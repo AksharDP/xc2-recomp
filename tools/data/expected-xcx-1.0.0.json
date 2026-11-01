@@ -1,0 +1,12 @@
+{
+  "version": 0,
+  "display_version": "1.0.0",
+  "title_id": "0100453019AA8000",
+  "exefs_sha256": {
+    "main": "64d531f510073450d0cc34a401a1b908bf4b9e8d403998d6a71df20d6b8ebab3",
+    "sdk": "0b72afe99b4c2e4ee89ddbf449351aed2036b077536bf01be02f4991c8af22d3",
+    "subsdk0": "24bc0737080524edcb690523ece78a610ca2260dfacff4a8fbeb463d5a0aec97",
+    "rtld": "ccc8301636595a6273681568f919435238c1a9f2a31263e991a0d6f11bf16771",
+    "main.npdm": "dfc7219c8a68a6b1a77aacac1d5a2aae92bf2c8c700caa5375355a0cec2fdc98"
+  }
+}

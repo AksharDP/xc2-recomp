@@ -1,0 +1,17 @@
+# Copy to config.local.toml (ignored by git) and point it at your own files.
+
+[input]
+# Base game 1.0.0, title id 0100F2C0115B6000, as NSP or XCI.
+base = 'C:\Games\XCX\base.nsp'
+# Cumulative update NSPs, title id 0100F2C0115B6800. Each is identified by its code hash; 1.4.3 and 1.2.1 are supported.
+# Leave the list empty for 1.0.0 only.
+updates = ['C:\Games\XCX\update-1.4.3.nsp']
+# Keys dumped from your own console. Never printed or copied by the tools.
+keys = 'C:\Switch\prod.keys'
+# Optional: a firmware NCA directory (an unpacked firmware, or an emulator's installed registered/ directory).
+# tools/extract_fonts.py takes the system shared fonts from it; the game needs them only with Chinese or Korean text.
+# firmware = 'C:\Switch\firmware'
+
+[work]
+# Extracted files, generated C and builds go here. Allow about 60 GB.
+dir = 'build'

@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "display_version": "XCX DE 2.0.0",
+  "exefs_sha256": {
+    "main": "0a9dbf1f3816dd0fab0a08883d538c74d9b9fd7d939cb29aaf0947d71a201026",
+    "sdk": "0b72afe99b4c2e4ee89ddbf449351aed2036b077536bf01be02f4991c8af22d3",
+    "subsdk0": "24bc0737080524edcb690523ece78a610ca2260dfacff4a8fbeb463d5a0aec97",
+    "rtld": "ccc8301636595a6273681568f919435238c1a9f2a31263e991a0d6f11bf16771",
+    "main.npdm": "75dc2bc1dd297288c1a6b79dced8c68b9a932154c31c077cab079816754daa12"
+  },
+  "romfs": {
+    "size": 14331812280,
+    "sha256": "31afb6d9d956b4dba5117a951055c47c9adf132deaca548579cfabc77ceea91a"
+  },
+  "title_id": "0100453019AA8000"
+}

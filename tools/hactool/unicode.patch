@@ -1,0 +1,62 @@
+Applied by tools/build_hactool.py after portable.patch. Ours: a manifest embedded through hactool.rc makes UTF-8 the
+process code page (Windows 10 1903 and later), so paths and user profiles with non-ASCII names reach filepath.c intact.
+
+diff --git a/Makefile b/Makefile
+index e1913b8..73b7e3f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -13,9 +13,19 @@ all:
+ .c.o:
+ 	$(CC) $(INCLUDE) -c $(CFLAGS) -o $@ $<
+ 
+-hactool$(EXEEXT): save.o sha.o aes.o extkeys.o rsa.o npdm.o bktr.o kip.o packages.o pki.o pfs0.o hfs0.o nca0_romfs.o romfs.o utils.o nax0.o nso.o lz4.o nca.o xci.o main.o filepath.o ConvertUTF.o cJSON.o
++# Windows: a manifest makes UTF-8 the process code page (Windows 10 1903 and later), so argv, getenv and fopen carry
++# UTF-8 as filepath.c expects: paths and user profiles with non-ASCII names work.
++ifeq ($(EXEEXT),.exe)
++WINDRES ?= windres
++RESOURCES = hactool.res.o
++endif
++
++hactool$(EXEEXT): save.o sha.o aes.o extkeys.o rsa.o npdm.o bktr.o kip.o packages.o pki.o pfs0.o hfs0.o nca0_romfs.o romfs.o utils.o nax0.o nso.o lz4.o nca.o xci.o main.o filepath.o ConvertUTF.o cJSON.o $(RESOURCES)
+ 	$(CC) -o $@ $^ -L $(LIBDIR) $(LDFLAGS)
+ 
++hactool.res.o: hactool.rc hactool.manifest
++	$(WINDRES) -O coff hactool.rc -o $@
++
+ aes.o: aes.h types.h
+ 
+ bktr.o: bktr.h types.h
+diff --git a/hactool.manifest b/hactool.manifest
+new file mode 100644
+index 0000000..4073219
+--- /dev/null
++++ b/hactool.manifest
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
++<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
++  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
++    <security>
++      <requestedPrivileges>
++        <requestedExecutionLevel level="asInvoker"/>
++      </requestedPrivileges>
++    </security>
++  </trustInfo>
++  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
++    <application>
++      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
++    </application>
++  </compatibility>
++  <application xmlns="urn:schemas-microsoft-com:asm.v3">
++    <windowsSettings>
++      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
++    </windowsSettings>
++  </application>
++</assembly>
+diff --git a/hactool.rc b/hactool.rc
+new file mode 100644
+index 0000000..543aa10
+--- /dev/null
++++ b/hactool.rc
+@@ -0,0 +1,2 @@
++/* Windows: argv, getenv and the narrow file functions use UTF-8 (Windows 10 1903 and later), as filepath.c expects. */
++1 24 "hactool.manifest"

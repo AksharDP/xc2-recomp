@@ -1,0 +1,5 @@
+# Title screen to gameplay (first save slot).
+300 A 4
+520 A 4
+700 A 4
+900 A 4

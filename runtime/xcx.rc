@@ -1,0 +1,5 @@
+/* The application manifest of xcx.exe (xcx.manifest) and its icon (xcx.ico, also the icon of XCX-Setup.exe and of
+   the installer window). tools/build_game.py compiles it with the runtime objects, so it is also a member of
+   libxcxrt.a, which the release links with --whole-archive. */
+1 24 "xcx.manifest"
+1 ICON "xcx.ico"

@@ -1,0 +1,3 @@
+/* The icon of XCX-Setup.exe: runtime/xcx.ico, the icon of xcx.exe. tools/make_release.py compiles this file with
+   llvm-windres -I runtime and links it with launcher.c. */
+1 ICON "xcx.ico"

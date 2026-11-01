@@ -1,0 +1,12 @@
+#!/bin/sh
+# Enable once per clone: git config core.hooksPath .githooks
+# Refuses pushes to master or main: changes reach them through a branch and a pull request. Tags pass.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+    refs/heads/master | refs/heads/main)
+        echo "pre-push: no direct pushes to ${remote_ref#refs/heads/}; push a branch and open a pull request" >&2
+        exit 1
+        ;;
+    esac
+done
+exit 0
