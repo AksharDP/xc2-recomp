@@ -85,6 +85,25 @@ back end reads keys with `GetAsyncKeyState` while the window is foreground, whic
 TotK's `stick_sens` is not ported: it rewrites TotK's camera parameter pack in the RomFS. An XC2 version needs XC2's
 own camera speed data.
 
+### Xbox button prompts: how XC2 draws them (investigated 2026-11-02, not implemented)
+
+TotK's `prompts` setting rewrites button glyphs in a font. XC2 has no button font: its prompts are textures.
+- Text prompts are `[ML:icon icon=<name>]` tags in the BDAT messages (names `A B X Y L R ZL ZR L3 R3 plus minus up down
+  left right`; the English tables use 176 of them). They draw cells of one shared atlas, the 512x256 BC3 texture (MIBL
+  format 68, block-linear) at the end of `menu/image/button.wilay` in `bf2.arh/ard`: round A B X Y, L R ZL ZR in two
+  shapes, plus, minus, home, stick and D-pad icons, SL and SR.
+- Layouts also carry their own button art, for example the battle palette's styled B X Y in
+  `menu/image/mnu032_button_icon.wilay`. There are 5,064 image layouts; which others show buttons is still to be found.
+- Delivery: the game asks every add-on content mount (`aoc1` to `aoc99`) for a menu file before it reads `bf2.ard`
+  (`XCX_TRACE=fs` at boot shows the probes for `menu/image/button.wilay`). A patched layout served through one of those
+  mounts, or through a RomFS overlay, replaces the archive's copy without touching `bf2.arh/ard`.
+- So the TotK approach carries over: a tool reads the player's own archive (`arh1` header with a XOR key, a path trie,
+  24-byte file entries; `xbc1` zlib blocks in the `.ard`), swaps the A/B and X/Y cells for the Nintendo layout, and
+  draws LB RB LT RT Menu View over L R ZL ZR plus minus. Then it re-encodes the texture and writes the loose files under
+  `build/`. Nothing from the game ships. Not done yet: the archive reader as a tool, the texture writer, the cell map,
+  the survey of the other layouts, the runtime overlay, a `prompts` setting, and an in-game check on a screen that shows
+  `[ML:icon]` text.
+
 ## Known issues
 
 ### Probes that need XCX data
