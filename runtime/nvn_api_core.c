@@ -248,7 +248,8 @@ NVN_API(nvnDeviceSetDepthMode) {
     uint32_t m = (uint32_t)arg_x(c, 1);
     ((dev_t_ *)arg_p(c, 0))->depth_mode = m;
     __atomic_store_n(&depth_minus_w, m == NVN_DEPTH_MODE_NEAR_IS_MINUS_W, __ATOMIC_RELAXED);
-    NVN_LOG("depth mode %s", m ? "near is 0 (as D3D and Vulkan)" : "near is -w (GL): vertex shaders map z to (z+w)/2");
+    rt_log("nvn: depth mode %s (device %p, caller %#llx)", m ? "near is 0 (as D3D and Vulkan)" : "near is -w (GL)",
+           arg_p(c, 0), (unsigned long long)c->x[30]);
 }
 // void nvnDeviceFinalizeCommandHandle(NVNdevice *d, NVNcommandHandle h)
 NVN_API(nvnDeviceFinalizeCommandHandle) { (void)c; }
@@ -593,6 +594,9 @@ NVN_API(nvnQueueSubmitCommands) {
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
     if (n < 0 || (n && !h)) rt_fatal("nvn: QueueSubmitCommands with %d handles at %p", n, (const void *)h);
+    if (nvn_callers_on())
+        for (int i = 0; i < n; i++)
+            rt_log("draw callers: QueueSubmitCommands handle %d/%d %#llx", i, n, (unsigned long long)h[i]);
     NVN_BLOCKING();
     uint64_t no = __atomic_add_fetch(&lod_entered, 1, __ATOMIC_SEQ_CST);
     q->submits++;

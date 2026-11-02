@@ -270,9 +270,12 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     o.voices = (uint32_t)vc * sizeof(AudrenVoiceOut);
     o.effects = (uint32_t)ec * eo;
     o.sinks = (uint32_t)sc * sizeof(AudrenSinkOut);
-    o.performance = 0x10;
+    // REV3's update output always carries the 0x10 performance section even when the game passes no performance
+    // buffer, and no render-info section: the SDK compares each size against its own managers and the total against
+    // the output buffer it allocated (0x1f80 here).
+    o.performance = 0x10u;
     o.behavior = AUDREN_BEHAVIOR_OUT;
-    o.render_info = AUDREN_RENDER_INFO_OUT;
+    o.render_info = 0;
     o.total = (uint32_t)sizeof o + o.memory_pools + o.voices + o.effects + o.sinks + o.performance + o.behavior +
               o.render_info;
     if (o.total > out_size) {
@@ -312,7 +315,7 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     }
     w += 0x10;                    // performance: nothing written
     w += AUDREN_BEHAVIOR_OUT;     // behavior: no errors
-    memcpy(w, &r->elapsed_frames, 8);
+    if (o.render_info) memcpy(w, &r->elapsed_frames, 8);
     plat_mutex_unlock(&r->lock);
 }
 

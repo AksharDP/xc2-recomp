@@ -2,12 +2,12 @@
 // (MIT, Copyright (c) 2026 MacNativeGames contributors) and LAS Recomp runtime/main.c (lines 16-35, 141-159) @
 // da35b83 (MIT, Copyright (c) 2026 Peiikai).
 // The boot driver: the guest main thread runs the game's own nn::init::Start
-// with three host callbacks, the second of which runs DT_INIT of main, subsdk0 and sdk; Start then calls nnMain.
-// --boot checks two checkpoints on the way and ends at the first nvnBootstrapLoader call:
-//   SetFocusHandlingMode   called from main+0xe7a954 (1.4.3: +0xbdb48c) in nnMain, every module's constructor flag
-//                          reads 2
-//   nvnBootstrapLoader     called from main+0xe7eb2c (1.4.3: +0xbe0360) in the graphics bring-up; logs the run
-//                          statistics, exits 0
+// with host callbacks, the last of which runs DT_INIT of main, subsdk0 and sdk; Start then calls nnMain.
+// --boot checks a checkpoint on the way and ends at the first nvnBootstrapLoader call:
+//   SetFocusHandlingMode   SDK 3.5.0 (XC2) calls it from sdk's nn::oe::InitializeApplet, not from nnMain, so XC2 has
+//                          no main-relative checkpoint (CHECKPOINT_RET 0); every module's constructor flag must read 2
+//   nvnBootstrapLoader     called from main+0x708b40 in the graphics bring-up; logs the run statistics, exits 0
+// XC2's SDK 3.5.0 Start takes two callbacks (loader_ready, module_inits); 1.4.3's takes three and adds module_finis.
 // With --seconds S the run continues past that call; rt_frame_presented ends it once the world clock passed S.
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,17 +16,19 @@
 #include "cfg.h"
 #include "fs.h"
 #include "gfx.h"
+#include "kernel.h"
 #include "nvn_api.h"
 #include "vk.h"
 #include "platform/platform.h"
 
-#define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
+#define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_"
+#define START_CALLBACKS 2                // SDK 3.5.0: (loader_ready, module_inits); no module_finis callback
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.2.1 from this port's analysis of main; 1.4.3 from
 // MacNativeGames' scripts/verify_boot.py) and of the first nvnBootstrapLoader call, per game version.
-// XCX 2.0.0: nnMain never calls SetFocusHandlingMode, so it has no checkpoint (0); its first nvnBootstrapLoader call
-// returns to main+0x953268 (the call is at +0x953264).
+// XC2 3.0.1: nnMain never calls SetFocusHandlingMode (sdk's nn::oe::InitializeApplet does), so it has no checkpoint;
+// its only BL to nvnBootstrapLoader is at main+0x708b40 and returns to main+0x708b44.
 #define CHECKPOINT_RET 0ull
-#define NVN_RET 0x953268ull
+#define NVN_RET 0x708b44ull
 #define CTOR_DONE 2                      // a module's constructor flag after its DT_INIT ran the init_array
 
 // The init_array sizes (1.2.1: counted in the modules; 1.4.3: DT_INIT_ARRAYSZ); MacNativeGames' boot check expects
@@ -34,9 +36,10 @@
 typedef struct { const char *name; uint64_t entries; } InitCount;
 static const InitCount inits_121[] = {{"main", 10673}, {"subsdk0", 45}, {"sdk", 116}};
 static const InitCount inits_143[] = {{"main", 10717}, {"subsdk0", 45}, {"sdk", 83}};
-// XCX DE 2.0.0 (DT_INIT_ARRAYSZ of its modules). This fork runs only XCX, so its counts are the ones checked.
-static const InitCount inits_xcx[] = {{"main", 1998}, {"subsdk0", 45}, {"sdk", 87}};
-#define expected_inits inits_xcx
+// XCX DE 2.0.0 (DT_INIT_ARRAYSZ of its modules). This fork runs only XC2, so its counts are the ones checked.
+// XC2 3.0.1 (DT_INIT_ARRAYSZ of main/subsdk0/sdk: 1600, 368 and 824 bytes).
+static const InitCount inits_xc2[] = {{"main", 200}, {"subsdk0", 46}, {"sdk", 103}};
+#define expected_inits inits_xc2
 
 static volatile int32_t inits_done, checkpoint_seen;
 uint64_t rt_guest_start_ns;
@@ -92,10 +95,7 @@ static void cb_module_inits(Cpu *c) {
     plat_xchg32(&inits_done, 1);
 }
 
-static void cb_module_finis(Cpu *c) {
-    char lr[128];
-    rt_fatal("boot: the game asked for module finalizers (from %s): the guest exited", caller(c, lr, sizeof lr));
-}
+// SDK 3.5.0's Start has no finalizer callback: module DT_FINI never runs, so there is nothing to report here.
 
 // ---- checkpoints (host.h)
 static void stats_line(void) {
@@ -323,6 +323,9 @@ static void hang_note_present(void) {
     e = cfg_get("XCX_STATE_DUMP");
     s = e ? strtol(e, NULL, 10) : 0;
     if (s > 0) plat_thread_detach(plat_thread_new(state_watch, (void *)(uintptr_t)s, "state_watch"));
+    e = cfg_get("XCX_PC_SAMPLE");
+    s = e ? strtol(e, NULL, 10) : 0;
+    if (s > 0) kern_pc_sample_start((uint32_t)s);
 }
 
 // A --seconds run ends at the first present after the world clock (game time since the save's first frame,
@@ -352,7 +355,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
 }
 
 // ---- steps 9-14
-static uint64_t cb_addr[3];
+static uint64_t cb_addr[2];
 
 static void guest_main(Cpu *c) {
     uint32_t handle = kern_main_thread(&c);
@@ -360,8 +363,8 @@ static void guest_main(Cpu *c) {
     if (!start) rt_fatal("boot: %s is not exported", SYM_INIT_START);
     char d[128];
     rt_log("boot: ENTER nn::init::Start at %s, main thread %#x", ldr_describe(start, d, sizeof d), handle);
-    // nn::init::Start(main thread handle, arguments region, loader_ready, module_inits, module_finis)
-    rt_call(c, start, 5, (uint64_t)handle, (uint64_t)0, cb_addr[0], cb_addr[1], cb_addr[2]);
+    // nn::init::Start(main thread handle, arguments region, loader_ready, module_inits)
+    rt_call(c, start, START_CALLBACKS + 2, (uint64_t)handle, (uint64_t)0, cb_addr[0], cb_addr[1]);
     rt_fatal("boot: nn::init::Start returned");
 }
 
@@ -387,7 +390,6 @@ void rt_boot(void) {
     res_init();
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
-    cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
     hostfn_seal();
     uint64_t held = plat_now_ms();
     if (warm) plat_thread_join(warm);

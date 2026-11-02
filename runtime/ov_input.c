@@ -78,6 +78,23 @@ static void ov_style_set(Cpu *c) {
     ret_x(c, v);
 }
 
+// XCX_HID_TRACE=1: log pad polling (which style, whether it is live, the buttons read) every 600 samples and on
+// every button change. Diagnosis aid for a screen that may be waiting for input.
+static void hid_trace_state(uint32_t want, uint32_t id, int live, uint64_t buttons) {
+    static int on = -1;
+    static uint64_t last;
+    static int64_t first_live = -1;
+    if (on < 0) on = cfg_bool("XCX_HID_TRACE");
+    if (!on) return;
+    if (live && first_live < 0) { first_live = sample; rt_log("hid: first live GetNpadStates (style %u id %#x)", want, id); }
+    if (buttons && buttons != last)
+        rt_log("hid: GetNpadStates buttons %#llx (sample %lld style %u)", (unsigned long long)buttons, (long long)sample, want);
+    else if (!live && sample % 600 == 0)
+        rt_log("hid: GetNpadStates not live (sample %lld want %u id %#x styles %#x enabled %d allowed %d)",
+               (long long)sample, want, id, styles, enabled, allowed);
+    last = buttons;
+}
+
 // int GetNpadStates(<State> *out, int count, const NpadIdType &id): the newest state only. want: the style of the
 // overload, 0 for the Joy-Con overloads (never connected).
 static void npad_states(Cpu *c, uint32_t want) {
@@ -94,6 +111,7 @@ static void npad_states(Cpu *c, uint32_t want) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
     }
+    hid_trace_state(want, id, live, s.buttons);
     *out = s;
     ret_x(c, 1);
 }

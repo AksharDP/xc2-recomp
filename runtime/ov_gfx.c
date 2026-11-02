@@ -101,6 +101,13 @@ static void ov_vsync_event(Cpu *c) {
     ret_x(c, 0);
 }
 
+// void nn::vi::SetLayerScalingMode(Layer *layer, ScalingMode mode): XC2 sets the layer to 2 (ScaleToWindow)
+// before it asks for the native window. The host presents the swapchain at the window size, which is that mode.
+static void ov_layer_scaling(Cpu *c) {
+    if (vi_up() && arg_p(c, 0) != layer) rt_fatal("nn::vi::SetLayerScalingMode: not the open layer");
+    (void)arg_x(c, 1);
+}
+
 // void *nvnBootstrapLoader(const char *name): the first NVN call
 static void ov_nvn_bootstrap(Cpu *c) {
     const char *name = arg_p(c, 0);
@@ -122,5 +129,6 @@ HOST_OVERRIDE("_ZN2nn2vi10InitializeEv", ov_vi_initialize);
 HOST_OVERRIDE("_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE", ov_open_display);
 HOST_OVERRIDE("_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE", ov_create_layer);
 HOST_OVERRIDE("_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE", ov_native_window);
+HOST_OVERRIDE("_ZN2nn2vi19SetLayerScalingModeEPNS0_5LayerENS0_11ScalingModeE", ov_layer_scaling);
 HOST_OVERRIDE("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE", ov_vsync_event);
 HOST_OVERRIDE("nvnBootstrapLoader", ov_nvn_bootstrap);

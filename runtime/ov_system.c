@@ -114,7 +114,18 @@ static void ov_desired_language(Cpu *c) {
     ret_x(c, v);
 }
 
-static void ov_oe_initialize(Cpu *c) { (void)c; rt_log("oe: application environment: a local host process"); }
+// nn::oe::Initialize in SDK 3.5.0 also calls nn::oe::InitializeApplet, which sets up the nn::am interfaces
+// (appletAE proxy) that EnableScreenShot and friends use. XCX's SDK did not, so this is an observer, not an override.
+
+// nn::apm (performance manager) is opened by nn::oe::Initialize in SDK 3.5.0. The host schedules the CPU itself and
+// the game's performance requests go through our nn::oe overrides, so the service is not needed.
+static void ov_apm_initialize(Cpu *c) { (void)c; rt_log("apm: the host schedules the CPU"); }
+
+// nn::oe::InitializeApplet in SDK 3.5.0 opens appletOE and builds the nn::am controller objects. The game only uses
+// nn::oe wrappers, which this file overrides, so the applet proxy is not needed. Screenshots are host-side.
+static void ov_initialize_applet(Cpu *c) { (void)c; rt_log("oe: applet interfaces: the host process needs none"); }
+static void ov_screenshot_enable(Cpu *c) { (void)c; }
+static void ov_screenshot_disable(Cpu *c) { (void)c; }
 
 // void SetPerformanceConfiguration(PerformanceMode mode, int config)
 static void ov_performance_config(Cpu *c) {
@@ -128,6 +139,14 @@ static void ov_performance_config(Cpu *c) {
 static void ov_cpu_boost(Cpu *c) {
     int64_t mode = (int32_t)arg_x(c, 0);
     if (mode < 0 || mode > 2) rt_fatal("nn::oe::SetCpuBoostMode: unknown mode %lld", (long long)mode);
+}
+
+// void GetDisplayVersion(DisplayVersion *out): a 0x10-byte name, the application's display version
+static void ov_display_version(Cpu *c) {
+    char *out = arg_p(c, 0);
+    if (!out) return;
+    memset(out, 0, 0x10);
+    memcpy(out, "3.0.1", 5);
 }
 
 static void ov_operation_mode(Cpu *c) { ret_x(c, ov_handheld() ? 0 : 1); }
@@ -294,6 +313,16 @@ static void ov_show_error(Cpu *c) {
 
 // ==== SDK-internal initialisation (services.c)
 static void ov_diag_startup(Cpu *c) { (void)c; rt_log("diag: host diagnostics"); }
+// nn::diag::detail::NotNullImpl(value): the SDK's NN_ASSERT(value != 0). Logging the failing value names which check
+// aborted when its file/function strings are empty, as they are in the RomFS cache allocation.
+static void ov_diag_not_null(Cpu *c) {
+    uint64_t v = arg_x(c, 0);
+    if (!v) {
+        char lr[96];
+        rt_logf("diag: NotNullImpl(0) from %s\n", caller(c, lr, sizeof lr));
+    }
+    ret_x(c, v ? 1 : 0);
+}
 static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: %d add-on content present", fs_aoc_list(NULL, 0, 0)); }
 // The add-on content installed beside the RomFS (fs_host.c fs_aoc_list); XCX 1.4.3 and XCX list it.
 // int ListAddOnContent(AddOnContentIndex *out, int offset, int count)
@@ -311,6 +340,10 @@ static void observe(Cpu *c, const char *name) {
     rt_log("ENTER %s", name);
     rt_original(c);
     rt_log("RETURN %s", name);
+}
+static void obs_oe_initialize(Cpu *c) {
+    rt_log("oe: application environment: a local host process");
+    rt_original(c);
 }
 static void obs_os_initialize(Cpu *c) { observe(c, "nnosInitialize"); }
 static void obs_sdk_initialize(Cpu *c) { observe(c, "nninitInitializeSdkModule"); }
@@ -410,6 +443,23 @@ static void ov_open_user(Cpu *c) {
         }
     plat_mutex_unlock(&account_lock);
     ret_x(c, (uint64_t)ok);
+}
+
+// Result OpenPreselectedUser(UserHandle *out): SDK 3.5.0's Result-returning form of TryOpenPreselectedUser.
+static void ov_open_preselected(Cpu *c) {
+    UserHandle *out = arg_p(c, 0);
+    if (!out) { ret_x(c, ACCOUNT_R_INVALID); return; }
+    plat_mutex_lock(&account_lock);
+    load_uid();
+    int ok = 0;
+    for (int i = 0; i < 64 && !ok; i++)
+        if (!tokens[i]) {
+            tokens[i] = next_token++;
+            *out = (UserHandle){local, tokens[i]};
+            ok = 1;
+        }
+    plat_mutex_unlock(&account_lock);
+    ret_x(c, ok ? 0 : ACCOUNT_R_INVALID);
 }
 
 // void CloseUser(const UserHandle &)
@@ -900,11 +950,16 @@ static void ov_profanity_mask(Cpu *c) {
 static void ov_screenshot(Cpu *c) { ret_x(c, ALBUM_R_UNAVAILABLE); }
 
 // ==== registration
-HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
+HOST_OBSERVER("_ZN2nn2oe10InitializeEv", obs_oe_initialize);
+HOST_OVERRIDE("_ZN2nn3apm10InitializeEv", ov_apm_initialize);
+HOST_OVERRIDE("_ZN2nn2oe16InitializeAppletEv", ov_initialize_applet);
+HOST_OVERRIDE("_ZN2nn2oe16EnableScreenShotEv", ov_screenshot_enable);
+HOST_OVERRIDE("_ZN2nn2oe17DisableScreenShotEv", ov_screenshot_disable);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);
 HOST_OVERRIDE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", ov_cpu_boost);
 HOST_OVERRIDE("_ZN2nn2oe16GetOperationModeEv", ov_operation_mode);
+HOST_OVERRIDE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", ov_display_version);
 HOST_OVERRIDE("_ZN2nn2oe18GetPerformanceModeEv", ov_performance_mode);
 HOST_OVERRIDE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", ov_focus_mode);
 HOST_OVERRIDE("_ZN2nn2oe20GetCurrentFocusStateEv", ov_focus_state);
@@ -958,6 +1013,7 @@ HOST_OVERRIDE("_ZN2nn5album21SaveCurrentScreenshotENS0_17AlbumReportOptionE", ov
 HOST_OVERRIDE("_ZN2nn3err26InitializeContextWriterApiEv", ov_err_context);
 HOST_OVERRIDE("_ZN2nn4pctl10InitializeEv", ov_pctl_initialize);
 HOST_OVERRIDE("_ZN2nn4diag34InitializeApplicationAbortObserverEv", ov_abort_observer);
+HOST_OVERRIDE("_ZN2nn4diag6detail11NotNullImplEm", ov_diag_not_null);
 
 HOST_OBSERVER("_ZN2nn2os21AllocateAddressRegionEPmm", obs_address_region);
 HOST_OBSERVER("_ZN2nn2os19AllocateMemoryPagesEmm", obs_memory_pages);
@@ -968,6 +1024,7 @@ HOST_OBSERVER("nnMain", obs_main);
 
 HOST_OVERRIDE("_ZN2nn7account10InitializeEv", ov_account_initialize);
 HOST_OVERRIDE("_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE", ov_open_user);
+HOST_OVERRIDE("_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE", ov_open_preselected);
 HOST_OVERRIDE("_ZN2nn7account9CloseUserERKNS0_10UserHandleE", ov_close_user);
 HOST_OVERRIDE("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE", ov_user_id);
 HOST_OVERRIDE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", ov_user_existence);

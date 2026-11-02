@@ -38,6 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
@@ -231,7 +232,11 @@ static void oq_cb(void *arg) {
     else {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
-        if (s->addr) write_counter(s->addr, oq_count);
+        // XCX_OQ_VISIBLE=1 (diagnostic): every report says a full screen of samples passed, so nothing the game tests
+        // with a query is culled; isolates occlusion-query bugs from missing geometry
+        static int all_visible = -1;
+        if (all_visible < 0) all_visible = cfg_get("XCX_OQ_VISIBLE") && !strcmp(cfg_get("XCX_OQ_VISIBLE"), "1");
+        if (s->addr) write_counter(s->addr, all_visible ? oq_count + (1u << 22) : oq_count);
     }
     free(s);
 }
@@ -256,6 +261,8 @@ static void reset_counter(VkExec *ex, const p_reset_counter *p) {
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
 // reset, unless reports came without resets before.
 static void oq_report(VkExec *ex, uint64_t addr) {
+    LOG_ONCE("vk: the game reports samples-passed counters (occlusion culling); first report at %#llx",
+             (unsigned long long)addr);
     oq_segment(ex, addr, 0);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;
@@ -315,8 +322,12 @@ static int cond_enabled(const p_render_cond *c) {
         warn_once(W_BUFFER, "conditional render counters at %#llx are not readable: rendering", (unsigned long long)c->addr);
         return 1;
     }
-    if (rx == 2 || ry == 2) return 1;   // a samples-passed count not done yet
-    return c->mode == 0 ? x == y : x != y;
+    int on = rx == 2 || ry == 2 ? 1 : c->mode == 0 ? x == y : x != y;   // 2: a samples-passed count not done yet
+    if (vk_dump_armed)
+        vk_dump_note("render condition at %#llx mode %d: words %llu%s, %llu%s -> %s", (unsigned long long)c->addr,
+                     c->mode, (unsigned long long)x, rx == 2 ? " (pending samples)" : "", (unsigned long long)y,
+                     ry == 2 ? " (pending samples)" : "", on ? "render" : "SKIP");
+    return on;
 }
 
 // ---- textures
@@ -601,7 +612,10 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload) {
     case OP_REPORT_COUNTER: report_counter(ex, payload); break;
     case OP_RESET_COUNTER: reset_counter(ex, payload); break;
     case OP_CLEAR_BUF: clear_buf(ex, payload); break;
-    case OP_RENDER_ENABLE: ex->render_disabled = !((const p_flag *)payload)->value; break;
+    case OP_RENDER_ENABLE:
+        ex->render_disabled = !((const p_flag *)payload)->value;
+        if (vk_dump_armed) vk_dump_note("render enable %d", !ex->render_disabled);
+        break;
     case OP_RENDER_COND:
         ex->render_cond = *(const p_render_cond *)payload;
         ex->has_render_cond = 1;

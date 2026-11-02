@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -398,6 +399,9 @@ NVN_API(nvnCommandBufferEndRecording) {
     uintptr_t hi = o->ctl ? lo + 1 : 0;
     o->ctl_used += CTL_PER_RECORDING;
     copy_add(lo, hi, copy);
+    if (nvn_callers_on())
+        rt_log("draw callers: EndRecording cmd %p -> handle %p (%zu bytes), lr %#llx", (void *)o, (void *)copy,
+               (size_t)(o->cur - o->seg), (unsigned long long)c->x[30]);
     ret_x(c, (uintptr_t)copy);
 }
 // NVNboolean nvnCommandBufferIsRecording(const NVNcommandBuffer *cmd)
@@ -424,13 +428,19 @@ NVN_API(nvnCommandBufferCallCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CallCommands");
+    for (int i = 0; i < n; i++) {
+        if (nvn_callers_on()) rt_log("draw callers: CallCommands cmd %p inlines handle %#llx", (void *)o, (unsigned long long)h[i]);
+        inline_recording(o, h[i], "CallCommands");
+    }
 }
 NVN_API(nvnCommandBufferCopyCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CopyCommands");
+    for (int i = 0; i < n; i++) {
+        if (nvn_callers_on()) rt_log("draw callers: CopyCommands cmd %p inlines handle %#llx", (void *)o, (unsigned long long)h[i]);
+        inline_recording(o, h[i], "CopyCommands");
+    }
 }
 
 // ---------- CommandBuffer: commands with CPU-visible results (performed by the back end in GPU order)
@@ -486,13 +496,17 @@ NVN_API(nvnCommandBufferSetRenderTargets) {
     r->depth = tex_pin(dt);
     copy_view(&r->dview, &r->has_dview, dv);
 }
-// void nvnCommandBufferClearColor(NVNcommandBuffer *cmd, int index, const float *rgba, int mask)
-NVN_API(nvnCommandBufferClearColor) {
+// void nvnCommandBufferClearColor{,i,ui}(NVNcommandBuffer *cmd, int index, const T *rgba, int mask): the payload is
+// four 32-bit values whose bits the replay hands to Vulkan as-is, so the integer variants copy the same 16 bytes.
+static void clear_color_bits(Cpu *c) {
     p_clear_color *r = REC(cmd_of(c), OP_CLEAR_COLOR, p_clear_color);
     r->index = (int)arg_x(c, 1);
     r->mask = (int)arg_x(c, 3);
     memcpy(r->rgba, arg_p(c, 2), 16);
 }
+NVN_API(nvnCommandBufferClearColor) { clear_color_bits(c); }
+NVN_API(nvnCommandBufferClearColori) { clear_color_bits(c); }
+NVN_API(nvnCommandBufferClearColorui) { clear_color_bits(c); }
 // void nvnCommandBufferClearDepthStencil(NVNcommandBuffer *cmd, float depth, NVNboolean depth_mask, int stencil,
 // int stencil_mask)
 NVN_API(nvnCommandBufferClearDepthStencil) {
@@ -716,12 +730,46 @@ NVN_API(nvnCommandBufferSetPolygonOffsetClamp) {
     *REC(cmd_of(c), OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){arg_s(c, 0), arg_s(c, 1), arg_s(c, 2)};
 }
 // void nvnCommandBufferDrawArrays(NVNcommandBuffer *cmd, NVNdrawPrimitive prim, int first, int count)
+// XCX_DRAW_CALLERS=<frame> (diagnostic): for that presented frame and the next, every draw call logs its primitive,
+// count and the game's return addresses, walked through the AArch64 frame records (x29 -> {fp, lr}). A lifted
+// function stores x29 and x30 back before it calls the host, so the chain is the guest's own.
+// 1 inside the XCX_DRAW_CALLERS window (also used by EndRecording, CallCommands and QueueSubmitCommands)
+int nvn_callers_on(void) {
+    static int64_t from = -2;
+    if (from == -2) {
+        const char *e = cfg_get("XCX_DRAW_CALLERS");
+        from = e && *e ? strtoll(e, NULL, 0) : -1;
+    }
+    if (from < 0) return 0;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    return f >= (uint64_t)from && f <= (uint64_t)from + 1;
+}
+
+static void draw_callers(Cpu *c, const char *kind, int prim, int count) {
+    if (!nvn_callers_on()) return;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    char buf[400];
+    int n = snprintf(buf, sizeof buf, "draw callers: frame %llu %s prim %d count %d cmd %p: %#llx",
+                     (unsigned long long)f, kind, prim, count, arg_p(c, 0), (unsigned long long)c->x[30]);
+    uint64_t fp = c->x[29];
+    for (int k = 0; k < 10 && n < (int)sizeof buf - 24; k++) {
+        if (!fp || (fp & 7) || fp >= (1ull << 39) || fp < 0x10000) break;
+        uint64_t next = ((const uint64_t *)(uintptr_t)fp)[0], lr = ((const uint64_t *)(uintptr_t)fp)[1];
+        n += snprintf(buf + n, sizeof buf - n, " %#llx", (unsigned long long)lr);
+        if (next <= fp) break;   // frame records grow towards higher addresses
+        fp = next;
+    }
+    rt_log("%s", buf);
+}
+
 NVN_API(nvnCommandBufferDrawArrays) {
+    draw_callers(c, "arrays", (int)arg_x(c, 1), (int)arg_x(c, 3));
     *REC(cmd_of(c), OP_DRAW, p_draw) = (p_draw){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), 0, 1};
 }
 // void nvnCommandBufferDrawArraysInstanced(NVNcommandBuffer *cmd, NVNdrawPrimitive prim, int first, int count,
 // int base_instance, int instances): zero instances draw nothing
 NVN_API(nvnCommandBufferDrawArraysInstanced) {
+    draw_callers(c, "arrays-inst", (int)arg_x(c, 1), (int)arg_x(c, 3));
     int inst = (int)arg_x(c, 5);
     if (inst <= 0) return;
     *REC(cmd_of(c), OP_DRAW, p_draw) = (p_draw){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), (int)arg_x(c, 4), inst};
@@ -729,12 +777,14 @@ NVN_API(nvnCommandBufferDrawArraysInstanced) {
 // void nvnCommandBufferDrawElements(NVNcommandBuffer *cmd, NVNdrawPrimitive prim, NVNindexType type, int count,
 // NVNbufferAddress indices)
 NVN_API(nvnCommandBufferDrawElements) {
+    draw_callers(c, "elements", (int)arg_x(c, 1), (int)arg_x(c, 3));
     cmd_t *o = cmd_of(c);
     *REC(o, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), 0, 0, 1, arg_x(c, 4)};
     hw_fix(o, 48);
 }
 // void nvnCommandBufferDrawElementsBaseVertex(..., NVNbufferAddress indices, int base_vertex)
 NVN_API(nvnCommandBufferDrawElementsBaseVertex) {
+    draw_callers(c, "elements-bv", (int)arg_x(c, 1), (int)arg_x(c, 3));
     cmd_t *o = cmd_of(c);
     *REC(o, OP_DRAW_IDX, p_draw_idx) =
         (p_draw_idx){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), (int)arg_x(c, 5), 0, 1, arg_x(c, 4)};
@@ -743,6 +793,7 @@ NVN_API(nvnCommandBufferDrawElementsBaseVertex) {
 // void nvnCommandBufferDrawElementsInstanced(..., NVNbufferAddress indices, int base_vertex, int base_instance,
 // int instances): assumed to use the 6-parameter draw macro of the base-vertex form (unverified)
 NVN_API(nvnCommandBufferDrawElementsInstanced) {
+    draw_callers(c, "elements-inst", (int)arg_x(c, 1), (int)arg_x(c, 3));
     cmd_t *o = cmd_of(c);
     *REC(o, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3),
                                                     (int)arg_x(c, 5), (int)arg_x(c, 6), (int)arg_x(c, 7), arg_x(c, 4)};

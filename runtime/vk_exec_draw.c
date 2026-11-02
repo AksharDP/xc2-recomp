@@ -1824,7 +1824,12 @@ static int pipe_memo_on(void) {
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
-    if (ex->render_disabled) return 0;
+    if (ex->render_disabled) {
+        if (vk_dump_armed)
+            vk_dump_note("draw skipped (render disabled): program %llu prim %d count %d",
+                         (unsigned long long)(ex->prog ? ex->prog->serial : 0), prim, count);
+        return 0;
+    }
     cb_res(ex);
     dummies_init();
     if (ex->pass_noatt) {   // no attachment: the pass covers this draw's viewport or scissor, reopened when it needs more
@@ -1836,7 +1841,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!ex->in_pass) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT | VK_EXEC_DIRTY_SCISSOR;
     vk_exec_pass_begin(ex);
     VkRect2D sc = vk_exec_scissor(ex);
-    if (!sc.extent.width || !sc.extent.height) return 0;
+    if (!sc.extent.width || !sc.extent.height) {
+        if (vk_dump_armed) vk_dump_note("draw skipped (empty scissor): count %d", count);
+        return 0;
+    }
     if (!ex->prog) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
     int has_vs, has_fs, vs_wait = 0, fs_wait = 0, memo = shader_memo_on();
     const GfxShader *vs, *fs;
@@ -1862,7 +1870,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
     int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
     if (vs_wait || fs_wait) {
-        if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) return perf_count(PERF_CNT_SHADER_SKIP), 0;   // skipped until ready
+        if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) {   // skipped until ready
+            if (vk_dump_armed) vk_dump_note("draw skipped (shader translating): program %llu", (unsigned long long)ex->prog->serial);
+            return perf_count(PERF_CNT_SHADER_SKIP), 0;
+        }
         perf_count(PERF_CNT_ONESHOT_WAIT);
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
@@ -1930,7 +1941,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
                (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1, waited / 1e6, why,
                pending ? ", skipped after all" : "", count, ex->pass_w, ex->pass_h, tg);
     }
-    if (pending) return 0;   // a background worker is building it: the draw is skipped until it is ready
+    if (pending) {   // a background worker is building it: the draw is skipped until it is ready
+        if (vk_dump_armed) vk_dump_note("draw skipped (pipeline building): program %llu", (unsigned long long)ex->prog->serial);
+        return 0;
+    }
     if (!p || !info) return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     if (!B.st_valid || memcmp(&B.st, &s, sizeof s)) {
@@ -2062,6 +2076,21 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
+    if (vk_dump_armed)   // instance-rate streams: bytes the draw reads against bytes bound, and the first record
+        for (int b = 0; b < 16; b++)
+            if (ex->pipe.vstream[b].divisor && ex->pipe.vstream[b].stride) {
+                uint32_t stride = ex->pipe.vstream[b].stride;
+                uint64_t need = ((uint64_t)d->base_instance + (uint64_t)(d->instances > 0 ? d->instances : 1)) * stride;
+                float m[12] = {0};
+                uint64_t at = ex->vbuf[b].address + (uint64_t)d->base_instance * stride;
+                if (ex->vbuf[b].address && stride >= sizeof m) memcpy(m, (const void *)(uintptr_t)at, sizeof m);
+                vk_dump_note("instanced draw count %d: stream %d addr %#llx bound %#llx stride %u base_instance %d "
+                             "instances %d needs %#llx%s; first rows (%g %g %g %g) (%g %g %g %g) (%g %g %g %g)", d->count,
+                             b, (unsigned long long)ex->vbuf[b].address, (unsigned long long)B.vsz[b], stride,
+                             d->base_instance, d->instances, (unsigned long long)need,
+                             need > B.vsz[b] ? " OUT OF RANGE" : "", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+                             m[8], m[9], m[10], m[11]);
+            }
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     ex->recorded++;

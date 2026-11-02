@@ -25,6 +25,8 @@
 // the frame are reached before the PNG cap.
 // XCX_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
 // (the terrain decals draw one pass each into the G-buffer and would use up both caps).
+// XCX_DUMP_PASS=<lo>[-<hi>]: passes and dispatches numbered lo..hi are copied even when a skip run would drop them, so
+// a G-buffer pass that follows another pass into the same targets can be inspected.
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -51,6 +53,7 @@ static char dir[400];
 static FILE *passes_f, *images_f;
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
 static int skip_runs, dump_ubo;        // XCX_DUMP_SKIP_RUNS, XCX_DUMP_UBO
+static int pass_lo = -1, pass_hi = -1; // XCX_DUMP_PASS: passes/dispatches always copied
 static uint32_t want_tex[16][2];       // XCX_DUMP_TEX: slot id and 0, or width and height
 static int nwant_tex;
 static uint64_t last_targets;          // targets_sig of the last render pass; 0 after a dispatch
@@ -676,6 +679,10 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     if (!active()) goto out;
     pass_draws++;
     uint64_t th = bindings_hash(ex, info);
+    // dynamic depth state is not in the pipeline: draws that differ only there get entries of their own
+    uint32_t dr[2];
+    memcpy(dr, ex->depth_range, sizeof dr);
+    th = (th ^ ((uint64_t)dr[0] << 32 | dr[1])) * 0x100000001b3ull;
     for (int i = 0; i < nents; i++)
         if (ents[i].p == p && ents[i].th == th) {
             ents[i].draws++;
@@ -688,6 +695,20 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     Str b = {0};
     sp(&b, "vs %016llx fs %016llx prog %llu prim %d\n", (unsigned long long)shader_hash(s->vs),
        (unsigned long long)shader_hash(s->fs), (unsigned long long)(ex->prog ? ex->prog->serial : 0), s->prim);
+    sp(&b, "    fixed: depth range %g..%g, vp0 %g,%g %gx%g%s, minus_w %d clamp %d, depth test %d write %d func %d, "
+           "offset en %#x factor %g units %g clamp %g\n",
+       ex->depth_range[0], ex->depth_range[1], ex->vp[0][0], ex->vp[0][1], ex->vp[0][2], ex->vp[0][3],
+       ex->has_vp ? "" : " (unset)", s->depth_minus_w, s->depth_clamp, (int)s->ds.dt, (int)s->ds.dw, (int)s->ds.df,
+       (unsigned)s->poly.offset_en, ex->poly_offset.factor, ex->poly_offset.units, ex->poly_offset.clamp);
+    sp(&b, "    vertex input:");
+    for (int l = 0; l < 16; l++) {
+        va_st va;
+        memcpy(&va, &s->vattr[l], sizeof va);
+        if (va.fmt)
+            sp(&b, " L%d fmt %#x stream %u off %u stride %u", l, (unsigned)va.fmt, (unsigned)va.stream,
+               (unsigned)va.offset, va.stream < 16 ? s->vstream[va.stream].stride : 0);
+    }
+    sp(&b, "\n");
     describe_bindings(&b, ex, info);
     ents[nents++] = (Ent){p, th, 1, b.s};
 out:
@@ -730,9 +751,11 @@ static uint64_t targets_sig(const VkExec *ex) {
 }
 
 // Sets pass_skip for the pass or dispatch being logged and counts it when it copies.
-static void pass_decide(int same_targets) {
+static void pass_decide(int same_targets, int n) {
     if (frame_now() != dump_frame) copied = 0;
-    pass_skip = copied >= MAX_PASSES ? "pass cap" : same_targets ? "same targets as the previous pass" : NULL;
+    int forced = pass_lo >= 0 && n >= pass_lo && n <= pass_hi;
+    pass_skip = forced ? NULL : copied >= MAX_PASSES ? "pass cap" : same_targets ? "same targets as the previous pass"
+                                                                                 : NULL;
     if (!pass_skip) copied++;
 }
 
@@ -741,7 +764,7 @@ void vk_dump_pass_end(VkExec *ex) {
     if (!active()) goto out;
     int n = seq++;
     uint64_t sig = targets_sig(ex);
-    pass_decide(skip_runs && sig == last_targets);
+    pass_decide(skip_runs && sig == last_targets, n);
     last_targets = sig;
     fprintf(passes_f, "pass %04d: render pass, draws %d, area %ux%u layers %u, fence %llu, frame %llu\n", n, pass_draws,
             ex->pass_w, ex->pass_h, ex->pass_layers, (unsigned long long)ex->fence, (unsigned long long)frame_now());
@@ -771,7 +794,7 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
     plat_mutex_lock(&rec_lock);
     if (!active()) goto out;
     int n = seq++;
-    pass_decide(0);
+    pass_decide(0, n);
     last_targets = 0;
     Str b = {0};
     describe_bindings(&b, ex, info);
@@ -864,6 +887,21 @@ out:
     plat_mutex_unlock(&rec_lock);
 }
 
+// One line in passes.txt between the passes, for replay decisions that leave no pass behind (skipped draws, render
+// conditions).
+void vk_dump_note(const char *fmt, ...) {
+    plat_mutex_lock(&rec_lock);
+    if (active()) {
+        va_list ap;
+        va_start(ap, fmt);
+        fprintf(passes_f, "note after pass %d: ", seq - 1);
+        vfprintf(passes_f, fmt, ap);
+        fputc('\n', passes_f);
+        va_end(ap);
+    }
+    plat_mutex_unlock(&rec_lock);
+}
+
 static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
 void vk_dump_init(void) {
@@ -873,6 +911,13 @@ void vk_dump_init(void) {
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
     const char *sr = cfg_get("XCX_DUMP_SKIP_RUNS");
     skip_runs = sr && *sr && *sr != '0';
+    const char *pp = cfg_get("XCX_DUMP_PASS");
+    if (pp && *pp) {
+        char *q;
+        long lo = strtol(pp, &q, 10);
+        long hi = *q == '-' ? strtol(q + 1, NULL, 10) : lo;
+        if (lo >= 0 && hi >= lo) pass_lo = (int)lo, pass_hi = (int)hi;
+    }
     const char *du = cfg_get("XCX_DUMP_UBO");
     dump_ubo = du && *du && *du != '0';
     const char *only = cfg_get("XCX_DUMP_ONLY");

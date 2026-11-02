@@ -526,9 +526,11 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
     const char *p = romfs_path_relative(mount_name, path);
-    if (!p) return FS_R_PATH_NOT_FOUND;
-    uint64_t i = file_index(p);
-    if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
+    uint64_t i = p ? file_index(p) : UINT64_MAX;
+    if (i == UINT64_MAX) {
+        fs_trace("rom NOT FOUND", path);
+        return FS_R_PATH_NOT_FOUND;
+    }
     uint32_t ov = overlay_slot(i);
     PlatFile *f = NULL;
     if (ov) {
@@ -581,6 +583,14 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
     PlatFile *f;
     uint64_t base, fsize;
     if (!out || offset < 0 || !handle_source(h, &f, &base, &fsize)) return FS_R_INVALID;
+    if (rt_trace & RT_TRACE_FS) {   // XCX_TRACE=fs: every read, with what it asked for and what the file has
+        char what[96];
+        uint64_t i = handles[h - ROMFS_HANDLE_BASE];
+        snprintf(what, sizeof what, "rom read %#llx+%#llx of %#llx%s", (unsigned long long)offset,
+                 (unsigned long long)size, (unsigned long long)fsize,
+                 (uint64_t)offset > fsize ? " PAST END" : (uint64_t)offset + size > fsize ? " SHORT" : "");
+        fs_trace(what, i ? entry_name(entry(i - 1)) : "?");
+    }
     if ((uint64_t)offset > fsize || (!buffer && size)) return FS_R_INVALID;
     uint64_t n = size < fsize - (uint64_t)offset ? size : fsize - (uint64_t)offset, done = 0;
     if (f == image && image_map) {
@@ -640,10 +650,12 @@ uint32_t romfs_entry_type(int *out, const char *path) {
 // ---- overrides
 // nn::Result nn::fs::MountRom(const char *name, void *cache, size_t cache_size)
 static void ov_mount_rom(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
-// nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): no cache needed, the host reads the image directly
+// nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): the host reads the image directly, but the size must be
+// nonzero: XC2's fs init turns the answer into `malloc(size)` and asserts the pointer through NN_ASSERT, and
+// Nintendo's musl returns NULL for a zero-size request. The one page is allocated and never filled.
 static void ov_query_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);
-    if (out) *out = 0;
+    if (out) *out = 0x1000;
     ret_x(c, out ? 0 : FS_R_INVALID);
 }
 // void nn::fs::InitializeForApplication(): SDK-internal; opens the index instead of the fs service session

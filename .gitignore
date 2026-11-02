@@ -6,6 +6,8 @@
 /.venv/
 /.venv-py314/
 __pycache__/
+# pip's temporary folders, left behind when an install runs with the repository as its temp directory
+/pip-*/
 
 # Personal paths to game files and keys
 /config.local.toml

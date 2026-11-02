@@ -838,6 +838,8 @@ static void core_count(void) {
 
 static struct DgRel g_dg_rel;   // XCX_CORE_DIAG: the owner core_put is releasing, for core_grant
 
+static void core_migrate(void);
+
 static void core_grant(int c) {
     RtThread *b = NULL, **bp = NULL;
     int bpri = 0;
@@ -850,7 +852,10 @@ static void core_grant(int c) {
             bpri = pr;
         }
     }
-    if (!b) return;
+    if (!b) {
+        core_migrate();
+        return;
+    }
     *bp = b->cnext;
     b->cnext = NULL;
     b->cur_core = c;
@@ -935,6 +940,34 @@ static void core_kick(void) {
     }
 }
 
+// A free core can also unblock a waiter that may not run on it: move the holder of a core the waiter does need onto
+// the free one. Horizon reschedules an equal-priority holder by time slicing, which stops it; moving it keeps both
+// threads running, so a pinned waiter never waits for a holder that is free to go elsewhere.
+static uint64_t g_mig_n, g_mig_depth;
+
+static void core_migrate(void) {
+    if (g_mig_depth) return;
+    for (int f = 0; f < NCORE; f++) {
+        if (g_core_owner[f]) continue;
+        for (int d = 0; d < NCORE; d++) {
+            RtThread *o = g_core_owner[d];
+            if (!o || d == f || !core_allowed(o, f)) continue;
+            int wanted = 0;
+            for (const RtThread *w = g_core_wait; w && !wanted; w = w->cnext)
+                wanted = core_allowed(w, d) && !core_allowed(w, f);
+            if (!wanted) continue;
+            g_core_owner[d] = NULL;
+            o->cur_core = f;
+            g_core_owner[f] = o;
+            g_mig_n++;
+            g_mig_depth++;
+            core_grant(d);
+            g_mig_depth--;
+            return;
+        }
+    }
+}
+
 static void core_take(RtThread *t) {
     if (t->cur_core >= 0) return;
     if (!cores_enabled()) {
@@ -963,6 +996,7 @@ static void core_take(RtThread *t) {
         memset(&t->dg_rel, 0, sizeof t->dg_rel);
     }
     core_kick();
+    for (int i = 0; i < NCORE && t->cur_core < 0; i++) core_migrate();
     if (g_diag > 0) t->dg_cls = dg_class0(t);
     if (g_ap_int && t->target && t->cur_core < 0) {   // most waits end within microseconds: spin before interrupting
         uint64_t end = kern_now_ns() + AP_FIRST_NS;
@@ -1260,8 +1294,9 @@ void kern_hang_dump(void) {
     for (RtThread *t = g_all; t; t = t->all) {
         if (t->exited) continue;
         const Cpu *c = t->cur ? t->cur : t->cpu;
-        rt_log("hang: thread %#x p%d core %d %s, state %s, wait %s addr %#llx key %#llx obj %#llx, entry %s", t->handle,
-               t->prio, t->cur_core, t->is_main ? "main" : t == g_render ? "render" : "", st[t->st],
+        rt_log("hang: thread %#x p%d core %d mask %llx%s%s%s, state %s, wait %s addr %#llx key %#llx obj %#llx, entry %s",
+               t->handle, t->prio, t->cur_core, (unsigned long long)t->mask, t->is_main ? " main" : "",
+               t == g_render ? " render" : "", ap_disabled(t) ? " pdis" : "", st[t->st],
                (unsigned)t->wkind < 5 ? wk[t->wkind] : "?", (unsigned long long)t->waddr, (unsigned long long)t->wkey,
                (unsigned long long)t->wobj, ldr_describe(t->entry, d, sizeof d));
         dump_host_stack(t->tid);
@@ -1284,7 +1319,40 @@ void kern_hang_dump(void) {
             fp = next;
         }
     }
+    {
+        char line[128];   // which core each handle holds: a waiter whose mask includes a free core has a lost grant
+        int n = snprintf(line, sizeof line, "hang: cores");
+        for (int i = 0; i < NCORE && n < (int)sizeof line - 16; i++)
+            n += snprintf(line + n, sizeof line - (size_t)n, " %d:%#x", i,
+                          g_core_owner[i] ? g_core_owner[i]->handle : 0);
+        rt_log("%s", line);
+    }
     unlock();
+}
+
+// XCX_PC_SAMPLE=<ms>: every N ms, every guest thread's state, wait object and guest pc/lr. The hang dump says where a
+// thread waits; this samples over time what a thread that never waits is doing.
+static void pc_sample(void *arg) {
+    uint32_t ms = (uint32_t)(uintptr_t)arg;
+    static const char *const st[S_N] = {"off", "run", "core", "host", "sleep", "sync", "cv", "lock", "addr"};
+    char a[128], b[128];
+    for (;;) {
+        plat_sleep_ms(ms);
+        lock();
+        for (RtThread *t = g_all; t; t = t->all) {
+            if (t->exited) continue;
+            const Cpu *c = t->cur ? t->cur : t->cpu;
+            rt_log("pcs: %#x p%d%s%s st %s wait %d obj %#llx pc %s lr %s", t->handle, t->prio, t->is_main ? " main" : "",
+                   t == g_render ? " render" : "", st[t->st], (int)t->wkind, (unsigned long long)t->wobj,
+                   c ? ldr_describe(c->pc, a, sizeof a) : "-", c ? ldr_describe(c->x[30], b, sizeof b) : "-");
+        }
+        rt_log("pcs: --");
+        unlock();
+    }
+}
+
+void kern_pc_sample_start(uint32_t ms) {
+    plat_thread_detach(plat_thread_new(pc_sample, (void *)(uintptr_t)ms, "pc_sample"));
 }
 
 void kern_sched_report(uint64_t frame) {
@@ -1365,6 +1433,7 @@ void kern_sched_report(uint64_t frame) {
                 }
     }
     uint64_t pre_stale = g_pre_stale, pre_req = g_pre_req, pre_n = g_pre_n, pre_ns = g_pre_ns, pre_max = g_pre_max;
+    uint64_t moves = g_mig_n;
     uint64_t sc = g_sync_calls, sb = g_sync_blocks;
     for (RtThread *t = g_all; t; t = t->all) {
         memset(t->st_ns, 0, sizeof t->st_ns);
@@ -1375,14 +1444,16 @@ void kern_sched_report(uint64_t frame) {
     memset(g_rw, 0, sizeof g_rw);
     memset(g_mw, 0, sizeof g_mw);
     g_pre_req = g_pre_n = g_pre_ns = g_pre_max = g_pre_stale = 0;
+    g_mig_n = 0;
     g_sync_calls = g_sync_blocks = 0;
     unlock();
     if (!span) return;
     rt_log("sched: frame %llu: %.2f s, cores busy %.2f of %d, core wait %.2f thread-s, preempt req %llu released %llu "
-           "avg %.2f ms max %.2f ms, WaitSynchronization %llu calls %llu blocks, stale preempt %llu%s",
+           "avg %.2f ms max %.2f ms, cores moved %llu, WaitSynchronization %llu calls %llu blocks, stale preempt %llu%s",
            (unsigned long long)frame, span / 1e9, (double)all_run / span, NCORE, all_core / 1e9,
            (unsigned long long)pre_req, (unsigned long long)pre_n, pre_n ? pre_ns / 1e6 / pre_n : 0.0, pre_max / 1e6,
-           (unsigned long long)sc, (unsigned long long)sb, (unsigned long long)pre_stale, self ? "" : " (render thread is not a guest thread)");
+           (unsigned long long)moves, (unsigned long long)sc, (unsigned long long)sb, (unsigned long long)pre_stale,
+           self ? "" : " (render thread is not a guest thread)");
     for (int i = 0; i < nr; i++) {
         Row *r = &rows[i];
         char d[128], s[256];

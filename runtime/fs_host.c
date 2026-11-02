@@ -977,6 +977,16 @@ static uint32_t read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, 
     return 0;
 }
 
+// Result GetDirectoryEntryCount(int64_t *out, DirectoryHandle h): the count at open, before the mode filter, so the
+// game can size its buffer. ReadDirectory still returns at most the entries the mode selects.
+static uint32_t directory_entry_count(int64_t *out, uint64_t h) {
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !out) return FS_R_INVALID_ARGUMENT;
+    Dir *d = &dirs[h - DIR_BASE];
+    if (!d->used) return FS_R_INVALID_ARGUMENT;
+    *out = d->n;
+    return 0;
+}
+
 static void close_directory(uint64_t h) {
     if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !dirs[h - DIR_BASE].used)
         rt_fatal("fs: close of invalid directory handle %#llx", (unsigned long long)h);
@@ -1009,6 +1019,7 @@ static void ov_delete_recursive(Cpu *c) { ret_x(c, delete_recursive(arg_p(c, 0))
 static void ov_open_directory(Cpu *c) { ret_x(c, open_directory(arg_p(c, 0), arg_p(c, 1), I32(2))); }
 static void ov_read_directory(Cpu *c) { ret_x(c, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
 static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
+static void ov_directory_count(Cpu *c) { ret_x(c, directory_entry_count(arg_p(c, 0), arg_x(c, 1))); }
 // Result MountAddOnContent(const char *name, AddOnContentIndex index, void *cache, size_t cache_size)
 static void ov_mount_aoc(Cpu *c) { ret_x(c, mount_aoc(arg_p(c, 0), (int)arg_x(c, 1))); }
 // Result QueryMountAddOnContentCacheSize(size_t *out, AddOnContentIndex index): host files need no cache
@@ -1065,6 +1076,8 @@ static void ov_save_exists_own(Cpu *c) { ret_x(c, save_exists(XCX_APPLICATION_ID
 #define S_MOUNT_TEMP "_ZN2nn2fs21MountTemporaryStorageEPKc"
 #define S_UNMOUNT "_ZN2nn2fs7UnmountEPKc"
 #define S_COMMIT "_ZN2nn2fs6CommitEPKc"
+#define S_COMMIT_SAVE "_ZN2nn2fs14CommitSaveDataEPKc"
+#define S_DIRECTORY_COUNT "_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE"
 #define S_CREATE_CACHE "_ZN2nn2fs18CreateCacheStorageEill"
 #define S_DELETE_CACHE "_ZN2nn2fs18DeleteCacheStorageEi"
 #define S_MOUNT_CACHE "_ZN2nn2fs17MountCacheStorageEPKci"
@@ -1103,6 +1116,8 @@ HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);
+HOST_OVERRIDE(S_COMMIT_SAVE, ov_commit);
+HOST_OVERRIDE(S_DIRECTORY_COUNT, ov_directory_count);
 HOST_OVERRIDE(S_CREATE_CACHE, ov_create_cache);
 HOST_OVERRIDE(S_DELETE_CACHE, ov_delete_cache);
 HOST_OVERRIDE(S_MOUNT_CACHE, ov_mount_cache);

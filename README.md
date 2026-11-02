@@ -1,24 +1,25 @@
-# XCX Recomp
+# XC2 Recomp
 
-**XCX Recomp** is a static recompilation of *Xenoblade Chronicles X: Definitive Edition* (Nintendo Switch, 2025) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)). It is a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh.
+**XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh. Most of the documentation still describes XCX; XC2's own state is in [NOTES.md](NOTES.md).
 
 > [!IMPORTANT]
-> **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles X: Definitive Edition*, dumped from your own console: the base game and the 2.0.0 update (the add-on content is optional). Instructions for obtaining those files will not be provided.
+> **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles 2*, dumped from your own console: the base game and the 3.0.1 update (the add-on content is optional). Instructions for obtaining those files will not be provided.
 >
 > The game is built from your files on your machine, so the result contains the game. It is for your own use. Do not share it.
 
 ## Status
 
-Early development. New Game, cutscenes and gameplay run on Windows with sound, text and the menu, at 60 fps by
-default (30 to 360 in the settings; above 60 is experimental).
+Early development. The game boots to the title screen and runs New Game into the opening battle with sound, text and
+input, at its native 30 fps. Known issues, including missing ground in the opening battle, are listed in
+[NOTES.md](NOTES.md).
 
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features
 
 - Native code, not emulation
-- Update 2.0.0 and the Exploration Support Package add-on content
-- XCX-Setup: builds the game from your own NSP files and `prod.keys`
+- Update 3.0.1 and all seven add-on content packs
+- Built from your own NSP files and `prod.keys` (the XCX-Setup installer is not yet adapted to XC2)
 - In-game settings menu (F1) and performance overlay (F10)
 - Keyboard, mouse and gamepad
 

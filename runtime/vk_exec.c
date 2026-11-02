@@ -867,6 +867,8 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_BARRIER: vk_exec_barrier(ex); break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) vk_exec_frame.draws_seen++, split_draws++;
+            if (vk_dump_armed && h->op == OP_DRAW) vk_dump_note("replay draw prim %d count %d", ((const p_draw *)a)->prim, ((const p_draw *)a)->count);
+            if (vk_dump_armed && h->op == OP_DRAW_IDX) vk_dump_note("replay draw prim %d count %d", ((const p_draw_idx *)a)->prim, ((const p_draw_idx *)a)->count);
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) vk_exec_frame.dispatches++, split_draws++;
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
@@ -906,6 +908,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     if (n) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
     for (int i = 0; i < n; i++) {
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
+        if (vk_dump_armed) vk_dump_note("replay handle %d/%d %#llx", i, n, (unsigned long long)handles[i]);
         walk(ex, nvn_op_first(handles[i]), 0);
     }
     vk_exec_pass_end(ex);

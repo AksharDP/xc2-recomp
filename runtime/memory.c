@@ -278,12 +278,15 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     plat_mutex_lock(&lock);
     if (size > HEAP_CAP || size % 0x200000 || size + image_bytes() > L.pool) {
         plat_mutex_unlock(&lock);
+        rt_logf("memory: SetHeapSize %#llx refused (cap %#llx, image %#llx, pool %#llx)\n", (unsigned long long)size,
+               (unsigned long long)HEAP_CAP, (unsigned long long)image_bytes(), (unsigned long long)L.pool);
         return R_INVALID_STATE;
     }
     if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
     if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
     heap_size = size;
     plat_mutex_unlock(&lock);
+    rt_logf("memory: SetHeapSize %#llx at %#llx\n", (unsigned long long)size, (unsigned long long)L.heap.base);
     if (addr) *addr = L.heap.base;
     return R_OK;
 }

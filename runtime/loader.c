@@ -552,24 +552,20 @@ uint64_t ldr_plt_stub(const char *module, const char *name) {
 }
 
 // ---- --probe-loader
-// Expected values, measured on the 1.2.1 and 1.4.3 modules; the 1.4.3 relocation totals match the ones
-// MacNativeGames' port notes give for that version.
+// Expected values, measured on this game's modules (Xenoblade Chronicles 2 3.0.1, SDK 3.5.0). Every count comes from
+// one --probe-loader run on the verified ExeFS, so a different build or a broken loader stops the probe.
 typedef struct {
     const char *name;
     uint64_t kinds[K_COUNT], total, sym_import, sym_own;
     uint32_t imports, to[MOD_COUNT], weak, init_off, init_array;
 } Expect;
-static const Expect expect_121[] = {
-    {"main", {508816, 1415, 32, 641}, 510904, 2088, 0, 675, {0, 16, 647}, 12, 0x30, 10673},
-    {"subsdk0", {1623, 12820, 1030, 3924}, 19397, 6576, 11198, 667, {9, 0, 654}, 4, 0x30, 45},
-    {"sdk", {10917, 13976, 1207, 8932}, 35032, 16, 24099, 13, {8, 0, 0}, 5, 0x30, 116},
+static const Expect expect_xc2[] = {
+    {"main", {31910, 284, 8, 375}, 32577, 667, 0, 408, {0, 28, 376}, 4, 0x24, 200},
+    {"subsdk0", {1751, 15411, 1005, 3527}, 21694, 8482, 11461, 609, {5, 0, 600}, 4, 0x24, 46},
+    {"sdk", {8564, 13399, 863, 6264}, 29090, 16, 20510, 13, {8, 0, 0}, 5, 0x24, 103},
 };
-static const Expect expect_143[] = {
-    {"main", {499078, 1393, 28, 650}, 501149, 2071, 0, 680, {0, 16, 656}, 8, 0x10b4f10, 10717},
-    {"subsdk0", {3424, 10927, 905, 3817}, 19073, 6557, 9092, 663, {9, 0, 654}, 0, 0x20, 45},
-    {"sdk", {15013, 10135, 1079, 7832}, 34059, 10, 19036, 8, {8, 0, 0}, 0, 0x400, 83},
-};
-#define expect (RT_V143 ? expect_143 : expect_121)
+#define expect expect_xc2
+#define NEXPECT (sizeof expect_xc2 / sizeof *expect_xc2)
 
 static int failures;
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("  FAIL: " __VA_ARGS__); putchar('\n'); } } while (0)
@@ -659,7 +655,7 @@ int probe_loader(void) {
     const RtConfig *cfg = rt_config();
     hostfn_add_override(PROBE_SYMBOL, probe_override);
     ldr_load(cfg->exefs);
-    if (nmods != (int)(sizeof expect_121 / sizeof *expect_121)) {
+    if (nmods != (int)NEXPECT) {
         printf("probe-loader: FAILED (%d modules, expected 3)\n", nmods);
         return 1;
     }

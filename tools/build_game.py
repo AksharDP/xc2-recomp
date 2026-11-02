@@ -146,9 +146,12 @@ WINDRES = UCRT / 'windres.exe'   # runtime/xcx.rc: the manifest of xcx.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
-# The game version the menu shows. XCX 2.0.0 (upd) keeps rt_game_version 0: the runtime's 121/143 branches are TotK's.
-GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0'}
+DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'v301': '3.0.1'}
+# rt_game_version is TotK's 121/143 discriminator (host.h RT_V143 switches 1.4.3-only offsets and ABI details on).
+# XCX 2.0.0 (upd) and XC2 3.0.1 keep 0: those branches must stay off for a different game.
+GAME_VERSIONS = {'v0': 100, 'v112': 112, 'v121': 121, 'v143': 143}
+# The game version the menu shows. A named game prints this instead of rt_game_version.
+GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0', 'v301': 'Xenoblade Chronicles 2 3.0.1'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
@@ -294,7 +297,7 @@ def module_glue(layout, linked, hashes, paths, version):
     out += ['};', f'const int rt_exefs_sha256_count = {len(hashes)};', '']
     for name in ('exefs', 'romfs', 'profile'):
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
-    number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
+    number = GAME_VERSIONS.get(version, 0)   # 1.4.3 -> 143; XCX 2.0.0 and XC2 3.0.1 -> 0
     out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};',
             f'const char rt_game_name[] = {c_string(GAME_NAMES.get(version, ""))};', '']
     return '\n'.join(out)
@@ -469,6 +472,25 @@ def link_objects(out, pairs):
             os.link(theirs, dst)
         except OSError:
             shutil.copy2(theirs, dst)
+
+
+def copy_translator(exe_dir):
+    """Put xcx_xlate.exe and its .id next to xcx.exe, where gfx_shader.c looks first. Without a translator every
+    shader fails and the game draws nothing (black screen, sound plays). Source: build/xlate (tools/build_xlate.py),
+    else the bin directory of the XCX setup whose llvm-mingw --toolchain names."""
+    suffix = '.exe' if WIN else ''
+    found = [d for d in [ROOT / 'build' / 'xlate', TOOLCHAIN_BIN and TOOLCHAIN_BIN.parent.parent / 'bin']
+             if d and (d / f'xcx_xlate{suffix}').is_file()]
+    if not found:
+        if not (exe_dir / f'xcx_xlate{suffix}').is_file():
+            print('build_game: warning: no xcx_xlate translator found (tools/build_xlate.py builds one); the game '
+                  'will draw nothing unless XCX_XLATE names one', file=sys.stderr)
+        return
+    for name in (f'xcx_xlate{suffix}', 'xcx_xlate.id'):
+        src = found[0] / name
+        if src.is_file():
+            shutil.copy2(src, exe_dir / name)
+    print(f'build_game: translator from {found[0]}')
 
 
 def unlink_shared(out, mods):
@@ -691,7 +713,7 @@ def mib(n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--version', default='v121', help='game version (default v121)')
+    ap.add_argument('--version', default='v301', help='game version (default v301, Xenoblade Chronicles 2 3.0.1)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
     ap.add_argument('--out', type=Path, help='build directory (default build/<version>)')
     ap.add_argument('--modules', help='comma-separated subset of the layout modules (default all)')
@@ -859,6 +881,7 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xcx.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    copy_translator(exe.parent)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))
