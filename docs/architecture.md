@@ -20,7 +20,7 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 
 ### 1. Input
 
-- Base 1.0.0 (`0100F2C0115B6000`) and one cumulative update (`0100F2C0115B6800`), NSP or XCI, plus the keys of the user's console.
+- Base 1.0.0 (`0100E95004038000`) and update 3.0.1 (`0100E95004038800`), NSP or XCI, add-on content (`0100E950040390NN`), plus the keys of the user's console.
 - ExeFS and RomFS extraction: MacNativeGames' Python extractor (Python 3.14 for `compression.zstd`, `.venv-py314`).
 - Update merging: hactool at `1d64a83` with MacNativeGames' BKTR patches, built by `tools/build_hactool.py`.
 - Verification: MacNativeGames' `expected-v*.json` hashes of ExeFS, RomFS and fonts.
