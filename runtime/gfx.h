@@ -7,7 +7,7 @@
 // ---- moved from ov.h
 enum { OE_MSG_FOCUS_STATE_CHANGED = 15, OE_MSG_OPERATION_MODE_CHANGED = 30, OE_MSG_PERFORMANCE_MODE_CHANGED = 31 };
 void oe_push_message(uint32_t message);                   // ov_system.c
-void oe_set_focus(int in_focus);                          // ov_system.c: GetCurrentFocusState; XC2_ASSUME_FOCUS pins 1
+int oe_set_focus(int in_focus);                           // ov_system.c: GetCurrentFocusState; 1 if it changed
 typedef struct { uint64_t alloc, free, realloc, user; } OvNvAllocator;
 typedef struct { OvNvAllocator graphics, devtools; uint64_t memory, memory_size; int initialized; } OvNvState;
 const OvNvState *ov_nv_state(void);                        // ov_gfx.c

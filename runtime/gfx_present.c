@@ -50,8 +50,7 @@ void gfx_window_mark_dirty(void) { plat_xchg32(&g_dirty, 1); }
 // The window gained or lost the focus: the game hears it as nn::oe's focus state and a notification message.
 void gfx_window_focus_changed(int in) {
     plat_xchg32(&g_focused, in);
-    oe_set_focus(in);                          // pinned to 1 by XC2_ASSUME_FOCUS inside
-    oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+    if (oe_set_focus(in)) oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);   // pinned to 1 unless XC2_ASSUME_FOCUS=0
     plat_inc32(&g_focus_msgs);
 }
 

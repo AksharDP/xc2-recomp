@@ -38,7 +38,7 @@ build\<ver>\xc2.exe
 `XC2_VK_VALIDATION=1` turns on the Vulkan validation layer (it comes with the Vulkan SDK). It makes the game slower;
 do one run with it and one without (`set XC2_VK_VALIDATION=`).
 
-Keep the window in the foreground: an unfocused window stalls the game. Shaders the preparation did not cover compile on first use, so
+The game keeps running when another window is in front (`XC2_ASSUME_FOCUS=0` pauses it as on the Switch). Shaders the preparation did not cover compile on first use, so
 the first minutes of play can stutter.
 Play into the open field (load a save, walk around for a minute, fight something if you can), then close the window.
 

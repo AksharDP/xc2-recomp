@@ -9,8 +9,8 @@
 //   XC2_LOCALE=<BCP 47 tag>           else the language for this locale ("pt-BR"), else the Windows user locale;
 //                                      a language the game does not ship becomes en-US
 //   XC2_OPERATION_MODE=docked|handheld   operation and performance mode reported to the game (default docked)
-//   XC2_ASSUME_FOCUS=1                GetCurrentFocusState always reports in focus, whatever the window says; the
-//                                      window opens without taking focus (gfx_window_win.c), for scripted runs
+//   XC2_ASSUME_FOCUS=0|1              1 (default): GetCurrentFocusState always reports in focus, so the game keeps
+//                                      running behind other windows; 0: the window's focus, as on the Switch
 //   XC2_SHARED_FONTS=<dir>            nn::pl shared fonts (tools/extract_fonts.py output), default
 //                                      <romfs>/../../firmware/shared-fonts
 #include <ctype.h>
@@ -166,21 +166,26 @@ static void ov_focus_mode(Cpu *c) {
     }
 }
 
-// FocusState GetCurrentFocusState(): 1 in focus, 2 out of focus (nn::oe::FocusState). In focus until the window
-// reports otherwise through oe_set_focus; XC2_ASSUME_FOCUS=1 (unattended runs) pins it to 1. The caller of
-// oe_set_focus also pushes OE_MSG_FOCUS_STATE_CHANGED.
+// FocusState GetCurrentFocusState(): 1 in focus, 2 out of focus (nn::oe::FocusState). Pinned to 1 by default: out of
+// focus, XC2 stops drawing the scene and stepping cutscenes while its clock, its audio and some effects run on, and
+// then fast-forwards the cutscene to catch up once the focus is back. A PC game keeps running behind other windows.
+// XC2_ASSUME_FOCUS=0 passes the window's focus through as on the Switch. oe_set_focus returns whether the state the
+// game sees changed; its caller then pushes OE_MSG_FOCUS_STATE_CHANGED.
 static volatile int32_t focus_state = 1;
 static int assume_focus(void) {
     static volatile int32_t v = -1;
     int32_t a = v;
     if (a < 0) {
         const char *e = cfg_get("XC2_ASSUME_FOCUS");
-        a = e && atoi(e) ? 1 : 0;
+        a = !e || atoi(e) ? 1 : 0;
         plat_xchg32(&v, a);
     }
     return (int)a;
 }
-void oe_set_focus(int in_focus) { plat_xchg32(&focus_state, in_focus || assume_focus() ? 1 : 2); }
+int oe_set_focus(int in_focus) {
+    int32_t s = in_focus || assume_focus() ? 1 : 2;
+    return plat_xchg32(&focus_state, s) != s;
+}
 static void ov_focus_state(Cpu *c) { ret_x(c, (uint64_t)focus_state); }
 
 static volatile int32_t notify_resume, notify_operation, notify_performance;

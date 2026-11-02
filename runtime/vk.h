@@ -122,7 +122,7 @@ int gfx_window_vk_extensions(const char **out, int max);
 int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family);
 void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
-unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
+unsigned gfx_window_focus_messages(void);          // focus changes the window thread reported
 void gfx_window_release_vk(void);                  // vk_shutdown calls it first: destroys swapchain, surface, present objects
 long vk_validation_errors_total(void);             // validation errors since the first vk_init, across vk_shutdown
 

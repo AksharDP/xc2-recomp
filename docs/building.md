@@ -101,7 +101,7 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    The AMD driver keeps its pipeline cache per exe path and holds a limited amount: preparing another build folder can
    evict this one's. `xc2.exe --warm-shaders` rebuilds it from the shader cache.
 
-7. Run. Keep the window in the foreground; an unfocused window stalls the game.
+7. Run. The game keeps running behind other windows; `XC2_ASSUME_FOCUS=0` passes focus loss to it as on the Switch.
 
    ```powershell
    build\<ver>\xc2.exe
