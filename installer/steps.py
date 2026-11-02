@@ -1,7 +1,7 @@
 """The seven setup steps of docs/installer.md: check, extract, dlc, lift, compile, prepare, cleanup.
 
-Extraction runs in this process through tools/extract.py (the package's sibling tools/, which ships with it) and the
-bundled hactool; lift and compile run the bundled Python on recomp/gen.py and tools/build_game.py, whose output goes to
+Extraction runs in this process through tools/extract.py and tools/xc2_merge_romfs.py (the package's sibling tools/,
+which ships with it), reading the game files in place; lift and compile run the bundled Python on recomp/gen.py and tools/build_game.py, whose output goes to
 <temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call here: the host check is a small C program built
 with the bundled clang (hostcheck.c).
 
@@ -33,7 +33,6 @@ import extract  # noqa: E402
 import xc2_extract  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory)  # noqa: E402
 from package_select import program_nca  # noqa: E402
-from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 
 GiB = 1 << 30
 DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, xc2.exe
@@ -216,10 +215,6 @@ class Watch(threading.Thread):
         self.stopped.set()
 
 
-def size_of(paths):
-    return sum(p.stat().st_size for p in paths if p.is_file())
-
-
 # ---- 1. check
 
 class Check(Step):
@@ -250,11 +245,10 @@ class Check(Step):
         self.host(ctx)
         rep.progress('check', 'verify', force=True)
         ctx.verify_kept('check')
-        ncas = 0
         if ctx.will_run('extract'):
             rep.progress('check', 'inputs', force=True)
-            ncas = self.inputs(ctx)
-        self.space(ctx, ncas)
+            self.inputs(ctx)
+        self.space(ctx)
         if ctx.will_run('extract'):
             rep.progress('check', 'versions', force=True)
             self.versions(ctx)
@@ -326,7 +320,7 @@ class Check(Step):
         ctx.host = host
 
     def inputs(self, ctx):
-        """Open both files with the keys as the extraction will. Returns the bytes of both Program NCAs."""
+        """Open both files with the keys as the extraction will."""
         o = ctx.options
         for name in ('base', 'update', 'keys'):
             path = getattr(o, name)
@@ -340,18 +334,16 @@ class Check(Step):
             raise InstallError('check.keys_unreadable') from None
         if 'header_key' not in keys:
             raise InstallError('check.keys_no_header_key')
-        total = 0
         for name, is_update in (('base', False), ('update', True)):
             path = Path(getattr(o, name))
             with path.open('rb') as f:
-                total += self.open_input(f, path, keys, name, is_update)
+                self.open_input(f, path, keys, name, is_update)
         for path in dlc_inputs(ctx):   # optional: each must hold this game's add-on content
             if not path.is_file():
                 raise InstallError('check.input_missing', input='dlc', path=str(path))
             with path.open('rb') as f:
                 dlc_record(f, path, keys)
         del keys
-        return total
 
     @staticmethod
     def open_input(f, path, keys, name, is_update):
@@ -391,11 +383,11 @@ class Check(Step):
                                generation=max(header[0x206], header[0x220])) from None
         return record['size']
 
-    def space(self, ctx, ncas):
+    def space(self, ctx):
         # The steps run one after another and each frees its scratch files before the next starts, so the install
         # folder needs the largest of the peaks below, not their sum:
-        #   extract  the two Program NCA copies and the merged RomFS beside them (tools/extract.py
-        #            merge_update_romfs, which checks merge_need itself); the copies are deleted afterwards
+        #   extract  the merged RomFS, written once from the game files read in place (tools/extract.py
+        #            merge_update_romfs, which checks merge_need itself)
         #   dlc      the RomFS, the packs already unpacked and, for a moment, the largest pack's image beside its files
         #            (tools/xc2_extract.py dlc_romfs deletes the image once unpacked)
         #   after    the RomFS, every pack and the caches the game writes beside them (DEST_EXTRA)
@@ -406,7 +398,7 @@ class Check(Step):
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
             if romfs.is_file():   # a resumed extraction deletes it first, which frees its space
                 kept = romfs.stat().st_size
-        extract_peak = extract.merge_need(ncas) - kept if ctx.will_run('extract') else 0
+        extract_peak = extract.merge_need(romfs_size) - kept if ctx.will_run('extract') else 0
         packs = [p.stat().st_size for p in dlc_inputs(ctx) if p.is_file()] if ctx.will_run('dlc') else []
         settled = romfs_size - kept + sum(packs)
         dlc_peak = settled + max(packs, default=0)
@@ -546,28 +538,21 @@ class Extract(Step):
         return {'romfs_size': st.st_size, 'romfs_mtime_ns': st.st_mtime_ns}
 
     def merge(self, ctx, base, update, keys, romfs, expected):
-        dest, logs = ctx.dest, ctx.temp / 'logs'
-        ncas = extract.merge_space(base, update, keys)
+        # tools/xc2_merge_romfs.py reads both game files in place and writes the image once, hashing it as it goes. It
+        # sizes the image up front, so the progress comes from its callback, not from the file's size.
+        written = [0]
         watch = Watch(ctx.reporter, 'extract')
-
-        def phase(name):
-            if name == 'copy':
-                watch.set('copy', lambda: size_of(dest.glob('update-merge-*/*.nca')), ncas)
-            elif name == 'merge':
-                watch.set('merge', lambda: size_of(dest.glob('update-merge-*/result/romfs.bin')),
-                          expected['romfs']['size'])
-            else:
-                watch.set(name)
-
+        watch.set('merge', lambda: written[0], expected['romfs']['size'])
         watch.start()
         try:
-            extract.merge_update_romfs(base, update, keys, ctx.layout.hactool, romfs, logs, phase=phase)
+            extract.merge_update_romfs(base, update, keys, romfs,
+                                       progress=lambda done, total: written.__setitem__(0, done))
         except extract.DamagedFile as e:
             raise InstallError('check.input_damaged', input='base' if e.path == base else 'update', path=str(e.path),
                                detail=e.detail) from None
-        except ValueError as e:
-            raise InstallError('extract.romfs_merge_failed', detail=str(e), log=str(logs / 'merge_romfs-'
-                                                                                     f'{dest.name}.log')) from None
+        except (ValueError, OSError) as e:
+            raise InstallError('extract.romfs_merge_failed', detail=str(e),
+                               log=str(ctx.reporter.log_path or '')) from None
         finally:
             watch.stop()
 

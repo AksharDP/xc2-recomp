@@ -22,10 +22,10 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 
 - Base 1.0.0 (`0100E95004038000`) and update 3.0.1 (`0100E95004038800`), NSP or XCI, add-on content (`0100E950040390NN`), plus the keys of the user's console.
 - ExeFS and RomFS extraction: MacNativeGames' Python extractor (Python 3.14 for `compression.zstd`, `.venv-py314`).
-- Update merging: hactool at `1d64a83` with MacNativeGames' BKTR patches, built by `tools/build_hactool.py`.
+- Update merging: `tools/xc2_merge_romfs.py` walks the update's BKTR indirect and AES-CTR-EX tables and writes the patched RomFS straight from both game files.
 - Verification: MacNativeGames' `expected-v*.json` hashes of ExeFS, RomFS and fonts.
 - Primary version: 1.4.3, the last update; performance work targets it. It replaced all three modules of the earlier updates (new SDK 20.5.22, RELR relocations, audio renderer REV15) and builds with `--version v143`, `recomp/patches-v143.txt`. 1.2.1 is a second target on the same build path; 1.0.0, 1.1.2 and 1.2.1 share `sdk`, `subsdk0` and `rtld` byte for byte, so only `main` differs among them. Saves load on either.
-- Windows driver: `tools/extract.py` runs the vendored extractors (`tools/vendor/macnativegames/`) and identifies the update by the SHA-256 of its `main`. hactool has no Darwin `funopen` here, so the base Program NCA is copied out of the NSP before the BKTR merge (about 17 GB of temporary space).
+- Windows driver: `tools/extract.py` runs the vendored extractors (`tools/vendor/macnativegames/`) and identifies the update by the SHA-256 of its `main`. The merge needs no temporary copy of either Program NCA.
 
 ### 2. CPU: lift ARM64 to C
 

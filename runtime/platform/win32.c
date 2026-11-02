@@ -1049,6 +1049,19 @@ int plat_open_folder(const char *path) {
     return 1;
 }
 
+void plat_fatal_notice(const char *utf8) {
+    // A console shared with another process (cmd, PowerShell, a test harness) is a terminal the message stays in; a
+    // console the game has to itself was made for it by a double-click and disappears when it exits.
+    DWORD pids[2];
+    if (!GetConsoleWindow() || GetConsoleProcessList(pids, 2) != 1) return;
+    int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
+    wchar_t *w = n > 0 ? malloc((size_t)n * sizeof *w) : NULL;
+    if (!w) return;
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, n);
+    MessageBoxW(NULL, w, L"XC2 Recomp", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+    free(w);
+}
+
 // ---- dynamic libraries
 
 void *plat_lib_open(const char *name) {

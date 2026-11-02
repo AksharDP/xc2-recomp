@@ -43,7 +43,9 @@ runs again.
    (by the hashes in `tools/data/expected-xc2-<version>.json`), the keys are new enough for the update, enough space
    is free on the target disk, the CPU has AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one
    clear message.
-2. **Extract** ExeFS and RomFS into the install folder (hactool merges the BKTR patch) and verify the hashes.
+2. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
+   the update's BKTR patch while reading both game files in place: it writes the 14 GB RomFS once, decrypting on
+   several threads and hashing as it writes, so the folder needs room for the RomFS only.
 3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
    are encrypted with the title key from the NSP's ticket). Its log is `logs/dlc-<index>.log` in the temp folder.
 4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
@@ -67,7 +69,7 @@ A cancelled or failed setup resumes from the last finished step (`xc2-install.js
 python -m installer --base FILE --update FILE --keys FILE [--dlc FILE ...] --lang CODE --dest DIR [--root DIR] [--temp DIR] [--verify]
 ```
 
-In a repository checkout (dev mode, no release folder) the installer borrows Python, llvm-mingw, Ninja, hactool and
+In a repository checkout (dev mode, no release folder) the installer borrows Python, llvm-mingw, Ninja and
 the translator from an unpacked XCX-Setup release: `XC2_SETUP_TOOLS`, else the newest `../tools/xcx-setup/XCX-Setup-*`
 beside the repository (`installer/layout.py` `tools_fallback`). It needs the runtime library built once:
 `tools/build_game.py --make-runtime-lib --out build/install-rtlib --expected tools/data/expected-xc2-3.0.1.json`
@@ -104,7 +106,7 @@ python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi,
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
 runtime/              libxc2rt.a and the headers the generated code and modules.c/romfs.c/patches.c include
-bin/                  xc2_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
+bin/                  xc2_xlate.exe, SDL3.dll, libopus-0.dll, ninja.exe
 THIRD_PARTY_NOTICES.md
 xc2.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
@@ -135,10 +137,10 @@ llvm/                 LLVM 23 (clang, lld, llvm-ar) and llvm/sysroot: the files 
                       game's compile and link read (about 130 files)
 runtime/              libxc2rt.a, headers, the install-side sources, xc2.png; deps/ with the Vulkan headers, VMA and a
                       static zstd
-bin/                  xc2_xlate, hactool, ninja, libSDL3.so.0
+bin/                  xc2_xlate, ninja, libSDL3.so.0
 ```
 
-- What we compile is built against the sniper sysroot (glibc 2.31): the game, hostcheck, hactool and the translator
+- What we compile is built against the sniper sysroot (glibc 2.31): the game, hostcheck and the translator
   need no newer glibc. The game links Opus, libvpx, zstd and libstdc++ statically and needs only glibc, the system's
   Vulkan loader and the SDL3 beside it. The setup itself needs glibc 2.34 (Ubuntu 22.04, Debian 12, Fedora 35,
   SteamOS 3): the official LLVM binaries and the `cryptography` wheel are built against it. `make_release_linux.py`
@@ -161,12 +163,11 @@ bin/                  xc2_xlate, hactool, ninja, libSDL3.so.0
 - The window is a front end over the CLI (`python -m installer --base ... --update ... --keys ... --lang ... --dest
   ...`), which prints one JSON progress event per line. Tests and CI use the CLI.
 - Paths may hold any Unicode characters (a Cyrillic user name puts the temp and install folders under it). Every exe
-  the setup runs or builds reads its arguments and paths as UTF-8 through an `activeCodePage` manifest: hactool
-  (our patch, [building.md](building.md)), xc2.exe (`runtime/xc2.rc`), ninja (upstream). The Python steps write
+  the setup runs or builds reads its arguments and paths as UTF-8 through an `activeCodePage` manifest: xc2.exe (`runtime/xc2.rc`), ninja (upstream). The Python steps write
   their files and logs as UTF-8, and `build_game.py` quotes paths with spaces on its Ninja command lines.
 - A game file whose data fails its hash checks or ends early stops the setup with `check.input_damaged`, which names
-  the file and asks to copy it again (`extract.DamagedFile`). A failed merge checks the base Program NCA alone to tell
-  which file is damaged.
+  the file and asks to copy it again (`extract.DamagedFile`). Merged game data whose
+  checksum differs from the expected one stops it with `extract.romfs_mismatch`; copy both files again then.
 - Unsigned exe: SmartScreen warns on first start.
 
 ## Later

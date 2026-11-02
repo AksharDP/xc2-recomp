@@ -9,7 +9,7 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     llvm/                   llvm-mingw (bin/clang.exe)
     runtime/                libxc2rt.a, the headers, install-side sources (romfs.c, patches.c, ov_zstd.c) and the icon; runtime/deps/ holds
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
-    bin/                    xc2_xlate.exe (+ xc2_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
+    bin/                    xc2_xlate.exe (+ xc2_xlate.id), ninja.exe, SDL3.dll, libopus-0.dll
     xc2.ini.example
     VERSION                 the release version, one line
     temp/                   the default temp folder (created)
@@ -21,7 +21,7 @@ against), runtime/deps/ with include/ and the static Opus, libvpx and zstd, bin/
 Dev mode, root = a repository checkout (no python/python.exe): build/py314-embed/py/python.exe (the embeddable
 Python the release ships, with the same packages), else this Python; toolchain/llvm-mingw-*/ and toolchain/deps-mingw;
 runtime/ as the sources with build/install-rtlib/libxc2rt.a (tools/build_game.py --make-runtime-lib --out
-build/install-rtlib); MSYS2 UCRT64 ninja.exe; toolchain/hactool; build/xlate/xc2_xlate.exe; build/install-temp.
+build/install-rtlib); MSYS2 UCRT64 ninja.exe; build/xlate/xc2_xlate.exe; build/install-temp.
 Without toolchain/, the tools come from an unpacked XCX Recomp release folder, the one tools/build_xcx.ps1 builds
 with (TOOLS_FALLBACK). The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
 dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
@@ -72,7 +72,6 @@ class Layout:
     runtime: Path         # runtime headers and install-side sources
     runtime_lib: Path     # libxc2rt.a
     ninja: Path
-    hactool: Path
     xlate: Path           # xc2_xlate.exe; a xc2_xlate.id beside it is copied too
     dlls: tuple = field(default_factory=tuple)
     ini_example: Path | None = None
@@ -92,7 +91,7 @@ class Layout:
         need = [self.python, self.tools / 'extract.py', self.tools / 'build_game.py', self.recomp / 'gen.py',
                 self.clang,
                 *((self.deps / 'include', self.deps / 'lib') if self.deps else ()), self.runtime, self.runtime_lib, self.ninja,
-                self.hactool, self.xlate, *self.dlls, *(self.expected(v) for v in (BASE, *SUPPORTED))]
+                self.xlate, *self.dlls, *(self.expected(v) for v in (BASE, *SUPPORTED))]
         if self.sysroot:
             need.append(self.sysroot)
         return [str(p) for p in need if not p.exists()]
@@ -131,7 +130,7 @@ def release_layout(root):
         tools=root / 'tools', recomp=root / 'recomp',
         llvm=root / 'llvm', deps=root / 'runtime' / 'deps', runtime=root / 'runtime',
         runtime_lib=root / 'runtime' / 'libxc2rt.a',
-        ninja=root / 'bin' / ('ninja' + EXE), hactool=root / 'bin' / ('hactool' + EXE),
+        ninja=root / 'bin' / ('ninja' + EXE),
         xlate=root / 'bin' / ('xc2_xlate' + EXE), dlls=release_dlls(root) if WIN else (root / 'bin' / 'libSDL3.so.0',),
         ini_example=root / 'xc2.ini.example',
         # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
@@ -157,7 +156,7 @@ def dev_layout(root):
             tools=root / 'tools', recomp=root / 'recomp',
             llvm=tools / 'llvm', deps=tools / 'runtime' / 'deps', runtime=root / 'runtime',
             runtime_lib=root / 'build' / 'install-rtlib' / 'libxc2rt.a',
-            ninja=tools / 'bin' / ('ninja' + EXE), hactool=tools / 'bin' / ('hactool' + EXE),
+            ninja=tools / 'bin' / ('ninja' + EXE),
             xlate=release_translator(tools), dlls=release_dlls(tools),
             ini_example=root / 'xc2.ini.example', temp=root / 'build' / 'install-temp')
     return Layout(
@@ -166,7 +165,7 @@ def dev_layout(root):
         tools=root / 'tools', recomp=root / 'recomp',
         llvm=trees[-1] if trees else root / 'toolchain' / 'llvm-mingw-missing', deps=deps,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libxc2rt.a',
-        ninja=UCRT / ('ninja' + EXE), hactool=root / 'toolchain' / 'hactool' / ('hactool' + EXE),
+        ninja=UCRT / ('ninja' + EXE),
         xlate=root / 'build' / 'xlate' / ('xc2_xlate' + EXE),
         dlls=tuple(sorted((deps / 'bin').glob('*.dll'))),
         ini_example=root / 'xc2.ini.example', temp=root / 'build' / 'install-temp')
@@ -186,7 +185,7 @@ def dev_layout_posix(root):
         llvm=Path(clang).parent.parent if clang else root / 'toolchain' / 'clang-missing', deps=None,
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libxc2rt.a',
         ninja=Path(ninja) if ninja else root / 'toolchain' / 'ninja-missing',
-        hactool=root / 'toolchain' / 'hactool' / 'hactool', xlate=root / 'build' / 'xlate' / 'xc2_xlate',
+        xlate=root / 'build' / 'xlate' / 'xc2_xlate',
         ini_example=root / 'xc2.ini.example', temp=root / 'build' / 'install-temp')
 
 

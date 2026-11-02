@@ -56,7 +56,7 @@ These tools run on the developer's or player's machine during the build. They ar
 
 | Tool | Source | License | Purpose |
 |---|---|---|---|
-| hactool (the installer release ships it, see below) | https://github.com/SciresM/hactool @ `1d64a83450e025622f3468c28fc4164dad2c5ef6`, with patches from MacNativeGames | ISC | NCA and update container extraction |
+| hactool (a development tool; the releases do not ship it) | https://github.com/SciresM/hactool @ `1d64a83450e025622f3468c28fc4164dad2c5ef6`, with patches from MacNativeGames | ISC | NCA and update container extraction |
 | Capstone | https://www.capstone-engine.org | BSD-3-Clause | ARM64 disassembly for analysis |
 | Unicorn | https://www.unicorn-engine.org | GPL-2.0 (Python bindings BSD) | Differential testing of the lifter; never linked into the game |
 
@@ -77,7 +77,6 @@ These tools run on the developer's or player's machine during the build. They ar
 | Vulkan-Headers and Vulkan-Loader 1.4.363.0 (MSYS2 packages; headers and `libvulkan-1.dll.a` only, no loader DLL) | https://github.com/KhronosGroup | Apache-2.0 OR MIT | `runtime/deps/` |
 | Vulkan Memory Allocator 3.4.0 (MSYS2 package), header | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator | MIT | `runtime/deps/` |
 | Ninja 1.13.2 (`ninja-win.zip`) | https://github.com/ninja-build/ninja/releases/tag/v1.13.2 | Apache-2.0 | `bin/ninja.exe` |
-| hactool (SciresM @ `1d64a83450e025622f3468c28fc4164dad2c5ef6` plus `tools/hactool/portable.patch`, from MacNativeGames' `build_hactool()`: `MNG_TITLE_KEYS` and relaxed BKTR layout checks; our `tools/hactool/unicode.patch`: an embedded manifest that makes UTF-8 the process code page), built by `tools/build_hactool.py` with MSYS2 UCRT64 gcc; imports only KERNEL32 and the UCRT | https://github.com/SciresM/hactool | ISC | `bin/hactool.exe` |
 | `xc2_xlate.exe` (Ryujinx shader translator, NativeAOT build of `tools/xlate/`, see the Ryujinx row above) | built by `tools/build_xlate.py` | MIT | `bin/xc2_xlate.exe` |
 | MacNativeGames shader variant list | https://github.com/ly05010419/MacNativeGames @ `b75be8cfa704df3701e86130c8ced268e79d6b11` (`games/totk/assets/shader_list.tsv`), Copyright (c) 2026 MacNativeGames contributors | MIT | `data/shader_list.tsv` |
 
@@ -97,7 +96,6 @@ folder's `licenses/` and in each component's own folder.
 | Vulkan Memory Allocator 3.4.0, header (the licence text is its header comment) | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tree/v3.4.0 | MIT | `runtime/deps/include/vma/` |
 | Zstandard 1.5.7, built from the release tarball into a static `libzstd.a` with the folder's clang and sysroot | https://github.com/facebook/zstd/releases/tag/v1.5.7 | BSD-3-Clause | `runtime/deps/` |
 | Ninja 1.13.2 (`ninja-linux.zip`) | https://github.com/ninja-build/ninja/releases/tag/v1.13.2 | Apache-2.0 | `bin/ninja` |
-| hactool (as in the installer release row above), built by `tools/build_hactool.py --cc` with the folder's clang and sysroot; includes its bundled mbedtls | https://github.com/SciresM/hactool | ISC; mbedtls Apache-2.0 | `bin/hactool` |
 | `xc2_xlate` (NativeAOT linux-x64 build of `tools/xlate/`, linked with the folder's clang, lld and sysroot) | built by `tools/build_xlate.py --llvm --sysroot` | MIT | `bin/xc2_xlate` |
 | AppImage type-2 runtime (static; includes libfuse and squashfuse), the AppImage's first part; appimagetool packs the folder and is not distributed | https://github.com/AppImage/type2-runtime | MIT; libfuse LGPL-2.1; squashfuse BSD-2-Clause | the AppImage header |
 | MacNativeGames shader variant list | as in the installer release row above | MIT | `data/shader_list.tsv` |

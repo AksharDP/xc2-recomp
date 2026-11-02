@@ -78,7 +78,7 @@ class Bed:
         layout = Layout(root=Path('.'), dev=True, release=release, python=Path('python'), tools=Path('tools'),
                         recomp=Path('recomp'), llvm=Path('llvm'),
                         deps=Path('deps'), runtime=Path('rt'), runtime_lib=Path('lib'), ninja=Path('ninja'),
-                        hactool=Path('hactool'), xlate=Path('xlate'))
+                        xlate=Path('xlate'))
         options = SimpleNamespace(inputs=inputs or {}, fail=dict(fail or {}), verify_ok=verify_ok or {}, ran=[],
                                   verified=[], forced=[])
         out = io.StringIO()

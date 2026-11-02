@@ -347,6 +347,10 @@ int plat_stderr_path(char *out, size_t cap);
 // ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success
 int plat_open_folder(const char *path);                   // shows the folder in the file manager; 1 on success
+// Shows a fatal error to a player who has no terminal to read it in, and returns when they close it: a message box when
+// the game was started from the desktop (Windows: it owns its console window, which closes with it). Nothing when it
+// runs in a terminal or under a test, whose output already holds the message.
+void plat_fatal_notice(const char *utf8);
 
 // ---- dynamic libraries: a library some machines lack (a GPU vendor's), loaded at run time. A bare name is searched
 // in the system directories only. NULL when missing.

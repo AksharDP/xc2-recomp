@@ -13,7 +13,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
-    bin/       xc2_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
+    bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626 (VERSION alone outside a git checkout); the
                installer's release string
@@ -286,7 +286,6 @@ def build_bin(out):
     b.mkdir(parents=True, exist_ok=True)
     for f in ('xc2_xlate.exe', 'xc2_xlate.id'):
         shutil.copy2(MAIN_ROOT / 'build' / 'xlate' / f, b / f)
-    shutil.copy2(MAIN_ROOT / 'toolchain' / 'hactool' / 'hactool.exe', b / 'hactool.exe')
     dll = unpack('sdl3-dll') / 'SDL3.dll'
     if sha256_file(dll) != SDL3_DLL_SHA256:
         sys.exit(f'{dll}: not the pinned SDL3.dll')
@@ -328,7 +327,6 @@ def collect_licenses(out):
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
-        (MAIN_ROOT / 'toolchain' / 'hactool' / 'LICENSE', 'hactool-LICENSE.txt'),
         (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
@@ -347,7 +345,8 @@ def take_prebuilt(out, src):
         copy_tree(src / d, out / d, lambda r: '__pycache__' in r)
     copy_tree(src / 'runtime' / 'deps', out / 'runtime' / 'deps')
     (out / 'bin').mkdir(parents=True, exist_ok=True)
-    for name in ('hactool.exe', 'ninja.exe', 'SDL3.dll', 'libopus-0.dll'):
+    (out / 'licenses' / 'hactool-LICENSE.txt').unlink(missing_ok=True)   # src ships hactool; this release does not
+    for name in ('ninja.exe', 'SDL3.dll', 'libopus-0.dll'):
         shutil.copy2(src / 'bin' / name, out / 'bin' / name)
     stem = next((s for s in ('xc2_xlate', 'xcx_xlate') if (src / 'bin' / (s + '.exe')).is_file()), 'totk_xlate')
     for ext in ('.exe', '.id'):

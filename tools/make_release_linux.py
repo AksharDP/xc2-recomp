@@ -17,7 +17,7 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib --sysroot), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), xc2.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd
                built static; SDL3, Opus and libvpx come from the sysroot)
-    bin/       xc2_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
+    bin/       xc2_xlate (+ .id), ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION
     AppRun, xc2-setup.desktop, xc2-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
 
@@ -187,10 +187,6 @@ def build_bin(out, llvm, sysroot):
     zip_dir = mr.unpack('ninja-linux')
     shutil.copy2(zip_dir / 'ninja', b / 'ninja')
     (b / 'ninja').chmod(0o755)
-    hac = WORK / 'hactool-linux'
-    run([sys.executable, ROOT / 'tools' / 'build_hactool.py', '--src', WORK / 'hactool-src', '--out', hac,
-         '--cc', sysroot_cc(llvm, sysroot)])
-    shutil.copy2(hac / 'hactool', b / 'hactool')
     xl = WORK / 'xlate-linux'
     run([sys.executable, ROOT / 'tools' / 'build_xlate.py', '--out', xl, '--llvm', llvm, '--sysroot', sysroot])
     shutil.copy2(xl / 'xc2_xlate', b / 'xc2_xlate')
@@ -398,7 +394,6 @@ def collect_licenses(out, sysroot):
         (WORK / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (out / 'python' / 'lib' / f'python{sys_version(out)}' / 'LICENSE.txt', 'python-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
-        (WORK / 'hactool-linux' / 'LICENSE', 'hactool-LICENSE.txt'),
         (mng_license(), 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:

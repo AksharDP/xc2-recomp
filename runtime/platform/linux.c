@@ -1383,6 +1383,11 @@ int plat_random(void *out, size_t n) {
 
 int plat_clipboard_set(const char *utf8) { return SDL_SetClipboardText(utf8); }
 
+// Started from a desktop launcher, the game has no terminal on stderr to show the message in.
+void plat_fatal_notice(const char *utf8) {
+    if (!isatty(STDERR_FILENO)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "XC2 Recomp", utf8, NULL);
+}
+
 static void reap_main(void *arg) {
     waitpid((pid_t)(intptr_t)arg, NULL, 0);
 }

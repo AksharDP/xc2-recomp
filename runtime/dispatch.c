@@ -41,14 +41,23 @@ static struct { uint64_t addr; GuestFn fn; } g_host[HOST_CAP];
 static uint64_t g_nhost;
 
 void rt_fatal(const char *fmt, ...) {
-    va_list ap;
+    va_list ap, again;
     va_start(ap, fmt);
+    va_copy(again, ap);
     rt_log_raw("FATAL: ", 7);
     rt_vlogf(fmt, ap);
     rt_log_raw("\n", 1);
     va_end(ap);
     fflush(stdout);
     fflush(stderr);
+    // A game started from the desktop exits with its console window, taking the message along: show it in a box too
+    char text[2048];
+    int n = snprintf(text, sizeof text, "XC2 Recomp stopped:\n\n");
+    vsnprintf(text + n, sizeof text - (size_t)n, fmt, again);
+    va_end(again);
+    size_t used = strlen(text);
+    snprintf(text + used, sizeof text - used, "\n\nThe full log is in the logs folder next to the game.");
+    plat_fatal_notice(text);
     _Exit(70);
 }
 
