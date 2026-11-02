@@ -706,8 +706,13 @@ static void ov_send_input(Cpu *c) {
     }
     Signals s = {0};
     plat_mutex_lock(&m->mu);
+    // only a buffer the client holds (handed out, not yet sent): one that is free or queued would be returned twice
+    // and overflow in_free (after a Flush refilled it, say)
+    int held = 1;
+    for (int i = 0; i < m->nin_free; i++) held &= m->in_free[i] != index;
+    for (int i = 0; i < m->npending; i++) held &= m->pending[i].index != index;
     int st = ST_OK;
-    if (!m->started || m->npending == IN_BUFS) st = ST_ERROR;
+    if (!m->started || m->npending == IN_BUFS || !held) st = ST_ERROR;
     else if (m->eos_in) {   // after end of stream: hand the buffer back
         m->in_free[m->nin_free++] = index;
         m->owed |= 1u << MOVIE_EV_INPUT;

@@ -231,10 +231,20 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     take(&in, h.render_info, "render info");
     need(in.p == in.end, "unconsumed update input");
 
+    // In-use entries only (Ryujinx StateUpdater.UpdateVoiceChannelResources): XC2's SDK sends its unused channel
+    // resources zeroed with id 0, which overwrote resource 0's mix volumes with zeros every update
     for (uint32_t i = 0; i < h.voice_resources / sizeof(AudrenChannelIn); i++) {
+        if (!chans[i].in_use) continue;
         need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
         r->channels[chans[i].id] = chans[i];
     }
+    // Only in-use entries are applied, by their id, as Ryujinx StateUpdater.UpdateVoices does: XC2's SDK (REV3) sends
+    // its unused voice slots zeroed, id 0 included, so applying them reset voice 0 once per update and the voice in
+    // that slot never played (one side of every sound played as a left/right pair of voices). A voice the client no
+    // longer reports in use is released after the loop.
+    uint8_t seen[1024];
+    need(vc <= (int)sizeof seen, "voice count");
+    memset(seen, 0, (size_t)vc);
     for (int i = 0; i < vc; i++) {
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
@@ -252,11 +262,18 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
             }
         } else
             memcpy(&v, voices + i * voice_stride, sizeof v);
+        if (!v.in_use) continue;
         update_voice(r, &v);
+        seen[v.id] = 1;
         ServerVoice *server = &r->voices[v.id];
         server->use_float_biquads = (uint8_t)float_voices;
         if (float_voices) memcpy(server->float_biquads, v2.biquads, sizeof v2.biquads);
     }
+    for (int i = 0; i < vc; i++)
+        if (!seen[i] && r->voices[i].in.in_use) {   // released by the client: what update_voice did for !in_use
+            voice_reset(&r->voices[i]);
+            r->voices[i].in.in_use = 0;
+        }
     for (int i = 0; i < ec; i++) r->effects[i] = effects[i];
     audio_mixer_update_effects(r);
     audio_mixer_update_routing(r, splitters, h.splitters, mixes, h.mixes, mc);

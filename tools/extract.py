@@ -38,9 +38,11 @@ from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 DATA = ROOT / 'tools' / 'data'
 EXEFS_CODE = ('main', 'sdk', 'subsdk0', 'rtld')
 LONG_HEX = re.compile(r'[0-9A-Fa-f]{32,}')
-# hactool checks two signatures with Nintendo public keys it does not ship, so these two lines always read (FAIL) and
-# say nothing about the data. The IVFC levels and the image hash decide.
-UNSIGNED = re.compile(r'\s*(?:Fixed-Key Signature|NPDM Signature) \(FAIL\)')
+# hactool prints three RSA signature lines: the NCA's two and the ACID's in the NPDM. They say nothing about the data,
+# and a clang build reads all three as (FAIL) on genuine files: the multiply assembly in the bundled mbedtls (bn_mul.h,
+# MULADDC_STOP) declares no memory clobber, so RSA comes out wrong, and the Linux release builds hactool with clang.
+# The IVFC levels and the image hash decide.
+UNSIGNED = re.compile(r'\s*(?:Fixed-Key |NPDM )?Signature \(FAIL\)')
 HACTOOL_ERROR = re.compile(r'\(FAIL\)|\(INVALID\)|Failed to|Error:')
 # hactool lines of a hash check that failed: a RomFS level, a section's superblock or its hash table.
 HACTOOL_HASH_FAIL = re.compile(r'^\s*(?:Level \d|Superblock Hash|Hash Table) \(FAIL\)', re.M)
@@ -76,7 +78,7 @@ def sha256(path):
 
 def load_expected():
     versions = {}
-    for path in sorted(DATA.glob('expected-v*.json')):
+    for path in sorted(DATA.glob('expected-xc2-*.json')):
         data = json.loads(path.read_text())
         versions[data['display_version']] = data
     return versions

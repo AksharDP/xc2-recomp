@@ -270,8 +270,10 @@ static void ov_vibration_handles(Cpu *c) {
     uint32_t *out = arg_p(c, 0), style = (uint32_t)arg_x(c, 3);
     int max = (int)arg_x(c, 1);
     uint32_t id = handle_id(c, "GetVibrationDeviceHandles");
-    if (!out || max <= 0 || __builtin_popcount(style) != 1)
-        rt_fatal("nn::hid::GetVibrationDeviceHandles: invalid arguments (count %d, styles %#x)", max, style);
+    // no room or no style: no handles. Several style bits take the first in the table's order (below); only a missing
+    // array for a nonzero count is a game bug
+    if (max <= 0 || !style) { ret_x(c, 0); return; }
+    if (!out) rt_fatal("nn::hid::GetVibrationDeviceHandles: no handle array for %d handles (styles %#x)", max, style);
     static volatile int32_t asked;
     rumble_cfg();
     // strength 0 keeps the devices (silent), so the menu can turn rumble up again

@@ -31,15 +31,10 @@
 #define NVN_RET 0x708b44ull
 #define CTOR_DONE 2                      // a module's constructor flag after its DT_INIT ran the init_array
 
-// The init_array sizes (1.2.1: counted in the modules; 1.4.3: DT_INIT_ARRAYSZ); MacNativeGames' boot check expects
-// the same.
+// The init_array sizes the boot check expects (MacNativeGames' boot check does the same): XC2 3.0.1's DT_INIT_ARRAYSZ
+// of main/subsdk0/sdk, 1600, 368 and 824 bytes.
 typedef struct { const char *name; uint64_t entries; } InitCount;
-static const InitCount inits_121[] = {{"main", 10673}, {"subsdk0", 45}, {"sdk", 116}};
-static const InitCount inits_143[] = {{"main", 10717}, {"subsdk0", 45}, {"sdk", 83}};
-// XCX DE 2.0.0 (DT_INIT_ARRAYSZ of its modules). This fork runs only XC2, so its counts are the ones checked.
-// XC2 3.0.1 (DT_INIT_ARRAYSZ of main/subsdk0/sdk: 1600, 368 and 824 bytes).
-static const InitCount inits_xc2[] = {{"main", 200}, {"subsdk0", 46}, {"sdk", 103}};
-#define expected_inits inits_xc2
+static const InitCount expected_inits[] = {{"main", 200}, {"subsdk0", 46}, {"sdk", 103}};
 
 static volatile int32_t inits_done, checkpoint_seen;
 uint64_t rt_guest_start_ns;
@@ -79,7 +74,7 @@ static void cb_loader_ready(Cpu *c) {
 // afterwards (MacNativeGames loader.c:458-462).
 static void cb_module_inits(Cpu *c) {
     if (plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: module constructors requested twice");
-    for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++) {
+    for (unsigned k = 0; k < sizeof expected_inits / sizeof *expected_inits; k++) {
         const RtLoaded *m = module_named(expected_inits[k].name);
         uint64_t entries = m->init_array_size / 8;
         if (!m->init) rt_fatal("boot: %s has no DT_INIT", m->name);

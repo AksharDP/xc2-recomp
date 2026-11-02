@@ -623,6 +623,14 @@ NVN_API(nvnQueueSubmitCommands) {
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
     __atomic_store_n(&lod_issued, no, __ATOMIC_SEQ_CST);
+    // XCX_SUBMIT_WAIT=1, a test for issue 28: the submit returns only once the GPU has run it, so no game thread can
+    // rewrite pool memory the GPU still reads. Costs the CPU/GPU overlap.
+    static int wait_on = -1;
+    if (wait_on < 0) {
+        wait_on = cfg_bool("XCX_SUBMIT_WAIT");
+        if (wait_on) rt_log("nvn: XCX_SUBMIT_WAIT: every submit waits for the GPU to finish it");
+    }
+    if (wait_on && gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 2000000000ull);
 }
 
 // The producer (1.2.1 main f_70008c6460) releases the read lock on obj+0x538 at lr 0x70008c70c8; when

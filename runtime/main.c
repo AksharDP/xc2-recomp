@@ -531,7 +531,8 @@ static int usage(const char *argv0) {
 
 // Paths for a copied folder (tools/package_build.py). Per path: XCX_EXEFS, XCX_ROMFS, XCX_PROFILE_DIR, else the
 // folder next to xcx.exe (exefs, romfs, profile) if it exists, else the path baked in at build time. A relative
-// value is relative to xcx.exe's folder.
+// value is relative to xcx.exe's folder. A build copied to another machine can name a drive that machine lacks: a
+// profile folder that cannot be made at the baked path goes next to xcx.exe instead.
 static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
 
 static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
@@ -558,6 +559,15 @@ static void portable_paths(RtConfig *c) {
     c->exefs = portable_path(exe, "XCX_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
     c->romfs = portable_path(exe, "XCX_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
     c->profile = portable_path(exe, "XCX_PROFILE_DIR", "profile", ".", pp_profile, sizeof pp_profile, c->profile);
+}
+
+// After the command line: a path given there or in XCX_PROFILE_DIR is the player's own and stays as it is.
+static void profile_fallback(RtConfig *c) {
+    if (c->profile != rt_default_profile || !*pp_profile) return;
+    plat_file_mkdir_p(c->profile);
+    if (plat_dir_exists(c->profile)) return;
+    rt_log("cfg: cannot use the profile folder %s: using %s", c->profile, pp_profile);
+    c->profile = pp_profile;
 }
 
 int main(int argc, char **argv) {
@@ -614,6 +624,7 @@ int main(int argc, char **argv) {
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
     if (!mode) {
+        profile_fallback(&cfg);
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();
         return 0;

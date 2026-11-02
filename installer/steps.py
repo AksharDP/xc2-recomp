@@ -36,6 +36,7 @@ from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 
 GiB = 1 << 30
 DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, xcx.exe
+EXTRACT_MERGE_NEED = 18 * GiB   # free space tools/extract.py's merge requires beyond the two Program NCAs
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
@@ -161,6 +162,8 @@ def free_bytes(path):
     """Free bytes on the disk of path (its nearest existing parent) and that parent's device."""
     p = Path(path)
     while not p.exists():
+        if p.parent == p:   # a drive or share that is not there: its root is its own parent
+            raise InstallError('check.dest_unreachable', path=str(path))
         p = p.parent
     return shutil.disk_usage(p).free, os.stat(p).st_dev
 
@@ -391,13 +394,17 @@ class Check(Step):
     def space(self, ctx, ncas):
         dest_need = temp_need = 0
         if ctx.will_run('extract'):
-            # the update is identified after this estimate: the larger RomFS of the supported ones
-            dest_need += max(expected_of(ctx, v)['romfs']['size'] for v in SUPPORTED) + ncas
+            # the update is identified after this estimate: the larger RomFS of the supported ones. The merge itself
+            # (tools/extract.py) wants both NCAs plus 18 GiB free, more than the RomFS, so a pass here stays a pass there
+            romfs_size = max(expected_of(ctx, v)['romfs']['size'] for v in SUPPORTED)
+            dest_need += max(romfs_size, EXTRACT_MERGE_NEED) + ncas
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
             if romfs.is_file():   # a resumed extraction replaces it
                 dest_need -= romfs.stat().st_size
         if ctx.will_run('prepare') or ctx.will_run('extract'):
             dest_need += DEST_EXTRA
+        if ctx.will_run('dlc'):   # each pack's RomFS image and its unpacked files exist together for a moment
+            dest_need += 2 * sum(p.stat().st_size for p in dlc_inputs(ctx) if p.is_file())
         if ctx.will_run('lift') or ctx.will_run('compile'):
             temp_need += TEMP_NEED
         dest_free, dest_dev = free_bytes(ctx.dest)
@@ -485,8 +492,12 @@ class Extract(Step):
         for name, path in (('base', base), ('update', update)):
             known = ctx.state['inputs'].get(name, {})
             st = path.stat()
-            if known.get('size') == st.st_size and known.get('mtime_ns') == st.st_mtime_ns and known.get('sha256'):
+            if known.get('size') == st.st_size and known.get('mtime_ns') == st.st_mtime_ns and \
+                    (known.get('sha256') or name == 'base'):
                 inputs[name] = known
+                continue
+            if name == 'base':   # only the update's checksum is compared later (Extract.current); the base's 13 GB
+                inputs[name] = {'name': path.name, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns}   # are not read
                 continue
             digest = file_sha256(path, lambda d, t, n=name: rep.progress('extract', 'hash_' + n, d, t, 'bytes'))
             inputs[name] = {'name': path.name, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns, 'sha256': digest}
@@ -595,7 +606,9 @@ class Dlc(Step):
         files = dlc_inputs(ctx)
         if not files:   # nothing chosen: whatever is recorded stays current
             return ctx.state.get('steps', {}).get('dlc', {}).get('key') or fingerprint('dlc-1')
-        return fingerprint('dlc-1', *(f'{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}' for p in files))
+        # a missing file must reach the check (check.input_missing), not fail planning here
+        return fingerprint('dlc-1', *(f'{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}' if p.is_file()
+                                      else f'{p}:missing' for p in files))
 
     def current(self, ctx, record):
         return all((ctx.dest / 'aoc' / str(i)).is_dir() for i in record.get('indices', []))
@@ -619,19 +632,24 @@ class Dlc(Step):
                 title_id, _ = dlc_record(f, path, keys)
             index = aoc_index(title_id)
             out, log = dest / 'aoc' / str(index), logs / f'dlc-{index}.log'
-            remove(out)
-            out.parent.mkdir(parents=True, exist_ok=True)
+            # unpacked under a name the game does not mount, then renamed: a cancelled or killed run leaves no
+            # half-filled aoc/<index> that runtime/fs_host.c aoc_present would take for an installed pack
+            part = dest / 'aoc' / f'.{index}.part'
+            remove(part)
+            part.parent.mkdir(parents=True, exist_ok=True)
             # XC2's add-on content is encrypted with the title key of the package's ticket, which hactool is not given:
             # tools/xc2_extract.py dlc_romfs reads the ticket, verifies every IVFC level and unpacks the files loose
             # into aoc/<index>/ as the runtime mounts them. Its output goes to the log, not to the CLI's event stream.
             with open(log, 'w', encoding='utf-8', newline='\n') as f, contextlib.redirect_stdout(f):
                 try:
-                    xc2_extract.dlc_romfs(path, keys_path, out)
+                    xc2_extract.dlc_romfs(path, keys_path, part)
                 except (ValueError, OSError) as e:
                     print(f'dlc_romfs failed: {e}')
                     raise_if_damaged(e, 'dlc', path)
-                    remove(out)
+                    remove(part)
                     raise InstallError('dlc.extract_failed', path=str(path), log=str(log)) from None
+            remove(out)
+            os.replace(part, out)
             rep.log(f'dlc: {path.name} is add-on content {index} ({title_id})')
             indices.append(index)
         rep.progress('dlc', 'extract', len(files), len(files), 'files')
@@ -687,7 +705,9 @@ class Compile(Step):
 
     def key(self, ctx):
         layout = ctx.layout
-        clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout
+        # a missing compiler is the check's check.release_incomplete, not a planning crash
+        clang = subprocess.run([str(layout.clang), '--version'], capture_output=True, text=True).stdout \
+            if layout.clang.is_file() else 'missing'
         tools = [layout.tools / n for n in ('build_game.py', 'build_shaders.py', 'romfs_index.py', 'check_content.py')]
         return fingerprint('compile-1', ctx.keys['lift'], layout.runtime, layout.runtime_lib, layout.deps or 'system',
                            layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
@@ -775,7 +795,7 @@ class Cleanup(Step):
         rep.progress('cleanup', 'ini', force=True)
         try:
             ini.write(dest, ctx.lang, ctx.layout.ini_example)
-        except OSError as e:
+        except (OSError, ValueError) as e:   # ValueError: an xcx.ini saved in another encoding than UTF-8
             raise InstallError('cleanup.ini_failed', detail=str(e)) from None
         ctx.state['lang'] = ctx.lang
         (dest / 'profile').mkdir(exist_ok=True)

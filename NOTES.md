@@ -63,7 +63,29 @@ host decoder now binds XC2's constructor and format. The Vorbis tracks stay on t
 which constructs in the running game without NvRm. `xcx.exe --probe-movie` decodes an XC2 movie and passes; a movie
 has not been watched in game yet.
 
+### Audio: voices and effects on one side only (fixed 2026-11-02)
+
+XC2 plays many sounds as a pair of mono voices, one mixed to the left and one to the right, and its SDK (audio
+renderer REV3) sends unused voice slots and channel resources zeroed, id 0 included. `audren.c` applied every entry by
+its id, so each unused entry reset voice 0 and zeroed channel resource 0 once per update: the left voice of a pair,
+and mono voices such as speech that landed in those slots, went silent. Only in-use entries are applied now, as
+Ryujinx's StateUpdater does, and a voice the game stops reporting is released. Measured at the title screen: left and
+right energy were 15.6 against 68.0 before, 45.9 against 34.7 after. The 5.1 downmix also took the LFE coefficient for
+the back pair; it now uses {front, centre, LFE, back}.
+
 ## Known issues
+
+### Probes that need XCX data
+
+`--probe-vkexec` (draw checks) and `--probe-shader` read a shader census of XCX (`build/v121/shaders/jobs.json`) and
+fail without it; XC2 has no census yet. `--probe-vkexec`'s present check also needs a 16:9 window
+(`XCX_WINDOW_SIZE=1280x720`) in environments that size it otherwise. `make_release.py --prove` runs these probes.
+
+### Settings that do nothing in XC2
+
+The output resolution and 3D render scale (`resolution.c`) rewrite XCX's frame-size table and code; XC2's are not
+found, so the game keeps 1920x1080 and logs why. The frame-rate patches (`frame_rate.c`) are XCX patch sets, absent
+for XC2.
 
 ### SDK 3.5.0 boundary
 

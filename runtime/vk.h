@@ -42,6 +42,7 @@ typedef struct VkCtx {
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     int device_index;                       // index in vkEnumeratePhysicalDevices
+    uint64_t vram_held;                     // XCX_VRAM_LIMIT: device-local bytes held unused (vk_device.c vram_limit)
 } VkCtx;
 enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };
 

@@ -513,7 +513,7 @@ NVN_API(nvnCommandBufferClearDepthStencil) {
     *REC(cmd_of(c), OP_CLEAR_DS, p_clear_ds) = (p_clear_ds){arg_s(c, 0), nvn_arg_bool(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3)};
 }
 static void set_viewports(cmd_t *o, int first, int n, const float *v) {
-    if (first < 0 || n < 0 || first + n > 16) {
+    if (first < 0 || first > 16 || n < 0 || n > 16 - first) {
         rt_log("nvn: SetViewports first %d n %d", first, n);
         return;
     }
@@ -539,7 +539,7 @@ NVN_API(nvnCommandBufferSetScissor) {
 NVN_API(nvnCommandBufferSetScissors) {
     int first = (int)arg_x(c, 1), n = (int)arg_x(c, 2);
     const int *r = arg_p(c, 3);
-    if (first < 0 || n < 0 || first + n > 16) rt_fatal("nvn: SetScissors first %d n %d", first, n);
+    if (first < 0 || first > 16 || n < 0 || n > 16 - first) rt_fatal("nvn: SetScissors first %d n %d", first, n);
     for (int i = 1; i < n; i++)
         if (memcmp(r + 4 * i, r, 16)) {
             static int once;
@@ -554,7 +554,7 @@ NVN_API(nvnCommandBufferSetDepthRange) { set_depth_range(cmd_of(c), arg_s(c, 0),
 NVN_API(nvnCommandBufferSetDepthRanges) {
     int first = (int)arg_x(c, 1), n = (int)arg_x(c, 2);
     const float *r = arg_p(c, 3);
-    if (first < 0 || n < 0 || first + n > 16) rt_fatal("nvn: SetDepthRanges first %d n %d", first, n);
+    if (first < 0 || first > 16 || n < 0 || n > 16 - first) rt_fatal("nvn: SetDepthRanges first %d n %d", first, n);
     for (int i = 1; i < n; i++)
         if (memcmp(r + 2 * i, r, 8)) {
             static int once;
@@ -630,7 +630,7 @@ NVN_API(nvnCommandBufferBindVertexStreamState) {
     hw_fix(o, 4 * (16 + (size_t)n));
 }
 static void bind_vertex_buffers(cmd_t *o, int first, int n, const NVNbufferRange *rg) {
-    if (first < 0 || n < 0 || first + n > 16) { rt_log("nvn: BindVertexBuffers first %d n %d", first, n); return; }
+    if (first < 0 || first > 16 || n < 0 || n > 16 - first) { rt_log("nvn: BindVertexBuffers first %d n %d", first, n); return; }
     p_bind_vbuf *r = RECN(o, OP_BIND_VBUF, p_bind_vbuf, r, n);
     r->first = first;
     r->n = n;
@@ -649,6 +649,13 @@ static void bind_buffers(const Cpu *c, uint32_t op) {   // (cmd, stage, first, n
     cmd_t *o = cmd_of(c);
     int st = (int)arg_x(c, 1), first = (int)arg_x(c, 2), n = (int)arg_x(c, 3);
     const NVNbufferRange *rg = arg_p(c, 4);
+    // 6 stages, at most 18 uniform or 16 storage bindings each; the replay drops out-of-range ones, but a garbage count
+    // would grow the recording until cmd_reserve gives up
+    int slots = op == OP_BIND_UBO ? 18 : 16;
+    if (st < 0 || st >= 6 || first < 0 || first > slots || n < 0 || n > slots - first || (n && !rg)) {
+        rt_log("nvn: bind of %d buffers at %d, stage %d", n, first, st);
+        return;
+    }
     for (int i = 0; i < n; i++) {
         *REC(o, op, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
         hw_fix(o, 20);

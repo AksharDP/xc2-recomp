@@ -670,7 +670,8 @@ def total_ram():
 
 def pe_sections(path):
     """{section name: virtual size} and SizeOfImage of a PE32+ file."""
-    data = path.read_bytes()[:4096]
+    with open(path, 'rb') as f:   # the headers only: the image can pass 1 GiB
+        data = f.read(4096)
     pe = int.from_bytes(data[0x3C:0x40], 'little')
     nsec = int.from_bytes(data[pe + 6:pe + 8], 'little')
     opt = pe + 24
@@ -760,7 +761,7 @@ def main():
     if not expected:
         if args.version not in DISPLAY_VERSIONS:
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
-        expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
+        expected = ROOT / 'tools' / 'data' / f'expected-xc2-{DISPLAY_VERSIONS[args.version]}.json'
     hashes = json.loads(Path(expected).read_text())['exefs_sha256']
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
     if args.ninja:

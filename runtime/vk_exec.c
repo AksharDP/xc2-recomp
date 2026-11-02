@@ -820,19 +820,25 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_SET_RT: set_rt(ex, a); break;
         case OP_CLEAR_COLOR: clear_color(ex, a); break;
         case OP_CLEAR_DS: clear_ds(ex, a); break;
+        // an unchanged viewport or scissor leaves the command buffer's dynamic state as it is (a new command buffer
+        // starts with every bit dirty): games set them again before most draws
         case OP_VIEWPORTS: {
             const p_viewports *v = a;
+            int changed = !ex->has_vp;
             for (int i = 0; i < v->n && v->first + i < 16; i++)
-                if (v->first + i >= 0) memcpy(ex->vp[v->first + i], v->v[i], sizeof ex->vp[0]);
+                if (v->first + i >= 0 && memcmp(ex->vp[v->first + i], v->v[i], sizeof ex->vp[0]))
+                    memcpy(ex->vp[v->first + i], v->v[i], sizeof ex->vp[0]), changed = 1;
             ex->has_vp = 1;
-            ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
+            if (changed) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
             break;
         }
-        case OP_SCISSOR:
-            ex->scissor = *(const p_scissor *)a;
+        case OP_SCISSOR: {
+            const p_scissor *s = a;
+            if (!ex->has_scissor || memcmp(&ex->scissor, s, sizeof *s)) ex->dirty |= VK_EXEC_DIRTY_SCISSOR;
+            ex->scissor = *s;
             ex->has_scissor = 1;
-            ex->dirty |= VK_EXEC_DIRTY_SCISSOR;
             break;
+        }
         case OP_DEPTH_RANGE: {
             const p_depth_range *r = a;
             ex->depth_range[0] = r->n, ex->depth_range[1] = r->f;

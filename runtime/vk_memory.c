@@ -52,7 +52,8 @@ typedef struct PoolRec {
     uint8_t untracked;                 // the last dirty scan found no write watch over it
     // VRAM mirror (POOL_IMPORT, "VRAM mirror" below). mstate and mbuf change on the replay thread only.
     uint8_t mstate;                    // MS_NONE until the first buffer use, then MS_ON or MS_REFUSED
-    VkBuffer mbuf;                     // MS_ON: device-local copy of [import_lo, import_hi), same offsets as buf
+    uint8_t mhost;                     // MS_ON: the mirror is in host memory (it did not fit the VRAM budget)
+    VkBuffer mbuf;                     // MS_ON: copy of [import_lo, import_hi), same offsets as buf
     VmaAllocation malloc_;
     uint32_t acc_sub;                  // replay: the last submission that synced the mirror (mirror_sync)
     uint32_t wb_sub;                   // replay: the last submission that wrote mirror bytes back to guest memory
@@ -562,6 +563,8 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
         for (uint32_t h = 0; h < p2.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
             if (p2.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
                 *used += b.heapUsage[h], *budget += b.heapBudget[h];
+        if (c->vram_held && *budget > c->vram_held && *used >= c->vram_held)   // XCX_VRAM_LIMIT
+            *used -= c->vram_held, *budget -= c->vram_held;
         *exact = 1;
         return *budget != 0;
     }
@@ -1134,8 +1137,11 @@ static void dirty_frame(uint64_t frame) {
 //   submission, exact byte ranges, before the fence signals (vk_mem_mirror_end).
 // - XCX_MEMORY=verify: every submission also copies up to VERIFY_BYTES of mirror pages, round robin, into host memory;
 //   at its fence the pages the CPU has not written since their sync are compared with guest memory.
-// A pool stays imported when its mirror would not fit the VRAM budget, its range is not write-watched, it overlaps
-// another pool or the allocation fails.
+// A pool whose mirror would not fit the VRAM budget gets its mirror in host memory instead (issue 28: a 420 MiB pool on
+// a 4 GB card). The point of a mirror there is not speed but the sync: the GPU reads the bytes as of the submission,
+// while an imported pool is read live, and the game rewrites vertex and storage data after its submit with no fence, so
+// late draws of the frame read the next frame's half-written data (the whole scene torn apart for a few frames).
+// A pool stays imported when its range is not write-watched, it overlaps another pool or the allocation fails.
 #define VERIFY_BYTES (4u << 20)
 #define VERIFY_SAMPLES 64
 #define VERIFY_LOG 16
@@ -1163,6 +1169,8 @@ static MirrorAcc mrep;                 // replay: this submission
 static MirrorAcc macc;                 // mirror_stat_lock: since the last summary
 static PlatMutex mirror_stat_lock = PLAT_MUTEX_INIT;
 static volatile int64_t m_live_n, m_live_bytes, m_refused_n[MR_N], m_refused_bytes[MR_N];
+static volatile int64_t m_host_n, m_host_bytes;   // mirrors in host memory (counted apart from m_live_*)
+static volatile int64_t m_host_logged;            // all of them ever made: caps the log line in mirror_create
 static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mismatch;
 
 static void mirror_mode(int discrete) {
@@ -1281,12 +1289,17 @@ static void mirror_create(PoolRec *r) {
     uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
     if (r1 >= SNAP_REGIONS) return refuse(r, MR_UNTRACKED, "outside the write-watched address space");
     uint64_t used, budget;
-    int exact;
-    if (vk_mem_vram(&used, &budget, &exact) && used + n + budget / 8 > budget) {
-        char why[128];
-        snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the VRAM budget (%.0f of %.0f MiB in use)",
-                 n / 1048576.0, used / 1048576.0, budget / 1048576.0);
-        return refuse(r, MR_BUDGET, why);
+    int exact, host = vk_mem_vram(&used, &budget, &exact) && used + n + budget / 8 > budget;
+    uint32_t host_types = 0;
+    if (host) {
+        for (uint32_t t = 0; t < c->mem_props.memoryTypeCount; t++)
+            if (!(c->mem_props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) host_types |= 1u << t;
+        if (!host_types) {
+            char why[128];
+            snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the VRAM budget (%.0f of %.0f MiB in use)",
+                     n / 1048576.0, used / 1048576.0, budget / 1048576.0);
+            return refuse(r, MR_BUDGET, why);
+        }
     }
     plat_mutex_lock(&gen_lock);
     mrep.sync_queries += snap_regions(r0, r1, mepoch);
@@ -1299,13 +1312,21 @@ static void mirror_create(PoolRec *r) {
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                                   .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+    if (host) ai = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST, .memoryTypeBits = host_types};
     VkResult res = vmaCreateBuffer(c->vma, &bi, &ai, &r->mbuf, &r->malloc_, NULL);
     if (res != VK_SUCCESS) {
         r->mbuf = VK_NULL_HANDLE, r->malloc_ = NULL;
         char why[96];
-        snprintf(why, sizeof why, "device-local allocation of %.1f MiB failed (%d)", n / 1048576.0, (int)res);
+        snprintf(why, sizeof why, "%s allocation of %.1f MiB failed (%d)", host ? "host" : "device-local",
+                 n / 1048576.0, (int)res);
         return refuse(r, MR_ALLOC, why);
     }
+    r->mhost = (uint8_t)host;
+    if (host) plat_inc64(&m_host_n);
+    if (host && plat_inc64(&m_host_logged) <= 4)   // short-lived small pools come back all session long
+        rt_log("mem: pool %#llx+%#llx gets its mirror in host memory: its %.1f MiB do not fit the VRAM budget (%.0f of "
+               "%.0f MiB in use)", (unsigned long long)r->lo, (unsigned long long)r->size, n / 1048576.0,
+               used / 1048576.0, budget / 1048576.0);
     plat_mutex_lock(&pool_lock);
     if (nm == mcap) grow((void **)&mlist, &mcap, sizeof *mlist);
     int at = nm;
@@ -1318,6 +1339,10 @@ static void mirror_create(PoolRec *r) {
     r->mstate = MS_ON;
     range_add(&pend, &npend, &cpend, r, 0, n);
     mrep.first_n++, mrep.first_bytes += n;
+    if (host) {
+        plat_add64(&m_host_bytes, (int64_t)n);
+        return;
+    }
     plat_inc64(&m_live_n);
     plat_add64(&m_live_bytes, (int64_t)n);
 }
@@ -1328,8 +1353,13 @@ static void mirror_forget(PoolRec *r) {
         if (mlist[i] == r) {
             memmove(mlist + i, mlist + i + 1, (size_t)(nm - i - 1) * sizeof *mlist);
             nm--;
-            plat_dec64(&m_live_n);
-            plat_add64(&m_live_bytes, -(int64_t)(r->import_hi - r->import_lo));
+            if (r->mhost) {
+                plat_dec64(&m_host_n);
+                plat_add64(&m_host_bytes, -(int64_t)(r->import_hi - r->import_lo));
+            } else {
+                plat_dec64(&m_live_n);
+                plat_add64(&m_live_bytes, -(int64_t)(r->import_hi - r->import_lo));
+            }
             break;
         }
 }
@@ -1656,11 +1686,13 @@ static void mirror_log(uint64_t frame) {
         snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
                  (long long)plat_xchg64(&v_mismatch, 0));
-    rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; stay imported: budget %lld (%.1f MiB), untracked "
+    rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; in host memory %lld (%.1f MiB); stay imported: "
+           "budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
            "first use %.2f pools %.3f MiB, write-back %.3f MiB in %.1f ranges, flush calls %.1f (%.3f MiB), queries "
            "%.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu %.3f ms (pre-snap %.3f, syncs %.3f)%s",
-           (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_refused_n[MR_BUDGET],
+           (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_host_n, m_host_bytes / M,
+           (long long)m_refused_n[MR_BUDGET],
            m_refused_bytes[MR_BUDGET] / M, (long long)m_refused_n[MR_UNTRACKED], (long long)m_refused_n[MR_OVERLAP],
            (long long)m_refused_n[MR_ALLOC], a.subs / f, a.syncs / f, a.upload_bytes / f / M, a.upload_copies / f,
            a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M,

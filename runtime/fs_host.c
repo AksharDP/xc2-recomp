@@ -809,7 +809,8 @@ static uint32_t read_exact(uint64_t h, int64_t off, void *buf, uint64_t size) {
 static uint32_t write_file(uint64_t h, int64_t offset, const void *buffer, uint64_t size, const int32_t *option) {
     PlatFile *f;
     int mode;
-    File *file = offset < 0 || (!buffer && size) ? NULL : file_of(h, &f, &mode);
+    // offset + size must not wrap: a wrapped end would pass the append check below and write past the guest's buffer
+    File *file = offset < 0 || (!buffer && size) || size > INT64_MAX - (uint64_t)offset ? NULL : file_of(h, &f, &mode);
     if (!file) return FS_R_INVALID_ARGUMENT;
     if (!(mode & FS_OPEN_WRITE)) return FS_R_OPEN_MODE;
     PlatFileId id;

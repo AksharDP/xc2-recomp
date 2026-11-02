@@ -760,10 +760,14 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
         for (int k = 0; k < frames; k++) {
             float l, rr;
             if (sink->input_count >= 6) {   /* FL FR C LFE RL RR -> stereo */
-                float ff = sink->downmix_enabled ? sink->downmix[0] : 1.0f, cf = sink->downmix_enabled ? sink->downmix[1] : 0.7071f, sf = sink->downmix_enabled ? sink->downmix[2] : 0.7071f;
-                float C = ch[2] ? ch[2][k] : 0;
-                l = ff * (ch[0] ? ch[0][k] : 0) + cf * C + sf * (ch[4] ? ch[4][k] : 0);
-                rr = ff * (ch[1] ? ch[1][k] : 0) + cf * C + sf * (ch[5] ? ch[5][k] : 0);
+                /* coefficients {front, centre, LFE, back}, defaults {1, 0.707, 0.251, 0.707} (Ryujinx
+                   DownMixingCommand DownMixSurroundToStereo); [2] is the LFE's, not the back pair's */
+                const float *dm = sink->downmix;
+                float ff = sink->downmix_enabled ? dm[0] : 1.0f, cf = sink->downmix_enabled ? dm[1] : 0.7071f,
+                      lf = sink->downmix_enabled ? dm[2] : 0.251f, sf = sink->downmix_enabled ? dm[3] : 0.7071f;
+                float C = ch[2] ? ch[2][k] : 0, LFE = ch[3] ? ch[3][k] : 0;
+                l = ff * (ch[0] ? ch[0][k] : 0) + cf * C + lf * LFE + sf * (ch[4] ? ch[4][k] : 0);
+                rr = ff * (ch[1] ? ch[1][k] : 0) + cf * C + lf * LFE + sf * (ch[5] ? ch[5][k] : 0);
             } else if (sink->input_count >= 2) { l = ch[0] ? ch[0][k] : 0; rr = ch[1] ? ch[1][k] : 0; }
             else l = rr = ch[0] ? ch[0][k] : 0;
             l *= gain; rr *= gain;

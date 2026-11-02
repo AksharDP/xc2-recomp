@@ -825,7 +825,9 @@ const char *ov_shared_font_dir(char *buf, size_t n) {
     const char *e = cfg_get("XCX_SHARED_FONTS");
     if (e && *e) snprintf(buf, n, "%s", e);
     else {
-        char exe[PLAT_PATH_MAX], probe[PLAT_PATH_MAX + 40];   // shared-fonts next to xcx.exe (tools/package_build.py), else the repo's
+        // shared-fonts next to xcx.exe (tools/package_build.py), else the repo's. exe starts empty: plat_exe_path leaves
+        // it unwritten when the path does not fit
+        char exe[PLAT_PATH_MAX] = "", probe[PLAT_PATH_MAX + 40];
         int len = plat_exe_path(exe, sizeof exe);
         char *cut = len && len < sizeof exe ? plat_last_sep(exe) : NULL;
         if (cut) *cut = 0;

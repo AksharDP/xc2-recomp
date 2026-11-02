@@ -176,7 +176,7 @@ def dev_layout_posix(root):
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libxcxrt.a',
         ninja=Path(ninja) if ninja else root / 'toolchain' / 'ninja-missing',
         hactool=root / 'toolchain' / 'hactool' / 'hactool', xlate=root / 'build' / 'xlate' / 'xcx_xlate',
-        shader_list=None, ini_example=root / 'xcx.ini.example', temp=root / 'build' / 'install-temp')
+        ini_example=root / 'xcx.ini.example', temp=root / 'build' / 'install-temp')
 
 
 def find(root=None):

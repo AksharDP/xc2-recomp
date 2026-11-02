@@ -71,6 +71,9 @@ typedef struct {
 } ViewKey;
 _Static_assert(sizeof(ViewKey) == 40, "ViewKey is hashed as bytes: no padding");
 typedef struct { uint64_t addr, size; } Range;
+// A storage range a shader writes through a transient copy (bind_range, unaligned host memory): copied back to guest
+// memory when the command buffer completes, before its chunk is recycled.
+typedef struct { const uint8_t *src; VmaAllocation alloc; VkDeviceSize off; uint64_t addr, size; } CopyBack;
 typedef struct {
     Chunk *chunks;
     int nchunks, cchunks;
@@ -78,6 +81,8 @@ typedef struct {
     int npools, cpools;
     Range *written;
     int nwritten, cwritten;
+    CopyBack *back;
+    int nback, cback;
 } CbRes;
 
 static CbRes *cur;
@@ -176,6 +181,11 @@ static uint64_t bind_gen = 1;            // bumped by every bind op that writes 
 static void cb_done(void *arg) {   // completion thread
     CbRes *r = arg;
     VkCtx *c = vk_ctx();
+    for (int i = 0; i < r->nback; i++) {   // before vk_gpu_written below reports these ranges as written
+        const CopyBack *b = &r->back[i];
+        vmaInvalidateAllocation(c->vma, b->alloc, b->off, b->size);   // the chunk may be non-coherent host memory
+        memcpy((void *)(uintptr_t)b->addr, b->src, b->size);
+    }
     for (int i = 0; i < r->nwritten; i++) vk_gpu_written(r->written[i].addr, r->written[i].size);
     for (int i = 0; i < r->npools; i++) {
         vkResetDescriptorPool(c->device, r->pools[i], 0);
@@ -192,7 +202,7 @@ static void cb_done(void *arg) {   // completion thread
         plat_mutex_unlock(&spare_lock);
         if (!kept) vmaDestroyBuffer(c->vma, r->chunks[i].buf, r->chunks[i].alloc);
     }
-    free(r->written), free(r->pools), free(r->chunks), free(r);
+    free(r->back), free(r->written), free(r->pools), free(r->chunks), free(r);
 }
 
 void vk_exec_draw_new_cb(void) { memset(&B, 0, sizeof B); }
@@ -789,7 +799,13 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     VkBuffer b;
     VkDeviceSize o;
     RS.volatile_ = 1;
-    memcpy(scratch(ex, n, &b, &o), (const void *)(uintptr_t)addr, n);
+    uint8_t *copy = scratch(ex, n, &b, &o);
+    memcpy(copy, (const void *)(uintptr_t)addr, n);
+    if (written) {   // the shader's stores land in the copy: cb_done writes them back to guest memory
+        CbRes *r = cb_res(ex);
+        if (r->nback == r->cback) r->back = grow(r->back, &r->cback, sizeof *r->back);
+        r->back[r->nback++] = (CopyBack){copy, r->chunks[r->nchunks - 1].alloc, o, addr, n};
+    }
     vk_mem_count(sp.cls, VK_MUSE_CPU_READ, n);
     vk_mem_count(VK_MCLS_SCRATCH, use, n);
     *out = (VkDescriptorBufferInfo){b, o, n};
@@ -2087,7 +2103,10 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
-    if (vk_dump_armed)   // instance-rate streams: bytes the draw reads against bytes bound, and the first record
+    // only in the dump frame itself: vk_dump_armed stays set for the whole run, and the position scan below reads up to
+    // 60000 indices per draw
+    int dumping = vk_dump_armed && vk_dump_active();
+    if (dumping)   // instance-rate streams: bytes the draw reads against bytes bound, and the first record
         for (int b = 0; b < 16; b++)
             if (ex->pipe.vstream[b].divisor && ex->pipe.vstream[b].stride) {
                 uint32_t stride = ex->pipe.vstream[b].stride;
@@ -2102,7 +2121,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
                              need > B.vsz[b] ? " OUT OF RANGE" : "", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
                              m[8], m[9], m[10], m[11]);
             }
-    if (vk_dump_armed) {   // the positions the draw reads (location 0, 3 floats): bounding box, zero and non-finite ones
+    if (dumping) {   // the positions the draw reads (location 0, 3 floats): bounding box, zero and non-finite ones
         va_st va;
         memcpy(&va, &ex->pipe.vattr[0], sizeof va);
         uint32_t vs = va.stream < 16 ? ex->pipe.vstream[va.stream].stride : 0;
@@ -2133,7 +2152,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
             char key[24];
             snprintf(key, sizeof key, ",%d,", d->count);
             const char *dir = cfg_get("XCX_DUMP_DIR");
-            if (strstr(want_mesh, key) && dir && vk_dump_active()) {
+            if (strstr(want_mesh, key) && dir) {
                 char path[512];
                 snprintf(path, sizeof path, "%s/mesh_%d_%d.bin", dir, d->count, mesh_seq++);
                 FILE *f = fopen(path, "wb");
