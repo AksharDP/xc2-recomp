@@ -10,8 +10,7 @@
 ## Status
 
 Early development. The game boots to the title screen and runs New Game into the opening battle with sound, text and
-input, at its native 30 fps. Known issues, including missing ground in the opening battle, are listed in
-[NOTES.md](NOTES.md).
+input, at its native 30 fps. Known issues are listed in [NOTES.md](NOTES.md).
 
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 

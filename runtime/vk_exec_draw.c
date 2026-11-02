@@ -15,6 +15,7 @@
 // 9365-9488, 9489-9921, 10013-10079 @ b75be8cf (MIT, Copyright (c) 2026 jhaizhou); the uniform-buffer spans, texture and
 // sampler descriptor lookups and the dispatch flow follow LAS Recomp runtime/nvn/vulkan/exec.c:1851-1908, 2300-2516
 // @ da35b83a (MIT, Copyright (c) 2026 Peiikai). The support buffer layout is Ryujinx's SupportBuffer.cs (MIT).
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -1830,6 +1831,16 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
                          (unsigned long long)(ex->prog ? ex->prog->serial : 0), prim, count);
         return 0;
     }
+    // XCX_ONLY_PROG=<program serial> (diagnostic): in the dump frame only that program's draws are made, so a pass's
+    // targets show what one program rasterizes
+    if (vk_dump_armed) {
+        static long long only = -2;
+        if (only == -2) {
+            const char *e = cfg_get("XCX_ONLY_PROG");
+            only = e && *e ? atoll(e) : -1;
+        }
+        if (only >= 0 && (!ex->prog || (long long)ex->prog->serial != only) && vk_dump_active()) return 0;
+    }
     cb_res(ex);
     dummies_init();
     if (ex->pass_noatt) {   // no attachment: the pass covers this draw's viewport or scissor, reopened when it needs more
@@ -2091,6 +2102,64 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
                              need > B.vsz[b] ? " OUT OF RANGE" : "", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
                              m[8], m[9], m[10], m[11]);
             }
+    if (vk_dump_armed) {   // the positions the draw reads (location 0, 3 floats): bounding box, zero and non-finite ones
+        va_st va;
+        memcpy(&va, &ex->pipe.vattr[0], sizeof va);
+        uint32_t vs = va.stream < 16 ? ex->pipe.vstream[va.stream].stride : 0;
+        uint64_t vbase = va.stream < 16 ? ex->vbuf[va.stream].address : 0;
+        if (va.fmt == 0x22 && vs && vbase && d->ibuf && d->itype > 0 && !nvn_gpu_only(d->ibuf) && !nvn_gpu_only(vbase)) {
+            float lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+            int zero = 0, bad = 0, n = d->count < 60000 ? d->count : 60000;
+            uint32_t imax = 0;
+            for (int k = 0; k < n; k++) {
+                uint32_t ix = d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)(uintptr_t)d->ibuf)[k]
+                                                                        : ((const uint32_t *)(uintptr_t)d->ibuf)[k];
+                ix += (uint32_t)d->base_vertex;
+                if (ix > imax) imax = ix;
+                float p[3];
+                memcpy(p, (const void *)(uintptr_t)(vbase + (uint64_t)ix * vs + va.offset), sizeof p);
+                if (!isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2])) { bad++; continue; }
+                if (!p[0] && !p[1] && !p[2]) zero++;
+                for (int a = 0; a < 3; a++) lo[a] = p[a] < lo[a] ? p[a] : lo[a], hi[a] = p[a] > hi[a] ? p[a] : hi[a];
+            }
+            // XCX_DUMP_MESH=<index count>[,...]: the triangles of such draws as float triples, mesh_<count>_<n>.bin
+            static char want_mesh[128];
+            static int mesh_init, mesh_seq;
+            if (!mesh_init) {
+                const char *e = cfg_get("XCX_DUMP_MESH");
+                snprintf(want_mesh, sizeof want_mesh, ",%s,", e ? e : "");
+                mesh_init = 1;
+            }
+            char key[24];
+            snprintf(key, sizeof key, ",%d,", d->count);
+            const char *dir = cfg_get("XCX_DUMP_DIR");
+            if (strstr(want_mesh, key) && dir && vk_dump_active()) {
+                char path[512];
+                snprintf(path, sizeof path, "%s/mesh_%d_%d.bin", dir, d->count, mesh_seq++);
+                FILE *f = fopen(path, "wb");
+                snprintf(path + strlen(path) - 4, 8, ".idx");
+                FILE *fi = fopen(path, "wb");   // the vertex index of each corner, base vertex added
+                for (int k = 0; f && k < n; k++) {
+                    uint32_t ix = d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)(uintptr_t)d->ibuf)[k]
+                                                                            : ((const uint32_t *)(uintptr_t)d->ibuf)[k];
+                    ix += (uint32_t)d->base_vertex;
+                    fwrite((const void *)(uintptr_t)(vbase + (uint64_t)ix * vs + va.offset), 4, 3, f);
+                    if (fi) fwrite(&ix, 4, 1, fi);
+                }
+                if (f) fclose(f);
+                if (fi) fclose(fi);
+                snprintf(path + strlen(path) - 4, 8, ".bin");
+                vk_dump_note("mesh of count %d written to %s (prim %d, cull %d front %d)", d->count, path, d->prim,
+                             (int)ex->pipe.poly.cull, (int)ex->pipe.poly.front);
+            }
+            vk_dump_note("positions of draw count %d instances %d prog %llu: vbuf %#llx size %#llx stride %u, max index %u "
+                         "(bytes %#llx), box (%g %g %g)..(%g %g %g), zero %d, non-finite %d", d->count, d->instances,
+                         (unsigned long long)(ex->prog ? ex->prog->serial : 0), (unsigned long long)vbase,
+                         (unsigned long long)ex->vbuf[va.stream].size, vs, imax,
+                         (unsigned long long)((uint64_t)imax * vs + va.offset + 12), lo[0], lo[1], lo[2], hi[0], hi[1],
+                         hi[2], zero, bad);
+        }
+    }
     vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     ex->recorded++;

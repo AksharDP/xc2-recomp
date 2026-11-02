@@ -887,6 +887,14 @@ out:
     plat_mutex_unlock(&rec_lock);
 }
 
+// 1 while the dump frame is being recorded (vk_dump_armed is set for the whole run)
+int vk_dump_active(void) {
+    plat_mutex_lock(&rec_lock);
+    int a = active();
+    plat_mutex_unlock(&rec_lock);
+    return a;
+}
+
 // One line in passes.txt between the passes, for replay decisions that leave no pass behind (skipped draws, render
 // conditions).
 void vk_dump_note(const char *fmt, ...) {

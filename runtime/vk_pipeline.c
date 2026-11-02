@@ -49,6 +49,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "platform/platform.h"
 #include "tex.h"
@@ -2950,10 +2951,13 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (!ensure_init()) return;
     const poly_st *pl = &s->poly;
     const ds_st *d = &s->ds;
-    // The front face maps unchanged: XCX sets the upper-left window origin, and the y-flipped viewport (y_flip) puts
-    // NDC +y at row 0 as NVN does, so the framebuffer winding Vulkan tests is the one NVN tests (MacNativeGames passes
-    // it to Metal unchanged; LAS Recomp exec.c mirrors it only for the lower-left origin).
-    int front_cw = pl->front == NVN_FRONT_FACE_CW;
+    // Front face. The replay's viewports have negative heights (y_flip), so Vulkan judges winding as OpenGL does, with
+    // NDC +y up. NVN judges it in window coordinates, which run downwards once the game picks the upper-left window
+    // origin: there the sense of clockwise is reversed, and the front face is mirrored. With the lower-left origin both
+    // agree and it maps unchanged. XC2 sets the upper-left origin at boot (nvnDeviceSetWindowOriginMode); mapped
+    // unchanged, every camera-facing triangle of its back-face-culled draws was culled: the floor on Gramps' back in
+    // the opening battle was missing, and props drew their far sides lit from behind (dark silhouettes).
+    int front_cw = (pl->front == NVN_FRONT_FACE_CW) != (nvn_origin_upper_left() != 0);
     vkCmdSetCullMode(cb, (VkCullModeFlags)(pl->cull & 3));   // NVN_FACE_* has VkCullModeFlagBits' values
     vkCmdSetFrontFace(cb, front_cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
     vkCmdSetPrimitiveTopology(cb, vk_pipeline_topology(s->prim));

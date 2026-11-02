@@ -48,6 +48,8 @@ uint64_t nvn_fence_last(void) { return __atomic_load_n(&last_fence, __ATOMIC_ACQ
 
 static int depth_minus_w;
 int nvn_depth_minus_w(void) { return __atomic_load_n(&depth_minus_w, __ATOMIC_RELAXED); }
+static int origin_upper_left;
+int nvn_origin_upper_left(void) { return __atomic_load_n(&origin_upper_left, __ATOMIC_RELAXED); }
 
 void nvn_guest_written(uint64_t addr, uint64_t size) {
     if (size) gfx_backend()->guest_written(addr, size);
@@ -241,7 +243,9 @@ NVN_API(nvnDeviceInstallDebugCallback) {
 NVN_API(nvnDeviceSetWindowOriginMode) {
     uint32_t m = (uint32_t)arg_x(c, 1);
     ((dev_t_ *)arg_p(c, 0))->origin = m;
-    NVN_LOG("window origin %s", m ? "upper left (as D3D and Vulkan)" : "lower left (GL)");
+    __atomic_store_n(&origin_upper_left, m == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, __ATOMIC_RELAXED);
+    rt_log("nvn: window origin %s (device %p, caller %#llx)", m ? "upper left (as D3D and Vulkan)" : "lower left (GL)",
+           arg_p(c, 0), (unsigned long long)c->x[30]);
 }
 // void nvnDeviceSetDepthMode(NVNdevice *d, NVNdepthMode mode)
 NVN_API(nvnDeviceSetDepthMode) {
