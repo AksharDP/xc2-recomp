@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -44,6 +45,8 @@ def fix_tcl_paths():
 class App:
     def __init__(self, root, ui_lang, layout, run_args=None):
         self.root, self.layout = root, layout
+        # the release runs under pythonw, which has no console: an error in a button's callback would vanish silently
+        root.report_callback_exception = self.callback_error
         self.cat = Catalog(ui_lang)
         self.model = Model()
         self.process = None
@@ -53,7 +56,6 @@ class App:
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
         self.vars = {n: tk.StringVar() for n in ('base', 'update', 'dlc', 'keys', 'dest')}
         self.vars['lang'] = tk.StringVar()
-        self.dlc_files = []              # the add-on NSPs; vars['dlc'] shows their names
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
@@ -192,10 +194,10 @@ class App:
         for i, (name, label_id, pick_id) in enumerate(rows):
             lab = self.label(grid, label_id)
             lab.grid(row=i, column=0, sticky='w', pady=4, padx=(0, 10))
-            if name == 'dlc':   # several files: shown joined, chosen with the picker, emptied with Clear
+            if name == 'dlc':   # several paths joined by '; ': typed, added with the picker, emptied with Clear
                 cell = ttk.Frame(grid)
                 cell.columnconfigure(0, weight=1)
-                ttk.Entry(cell, textvariable=self.vars[name], state='readonly').grid(row=0, column=0, sticky='ew')
+                ttk.Entry(cell, textvariable=self.vars[name]).grid(row=0, column=0, sticky='ew')
                 self.button(cell, 'ui.clear', self.clear_dlc).grid(row=0, column=1, padx=(8, 0))
                 cell.grid(row=i, column=1, sticky='ew', pady=4)
             else:
@@ -272,7 +274,7 @@ class App:
     # ---- form -----------------------------------------------------------------------------------------------------
 
     def form(self):
-        return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=tuple(self.dlc_files),
+        return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=tuple(self.dlc_paths()),
                     keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
 
     def refresh_form(self):
@@ -294,21 +296,27 @@ class App:
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
         if name == 'dlc':   # the add-on packs are separate NSPs: each pick adds to the list, so they can come in batches
             paths = filedialog.askopenfilenames(title=self.cat(pick_id), filetypes=types)
-            try:   # the result is a tuple, or on some Tk builds one Tcl list string
-                picked = [os.path.normpath(p) for p in (self.tk.splitlist(paths) if paths else ())]
-            except (tk.TclError, TypeError, ValueError) as e:
-                self.form_error.configure(text=f'{self.cat("ui.pick_dlc")}: {e}')
-                return
-            self.set_dlc(self.dlc_files + [p for p in picked if p not in self.dlc_files])
+            # the result is a tuple, or on some Tk builds one Tcl list string
+            picked = [os.path.normpath(p) for p in (self.root.tk.splitlist(paths) if paths else ())]
+            have = self.dlc_paths()
+            self.set_dlc(have + [p for p in picked if p not in have])
             return
         path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
         if path:
             self.vars[name].set(os.path.normpath(path))
 
+    def callback_error(self, kind, error, tb):
+        traceback.print_exception(kind, error, tb)
+        label = getattr(self, 'form_error', None)
+        if label is not None:
+            label.configure(text=f'{kind.__name__}: {error}')
+
+    def dlc_paths(self):
+        """The add-on paths in the field: split at ';', each stripped of spaces and quotes."""
+        return [p for p in (s.strip().strip('"').strip() for s in self.vars['dlc'].get().split(';')) if p]
+
     def set_dlc(self, paths):
-        self.dlc_files = list(paths)
-        names = ', '.join(os.path.basename(p) for p in paths)
-        self.vars['dlc'].set(f'({len(paths)}) {names}' if len(paths) > 1 else names)
+        self.vars['dlc'].set('; '.join(paths))
 
     def clear_dlc(self):
         self.set_dlc([])
