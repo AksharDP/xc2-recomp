@@ -1,60 +1,64 @@
 # Mods and cheats
 
-XC2 Recomp loads mods made for Switch emulators and Atmosphere: RomFS file replacements, ExeFS code patches (`.ips`,
-`.pchtxt`) and Atmosphere cheat files. This page is for players who install mods and for people who make them. The
-code is `runtime/mods.c` (the folder scan), `runtime/romfs.c` and `runtime/fs_host.c` (serving files), `runtime/cheats.c`
-(cheats) and `tools/cheats.py` / `tools/exefs_patches.py` (code patches and code cheats built into the game).
+XC2 Recomp loads the same mods as Switch emulators and Atmosphere: replaced game files (RomFS), code patches (`.ips`,
+`.pchtxt`) and Atmosphere cheat files.
 
-## Installing a mod
+## Install a mod
 
-1. Open the `mods` folder next to `xcx.exe`. The Mods tab of the in-game menu (F1) has **Open mods folder**, which
-   creates it if it is missing.
-2. Unpack each mod into a folder of its own: `mods\<any name>\...`. Keep the layout the mod ships with; all of these
-   work:
+1. Open the `mods` folder next to `xcx.exe`. In game, press F1, go to the Mods tab and choose **Open mods folder**. The
+   game creates the folder if it does not exist.
+2. Unpack each mod into its own folder, `mods\<any name>\`. Keep the folders the mod came with. These layouts all work:
 
-   | Layout inside the mod's folder | Typical source |
+   | Inside the mod's folder | Where it comes from |
    |---|---|
-   | `romfs\`, `exefs\`, `cheats\` | yuzu / Ryujinx style mods (`load\<title id>\<mod>\` on an emulator) |
-   | `atmosphere\contents\<title id>\romfs\` (and `exefs\`, `cheats\`) | mods made for the SD card of a Switch |
-   | `contents\<title id>\romfs\`, `<title id>\romfs\` | the same, one or two folders shorter |
+   | `romfs\`, `exefs\`, `cheats\` | yuzu and Ryujinx mods (`load\<title id>\<mod>\` on the emulator) |
+   | `atmosphere\contents\<title id>\romfs\` (also `exefs\`, `cheats\`) | mods for a Switch SD card |
+   | `contents\<title id>\romfs\` or `<title id>\romfs\` | SD card mods unpacked one or two levels down |
    | `atmosphere\exefs_patches\<name>\*.ips` | Atmosphere IPS patches |
 
-3. Start the game. The Mods tab lists every folder with its switch and what it serves.
+3. Start the game. The Mods tab lists each folder, its switch and what it changes.
 
-The title ids of Xenoblade Chronicles 2:
+XC2's title ids:
 
-| Title id | Content |
+| Title id | What it is |
 |---|---|
-| `0100E95004038000` | the base game (also used for the 3.0.1 update) |
-| `0100E95004039001` | add-on content pack 1 (the folder XC2 mods use most, X2plus among them) |
+| `0100E95004038000` | the base game, including the 3.0.1 update |
+| `0100E95004039001` | add-on content pack 1, the one most XC2 mods use (X2plus, for example) |
 | `0100E95004039002` to `...9006` | add-on content packs 2 to 6 |
-| `0100E95004039063` | add-on content pack 99 (streamed audio and movies) |
+| `0100E95004039063` | add-on content pack 99: streamed audio and movies |
 
-Torna ~ The Golden Country is a separate game and is not supported.
+Torna ~ The Golden Country is a separate game. It is not supported.
 
 ### Order and switches
 
-On the Mods tab, A (or a click, or left / right) switches a mod on or off. The top face button or Ctrl+Up moves it up,
-the left face button or Ctrl+Down moves it down. When two mods give the same file, the higher one wins. Changes apply at
-the next start. They are kept in `xcx.ini`:
+On the Mods tab:
+
+- A, a click, or left / right turns a mod on or off.
+- The top face button or Ctrl+Up moves a mod up. The left face button or Ctrl+Down moves it down.
+- If two mods change the same file, the higher one wins.
+- Changes take effect the next time you start the game.
+
+The menu saves the list to `xcx.ini`:
 
 ```ini
 [mods]
 mods_order = Better Battles|X2plus|My Music   # top first, names separated by |
-mods_disabled = My Music                      # switched off
-# mods_dir = D:\XC2 mods                       # another mods folder (default: mods next to xcx.exe)
+mods_disabled = My Music                      # turned off
+# mods_dir = D:\XC2 mods                       # a different mods folder (default: mods next to xcx.exe)
 ```
 
-A folder `mods_order` does not name goes below the named ones, in name order.
+Folders missing from `mods_order` go below the listed ones, sorted by name.
 
-## How XC2 finds its files (why mods use add-on content folders)
+## Where XC2 looks for files
 
-Almost all of XC2's data is packed in one archive, `bf2.arh` (the index) and `bf2.ard` (the data). Only `stream\`
-(music, voices, movies) is loose. When the game needs a file of the archive, it first looks for that file in each
-add-on content pack (`aoc1:/bdat/common.bdat`, `aoc2:/...`, up to pack 99), and only then reads it from `bf2.ard`. It
-never looks for a loose copy in the base RomFS.
+XC2 packs nearly all its data into one archive: `bf2.arh` is the index and `bf2.ard` holds the data. Only `stream\`
+(music, voices, movies) sits outside it as loose files.
 
-So a mod replaces a file of the archive by putting it in an add-on content title's `romfs` folder:
+When the game needs a file from the archive, it checks each add-on content pack first (`aoc1:/bdat/common.bdat`,
+`aoc2:/...`, up to pack 99). If no pack has the file, it reads it from `bf2.ard`. It never checks the base game's
+`romfs` for a loose copy.
+
+That is why XC2 mods put replacement files in an add-on content title's `romfs` folder:
 
 ```
 mods\
@@ -62,74 +66,88 @@ mods\
     atmosphere\contents\0100E95004039001\romfs\bdat\common.bdat
 ```
 
-The port serves that file whenever the game asks pack 1 for `bdat/common.bdat`. This is the same thing that happens on
-a Switch or an emulator, so mods made for those work unchanged. The base `romfs\` folder of a mod is still used for
-files the game opens loose: `stream\bgm\*.nop` (music), `stream\voice\...`, `stream\movie\*.webm`, and a complete
-replacement of `bf2.arh` / `bf2.ard`. A file such as `romfs\bdat\common.bdat` under the base title is ignored by the
-game, as on an emulator.
+When the game asks pack 1 for `bdat/common.bdat`, it gets this file. A Switch and the emulators behave the same way, so
+mods made for them work without changes.
 
-The add-on content packs you own must be installed for their mod folders to be read (the setup installs every pack you
-give it). Paths are matched without regard to upper and lower case.
+A mod's base `romfs\` folder works for files the game opens directly:
+
+- music: `stream\bgm\*.nop`
+- voices: `stream\voice\...`
+- movies: `stream\movie\*.webm`
+- a full replacement of `bf2.arh` and `bf2.ard`
+
+The game never asks for something like `romfs\bdat\common.bdat` under the base title, so a file there does nothing. The
+emulators behave the same.
+
+A pack's mod files load only if you installed that pack. The setup installs every pack you give it. Upper and lower case
+in paths do not matter.
 
 ## Cheats
 
-A mod's cheats are an Atmosphere cheat file in its `cheats` folder, named after the first 16 hex digits of the game's
-build id. For XC2 3.0.1 that is:
+Put the Atmosphere cheat file in the mod's `cheats` folder. Its name is the first 16 hex digits of the game's build id.
+For 3.0.1:
 
 ```
 mods\<mod>\cheats\4F5C96E2D97F45AC.txt
 ```
 
-The file name's case does not matter. Files for other game versions (another build id) are not read. Cheats appear on
-the Cheats tab, grouped by mod, and are off until you switch them on; each switch is kept in `xcx.ini` under `[cheats]`
-(`cheat_<hash> = 1`). What each kind of cheat does here:
+Upper or lower case in the name does not matter. Files for other game versions have another build id and are not read.
 
-| Cheat | Effect |
+The Cheats tab lists the cheats by mod. Every cheat starts off. Your choices are saved in `xcx.ini` under `[cheats]` as
+`cheat_<hash> = 1`.
+
+| Kind of cheat | What happens |
 |---|---|
-| writes memory (heap, game data, pointer chains, button conditions) | runs in the cheat VM every frame while on, as on Atmosphere |
-| changes the game's code (opcode 0 into main's code) | built into the game by the setup; switches at once |
-| changes code while buttons are held (`8...` / `21000000` / `20000000`) | built in; on while the buttons are held |
+| writes memory (heap, game data, pointer chains, button conditions) | runs every frame while on, as on Atmosphere |
+| changes the game's code (opcode 0 into main's code) | built into the game by the setup; turns on and off at once |
+| changes code while you hold buttons (`8...` / `21000000` / `20000000`) | built in; active while the buttons are held |
 | `{master}` code | always on |
 
-The game's code is compiled C, not ARM instructions, so a code cheat cannot be written into memory as it runs. The setup
-compiles every code cheat of the mods folder into the game when it builds it. A code cheat added or edited after that is
-listed as waiting for the setup: run the setup again on the same folder (it keeps your saves and settings) and it
-becomes switchable. Extended opcodes `C...` and `F...` are not supported and are listed with the reason.
+The port runs the game as compiled C, not as ARM instructions, so a cheat cannot rewrite code while the game runs.
+Instead, the setup compiles every code cheat in the mods folder into the game. If you add or edit a code cheat later,
+the Cheats tab marks it as waiting. Run the setup again on the same folder to build it in. Your saves and settings stay.
+
+Extended opcodes (`C...`, `F...`) are not supported. The Cheats tab shows them greyed out with the reason.
 
 ## Code patches (ExeFS)
 
-`.pchtxt` (IPSwitch) and `.ips` / IPS32 files in a mod's `exefs` folder, or `atmosphere\exefs_patches\<name>\*.ips`,
-patch the game's main program. A file is used when it is for this game version:
+The game reads code patches from a mod's `exefs` folder (`.pchtxt`, `.ips`, IPS32) and from
+`atmosphere\exefs_patches\<name>\*.ips`. A patch is used only if it targets this game version:
 
-- a `.pchtxt` file's `@nsobid-` line names main's build id, `4F5C96E2D97F45AC288BC67613EBEF0A` for 3.0.1 (trailing zeros
-  may be left out);
-- an `.ips` file's name is that build id.
+- In a `.pchtxt` file, the `@nsobid-` line must name main's build id. For 3.0.1 that is
+  `4F5C96E2D97F45AC288BC67613EBEF0A`. Trailing zeros can be left out.
+- An `.ips` file must be named after that build id.
 
-Like code cheats, code patches are built into the game by the setup: after adding or changing one, run the setup again
-on the install folder. Until then the whole mod stays off (its other files may expect the patch), and the Mods tab says
-so. A patch file the port cannot apply makes the whole mod stay off with the reason shown, as does a mod that ships its
-own code modules (`exefs\subsdk*` plugins or a replaced `exefs\main`): the port has no loader for those.
+The setup builds code patches into the game, the same way as code cheats. After you add or change a patch, run the setup
+again. Until you do, the whole mod stays off, because its other files may depend on the patch. The Mods tab tells you
+when this happens.
 
-Patches made for 2.0.0 or other versions carry another build id and are listed as made for another version. Their
-offsets do not match 3.0.1's code, so they cannot simply be renamed.
+The whole mod also stays off when:
 
-## Making a mod
+- the port cannot apply one of its patch files (the Mods tab says why), or
+- it brings its own code modules (`exefs\subsdk*` plugins or a replaced `exefs\main`). The port cannot load those.
 
-### Replacing or adding a file
+Patches for 2.0.0 or any other version have a different build id, and the Mods tab lists them as made for another
+version. Renaming them does not help: their offsets point at different code in 3.0.1.
 
-1. Find which file you want to change and where the game looks for it. `XCX_TRACE=fs` (environment variable, or
-   `trace = fs` under `[diagnostics]` in `xcx.ini`) writes every file the game opens to the log, for example
-   `read aoc1:/bdat/common.bdat` followed by reads of `bf2.ard`.
-2. Get the original. Loose files (`stream\`) are in the installed `romfs\romfs.bin`; archived files are inside
-   `bf2.arh` / `bf2.ard` and need an XC2 archive extractor from the modding community. Add-on content files are in the
-   install's `aoc\<pack>\` folders.
-3. Put your file at the same path under `mods\<your mod>\atmosphere\contents\<title id>\romfs\`, with the add-on content
-   title id for archived files and `0100E95004038000` for loose ones (or `romfs\` directly for loose ones).
-4. Restart the game and check the log: `mods: <your mod>: on, ...` lists what was found, and with `XCX_TRACE=fs`
-   `read from a mod <path>` (add-on content) or `rom from an overlay <path>` (base RomFS) shows the game reading your
-   file.
+## Make a mod
 
-### Writing a code patch
+### Replace or add a file
+
+1. Find the file and where the game looks for it. Set `XCX_TRACE=fs` as an environment variable, or `trace = fs` under
+   `[diagnostics]` in `xcx.ini`. The log then lists every file the game opens, for example `read aoc1:/bdat/common.bdat`
+   followed by reads of `bf2.ard`.
+2. Get the original file:
+   - Loose files (`stream\`) are in the installed `romfs\romfs.bin`.
+   - Archived files are inside `bf2.arh` / `bf2.ard`. You need an XC2 archive extractor from the modding community.
+   - Add-on content files are in the install's `aoc\<pack>\` folders.
+3. Put your file at the same path under `mods\<your mod>\atmosphere\contents\<title id>\romfs\`. For an archived file,
+   use an add-on content title id. For a loose file, use `0100E95004038000`, or put it straight under `romfs\`.
+4. Restart the game and read the log. `mods: <your mod>: on, ...` lists what the game found. With `XCX_TRACE=fs`, the
+   line `read from a mod <path>` (add-on content) or `rom from an overlay <path>` (base game) shows the game reading
+   your file.
+
+### Write a code patch
 
 An IPSwitch file for 3.0.1:
 
@@ -142,30 +160,35 @@ An IPSwitch file for 3.0.1:
 @stop
 ```
 
-With `offset_shift 0x100` offsets are main's own; without it they count the 0x100-byte NSO header, as IPS files do. The
-setup turns each instruction you replace into a switchable alternative in the compiled code. Rules (the setup reports a
-file that breaks one as unsupported):
+`offset_shift 0x100` makes offsets count from the start of main. Without it, offsets include the 0x100-byte NSO header,
+as in IPS files.
 
-- only main's code can be patched, not its data;
-- the replaced instruction may be anything but `br`, `blr` or `ret`;
-- a replacement may end in a branch (`b`, `bl`, `b.cond`, `cbz`, `tbz`, `ret`); earlier words of it may not branch;
-- a replacement must set the CPU flags the way the original does;
-- a branch into a code cave the file writes into main's zero padding is inlined at the branch, without branches or
-  pc-relative instructions inside the cave.
+The setup turns each replaced instruction into a switchable alternative in the compiled code. A patch must follow these
+rules, or the setup marks the file unsupported:
 
-## When something does not work
+- Patch main's code only, not its data.
+- Do not replace a `br`, `blr` or `ret` instruction.
+- A replacement may end in a branch (`b`, `bl`, `b.cond`, `cbz`, `tbz`, `ret`). Only its last instruction may branch.
+- A replacement must set the CPU flags the same way as the original.
+- A branch into a code cave (code the file writes into main's zero padding) is copied in place of the branch. The cave
+  itself may not contain branches or pc-relative instructions.
 
-The log (Advanced tab, **Open log folder**) has a line per mod at start:
+## Troubleshooting
+
+To find the log, open the Advanced tab and choose **Open log folder**. At start the log has one line per mod:
 
 | Log line | Meaning |
 |---|---|
-| `mods: <name>: on, romfs aoc 1, ok` | used: base RomFS files and add-on content pack 1 files |
-| `... empty` | no `romfs`, `exefs` or `cheats` files in the places listed above (check the folder depth) |
+| `mods: <name>: on, romfs aoc 1, ok` | in use: base game files and add-on content pack 1 files |
+| `... empty` | no `romfs`, `exefs` or `cheats` files where the game looks. Check the folder depth. |
 | `... ExeFS patches the game was built without (run the setup again)` | run the setup on the install folder |
 | `... its ExeFS patches are for another game version` | the patch is not for 3.0.1 |
 | `... has a code module (subsdk or main), not supported` | the mod needs a code plugin the port cannot load |
-| `mods: <name>: N add-on content files (...), M overridden by <other>` | a higher mod gives M of the same files |
-| `cheats: ... N wait for a rebuild` | code cheats new since the build: run the setup again |
+| `mods: <name>: N add-on content files (...), M overridden by <other>` | a higher mod replaces M of these files |
+| `cheats: ... N wait for a rebuild` | code cheats added since the last build: run the setup again |
 
-A developer build without the setup builds code patches and cheats by hand; the commands are in
-[NOTES.md](../NOTES.md) ("Mods and cheats").
+## For developers
+
+The mod loader is in `runtime/mods.c` (finding mods), `runtime/romfs.c` and `runtime/fs_host.c` (serving their files)
+and `runtime/cheats.c` (cheats). `tools/cheats.py` and `tools/exefs_patches.py` build code cheats and patches into the
+game. To build them without the setup, use the commands in [NOTES.md](../NOTES.md) under "Mods and cheats".
