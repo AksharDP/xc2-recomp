@@ -92,7 +92,7 @@
  "ui.clear": "Clear",
  "ui.pick_game": "Choose the base game file",
  "ui.pick_update": "Choose the 3.0.1 update file",
- "ui.pick_dlc": "Choose the add-on content files (select several at once)",
+ "ui.pick_dlc": "Choose add-on content files to add (several at once, or a few at a time)",
  "ui.pick_keys": "Choose prod.keys",
  "ui.pick_dest": "Choose the install folder",
  "ui.type_game": "Game files (NSP, XCI)",

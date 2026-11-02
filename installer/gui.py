@@ -292,10 +292,14 @@ class App:
             types = [(self.cat('ui.type_nsp'), '*.nsp'), (self.cat('ui.type_all'), '*.*')]
         if name == 'keys':
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
-        if name == 'dlc':   # the add-on packs are separate NSPs: pick them together
+        if name == 'dlc':   # the add-on packs are separate NSPs: each pick adds to the list, so they can come in batches
             paths = filedialog.askopenfilenames(title=self.cat(pick_id), filetypes=types)
-            if paths:
-                self.set_dlc([os.path.normpath(p) for p in self.tk.splitlist(paths)])
+            try:   # the result is a tuple, or on some Tk builds one Tcl list string
+                picked = [os.path.normpath(p) for p in (self.tk.splitlist(paths) if paths else ())]
+            except (tk.TclError, TypeError, ValueError) as e:
+                self.form_error.configure(text=f'{self.cat("ui.pick_dlc")}: {e}')
+                return
+            self.set_dlc(self.dlc_files + [p for p in picked if p not in self.dlc_files])
             return
         path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
         if path:
@@ -303,7 +307,8 @@ class App:
 
     def set_dlc(self, paths):
         self.dlc_files = list(paths)
-        self.vars['dlc'].set('; '.join(os.path.basename(p) for p in paths))
+        names = ', '.join(os.path.basename(p) for p in paths)
+        self.vars['dlc'].set(f'({len(paths)}) {names}' if len(paths) > 1 else names)
 
     def clear_dlc(self):
         self.set_dlc([])

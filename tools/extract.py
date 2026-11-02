@@ -190,9 +190,16 @@ def program_ncas(base, update, keys_path):
 
 
 def merge_space(base, update, keys_path):
-    """Bytes merge_update_romfs needs free next to its output, beyond the merged image itself: the two Program NCAs."""
+    """Bytes of the two Program NCAs merge_update_romfs copies out (see merge_need)."""
     _, inputs = program_ncas(base, update, keys_path)
     return inputs[0][1]['size'] + inputs[1][1]['size']
+
+
+def merge_need(ncas):
+    """Free bytes merge_update_romfs needs beside its output, given the size of the two Program NCAs: their copies and
+    the merged image, which holds the base RomFS patched with the update's data and so is never larger than both NCAs
+    together, plus 1 GiB of slack for hactool's own files and the index."""
+    return 2 * ncas + (1 << 30)
 
 
 MERGE_PHASES = {'copy': '  copying the base and update Program NCAs', 'merge': '  merging with hactool',
@@ -226,15 +233,15 @@ def damaged_merge_input(hactool, hactool_keys, environment, base, update, base_n
 def merge_update_romfs(base, update, keys_path, hactool, output, logs, phase=lambda name: say(MERGE_PHASES[name])):
     """extract_update_romfs.merge() without its Darwin-only bounded view of the base: the base Program NCA is copied out.
 
-    Needs room for both Program NCAs (about 17 GB together) and the merged image (about 17 GB). phase(name) is called
-    as each part of MERGE_PHASES starts.
+    Needs room for copies of both Program NCAs and the merged image (merge_need). phase(name) is called as each part of
+    MERGE_PHASES starts.
     """
     if output.exists():
         shutil.rmtree(output)
     tickets, inputs = program_ncas(base, update, keys_path)
     sections = [i for i in range(4) if inputs[1][2][0x400 + i * 512 + 4] == 4]
     require(len(sections) == 1, 'Expected one BKTR section')
-    need = inputs[0][1]['size'] + inputs[1][1]['size'] + 18 * (1 << 30)
+    need = merge_need(inputs[0][1]['size'] + inputs[1][1]['size'])
     require(shutil.disk_usage(output.parent).free > need, f'Need {need / (1 << 30):.0f} GiB free in {output.parent}')
     log_path = logs / f'merge_romfs-{output.parent.name}.log'
     with tempfile.TemporaryDirectory(prefix='update-merge-', dir=output.parent) as tmp:

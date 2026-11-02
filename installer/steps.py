@@ -37,7 +37,6 @@ from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 
 GiB = 1 << 30
 DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, xcx.exe
-EXTRACT_MERGE_NEED = 18 * GiB   # free space tools/extract.py's merge requires beyond the two Program NCAs
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
@@ -393,27 +392,33 @@ class Check(Step):
         return record['size']
 
     def space(self, ctx, ncas):
-        dest_need = temp_need = 0
+        # The steps run one after another and each frees its scratch files before the next starts, so the install
+        # folder needs the largest of the peaks below, not their sum:
+        #   extract  the two Program NCA copies and the merged RomFS beside them (tools/extract.py
+        #            merge_update_romfs, which checks merge_need itself); the copies are deleted afterwards
+        #   dlc      the RomFS, the packs already unpacked and, for a moment, the largest pack's image beside its files
+        #            (tools/xc2_extract.py dlc_romfs deletes the image once unpacked)
+        #   after    the RomFS, every pack and the caches the game writes beside them (DEST_EXTRA)
+        romfs_size = kept = 0
         if ctx.will_run('extract'):
-            # the update is identified after this estimate: the larger RomFS of the supported ones. The merge itself
-            # (tools/extract.py) wants both NCAs plus 18 GiB free, more than the RomFS, so a pass here stays a pass there
+            # the update is identified after this estimate: the larger RomFS of the supported ones
             romfs_size = max(expected_of(ctx, v)['romfs']['size'] for v in SUPPORTED)
-            dest_need += max(romfs_size, EXTRACT_MERGE_NEED) + ncas
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
-            if romfs.is_file():   # a resumed extraction replaces it
-                dest_need -= romfs.stat().st_size
-        if ctx.will_run('prepare') or ctx.will_run('extract'):
-            dest_need += DEST_EXTRA
-        if ctx.will_run('dlc'):   # each pack's RomFS image and its unpacked files exist together for a moment
-            dest_need += 2 * sum(p.stat().st_size for p in dlc_inputs(ctx) if p.is_file())
-        if ctx.will_run('lift') or ctx.will_run('compile'):
-            temp_need += TEMP_NEED
+            if romfs.is_file():   # a resumed extraction deletes it first, which frees its space
+                kept = romfs.stat().st_size
+        extract_peak = extract.merge_need(ncas) - kept if ctx.will_run('extract') else 0
+        packs = [p.stat().st_size for p in dlc_inputs(ctx) if p.is_file()] if ctx.will_run('dlc') else []
+        settled = romfs_size - kept + sum(packs)
+        dlc_peak = settled + max(packs, default=0)
+        after = settled + (DEST_EXTRA if ctx.will_run('prepare') or ctx.will_run('extract') else 0)
+        dest_need = max(extract_peak, dlc_peak, after, 0)
+        temp_need = TEMP_NEED if ctx.will_run('lift') or ctx.will_run('compile') else 0
         dest_free, dest_dev = free_bytes(ctx.dest)
         temp_free, temp_dev = free_bytes(ctx.temp)
         ctx.reporter.log(f'space: install folder needs {dest_need / GiB:.1f} GiB of {dest_free / GiB:.1f} free, '
                          f'temp folder {temp_need / GiB:.1f} GiB of {temp_free / GiB:.1f}')
-        if dest_dev == temp_dev:
-            dest_need += temp_need
+        if dest_dev == temp_dev:   # lift and compile run after extract and dlc, beside what those left
+            dest_need = max(dest_need, max(dlc_peak, after) + temp_need)
             temp_need = 0
         ctx.reporter.emit('space', dest=str(ctx.dest), need=dest_need, free=dest_free, temp=str(ctx.temp),
                           temp_need=temp_need, temp_free=temp_free, same_disk=dest_dev == temp_dev)
