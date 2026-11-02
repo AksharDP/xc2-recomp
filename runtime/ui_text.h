@@ -144,6 +144,31 @@ typedef enum {
     UI_MENU_ACTION_FAILED,    // beside a button whose action did not work (no clipboard, no folder)
     UI_MENU_RESET, UI_MENU_RESET_DESC, UI_MENU_RESET_CONFIRM, UI_MENU_RESET_YES, UI_MENU_RESET_NO,
 
+    // Mods: the player's mods folder (mods.c)
+    UI_MENU_TAB_MODS, UI_MENU_MODS_INSTALLED,
+    UI_MENU_MODS_NONE,           // no mod folder yet: where to unpack one
+    UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
+    UI_MENU_MODS_ROW_DESC,       // printf: files it replaces, files it adds (as of this start)
+    UI_MENU_MODS_OVERRIDDEN,     // printf: files a higher mod serves instead, that mod's name
+    UI_MENU_MODS_MOVE_HINT,
+    UI_MENU_MODS_EMPTY, UI_MENU_MODS_SUBSDK, UI_MENU_MODS_EXEFS_LATER, UI_MENU_MODS_BAD_NAME,
+    UI_MENU_MODS_EXEFS_UNSUPPORTED,  // printf: the file and why
+    UI_MENU_MODS_EXEFS_OTHER,
+    UI_MENU_MODS_EXEFS_ON,           // printf: its ExeFS patch files in use
+    UI_MENU_MODS_REPLACES_BUILTIN,   // printf: its ExeFS patch files in use, the port's own patch sets they turn off
+    UI_MENU_MODS_OTHER_VERSION,  // printf: ExeFS patch files made for another game version, left out
+    UI_MENU_MODS_UNUSED,         // under the switch of a mod the port cannot use
+    UI_MENU_MODS_CHEATS,         // printf: its cheats as read at start
+    UI_MENU_MODS_CHEATS_FILE,    // printf: <build id>.txt, when none were read
+    // the Cheats tab (cheats.c): the file, the kinds of cheat and why one cannot be switched
+    UI_MENU_TAB_CHEATS,
+    UI_MENU_CHEATS_NONE,      // "%s": <build id>.txt
+    UI_MENU_CHEATS_MOD,       // "%s": the mod, "%d": its cheats
+    UI_MENU_CHEATS_UNBUILT,   // code cheats or ExeFS patches wait for the setup to run again
+    UI_MENU_CHEAT_CODE_DESC, UI_MENU_CHEAT_KEY_DESC /* "%s": the buttons */, UI_MENU_CHEAT_DATA_DESC,
+    UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
+    UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
+
     // Performance overlay
     UI_MENU_OV_FPS, UI_MENU_OV_FRAME_MS, UI_MENU_OV_GAME_PCT, UI_MENU_OV_MAX_MS,
     UI_MENU_OV_GPU, UI_MENU_OV_CPU, UI_MENU_OV_RAM, UI_MENU_OV_VRAM, UI_MENU_OV_TEMP, UI_MENU_OV_POWER,

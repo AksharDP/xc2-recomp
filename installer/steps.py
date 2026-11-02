@@ -6,7 +6,8 @@ bundled hactool; lift and compile run the bundled Python on recomp/gen.py and to
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), aoc/<index>/ (the add-on content's RomFS), profile/, xcx.exe
-and its DLLs, romfs-index.bin, xcx_xlate.exe, xcx.ini, xcx-install.json.
+and its DLLs, romfs-index.bin, xcx_xlate.exe, xcx.ini, xcx-install.json, mods/ (the player's, never written) and
+build-cache/ (cheats.status and exefs.status: what of the mods' code the build has, runtime/cheats.c and mods.c).
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
@@ -662,12 +663,58 @@ EMITTED = re.compile(r'^emitted (\d+)/(\d+) chunks')
 DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
 
 
+# The player's mods folder (runtime/mods.c): the Atmosphere cheat files and ExeFS patch files of its mods, the places
+# tools/cheats.py and tools/exefs_patches.py look in (adapted from totk-pc-recomp installer/steps.py @ ab1dee5b, MIT,
+# Copyright (c) 2026 Valiantsin Dzerakh).
+TITLE = '0100E95004038000'
+CHEAT_PLACES = ('cheats', f'atmosphere/contents/{TITLE}/cheats', f'contents/{TITLE}/cheats', f'{TITLE}/cheats')
+EXEFS_PLACES = ('exefs', f'atmosphere/contents/{TITLE}/exefs', f'contents/{TITLE}/exefs', f'{TITLE}/exefs')
+
+
+def cheat_files(ctx):
+    """The Atmosphere cheat files of the mods folder (<dest>/mods/<mod>/cheats/*.txt and the Atmosphere places), for
+    the lift key. All of them: the ones the build reads go by the build id of the installed main, and the keys are
+    computed before Extract runs (runner plan), when a fresh install has no main yet."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    return sorted(f for mod in mods.iterdir() if mod.is_dir() for where in CHEAT_PLACES
+                  for f in ((mod / where).glob('*.txt') if (mod / where).is_dir() else ()))
+
+
+def exefs_files(ctx):
+    """The ExeFS patch files of the mods folder (.ips and .pchtxt in each mod's exefs places and its
+    atmosphere/exefs_patches/<name>/), for the lift key."""
+    mods = ctx.dest / 'mods'
+    if not mods.is_dir():
+        return []
+    out = []
+    for mod in (m for m in mods.iterdir() if m.is_dir()):
+        folders = [mod / w for w in EXEFS_PLACES if (mod / w).is_dir()]
+        patches = mod / 'atmosphere' / 'exefs_patches'
+        folders += [d for d in patches.iterdir() if d.is_dir()] if patches.is_dir() else []
+        out += [f for d in folders for f in d.iterdir() if f.is_file() and f.suffix.lower() in ('.ips', '.pchtxt')]
+    return sorted(out)
+
+
+def exefs_status(ctx):
+    """The build's ExeFS patch status file (tools/exefs_patches.py --status), which runtime/mods.c reads."""
+    return ctx.dest / 'build-cache' / 'exefs.status'
+
+
+def cheats_status(ctx):
+    """The build's cheat status file (tools/cheats.py --status), which runtime/cheats.c reads: in build-cache, not in a
+    mod's own cheats folder, which the player may empty."""
+    return ctx.dest / 'build-cache' / 'cheats.status'
+
+
 class Lift(Step):
     id = 'lift'
     transient = True
 
     def key(self, ctx):
-        return fingerprint('lift-2', ctx.keys['extract'], ctx.layout.recomp)
+        return fingerprint('lift-3', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.tools / 'cheats.py',
+                           ctx.layout.tools / 'exefs_patches.py', *cheat_files(ctx), *exefs_files(ctx))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
@@ -686,11 +733,41 @@ class Lift(Step):
 
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
         table = layout.recomp / PATCHES.format(tag=version_tag(game_version(ctx)))
-        if table.is_file():   # code patch sites the runtime switches (XCX_FPS60 and the like)
-            args += ['--patches', table]
-        code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args, parse)
+        plain = table if table.is_file() else None   # code patch sites the runtime switches (XCX_FPS60 and the like)
+        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
+        # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
+        # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
+        # without them and the setup warns.
+        stages = [('cheats.py', 'patches-cheats.txt', cheats_status(ctx), cheat_files(ctx), 'warn.cheats_skipped'),
+                  ('exefs_patches.py', 'patches-exefs.txt', exefs_status(ctx), exefs_files(ctx), 'warn.exefs_skipped')]
+        patches, skipped = plain, {}
+        for tool, out, status, inputs, warn in stages:
+            status.unlink(missing_ok=True)   # no status: the runtime treats every such file as not built
+            if not inputs:
+                continue
+            code, log = run_tool(ctx, 'lift', layout.tools / tool,
+                                 ['--exefs', ctx.dest / 'exefs', '--mods', ctx.dest / 'mods',
+                                  *(['--patches', patches] if patches else []), '--out', ctx.temp / out,
+                                  '--status', status])
+            if code:
+                status.unlink(missing_ok=True)
+                skipped[warn] = log
+            else:
+                patches = ctx.temp / out
+        code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py',
+                             args + (['--patches', patches] if patches else []), parse)
+        if code and patches != plain:   # a mod's patch the generator refuses: build without the mods' code
+            for tool, out, status, inputs, warn in stages:
+                if inputs and warn not in skipped:
+                    status.unlink(missing_ok=True)
+                    skipped[warn] = log
+            remove(gen)
+            code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py',
+                                 args + (['--patches', plain] if plain else []), parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
+        for warn, log in skipped.items():
+            rep.warning(warn, log=str(log))
         (gen / STAMP).write_text(ctx.keys['lift'] + '\n')
         return {}
 

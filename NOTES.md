@@ -104,6 +104,42 @@ TotK's `prompts` setting rewrites button glyphs in a font. XC2 has no button fon
   the survey of the other layouts, the runtime overlay, a `prompts` setting, and an in-game check on a screen that shows
   `[ML:icon]` text.
 
+## Mods and cheats (ported from TotK Recomp, 2026-11-02)
+
+A `mods` folder next to `xcx.exe` (`XCX_MODS_DIR`) takes mods as emulators take them, one folder per mod: `romfs/`,
+`exefs/` (`.ips`, `.pchtxt`), `cheats/<build id>.txt`, or an SD card mod's `atmosphere/` folder. Order and switches
+are `mods_order` / `mods_disabled` in `xcx.ini` and the menu's Mods tab; cheats switch on the Cheats tab.
+`xcx.exe --probe-mods` checks the scan, order, switches and add-on content lookup without game files.
+
+How XC2 finds a file (measured with `XCX_TRACE=fs` at boot): everything but `stream/` sits in `bf2.arh` / `bf2.ard`.
+For a file of the archive the game reads `bf2.ard` at the archive's offset and never tries a loose `rom:/` path; before
+that it looks the file up in each add-on content pack (`aoc1:/bdat/common.bdat`, ... `aoc99:/...`). It opens a loose
+`rom:/` path only for files the archive lacks (`stream/`, `bdat/jp.bin`, a few effects and maps). So:
+
+| Mod folder | Served over | Use |
+|---|---|---|
+| `<mod>/romfs`, `<mod>/atmosphere/contents/0100E95004038000/romfs` (and `contents/`, `<title>/`) | the base RomFS (`runtime/romfs.c`) | `stream/` music, voices and movies; a whole replaced `bf2.arh` / `bf2.ard` |
+| `<mod>/atmosphere/contents/0100E950040390NN/romfs` (and `contents/`, `<title>/`; NN = pack in hex, 63 = pack 99) | that add-on content pack (`runtime/fs_host.c` `mod_aoc_path`) | files of the archive, as XC2 mods ship them (X2plus: `bdat/` for `...9001`) |
+
+A base `romfs/bdat/common.bdat` is served if asked but XC2 never asks for it, as on an emulator. Add-on content files
+of mods are not listed by `OpenDirectory` on a pack (the game opens them by path).
+
+ExeFS patches and code cheats are lifted into the game: the installer's Lift step runs `tools/cheats.py` and
+`tools/exefs_patches.py` over `<install>/mods` and writes `build-cache/cheats.status` / `exefs.status`, which the
+runtime reads. A developer build does the same by hand:
+
+```powershell
+.venv\Scripts\python tools\cheats.py --exefs build\extracted\v301\exefs --mods build\v301\mods --out build\tmp\p1.txt --status build\v301\build-cache\cheats.status
+.venv\Scripts\python tools\exefs_patches.py --exefs build\extracted\v301\exefs --mods build\v301\mods --patches build\tmp\p1.txt --out build\tmp\p2.txt --status build\v301\build-cache\exefs.status
+.venv\Scripts\python recomp\gen.py --exefs build\extracted\v301\exefs --out generated\v301 --patches build\tmp\p2.txt
+```
+
+Unlike TotK Recomp, the game does not restart into the setup when a mod's code is unbuilt: the log, the Mods tab and
+the Cheats tab say to run the setup again, and such a mod stays off. XC2 3.0.1's main build id is
+`4F5C96E2D97F45AC288BC67613EBEF0A`; cheat files are named `4F5C96E2D97F45AC.txt`. 3.0.0 / 3.0.1 are recent and no
+public 60 fps or resolution patch for them was found; emulator patches for 2.0.0 carry another build id and are listed
+as made for another version.
+
 ## Known issues
 
 ### Probes that need XCX data

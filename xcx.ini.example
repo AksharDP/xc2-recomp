@@ -198,8 +198,25 @@
 # bind_Y = pad:north, key:mouse_l
 
 [files]
-# Folder with RomFS mod files that replace or add game files. Default: none.
+# Folder with RomFS mod files that replace or add game files, listed in its manifest.tsv. Players put their mods into
+# the mods folder instead ([mods]). Default: none.
 # romfs_mods =
+
+[mods]
+# Folder with the player's mods, one subfolder per mod, unpacked as emulators take them: <name>/romfs, <name>/exefs
+# (.ips, .pchtxt), <name>/cheats (<build id>.txt), or an SD card mod's atmosphere folder. An add-on content title's
+# romfs (atmosphere/contents/0100E950040390NN/romfs) goes over that pack: XC2 mods replace archived files (bf2.arh)
+# that way. Code patches and code cheats are built in by the setup. Default: mods next to xcx.exe.
+# mods_dir =
+# Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
+# mods_order =
+# Mods switched off, names separated by |.
+# mods_disabled =
+
+[cheats]
+# One line per cheat of the mods' cheat files; the Cheats tab of the menu writes them. cheat_<hash> = 1 switches a
+# cheat on, the hash being FNV-1a 32 of "<mod folder>/<cheat name>". Default: every cheat off.
+# cheat_0123abcd = 1
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's

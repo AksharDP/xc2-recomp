@@ -75,6 +75,8 @@
  "warn.lang_needs_fonts": "Text in {lang} needs the Switch system fonts, which the installer does not extract; some text may not show.",
  "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
  "warn.kernel_old": "Linux {version} lacks the write tracking the game relies on (6.7 or later); the game may run very slowly. Updating the system fixes this.",
+ "warn.cheats_skipped": "The cheats of the mods folder that change the game's code could not be built; the game installs without them. Details: {log}",
+ "warn.exefs_skipped": "The mods' ExeFS patches (.ips, .pchtxt) could not be built; the game installs without them. Details: {log}",
  "ui.title": "XC2 Setup",
  "ui.version": "version {version}",
  "ui.intro": "Builds a playable Xenoblade Chronicles 2 folder from your own game files. This takes a while and runs once.",

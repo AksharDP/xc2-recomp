@@ -17,13 +17,22 @@
 // XCX_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
+//
+// Player mods (mods.c; adapted from totk-pc-recomp runtime/romfs.c @ ab1dee5b, MIT, Copyright (c) 2026 Valiantsin
+// Dzerakh): the files under each enabled mod's base RomFS root are overlays too, checked by identity only (no hash, no
+// manifest). A path several overlays give is served by one: a player mod higher in the order beats a lower one, any
+// player mod beats the XCX_ROMFS_MODS manifest, which beats romfs-patches (overlay_contest). A mod path that matches a
+// RomFS path only without case is served under the RomFS spelling. The add-on content files of the mods are fs_host.c's
+// (mods_aoc_file).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cfg.h"
 #include "fs.h"
 #include "host.h"
+#include "mods.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
 #include "platform/platform.h"
@@ -38,7 +47,9 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Entry;
 _Static_assert(sizeof(Entry) == 24, "index entry layout");
 
 typedef struct { uint32_t volume, pad; uint64_t file_id, size, write_time, create_time; } Identity;   // no padding
-typedef struct { uint64_t index, size; char *path, *name; Identity id; } Overlay;
+// prio: which overlay serves a path two of them give (the higher); romfs-patches 0, the XCX_ROMFS_MODS manifest 1, a
+// player mod 2 + its distance from the bottom of the order. mod: its index in mods_at + 1, 0 for any other overlay.
+typedef struct { uint64_t index, size; char *path, *name; Identity id; int prio, mod; } Overlay;
 
 static uint8_t *index_bytes;
 static size_t index_size;
@@ -202,7 +213,8 @@ static uint32_t overlay_slot(uint64_t i) {
 }
 
 // ---- overlays
-static void overlay_load(const char *dir) {
+// prio: the Overlay field (0 for the port's own folder, 1 for the XCX_ROMFS_MODS manifest).
+static void overlay_load(const char *dir, int prio) {
     char path[2100];
     need(snprintf(path, sizeof path, "%s/manifest.tsv", dir) < (int)sizeof path, "overlay path");
     FILE *m = fopen(path, "rb");
@@ -256,7 +268,7 @@ static void overlay_load(const char *dir) {
         }
         char *copy = strdup(file), *rel = strdup(name);
         need(copy && rel, "overlay path copy");
-        overlays[noverlay++] = (Overlay){i, size, copy, rel, id};
+        overlays[noverlay++] = (Overlay){i, size, copy, rel, id, prio, 0};
         if (noverlay - first <= 16)
             rt_log("RomFS overlay: %s (%llu bytes) %s", name, size, add ? "is added" : "replaces the original");
     }
@@ -265,6 +277,147 @@ static void overlay_load(const char *dir) {
                                       noverlay - first - 16);
     if (noverlay > first) rt_log("RomFS overlay: %s checked, %zu files, %.1f MiB hashed in %.2f s", dir,
                                  noverlay - first, hashed / 1048576.0, now_s() - t0);
+}
+
+// ---- player mods (mods.c): every file under an enabled mod's base RomFS root, by identity (no hash: a mod may be
+// gigabytes and the player changes it at will; romfs_open still stops on a file that changed after the start)
+static uint32_t *folded;   // RomFS indices sorted by name ignoring ASCII case; built on the first mod path that misses
+
+static int folded_order(const void *a, const void *b) {
+    return strcasecmp(entry_name(entry(*(const uint32_t *)a)), entry_name(entry(*(const uint32_t *)b)));
+}
+
+// The RomFS index of name, or of the RomFS path equal to it but for case (a mod made on Windows, where an emulator's
+// folder lookup ignores case); UINT64_MAX for a path the RomFS lacks.
+static uint64_t index_any_case(const char *name) {
+    uint64_t i = lower(name);
+    if (i < file_count && !strcmp(entry_name(entry(i)), name)) return i;
+    if (!folded) {
+        folded = malloc(file_count * sizeof *folded);
+        need(folded != NULL, "case-folded index");
+        for (uint64_t k = 0; k < file_count; k++) folded[k] = (uint32_t)k;
+        qsort(folded, file_count, sizeof *folded, folded_order);
+    }
+    uint64_t lo = 0, hi = file_count;
+    while (lo < hi) {
+        uint64_t m = lo + (hi - lo) / 2;
+        if (strcasecmp(entry_name(entry(folded[m])), name) < 0) lo = m + 1;
+        else hi = m;
+    }
+    return lo < file_count && !strcasecmp(entry_name(entry(folded[lo])), name) ? folded[lo] : UINT64_MAX;
+}
+
+static void overlay_push(Overlay o) {
+    if (noverlay == overlay_cap) {
+        overlay_cap = overlay_cap ? overlay_cap * 2 : 16;
+        overlays = realloc(overlays, overlay_cap * sizeof *overlays);
+        need(overlays != NULL, "overlay table");
+    }
+    overlays[noverlay++] = o;
+}
+
+typedef struct { int k, prio; const char *dir, *rel; } ModWalk;
+
+static void mod_walk(int k, int prio, const char *dir, const char *rel);
+
+// One entry of a mod's RomFS folder (mod_walk).
+static int mod_walk_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
+    (void)size;
+    const ModWalk *w = ctx;
+    ModInfo *m = mods_at(w->k);
+    char file[4200], path[4200];
+    if (snprintf(file, sizeof file, "%s/%s", w->dir, leaf) >= (int)sizeof file ||
+        snprintf(path, sizeof path, "%s%s%s", w->rel, *w->rel ? "/" : "", leaf) >= (int)sizeof path) {
+        rt_log("mods: %s: path too long under %s; left out", m->name, w->dir);
+        return 1;
+    }
+    if (kind == PLAT_FS_DIR) {
+        mod_walk(w->k, w->prio, file, path);
+        return 1;
+    }
+    if (kind != PLAT_FS_FILE) return 1;
+    if (!romfs_path_valid_relative(path)) {
+        rt_log("mods: %s: %s is not a RomFS path; left out", m->name, path);
+        return 1;
+    }
+    uint64_t i = index_any_case(path);
+    PlatFile *f = open_read(file);
+    if (!f) {
+        rt_log("mods: %s: cannot open %s; left out", m->name, file);
+        return 1;
+    }
+    Identity id = identity_of(f);
+    plat_file_close(f);
+    char *copy = strdup(file), *rp = strdup(i == UINT64_MAX ? path : entry_name(entry(i)));
+    need(copy && rp, "overlay path copy");
+    overlay_push((Overlay){i == UINT64_MAX ? ADDED : i, id.size, copy, rp, id, w->prio, w->k + 1});
+    return 1;
+}
+
+// The files under dir (a mod's RomFS root; rel: the RomFS path of dir, "" at the root) as overlays of mod k.
+static void mod_walk(int k, int prio, const char *dir, const char *rel) {
+    ModWalk w = {k, prio, dir, rel};
+    plat_fs_list(dir, mod_walk_cb, &w);
+}
+
+// What overlays compete on: the RomFS index, an added file's path; the higher prio first.
+static int contest_order(const void *a, const void *b) {
+    const Overlay *x = a, *y = b;
+    if (x->index != y->index) return (x->index > y->index) - (x->index < y->index);
+    int c = x->index == ADDED ? strcmp(x->name, y->name) : 0;
+    return c ? c : y->prio - x->prio;
+}
+
+static const char *owner_name(const Overlay *o) {
+    return o->mod ? mods_at(o->mod - 1)->name : o->prio ? "romfs_mods" : "the port's patches";
+}
+
+// One overlay per path: the highest prio serves it; the others are dropped and counted on their mod.
+static void overlay_contest(void) {
+    if (!noverlay) return;
+    qsort(overlays, noverlay, sizeof *overlays, contest_order);
+    size_t kept = 0;
+    for (size_t k = 0; k < noverlay; k++) {
+        Overlay *o = &overlays[k], *w = kept ? &overlays[kept - 1] : NULL;
+        if (w && w->index == o->index && (o->index != ADDED || !strcmp(w->name, o->name))) {
+            if (o->mod) {
+                ModInfo *m = mods_at(o->mod - 1);
+                m->overridden++;
+                if (!m->overridden_by[0]) snprintf(m->overridden_by, sizeof m->overridden_by, "%s", owner_name(w));
+            } else if (w->mod) {
+                rt_log("RomFS overlay: %s from mod %s replaces the one of %s", o->name, owner_name(w), owner_name(o));
+            }
+            free(o->path);
+            free(o->name);
+            continue;
+        }
+        if (o->mod) {
+            if (o->index == ADDED) mods_at(o->mod - 1)->added++;
+            else mods_at(o->mod - 1)->replaced++;
+        }
+        overlays[kept++] = *o;
+    }
+    noverlay = kept;
+}
+
+static void mods_overlay_init(void) {
+    mods_scan();
+    int n = mods_count();
+    for (int k = 0; k < n; k++) {
+        const ModInfo *m = mods_at(k);
+        // a mod with ExeFS patches the build lacks stays off: half of a mod is worse than none
+        if (m->enabled && (m->kind & MOD_ROMFS) && m->problem == MOD_OK) mod_walk(k, 2 + (n - k), m->romfs, "");
+    }
+}
+
+static void mods_overlay_log(void) {
+    for (int k = 0; k < mods_count(); k++) {
+        const ModInfo *m = mods_at(k);
+        if (!m->enabled || !(m->kind & MOD_ROMFS) || m->problem != MOD_OK) continue;
+        rt_log("mods: %s: %u RomFS files served (%u replaced, %u added), %u overridden%s%s", m->name,
+               m->replaced + m->added, m->replaced, m->added, m->overridden, m->overridden ? " by " : "",
+               m->overridden_by);
+    }
 }
 
 static int overlay_order(const void *a, const void *b) {
@@ -276,7 +429,7 @@ static int added_order(const void *a, const void *b) {
     return strcmp((*(Overlay *const *)a)->name, (*(Overlay *const *)b)->name);
 }
 
-// Number the added files in path order after the RomFS's own (file_count + k); two overlays adding one path stop.
+// Number the added files in path order after the RomFS's own (file_count + k); overlay_contest left one per path.
 static void added_init(void) {
     Overlay **list = NULL;
     for (size_t k = 0; k < noverlay; k++)
@@ -290,8 +443,6 @@ static void added_init(void) {
     added = malloc(nadded * sizeof *added);
     need(added != NULL, "added files");
     for (size_t k = 0; k < nadded; k++) {
-        if (k && !strcmp(list[k]->name, list[k - 1]->name))
-            rt_fatal("RomFS overlay: %s and %s both add %s", list[k - 1]->path, list[k]->path, list[k]->name);
         list[k]->index = file_count + k;
         added[k] = list[k]->name;
     }
@@ -351,7 +502,7 @@ static void heapdef_overlay(void) {
         }
         char *rel = strdup(HEAPDEF);
         need(rel != NULL, "overlay path copy");
-        overlays[noverlay++] = (Overlay){i, out_n, copy, rel, id};
+        overlays[noverlay++] = (Overlay){i, out_n, copy, rel, id, 0, 0};
     }
     rt_log("RomFS overlay: %s (%zu bytes, grown heaps) replaces %s", file, out_n, base ? "the mod's table" : "the original");
     res_heapdef_served();
@@ -368,11 +519,14 @@ static void overlay_init(void) {
     }
     const char *dirs[2] = {patches, cfg_get("XCX_ROMFS_MODS")};
     for (int i = 0; i < 2; i++)
-        if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i]);
+        if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], i);
+    mods_overlay_init();
+    overlay_contest();
+    mods_overlay_log();
     heapdef_overlay();
     added_init();
     if (noverlay) qsort(overlays, noverlay, sizeof *overlays, overlay_order);
-    for (size_t k = 1; k < noverlay; k++)
+    for (size_t k = 1; k < noverlay; k++)   // overlay_contest left one per file; the generated one replaces in place
         if (overlays[k].index == overlays[k - 1].index)
             rt_fatal("RomFS overlay: %s and %s replace the same file %s", overlays[k - 1].path, overlays[k].path,
                      overlays[k].name);
@@ -535,6 +689,7 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     PlatFile *f = NULL;
     if (ov) {
         const Overlay *o = &overlays[ov - 1];
+        fs_trace("rom from an overlay", o->path);
         f = open_read(o->path);
         Identity id;
         if (f) id = identity_of(f);

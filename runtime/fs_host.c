@@ -24,6 +24,7 @@
 
 #include "fs.h"
 #include "host.h"
+#include "mods.h"
 #include "platform/platform.h"
 #include "romfs_path.h"
 
@@ -38,7 +39,7 @@
 enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_AOC };   // M_SAVE: the working copy; M_SAVE_RO: the committed
                                                               // save; M_AOC: add-on content (read-only)
 
-typedef struct { int kind; char name[32]; char root[1024]; } Mount;
+typedef struct { int kind; char name[32]; char root[1024]; int aoc; } Mount;   // aoc: M_AOC's add-on content index
 typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
 typedef struct { char *name; int kind; uint64_t size; } Listed;
 typedef struct { Listed *e; int n, next, mode, used; } Dir;   // the directory's entries at open; used 0 = free
@@ -496,6 +497,7 @@ static uint32_t mount_add(const char *name, int kind, const char *root) {
     }
     if (slot < 0) rt_fatal("fs mount table full");
     mounts[slot].kind = kind;
+    mounts[slot].aoc = 0;
     strcpy(mounts[slot].name, name);
     snprintf(mounts[slot].root, sizeof mounts[slot].root, "%s", root);
     plat_mutex_unlock(&lock);
@@ -654,7 +656,28 @@ static uint32_t mount_aoc(const char *name, int index) {
     if (index <= 0 || index >= AOC_MAX || !aoc_present(index)) return FS_R_TARGET_NOT_FOUND;
     char p[PATH_CAP];
     aoc_dir(index, p, sizeof p);
-    return mount_add(name, M_AOC, p);
+    uint32_t r = mount_add(name, M_AOC, p);
+    plat_mutex_lock(&lock);
+    for (int i = 0; !r && i < NMOUNTS; i++)
+        if (mounts[i].kind == M_AOC && !strcmp(mounts[i].name, name)) mounts[i].aoc = index;
+    plat_mutex_unlock(&lock);
+    return r;
+}
+
+// A player mod's file for an add-on content path (mods.c mods_aoc_file): the game looks a file up in each pack before
+// its base archive, so this is where XC2 mods replace archived files. Into out the host file; 0 when no mod has the
+// path (*is_dir: a folder some mod has files under).
+static int mod_aoc_path(const char *path, char *out, size_t cap, int *is_dir) {
+    const char *colon = path ? strchr(path, ':') : NULL;
+    if (!colon || colon[1] != '/') return 0;
+    size_t n = (size_t)(colon - path);
+    int index = 0;
+    plat_mutex_lock_shared(&lock);
+    for (int i = 0; i < NMOUNTS; i++)
+        if (mounts[i].kind == M_AOC && strlen(mounts[i].name) == n && !strncmp(mounts[i].name, path, n))
+            index = mounts[i].aoc;
+    plat_mutex_unlock_shared(&lock);
+    return index && mods_aoc_file(index, colon + 2, out, cap, is_dir);
 }
 
 typedef struct { int32_t index; uint8_t reserved[0x1c]; } CacheStorageInfo;
@@ -757,9 +780,14 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     fs_trace(mode & FS_OPEN_WRITE ? "write" : "read", path);
     if (!out || !(mode & (FS_OPEN_READ | FS_OPEN_WRITE)) || (mode & ~7)) return FS_R_INVALID_ARGUMENT;
     char p[PATH_CAP];
-    int kind = M_FREE;
+    int kind = M_FREE, is_dir = 0;
     uint32_t r = host_path_kind(path, p, sizeof p, &kind);
     if (r) return r;
+    char m[PATH_CAP];
+    if (kind == M_AOC && mod_aoc_path(path, m, sizeof m, &is_dir) && !is_dir) {
+        memcpy(p, m, sizeof p);
+        fs_trace("read from a mod", m);
+    }
     if (plat_fs_kind(p) != PLAT_FS_FILE) return FS_R_PATH_NOT_FOUND;
     if ((kind == M_SAVE_RO || kind == M_AOC) && (mode & FS_OPEN_WRITE)) return FS_R_UNSUPPORTED_OPEN;
     int save_writer = kind == M_SAVE && (mode & FS_OPEN_WRITE);
@@ -910,7 +938,9 @@ static uint32_t entry_type(int *out, const char *path) {
     uint32_t r = host_path(path, p, sizeof p);
     if (r) return r;
     if (!out) return FS_R_INVALID_ARGUMENT;
-    int kind = plat_fs_kind(p);
+    int kind = plat_fs_kind(p), is_dir = 0;
+    char m[PATH_CAP];
+    if (mod_aoc_path(path, m, sizeof m, &is_dir)) kind = is_dir ? PLAT_FS_DIR : PLAT_FS_FILE;   // a mod's file wins
     if (kind == PLAT_FS_MISSING) return FS_R_PATH_NOT_FOUND;
     *out = kind == PLAT_FS_DIR ? FS_ENTRY_DIRECTORY : FS_ENTRY_FILE;
     return 0;

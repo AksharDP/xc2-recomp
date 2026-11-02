@@ -249,6 +249,50 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RESET_CONFIRM] = "Reset every setting to its default?", [UI_MENU_RESET_YES] = "Reset",
     [UI_MENU_RESET_NO] = "Cancel",
 
+    [UI_MENU_TAB_MODS] = "Mods", [UI_MENU_MODS_INSTALLED] = "Installed mods",
+    [UI_MENU_MODS_NONE] = "No mods yet. Unpack a mod into the mods folder, one folder per mod, as emulators take them "
+                          "(romfs, exefs, cheats, or the atmosphere folder of an SD card mod), then restart the game.",
+    [UI_MENU_MODS_OPEN] = "Open mods folder",
+    [UI_MENU_MODS_OPEN_DESC] = "Shows the folder the game loads mods from. It is created if it is missing.",
+    [UI_MENU_MODS_ROW_DESC] = "Game files it replaces: %u. New files it adds: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u of its files come from %s, which is higher in the list.",
+    [UI_MENU_MODS_MOVE_HINT] = "The top face button or Ctrl+Up moves it up, the left face button or Ctrl+Down moves it "
+                               "down. When two mods change one file, the higher one wins. Changes apply after a "
+                               "restart.",
+    [UI_MENU_MODS_EMPTY] = "This folder has no romfs, exefs or cheats files.",
+    [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main). The port cannot "
+                            "load code modules, so the whole mod stays off.",
+    [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs) and the game was built without these patches. "
+                                 "Run the setup again to build them in; until then the whole mod stays off.",
+    [UI_MENU_MODS_BAD_NAME] = "The folder name contains |, which the mod list uses between names. Rename the folder.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "This mod patches the game code (exefs) in a way the port cannot apply, so the "
+                                       "whole mod stays off. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Its code patches (exefs) are made for another game version.",
+    [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
+                                      "stays off while this mod is on.",
+    [UI_MENU_MODS_OTHER_VERSION] = "%u of its code patch files are made for another game version and are left out.",
+    [UI_MENU_MODS_UNUSED] = "not used",
+    [UI_MENU_MODS_CHEATS] = "Cheats: %d. Switch them on the Cheats tab.",
+    [UI_MENU_MODS_CHEATS_FILE] = "Cheats for this game version are read at start from cheats\\%s in this mod.",
+    [UI_MENU_TAB_CHEATS] = "Cheats",
+    [UI_MENU_CHEATS_NONE] = "No cheats for this game version. A mod's cheats are an Atmosphere cheat file in its "
+                            "cheats folder named after the game's build: %s. Restart the game after adding one.",
+    [UI_MENU_CHEATS_MOD] = "%s: %d cheats",
+    [UI_MENU_CHEATS_UNBUILT] = "Some cheats or code patches of your mods change the game's code and are not built into "
+                               "it. Run the setup again on this folder to build them in.",
+    [UI_MENU_CHEAT_CODE_DESC] = "Changes the game's code. Switches at once.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Changes the game's code while you hold %s. Switches at once.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
+    [UI_MENU_CHEAT_MASTER] = "always on", [UI_MENU_CHEAT_MASTER_DESC] = "The file's master code: it is always on.",
+    [UI_MENU_CHEAT_RESTORE] = "not needed",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "It only writes the game's own code back. Switching a cheat off already does that.",
+    [UI_MENU_CHEAT_REBUILD] = "after the setup",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "This cheat changes the game's code and is new or edited since the game was built. "
+                                   "Run the setup again to build it in.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
+
     [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f ms", [UI_MENU_OV_GAME_PCT] = "game %.0f%%",
     [UI_MENU_OV_MAX_MS] = "max %.1f ms",
     [UI_MENU_OV_GPU] = "GPU", [UI_MENU_OV_CPU] = "CPU", [UI_MENU_OV_RAM] = "RAM", [UI_MENU_OV_VRAM] = "VRAM",
@@ -498,6 +542,49 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RESET] = "Сбросить все настройки", [UI_MENU_RESET_DESC] = "Действует на все вкладки.",
     [UI_MENU_RESET_CONFIRM] = "Сбросить все настройки к значениям по умолчанию?", [UI_MENU_RESET_YES] = "Сбросить",
     [UI_MENU_RESET_NO] = "Отмена",
+
+    [UI_MENU_TAB_MODS] = "Моды", [UI_MENU_MODS_INSTALLED] = "Установленные моды",
+    [UI_MENU_MODS_NONE] = "Модов пока нет. Распакуйте мод в папку mods, каждый мод в свою папку, как их берут "
+                          "эмуляторы (romfs, exefs, cheats или папка atmosphere мода для SD-карты), и перезапустите игру.",
+    [UI_MENU_MODS_OPEN] = "Открыть папку модов",
+    [UI_MENU_MODS_OPEN_DESC] = "Показывает папку, из которой игра загружает моды. Если её нет, она будет создана.",
+    [UI_MENU_MODS_ROW_DESC] = "Заменяет файлов игры: %u. Добавляет новых файлов: %u.",
+    [UI_MENU_MODS_OVERRIDDEN] = "%u его файлов берутся из мода %s, он выше в списке.",
+    [UI_MENU_MODS_MOVE_HINT] = "Верхняя кнопка или Ctrl+Вверх поднимает мод, левая кнопка или Ctrl+Вниз опускает. Если "
+                               "два мода меняют один файл, побеждает верхний. Изменения действуют после перезапуска.",
+    [UI_MENU_MODS_EMPTY] = "В этой папке нет файлов romfs, exefs или cheats.",
+    [UI_MENU_MODS_SUBSDK] = "Этот мод приносит свой код игры (плагин subsdk или заменённый main). Порт не загружает "
+                            "модули кода, поэтому весь мод остаётся выключенным.",
+    [UI_MENU_MODS_EXEFS_LATER] = "Этот мод меняет код игры (exefs), а игра собрана без этих патчей. Запустите установку "
+                                 "ещё раз, чтобы собрать их; до тех пор весь мод остаётся выключенным.",
+    [UI_MENU_MODS_BAD_NAME] = "В имени папки есть символ |, которым список модов разделяет имена. Переименуйте папку.",
+    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Этот мод меняет код игры (exefs) так, как порт применить не может, поэтому мод "
+                                       "остаётся выключенным целиком. %s",
+    [UI_MENU_MODS_EXEFS_OTHER] = "Его патчи кода (exefs) сделаны для другой версии игры.",
+    [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
+    [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
+                                      "который остаётся выключенным, пока мод включён.",
+    [UI_MENU_MODS_OTHER_VERSION] = "Файлов патчей кода для другой версии игры: %u, они пропущены.",
+    [UI_MENU_MODS_UNUSED] = "не используется",
+    [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
+    [UI_MENU_MODS_CHEATS_FILE] = "Читы для этой версии игры читаются при запуске из cheats\\%s в этом моде.",
+    [UI_MENU_TAB_CHEATS] = "Читы",
+    [UI_MENU_CHEATS_NONE] = "Для этой версии игры читов нет. Читы мода — это файл читов Atmosphere в его папке cheats с "
+                            "именем по сборке игры: %s. После добавления перезапустите игру.",
+    [UI_MENU_CHEATS_MOD] = "%s — читов: %d",
+    [UI_MENU_CHEATS_UNBUILT] = "Некоторые читы или патчи кода ваших модов меняют код игры и не собраны в неё. "
+                               "Запустите установку на эту папку ещё раз, чтобы собрать их.",
+    [UI_MENU_CHEAT_CODE_DESC] = "Меняет код игры. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_KEY_DESC] = "Меняет код игры, пока вы держите %s. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_DATA_DESC] = "Пока включён, записывает память игры каждый кадр.",
+    [UI_MENU_CHEAT_MASTER] = "всегда вкл.", [UI_MENU_CHEAT_MASTER_DESC] = "Главный код файла: включён всегда.",
+    [UI_MENU_CHEAT_RESTORE] = "не нужен",
+    [UI_MENU_CHEAT_RESTORE_DESC] = "Он только возвращает исходный код игры. Выключение чита уже делает это.",
+    [UI_MENU_CHEAT_REBUILD] = "после установки",
+    [UI_MENU_CHEAT_REBUILD_DESC] = "Этот чит меняет код игры и появился или изменился после сборки игры. Запустите "
+                                   "установку ещё раз, чтобы собрать его.",
+    [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
+    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
 
     [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f мс", [UI_MENU_OV_GAME_PCT] = "игра %.0f%%",
     [UI_MENU_OV_MAX_MS] = "макс. %.1f мс",

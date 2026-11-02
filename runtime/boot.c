@@ -14,9 +14,11 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "cheats.h"
 #include "fs.h"
 #include "gfx.h"
 #include "kernel.h"
+#include "mods.h"
 #include "nvn_api.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -381,8 +383,10 @@ void rt_boot(void) {
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
     ldr_load(rt_config()->exefs);
     rt_patches_init();
+    mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on
     frame_step_init();
     res_init();
+    cheats_init();   // after the patch sets: a cheat's set follows its setting
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     hostfn_seal();

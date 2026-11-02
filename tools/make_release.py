@@ -102,7 +102,8 @@ LLVM_SKIP_SUFFIXES = {'.idl', '.tlb'}
 
 # tools/ files the installer steps run (and what they import), copied from the repo.
 TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract.py', 'package_select.py', 'romfs_index.py',
-               'xc2_extract.py']   # XC2's Program NCA selection and add-on extraction (package_select.py, installer Dlc)
+               'xc2_extract.py',   # XC2's Program NCA selection and add-on extraction (package_select.py, installer Dlc)
+               'cheats.py', 'exefs_patches.py']   # the mods folder's code cheats and ExeFS patches (installer Lift)
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
