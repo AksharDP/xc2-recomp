@@ -1,0 +1,19 @@
+{
+  "_comment": "Xenoblade Chronicles 2 US 3.0.1 (base 0100E95004038000 + update 0100E95004038800 v1114112), ExeFS taken from the update Program NCA. romfs is the BKTR merge of the base and update RomFS: the archive holds bf2.ard/bf2.arh plus stream/, the game's data lives inside bf2.ard. version is the installer's update name (installer/layout.py SUPPORTED); title_version the NSP's.",
+  "title_id": "0100E95004038800",
+  "base_title_id": "0100E95004038000",
+  "version": "3.0.1",
+  "display_version": "3.0.1",
+  "exefs_sha256": {
+    "main": "73d8d8f12c555f766964860c1ece9608398e8567370796aed16ca2bcf4c6f1ac",
+    "main.npdm": "de6f62edf720ad8099b44be4b4cceba485b504c0dcee1f077435bef565f1aba2",
+    "rtld": "3522d56dda056d4c7ba6f9508d6d1805d9a751b5a189a8700f9714ce06fb6c5a",
+    "sdk": "bbe0ce6e6803d2793165733f1667ebc6eb204ca7d54adb2c8030e4542d22a52c",
+    "subsdk0": "6d5a18e3bdd5a8e1fedd70b9213d3269425c3c8254055d423aecd98179107da4"
+  },
+  "romfs": {
+    "size": 14019660980,
+    "sha256": "248b10019e50f0c5b09258522295f487a25637d9b24226f3e8e00c13d9a99d18"
+  },
+  "title_version": 1114112
+}

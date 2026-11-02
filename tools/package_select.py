@@ -8,7 +8,7 @@ import runpy
 from pathlib import Path
 
 VENDOR = Path(__file__).resolve().parent / 'vendor' / 'macnativegames'
-BASE_TITLE = '0100453019AA8000'
+BASE_TITLE = '0100E95004038000'   # Xenoblade Chronicles 2 (tools/xc2_extract.py BASE_TITLE)
 
 
 def is_bktr(hdr):
@@ -27,19 +27,21 @@ def base_records(records):
 
 
 def program_nca(records, update=False):
-    import extract_exefs
-    return extract_exefs.program_nca(records if update else base_records(records), update=update)
+    """The Program NCA of an XC2 base or update package (tools/xc2_extract.py program_nca; the vendored selector knows
+    XCX's title ids), a combined dump's bundled update dropped for the base."""
+    import xc2_extract
+    return xc2_extract.program_nca(records if update else base_records(records), update=update)
 
 
 def run(path):
-    """Run the script at path as __main__. A vendored script is imported and its main() called instead, after its
-    module's program_nca is replaced: runpy would define a fresh, unreplaced program_nca in __main__."""
+    """Run the script at path as __main__. A vendored script is imported and its main() called instead, after the
+    vendored modules' program_nca is replaced: runpy would define a fresh, unreplaced program_nca in __main__."""
     path = Path(path).resolve()
     if path.parent != VENDOR:
         runpy.run_path(str(path), run_name='__main__')
         return
-    import extract_exefs
-    vendor_program_nca = extract_exefs.program_nca
-    extract_exefs.program_nca = lambda records, update=False: vendor_program_nca(
-        records if update else base_records(records), update=update)
+    import xc2_extract
+    xc2_extract.patch()
+    for name in ('extract_exefs', 'extract_romfs', 'extract_update_romfs'):
+        setattr(importlib.import_module(name), 'program_nca', program_nca)
     importlib.import_module(path.stem).main()

@@ -1,0 +1,14 @@
+{
+  "_comment": "Xenoblade Chronicles 2 base game 1.0.0 (0100E95004038000), ExeFS of the base Program NCA. The installer checks the player's base file against these before it builds from the 3.0.1 update.",
+  "title_id": "0100E95004038000",
+  "base_title_id": "0100E95004038000",
+  "version": 0,
+  "display_version": "1.0.0",
+  "exefs_sha256": {
+    "main": "588f55e3c17d28bdb274a70ca24617417ee54b71128827912377174ea24f8486",
+    "main.npdm": "73bbda471993f537c3f28a9eafbee22fbd6d5a6f835e69dad8c3c3e3c706d6b9",
+    "rtld": "3522d56dda056d4c7ba6f9508d6d1805d9a751b5a189a8700f9714ce06fb6c5a",
+    "sdk": "bbe0ce6e6803d2793165733f1667ebc6eb204ca7d54adb2c8030e4542d22a52c",
+    "subsdk0": "6d5a18e3bdd5a8e1fedd70b9213d3269425c3c8254055d423aecd98179107da4"
+  }
+}

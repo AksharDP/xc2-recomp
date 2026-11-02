@@ -10,6 +10,7 @@ and its DLLs, romfs-index.bin, xcx_xlate.exe, xcx.ini, xcx-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -28,6 +29,7 @@ from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
+import xc2_extract  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory)  # noqa: E402
 from package_select import program_nca  # noqa: E402
 from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
@@ -37,7 +39,9 @@ DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
-PATCHES = 'patches-upd.txt'   # recomp/: code patch sets of 2.0.0 (recomp/patches.py)
+# recomp/patches-<version tag>.txt: the code patch sets of the update (recomp/patches.py). XC2 has none yet, so the lift
+# runs without one; patches-upd.txt beside it is XCX 2.0.0's and must never reach XC2's code.
+PATCHES = 'patches-{tag}.txt'
 XLATE = 'xcx_xlate' + EXE   # the translator's name beside xcx.exe; runtime/gfx_shader.c starts it by this name
 
 
@@ -579,32 +583,30 @@ class Dlc(Step):
             return {'indices': []}
         keys_path = Path(ctx.options.keys)
         keys = load_keys(keys_path)
-        work = ctx.temp / 'dlc'
-        remove(work)
-        work.mkdir(parents=True)
-        hactool_keys = work / 'hactool.keys'
-        hactool_prod_keys(keys_path, hactool_keys)
+        logs = ctx.temp / 'logs'
+        logs.mkdir(parents=True, exist_ok=True)
         indices = []
-        try:
-            for n, path in enumerate(files):
-                rep.progress('dlc', 'extract', n, len(files), 'files')
-                with path.open('rb') as f:
-                    title_id, record = dlc_record(f, path, keys)
-                index = aoc_index(title_id)
-                nca, out = work / f'{index}.nca', dest / 'aoc' / str(index)
-                copy_range(path, record['nca_offset'], record['size'], nca)
-                remove(out)
-                out.parent.mkdir(parents=True, exist_ok=True)
-                code, log = extract.run_hactool([str(ctx.layout.hactool), '-y', '--disablekeywarns', '--suppresskeys',
-                                                 '-k', str(hactool_keys), f'--romfsdir={out}', str(nca)], dict(os.environ))
-                (ctx.temp / 'logs').mkdir(parents=True, exist_ok=True)
-                (ctx.temp / 'logs' / f'dlc-{index}.log').write_text(log, encoding='utf-8')
-                if code or not out.is_dir():
-                    raise InstallError('dlc.extract_failed', path=str(path), log=str(ctx.temp / 'logs' / f'dlc-{index}.log'))
-                rep.log(f'dlc: {path.name} is add-on content {index} ({title_id})')
-                indices.append(index)
-        finally:
-            remove(hactool_keys)
+        for n, path in enumerate(files):
+            rep.progress('dlc', 'extract', n, len(files), 'files')
+            with path.open('rb') as f:
+                title_id, _ = dlc_record(f, path, keys)
+            index = aoc_index(title_id)
+            out, log = dest / 'aoc' / str(index), logs / f'dlc-{index}.log'
+            remove(out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            # XC2's add-on content is encrypted with the title key of the package's ticket, which hactool is not given:
+            # tools/xc2_extract.py dlc_romfs reads the ticket, verifies every IVFC level and unpacks the files loose
+            # into aoc/<index>/ as the runtime mounts them. Its output goes to the log, not to the CLI's event stream.
+            with open(log, 'w', encoding='utf-8', newline='\n') as f, contextlib.redirect_stdout(f):
+                try:
+                    xc2_extract.dlc_romfs(path, keys_path, out)
+                except (ValueError, OSError) as e:
+                    print(f'dlc_romfs failed: {e}')
+                    raise_if_damaged(e, 'dlc', path)
+                    remove(out)
+                    raise InstallError('dlc.extract_failed', path=str(path), log=str(log)) from None
+            rep.log(f'dlc: {path.name} is add-on content {index} ({title_id})')
+            indices.append(index)
         rep.progress('dlc', 'extract', len(files), len(files), 'files')
         return {'indices': sorted(set(indices))}
 
@@ -638,8 +640,8 @@ class Lift(Step):
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
-        table = layout.recomp / PATCHES
-        if table.is_file():   # the 60 fps sites (XCX_FPS60 switches them at run time)
+        table = layout.recomp / PATCHES.format(tag=version_tag(game_version(ctx)))
+        if table.is_file():   # code patch sites the runtime switches (XCX_FPS60 and the like)
             args += ['--patches', table]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args, parse)
         if code:
@@ -708,7 +710,7 @@ class Compile(Step):
 # ---- 5. prepare
 
 class Prepare(Step):
-    """Puts the shader translator beside xcx.exe. XCX has no shader list to translate ahead of play yet: shaders are
+    """Puts the shader translator beside xcx.exe. XC2 has no shader list to translate ahead of play yet: shaders are
     translated on first use and cached in shader-cache/."""
     id = 'prepare'
 

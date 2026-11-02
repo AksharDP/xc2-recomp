@@ -254,9 +254,10 @@ class EventsTest(unittest.TestCase):
         catalog = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
         used = set()
         for path in (ROOT / 'installer').glob('*.py'):
-            used |= set(re.findall(r"InstallError\('([a-z_.]+)'", path.read_text()))
-            used |= set(re.findall(r"warning\('([a-z_.]+)'", path.read_text()))
-            used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", path.read_text())}
+            source = path.read_text(encoding='utf-8')   # gui.py holds non-ASCII text; the code page cannot decode it
+            used |= set(re.findall(r"InstallError\('([a-z_.]+)'", source))
+            used |= set(re.findall(r"warning\('([a-z_.]+)'", source))
+            used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", source)}
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
 
 

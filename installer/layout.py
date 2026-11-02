@@ -36,16 +36,26 @@ from pathlib import Path
 WIN = os.name == 'nt'
 EXE = '.exe' if WIN else ''
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-SUPPORTED = ('2.0.0',)   # updates the installer builds; the check identifies the player's by hash
+SUPPORTED = ('3.0.1',)   # updates the installer builds; the check identifies the player's by hash
 BASE = '1.0.0'           # the base game's version, checked by hash too
-GAME_EXE = 'xcx' + EXE   # the game's name in the install folder
-APP_ID = 0x0100453019AA8000   # XCX DE; its add-on content has title ids APP_ID + 0x1000 + index
-TOOLS_FALLBACK = Path(__file__).resolve().parent.parent.parent.parent / 'totk-pc-recomp'
+GAME_EXE = 'xcx' + EXE   # the game's name in the install folder (the runtime and build keep XCX Recomp's file names)
+APP_ID = 0x0100E95004038000   # Xenoblade Chronicles 2; its add-on content has title ids APP_ID + 0x1000 + index
+
+
+def tools_fallback():
+    """An unpacked XCX-Setup release folder whose python/, llvm/ and bin/ dev mode borrows when the repository has no
+    toolchain of its own: XC2_SETUP_TOOLS, else the newest XCX-Setup-* under ../tools/xcx-setup beside the
+    repository."""
+    env = os.environ.get('XC2_SETUP_TOOLS')
+    if env:
+        return Path(env)
+    found = sorted((Path(__file__).resolve().parent.parent.parent / 'tools' / 'xcx-setup').glob('XCX-Setup-*'))
+    return found[-1] if found else Path('XC2_SETUP_TOOLS-not-set')
 
 
 def version_tag(version):
-    """'2.0.0' -> 'upd': the version name of build_game.py (its generated/ and build/ folders)."""
-    return 'upd'
+    """'3.0.1' -> 'v301': the version name of build_game.py (its generated/ and build/ folders)."""
+    return 'v' + version.replace('.', '')
 
 
 @dataclass(frozen=True)
@@ -74,7 +84,7 @@ class Layout:
 
     def expected(self, version):
         """The expected hashes of the base game (BASE) or an update."""
-        return self.tools / 'data' / f'expected-xcx-{version}.json'
+        return self.tools / 'data' / f'expected-xc2-{version}.json'
 
     def missing(self):
         """Paths the steps need that do not exist."""
@@ -128,8 +138,8 @@ def dev_layout(root):
     trees = sorted(p.parent.parent for p in (root / 'toolchain').glob('llvm-mingw-*/llvm-mingw-*/bin/clang' + EXE))
     deps = root / 'toolchain' / 'deps-mingw'
     semver = (root / 'VERSION').read_text(encoding='utf-8').strip()
-    tools = TOOLS_FALLBACK
-    if not trees and is_release(tools):   # no toolchain/: the tools of an unpacked XCX Recomp release
+    tools = tools_fallback()
+    if not trees and is_release(tools):   # no toolchain/: the tools of an unpacked XCX-Setup release
         return Layout(
             root=root, dev=True, release=f'{semver}-dev+{commit or "unknown"}',
             python=tools / 'python' / ('python' + EXE),
@@ -137,7 +147,7 @@ def dev_layout(root):
             llvm=tools / 'llvm', deps=tools / 'runtime' / 'deps', runtime=root / 'runtime',
             runtime_lib=root / 'build' / 'install-rtlib' / 'libxcxrt.a',
             ninja=tools / 'bin' / ('ninja' + EXE), hactool=tools / 'bin' / ('hactool' + EXE),
-            xlate=tools / 'bin' / ('totk_xlate' + EXE), dlls=release_dlls(tools),
+            xlate=tools / 'bin' / ('xcx_xlate' + EXE), dlls=release_dlls(tools),
             ini_example=root / 'xcx.ini.example', temp=root / 'build' / 'install-temp')
     return Layout(
         root=root, dev=True, release=f'{semver}-dev+{commit or "unknown"}',

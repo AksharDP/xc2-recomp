@@ -1,8 +1,8 @@
 """Assemble the release folder of docs/installer.md ("Release layout") from pinned downloads.
 
-    .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XCX-Setup [--zip build/release/XCX-Setup-<version>-windows.zip]
-    .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XCX-Setup --from ..\\..\\totk-pc-recomp
-    .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XCX-Setup --prove
+    .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XC2-Setup [--zip build/release/XC2-Setup-<version>-windows.zip]
+    .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XC2-Setup --from ..\\tools\\xcx-setup\\XCX-Setup-0.1.11
+    .venv-py314\\Scripts\\python tools\\make_release.py --out build/release/XC2-Setup --prove
 
 Needs Python 3.14 (tarfile reads the MSYS2 .zst packages), uv on PATH and network access on the first run. Downloads are
 cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismatch stops the build. The folder holds:
@@ -17,15 +17,15 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xcx.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626 (VERSION alone outside a git checkout); the
                installer's release string
-    XCX-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
+    XC2-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
 
 --from DIR takes python/, llvm/, runtime/deps/, bin/ and licenses/ from an unpacked earlier release (an XCX Recomp
 release, or the TotK Recomp release whose bin/totk_xlate.exe is the same translator) instead of downloading and
 unpacking them; runtime/, the sources and the launcher are still built from this checkout.
 
---prove compiles generated/upd and links build/release-check/xcx.exe with nothing but the folder's python/, llvm/,
+--prove compiles generated/v301 and links build/release-check/xcx.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there. It needs a
-generated/upd and build/extracted/upd from the usual game build (they are read, nothing is written to them).
+generated/v301 and build/extracted/v301 from the usual game build (they are read, nothing is written to them).
 
 The folder contains nothing derived from the game: check_content runs over it before the script finishes. Then the
 folder's own python runs a check-only installer pass (no game files: it must get through the release, toolchain and host
@@ -105,8 +105,8 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
-VERSION_TAG = 'upd'   # installer/layout.py version_tag: the generated/ and build/extracted/ name of 2.0.0
-EXPECTED = 'expected-xcx-2.0.0.json'
+VERSION_TAG = 'v301'   # installer/layout.py version_tag: the generated/ and build/extracted/ name of 3.0.1
+EXPECTED = 'expected-xc2-3.0.1.json'
 PROBES = ['--probe-kernel', '--probe-vkexec', '--probe-nvn-tex', '--probe-shader']
 
 
@@ -432,7 +432,7 @@ def build_launcher(out, llvm):
     run([llvm / 'bin' / 'llvm-windres.exe', '-I', ROOT / 'runtime', '-O', 'coff',
          ROOT / 'installer' / 'launcher' / 'launcher.rc', '-o', res], env=env)
     run([llvm / 'bin' / 'clang.exe', '-O2', '-mwindows', '-Wall', '-Wl,-s', '-I', work,
-         ROOT / 'installer' / 'launcher' / 'launcher.c', res, '-o', out / 'XCX-Setup.exe'], env=env)
+         ROOT / 'installer' / 'launcher' / 'launcher.c', res, '-o', out / 'XC2-Setup.exe'], env=env)
 
 
 # ---- checks ----------------------------------------------------------------------------------------------------------
