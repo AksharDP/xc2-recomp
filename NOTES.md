@@ -106,6 +106,8 @@ TotK's `prompts` setting rewrites button glyphs in a font. XC2 has no button fon
 
 ## Mods and cheats (ported from TotK Recomp, 2026-11-02)
 
+How players install and make mods: [docs/mods.md](docs/mods.md). The notes below are the implementation's.
+
 A `mods` folder next to `xcx.exe` (`XCX_MODS_DIR`) takes mods as emulators take them, one folder per mod: `romfs/`,
 `exefs/` (`.ips`, `.pchtxt`), `cheats/<build id>.txt`, or an SD card mod's `atmosphere/` folder. Order and switches
 are `mods_order` / `mods_disabled` in `xcx.ini` and the menu's Mods tab; cheats switch on the Cheats tab.
