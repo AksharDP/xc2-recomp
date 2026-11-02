@@ -564,6 +564,41 @@ static const char *pad_layout_note(void) {
     return note;
 }
 
+// The action a key presses, or -1: the walk key is a key of its own, but Shift is B in the default bindings, and a
+// walk key that also presses something walks and does that something at the same time. The bindings come from a
+// snapshot, and every key of an action is looked at: binds_refresh rebuilds the live table on the polling thread while
+// the menu draws, and an action may hold more than the two keys its cells show.
+static int key_action(const InputMap *m, int key) {
+    for (int a = 0; a < ACTION_COUNT; a++) {
+        uint8_t keys[INPUT_BINDING_MAX];
+        int n = input_map_keys_of(m, a, keys, INPUT_BINDING_MAX);
+        for (int i = 0; i < n; i++)
+            if (keys[i] == key) return a;
+    }
+    return -1;
+}
+
+// The walk key as the handful of keys a player is likely to pick. "none" rather than an empty value closes it: an
+// unset key falls back to the default in the settings table, the same as a fresh installation. xcx.ini takes any name
+// input_map.c knows (walks of the keyboard sticks, not of the gamepad). A key the current bindings also use says which
+// action it presses.
+static void row_walk_key(void) {
+    static const char *const keys[] = {"none", "lshift", "lalt", "lctrl", "tab", "capslock"};
+    const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "Shift", "Alt", "Ctrl", "Tab", "Caps Lock"};
+    const char *cur = cfg_value("XCX_WALK_KEY");
+    static char note[64];
+    const char *n = nullptr;
+    InputMap m;
+    input_map_snapshot(&m);
+    for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
+        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
+        int a = key_action(&m, k);
+        if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
+    }
+    opt_choice_list("XCX_WALK_KEY", UI_MENU_WALK_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_WALK_KEY_DESC,
+                    -1, n);
+}
+
 static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX};
@@ -572,7 +607,20 @@ static void tab_controls(float scale) {
     opt_slider("XCX_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("XCX_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
     opt_toggle("XCX_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
+    // One row per stick, falling back to XCX_STICK_DEADZONE (both sticks) while unset. With a gamepad connected each
+    // row shows its stick's deflection now, before the dead zone: a drifting stick's resting value, to set it above.
+    double now[2];
+    bool pad = input_pad_stick_percent(now) != 0;
+    static char stick_note[2][64];
+    for (int s = 0; s < 2; s++)
+        snprintf(stick_note[s], sizeof stick_note[s], menu_text(UI_MENU_STICK_DEADZONE_NOW), now[s]);
+    opt_slider("XCX_LSTICK_DEADZONE", UI_MENU_LSTICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%",
+               pad ? stick_note[0] : nullptr, "XCX_STICK_DEADZONE");
+    opt_slider("XCX_RSTICK_DEADZONE", UI_MENU_RSTICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%",
+               pad ? stick_note[1] : nullptr, "XCX_STICK_DEADZONE");
     opt_slider("XCX_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
+    row_walk_key();
+    opt_slider("XCX_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     binds_rows(scale);
     opt_end();
     binds_after_page();

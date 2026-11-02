@@ -34,11 +34,14 @@ enum {
 };
 
 // Gamepad inputs by position (Nintendo layout, as SDL names them), platform-neutral like the key ids. ZL and ZR are the
-// analog triggers; input_win.c translates SDL buttons and axes to these (one place).
+// analog triggers; input.c translates SDL buttons and axes to these (one place). The paddles are the back buttons of
+// an Xbox Elite, DualSense Edge or Steam Controller (SDL's LEFT_PADDLE1 and so on); no Switch button has them by
+// default, a bind line or the remapping rows add them.
 enum {
     PAD_NONE = 0,
     PAD_SOUTH, PAD_EAST, PAD_WEST, PAD_NORTH, PAD_LSTICK, PAD_RSTICK, PAD_L, PAD_R, PAD_START, PAD_BACK,
     PAD_DPAD_LEFT, PAD_DPAD_UP, PAD_DPAD_RIGHT, PAD_DPAD_DOWN, PAD_ZL, PAD_ZR,
+    PAD_LPADDLE1, PAD_RPADDLE1, PAD_LPADDLE2, PAD_RPADDLE2,
     PAD_COUNT
 };
 
@@ -91,6 +94,16 @@ void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]);
 // Mouse motion in raw counts over dt_s seconds to right-stick deflection: full deflection at 3000 / sens counts/s.
 // Clamped to the unit circle, up (negative dy) is +y.
 void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]);
+// A gamepad stick (x, y in -32768..32767, up is +y) through a round dead zone of `dead` (fraction of full deflection,
+// 0..0.5): inside the circle the stick reads 0, and the rest of the travel is scaled to start at 0 at the edge, so a
+// drifting stick rests at 0 and full deflection still reaches full. The result stays inside the unit square.
+void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]);
+// The dead zone of gamepad stick 0 (left) or 1 (right) for input_pad_stick, as a fraction of full deflection:
+// XCX_LSTICK_DEADZONE or XCX_RSTICK_DEADZONE when set, else XCX_STICK_DEADZONE (both sticks), percent clamped to 0..50.
+float input_pad_deadzone(int stick);
+// How far a stick (x, y in -32768..32767) is from the centre, in percent of full deflection (100 at an axis's end; a
+// square gate's corner reads more).
+double input_stick_percent(int32_t x, int32_t y);
 
 // ---- the remapping rows' edits, on a copy of input_map. Pure.
 // action's keys (table order) / its gamepad buttons in layout, at most max; returns how many.

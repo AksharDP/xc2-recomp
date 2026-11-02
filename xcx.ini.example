@@ -161,8 +161,22 @@
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # pad_layout = auto
+# Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
+# the stick reads centred, and the rest of its travel is scaled to start there.
+# stick_deadzone = 8
+# The dead zone of one stick, in place of stick_deadzone for that stick (0 to 50; unset = stick_deadzone). The Controls
+# tab shows each stick's deflection now, so a drifting stick's resting value can be read off.
+# lstick_deadzone = 8
+# rstick_deadzone = 8
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
+# keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
+# none (the default) turns it off. walk_scale is 0.2 to 0.9; the default stops just above half because a keyboard
+# sample of 32767 times 0.5 is one short of the 16384 the game's stick-direction bits need. Only the keyboard is
+# scaled: the mouse camera and the gamepad are unchanged. The Controls tab sets both.
+# walk_key = lalt
+# walk_scale = 0.51
 # Write the input of this run to a file that replays as a script (docs/controls.md, "Scripted input"). Default: off.
 # input_record = input.txt
 # Remap buttons: the Controls tab of the settings menu (F1) writes these lines. One line per Switch button or stick
@@ -171,6 +185,7 @@
 # A line replaces that button's defaults (pad and keyboard); buttons without a line keep them. Stick directions take keys
 # only. Invalid entries are logged and skipped. Changes while the game runs take effect at once.
 #   pad names: south east west north l r zl zr start back lstick rstick dpad_left dpad_up dpad_right dpad_down
+#   lpaddle1 rpaddle1 lpaddle2 rpaddle2 (the back buttons of an Xbox Elite, DualSense Edge or Steam Controller)
 #   key names: a-z 0-9 f2-f7 f9 f12 num0-num9 space tab enter backspace lshift rshift lctrl rctrl lalt capslock insert
 #   delete home end pageup pagedown up down left right num_add num_sub num_mul num_div num_decimal minus equals
 #   lbracket rbracket semicolon apostrophe comma period slash backslash grave mouse_l mouse_r mouse_m mouse_x1 mouse_x2

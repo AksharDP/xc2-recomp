@@ -1,4 +1,5 @@
 // --probe-cfg: xcx.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,6 +262,34 @@ int probe_cfg(void) {
     CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
     input_mouse_stick(30, 0, 1.0 / 60, 0, st);
     CHECK(st[0] == 0 && st[1] == 0, "mouse: sensitivity 0 is off");
+    input_pad_stick(3000, -2000, 0.15f, st);
+    CHECK(st[0] == 0 && st[1] == 0, "pad stick: an 11% drift inside a 15% dead zone reads centred");
+    input_pad_stick(4000, -3000, 0, st);
+    CHECK(st[0] == 4000 && st[1] == -3000, "pad stick: dead zone 0 passes the stick unchanged");
+    input_pad_stick(32767, 0, 0.15f, st);
+    CHECK(st[0] == 32767 && st[1] == 0, "pad stick: full deflection still reaches full");
+    input_pad_stick(-32768, -32768, 0.15f, st);
+    CHECK(st[0] < 0 && st[1] < 0 && st[0] >= -32767 && (int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768,
+          "pad stick: a square gate's corner stays on the unit circle");
+    input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
+    CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
+    plat_setenv("XCX_STICK_DEADZONE", "12");
+    plat_setenv("XCX_LSTICK_DEADZONE", NULL);
+    plat_setenv("XCX_RSTICK_DEADZONE", NULL);
+    CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.12f) < 1e-6f,
+          "pad dead zone: both sticks follow stick_deadzone while lstick/rstick are unset");
+    plat_setenv("XCX_RSTICK_DEADZONE", "20");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.20f) < 1e-6f,
+          "pad dead zone: rstick_deadzone sets the right stick alone");
+    plat_setenv("XCX_LSTICK_DEADZONE", "80");
+    CHECK(fabsf(input_pad_deadzone(0) - 0.5f) < 1e-6f, "pad dead zone: clamped to 50%");
+    plat_setenv("XCX_STICK_DEADZONE", NULL);
+    plat_setenv("XCX_LSTICK_DEADZONE", NULL);
+    plat_setenv("XCX_RSTICK_DEADZONE", NULL);
+    CHECK(fabsf(input_pad_deadzone(0) - 0.08f) < 1e-6f, "pad dead zone: 8% by default");
+    CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
+              input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
+          "stick percent: an axis's end is 100%, the centre 0%, round in between");
     // Gamepad layouts (input_map.c)
     CHECK(input_pad_layout_pick("auto", 1) == PAD_LAYOUT_NINTENDO && input_pad_layout_pick(NULL, 0) == PAD_LAYOUT_XBOX,
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");
@@ -279,6 +308,13 @@ int probe_cfg(void) {
           "pad layout: a bind line adds its physical button in every layout");
     CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_SOUTH] = 1}, PAD_LAYOUT_XBOX) == 0,
           "pad layout: a bind line replaces the layout's own button");
+    input_map_reset();
+    CHECK(input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_XBOX) == 0,
+          "pad layout: a back paddle is unbound by default");
+    CHECK(input_map_bind("ZL", "pad:default, pad:rpaddle1") &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_RPADDLE1] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL &&
+              input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_ZL] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_ZL,
+          "bind: pad:rpaddle1 adds a back paddle, pad:default keeps the trigger");
     input_map_reset();
     // Bind lines for stick directions and default parts; the remapping rows' edits (input_map.c)
     memset(dn, 0, sizeof dn);
@@ -362,9 +398,9 @@ int probe_cfg(void) {
         int ok = 0;
         if (!m->values) ok = 1;
         else if (strstr(m->values, "..")) {
-            long lo = strtol(m->values, NULL, 10), hi = strtol(strstr(m->values, "..") + 2, NULL, 10);
+            double lo = strtod(m->values, NULL), hi = strtod(strstr(m->values, "..") + 2, NULL);   // 0.2..0.9 too
             double d = strtod(m->def, NULL);
-            ok = d >= (double)lo && d <= (double)hi;
+            ok = d >= lo && d <= hi;
         } else {
             size_t dl = strlen(m->def);
             for (const char *v = m->values; *v;) {

@@ -73,6 +73,18 @@ Ryujinx's StateUpdater does, and a voice the game stops reporting is released. M
 right energy were 15.6 against 68.0 before, 45.9 against 34.7 after. The 5.1 downmix also took the LFE coefficient for
 the back pair; it now uses {front, centre, LFE, back}.
 
+## Input settings from TotK Recomp (2026-11-02)
+
+Ported from totk-pc-recomp (same lineage, MIT): per-stick round dead zones (`stick_deadzone`, `lstick_deadzone`,
+`rstick_deadzone`, with the live "stick now" reading on the Controls tab), the keyboard walk key (`walk_key`,
+`walk_scale`), bindable back paddles (`pad:lpaddle1` ... `pad:rpaddle2`), the post-menu input gate that also waits for
+the sticks to centre, and `XCX_TEST_PAD` (a virtual SDL gamepad with fixed stick values, for runs without a
+controller). Checked in game with `XCX_TEST_PAD=0,20000,0,0 XCX_HID_TRACE=1`: the game reads the left stick's down bit
+with the default 8 % zone and nothing with `XCX_LSTICK_DEADZONE=30`. The walk key was not driven in game: the Win32
+back end reads keys with `GetAsyncKeyState` while the window is foreground, which a headless run cannot press.
+TotK's `stick_sens` is not ported: it rewrites TotK's camera parameter pack in the RomFS. An XC2 version needs XC2's
+own camera speed data.
+
 ## Known issues
 
 ### Probes that need XCX data

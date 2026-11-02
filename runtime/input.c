@@ -22,7 +22,7 @@
 #include "vk.h"
 #include "platform/platform.h"
 
-enum { STICK_MAX = 32767, STICK_DEAD = 2500, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
+enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static int state;                    // 0 not started, 1 running, -1 disabled or SDL failed
@@ -46,6 +46,8 @@ static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
     [PAD_R] = SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, [PAD_START] = SDL_GAMEPAD_BUTTON_START, [PAD_BACK] = SDL_GAMEPAD_BUTTON_BACK,
     [PAD_DPAD_LEFT] = SDL_GAMEPAD_BUTTON_DPAD_LEFT, [PAD_DPAD_UP] = SDL_GAMEPAD_BUTTON_DPAD_UP,
     [PAD_DPAD_RIGHT] = SDL_GAMEPAD_BUTTON_DPAD_RIGHT, [PAD_DPAD_DOWN] = SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+    [PAD_LPADDLE1] = SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, [PAD_RPADDLE1] = SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,
+    [PAD_LPADDLE2] = SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, [PAD_RPADDLE2] = SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
 };
 
 // XCX_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]" or "<frame> LSTICK|RSTICK <x> <y> [hold]", ORed into the real input.
@@ -233,6 +235,51 @@ static float mouse_sens_get(void) {
     return mouse_sens;
 }
 
+// ---- walk key: the keyboard's stick samples scaled down while a key is held (XCX_WALK_KEY, XCX_WALK_SCALE)
+// A keyboard key is all or nothing, so every keyboard-driven stick sample is +/-32767 and the game only ever sees a
+// full tilt. Holding this key scales those two samples, which gives the half tilt a gamepad gets from its analog range,
+// so the keyboard can walk as well as run. yuzu and eden do the same with their modifier and modifier_scale settings.
+// Only the keyboard is scaled: the gamepad's axes and the mouse camera sample their own values.
+static int walk_key = KEY_NONE;        // XCX_WALK_KEY as a KEY_*, KEY_NONE = off; live (cfg_version)
+static float walk_scale = 0.51f;       // XCX_WALK_SCALE, 0.2 to 0.9; live (cfg_version)
+static unsigned walk_seen = ~0u;
+
+// The ini takes the key names the Controls tab writes; a hand-written line may spell them in any case.
+static int name_matches(const char *name, const char *key) {
+    for (; *name && *key; name++, key++) {
+        unsigned char a = (unsigned char)*name, b = (unsigned char)*key;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return *name == *key;
+}
+
+static void walk_get(void) {
+    unsigned ver = cfg_version();
+    if (ver == walk_seen) return;
+    walk_seen = ver;
+    const char *name = cfg_value("XCX_WALK_KEY");   // "none" (the default) turns the key off
+    int key = KEY_NONE;
+    if (*name && !name_matches(name, "none")) {
+        for (int k = KEY_A; k < KEY_COUNT && key == KEY_NONE; k++)
+            if (input_key_name(k) && name_matches(name, input_key_name(k))) key = k;
+        if (key == KEY_NONE) rt_log("input: walk_key: unknown key '%s', the keyboard sticks keep their full tilt", name);
+    }
+    // 0.51 rather than 0.5: a keyboard sample is 32767, and 32767 * 0.5 = 16383 falls one short of stick_bits'
+    // STICK_DIR (16384), which would leave the game's stick-direction bits clear while the walk key is held. The value
+    // in the settings table carries that default; this code only rejects what the table's range does not allow.
+    const char *sv = cfg_value("XCX_WALK_SCALE");
+    char *end;
+    double d = strtod(sv, &end);
+    double s = end == sv || *end || !(d >= 0.2 && d <= 0.9) ? strtod(cfg_meta("XCX_WALK_SCALE")->def, NULL) : d;
+    if (key != walk_key || (float)s != walk_scale) {
+        walk_key = key;
+        walk_scale = (float)s;
+        rt_log("input: walk key %s, keyboard sticks at %.0f%% of their tilt (mouse and gamepad unchanged)",
+               key != KEY_NONE ? input_key_name(key) : "off", s * 100);
+    }
+}
 
 // The mouse camera as a right-stick sample, held for the whole presented frame. Under `lock`.
 static void mouse_camera(int32_t out[2]) {
@@ -261,9 +308,22 @@ static void mouse_camera(int32_t out[2]) {
     out[1] = held[1];
 }
 
-static int32_t axis(int16_t v) {
-    int32_t a = v < -STICK_MAX ? -STICK_MAX : v;
-    return a > -STICK_DEAD && a < STICK_DEAD ? 0 : a;
+static float stick_dead[2] = {-1, -1};     // input_pad_deadzone of the left and right stick; live (cfg_version)
+static unsigned stick_dead_seen;
+
+static float stick_dead_get(int s) {
+    unsigned ver = cfg_version();
+    if (stick_dead[0] < 0 || ver != stick_dead_seen) {
+        stick_dead_seen = ver;
+        stick_dead[0] = input_pad_deadzone(0);
+        stick_dead[1] = input_pad_deadzone(1);
+    }
+    return stick_dead[s];
+}
+
+// One gamepad stick through the dead zone; SDL's Y grows downwards, the Switch's upwards.
+static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t out[2]) {
+    input_pad_stick(SDL_GetGamepadAxis(pad, ax), -(int32_t)SDL_GetGamepadAxis(pad, ay), dead, out);
 }
 
 // Open the first gamepad when none is open or the open one went away; logs once per change.
@@ -336,12 +396,44 @@ static void binds_refresh(void) {
     input_map_configure();
 }
 
+// XCX_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values
+// (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
+// deflection go through the same mapping and dead zone as a real pad.
+static void test_pad_attach(void) {
+    static SDL_Joystick *joy;   // kept open: a virtual joystick's axes are set through an open handle
+    const char *e = cfg_get("XCX_TEST_PAD");
+    int v[4];
+    if (!e || !*e) return;
+    if (sscanf(e, "%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3]) != 4) {
+        rt_log("input: XCX_TEST_PAD=%s is not <lx>,<ly>,<rx>,<ry>; no test gamepad", e);
+        return;
+    }
+    SDL_VirtualJoystickDesc d;
+    SDL_INIT_INTERFACE(&d);
+    d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    d.name = "XC2 test gamepad";
+    SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
+    joy = id ? SDL_OpenJoystick(id) : NULL;
+    if (!joy) {
+        rt_log("input: test gamepad not attached (%s)", SDL_GetError());
+        return;
+    }
+    static const SDL_GamepadAxis axes[4] = {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX,
+                                            SDL_GAMEPAD_AXIS_RIGHTY};
+    for (int i = 0; i < 4; i++)
+        SDL_SetJoystickVirtualAxis(joy, axes[i], (Sint16)(v[i] < -32768 ? -32768 : v[i] > 32767 ? 32767 : v[i]));
+    rt_log("input: test gamepad attached, sticks at %d,%d %d,%d", v[0], v[1], v[2], v[3]);
+}
+
 static void start(void) {
     binds_refresh();
     const char *e = cfg_get("XCX_INPUT");
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (XCX_INPUT=none)"); return; }
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
+    if (state == 1) test_pad_attach();
     if (state == 1) {
         scan_pads();
         if (!pad) rt_log("input: no gamepad (keyboard only until one is connected)");
@@ -369,6 +461,7 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
     pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
     pd[PAD_ZR] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
+    for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);   // false without paddles
     return 1;
 }
 
@@ -378,11 +471,24 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
-    sl[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
-    sl[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
-    sr[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
-    sr[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+    stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
+    stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
+}
+
+int input_pad_stick_percent(double pct[2]) {
+    int ok = 0;
+    pct[0] = pct[1] = 0;
+    plat_mutex_lock(&lock);
+    if (state == 1 && pad && SDL_GamepadConnected(pad)) {   // the game's poll keeps the state fresh (SDL_UpdateGamepads)
+        pct[0] = input_stick_percent(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX),
+                                     SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));
+        pct[1] = input_stick_percent(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX),
+                                     SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));
+        ok = 1;
+    }
+    plat_mutex_unlock(&lock);
+    return ok;
 }
 
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
@@ -410,9 +516,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             was_captured = cap;
             b |= input_map_buttons(down);
             int32_t k[2];
+            walk_get();
+            int walk = walk_key != KEY_NONE && down[walk_key];
             input_map_stick(down, 0, k);
+            if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sl[0], &sl[1], k[0], k[1]);
             input_map_stick(down, 1, k);
+            if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
             pick(&sr[0], &sr[1], k[0], k[1]);
             mouse_camera(k);
             pick(&sr[0], &sr[1], k[0], k[1]);
@@ -459,15 +569,20 @@ void input_menu(int open) {
     ikb_cursor_update();
 }
 
-// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held.
-static int blocked(volatile int32_t *flag, uint64_t buttons) {
+// 1 while flag (g_block, g_menu) blocks the game's input; state 2 ends at the first poll with nothing held. A stick
+// axis counts as held as well: with the walk key the keyboard's sticks move part way without setting a direction bit, so
+// a gate that watched the buttons alone would let that movement through the moment the menu or the text entry closes.
+static int blocked(volatile int32_t *flag, uint64_t buttons, const int32_t *axes) {
     int32_t k = *flag;
-    return k && !(k == 2 && !buttons && plat_cas32(flag, 0, 2) == 2);
+    int held = buttons != 0;
+    for (int i = 0; i < 4; i++) held |= axes[i] != 0;
+    return k && !(k == 2 && !held && plat_cas32(flag, 0, 2) == 2);
 }
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
-    int text = blocked(&g_block, *buttons), menu = blocked(&g_menu, *buttons);
+    const int32_t axes[4] = {*lx, *ly, *rx, *ry};
+    int text = blocked(&g_block, *buttons, axes), menu = blocked(&g_menu, *buttons, axes);
     if (!text && !menu) return;
     *buttons = 0; *lx = *ly = *rx = *ry = 0;
 }
