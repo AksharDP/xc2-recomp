@@ -1,4 +1,4 @@
-// --probe-cfg: xcx.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
+// --probe-cfg: xc2.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,33 +29,45 @@ int probe_cfg(void) {
         "Realtime=0\r\n"
         "[Display]\r\n"
         "GPU_name = \"My GPU 1\"\r\n"
-        "XCX_Locale = de-DE\r\n"
+        "XC2_Locale = de-DE\r\n"
+        "XCX_Gpu_index = 2\r\n"
+        "XC2_Upscaler = fsr\r\n"
+        "XCX_Upscaler = bilinear\r\n"
         "lang =\r\n"
         "trace = a\r\n"
         "trace = b\r\n"
         "no_such_setting = 1\r\n"
         "no equals sign\r\n"
         "last = no newline at the end";
-    plat_setenv("XCX_LOCALE", NULL);
-    plat_setenv("XCX_FPS60", NULL);
+    plat_setenv("XC2_LOCALE", NULL);
+    plat_setenv("XC2_FPS60", NULL);
     CHECK(plat_file_write(path, ini, sizeof ini - 1), "write the probe ini");
     CHECK(cfg_load(path) == 1, "load the probe ini");
-    CHECK(EQ(cfg_get("XCX_FPS60"), "0"), "value read, whitespace trimmed, lower-case key");
-    CHECK(EQ(cfg_get("XCX_REALTIME"), "0"), "key without spaces, mixed case");
-    CHECK(EQ(cfg_get("XCX_GPU_NAME"), "My GPU 1"), "quoted value, section ignored");
-    CHECK(EQ(cfg_get("XCX_LOCALE"), "de-DE"), "XCX_ prefix accepted in the file");
-    CHECK(cfg_get("XCX_LANG") == NULL, "empty value is unset");
-    CHECK(EQ(cfg_get("XCX_TRACE"), "b"), "later line wins");
-    CHECK(cfg_get("XCX_CLOTH_REALTIME") == NULL, "absent key is NULL");
-    CHECK(cfg_get("XCX_comment") == NULL, "comment is not a key");
-    CHECK(EQ(cfg_get("XCX_NO_SUCH_SETTING"), "1"), "unknown key is still readable");
+    CHECK(EQ(cfg_get("XC2_FPS60"), "0"), "value read, whitespace trimmed, lower-case key");
+    CHECK(EQ(cfg_get("XC2_REALTIME"), "0"), "key without spaces, mixed case");
+    CHECK(EQ(cfg_get("XC2_GPU_NAME"), "My GPU 1"), "quoted value, section ignored");
+    CHECK(EQ(cfg_get("XC2_LOCALE"), "de-DE"), "XC2_ prefix accepted in the file");
+    CHECK(EQ(cfg_get("XC2_GPU_INDEX"), "2"), "legacy XCX_ prefix accepted in the file");
+    CHECK(EQ(cfg_get("XC2_UPSCALER"), "fsr"), "an XC2_ line in the file beats a later XCX_ line");
+    CHECK(cfg_get("XC2_LANG") == NULL, "empty value is unset");
+    CHECK(EQ(cfg_get("XC2_TRACE"), "b"), "later line wins");
+    CHECK(cfg_get("XC2_CLOTH_REALTIME") == NULL, "absent key is NULL");
+    CHECK(cfg_get("XC2_comment") == NULL, "comment is not a key");
+    CHECK(EQ(cfg_get("XC2_NO_SUCH_SETTING"), "1"), "unknown key is still readable");
+    plat_setenv("XC2_FPS60", "1");
+    CHECK(EQ(cfg_get("XC2_FPS60"), "1"), "environment overrides the file");
+    plat_setenv("XC2_FPS60", NULL);
+    CHECK(EQ(cfg_get("XC2_FPS60"), "0"), "file value returns when the variable is removed");
     plat_setenv("XCX_FPS60", "1");
-    CHECK(EQ(cfg_get("XCX_FPS60"), "1"), "environment overrides the file");
+    CHECK(EQ(cfg_get("XC2_FPS60"), "1"), "legacy XCX_ environment variable is read");
+    plat_setenv("XC2_FPS60", "0");
+    CHECK(EQ(cfg_get("XC2_FPS60"), "0"), "XC2_ environment variable wins over XCX_");
+    plat_setenv("XC2_FPS60", NULL);
     plat_setenv("XCX_FPS60", NULL);
-    CHECK(EQ(cfg_get("XCX_FPS60"), "0"), "file value returns when the variable is removed");
+    CHECK(EQ(cfg_get("XC2_FPS60"), "0"), "both environment variables removed: the file value returns");
     plat_file_delete(path);
     CHECK(cfg_load(path) == 0, "missing file is not an error");
-    CHECK(cfg_get("XCX_FPS60") == NULL, "missing file leaves no keys");
+    CHECK(cfg_get("XC2_FPS60") == NULL, "missing file leaves no keys");
 
     // cfg_set / cfg_save: only changed lines move, comments stay, a missing key goes under its section
     static const char before[] =
@@ -91,18 +103,18 @@ int probe_cfg(void) {
         "\r\n"
         "[audio]\r\n"
         "volume = 40\r\n";
-    plat_setenv("XCX_MOTION", NULL);
-    plat_setenv("XCX_VOLUME", NULL);
-    plat_setenv("XCX_RUMBLE_STRENGTH", NULL);
+    plat_setenv("XC2_MOTION", NULL);
+    plat_setenv("XC2_VOLUME", NULL);
+    plat_setenv("XC2_RUMBLE_STRENGTH", NULL);
     CHECK(plat_file_write(path, before, sizeof before - 1), "write the save ini");
     CHECK(cfg_load(path) == 1, "load the save ini");
     unsigned v0 = cfg_version();
-    cfg_set("XCX_FPS60", "0");
-    cfg_set("XCX_MOTION", "0");
-    cfg_set("XCX_RUMBLE_STRENGTH", "80");
-    cfg_set("XCX_VOLUME", "40");
+    cfg_set("XC2_FPS60", "0");
+    cfg_set("XC2_MOTION", "0");
+    cfg_set("XC2_RUMBLE_STRENGTH", "80");
+    cfg_set("XC2_VOLUME", "40");
     CHECK(cfg_version() == v0 + 4, "cfg_set bumps the version");
-    CHECK(EQ(cfg_get("XCX_FPS60"), "0") && EQ(cfg_get("XCX_VOLUME"), "40"), "cfg_set values are read back at once");
+    CHECK(EQ(cfg_get("XC2_FPS60"), "0") && EQ(cfg_get("XC2_VOLUME"), "40"), "cfg_set values are read back at once");
     CHECK(cfg_save_to(path) == 1, "cfg_save_to writes");
     uint64_t got_n = 0;
     uint8_t *got = plat_file_read(path, &got_n);
@@ -114,16 +126,16 @@ int probe_cfg(void) {
     got = plat_file_read(path, &got_n);
     CHECK(got && got_n == sizeof after - 1 && !memcmp(got, after, got_n), "a save with nothing changed keeps the file");
     free(got);
-    CHECK(cfg_load(path) == 1 && EQ(cfg_get("XCX_FPS60"), "0") && EQ(cfg_get("XCX_MOTION"), "0") &&
-          EQ(cfg_get("XCX_RUMBLE_STRENGTH"), "80") && EQ(cfg_get("XCX_VOLUME"), "40") &&
-          EQ(cfg_get("XCX_ROMFS_MODS"), "C:\\mods"), "the saved file reads back");
-    const char *held = cfg_get("XCX_VOLUME");
-    plat_setenv("XCX_VOLUME", "70");
-    cfg_set("XCX_VOLUME", "90");
-    CHECK(cfg_from_env("XCX_VOLUME") && EQ(cfg_get("XCX_VOLUME"), "70"), "environment wins over cfg_set");
+    CHECK(cfg_load(path) == 1 && EQ(cfg_get("XC2_FPS60"), "0") && EQ(cfg_get("XC2_MOTION"), "0") &&
+          EQ(cfg_get("XC2_RUMBLE_STRENGTH"), "80") && EQ(cfg_get("XC2_VOLUME"), "40") &&
+          EQ(cfg_get("XC2_ROMFS_MODS"), "C:\\mods"), "the saved file reads back");
+    const char *held = cfg_get("XC2_VOLUME");
+    plat_setenv("XC2_VOLUME", "70");
+    cfg_set("XC2_VOLUME", "90");
+    CHECK(cfg_from_env("XC2_VOLUME") && EQ(cfg_get("XC2_VOLUME"), "70"), "environment wins over cfg_set");
     CHECK(EQ(held, "40"), "a pointer cfg_get handed out stays valid after cfg_set");
-    plat_setenv("XCX_VOLUME", NULL);
-    CHECK(!cfg_from_env("XCX_VOLUME") && EQ(cfg_get("XCX_VOLUME"), "90"), "cfg_set value returns without the variable");
+    plat_setenv("XC2_VOLUME", NULL);
+    CHECK(!cfg_from_env("XC2_VOLUME") && EQ(cfg_get("XC2_VOLUME"), "90"), "cfg_set value returns without the variable");
     plat_file_delete(path);
     CHECK(cfg_save_to(path) == 1, "cfg_save_to creates a missing file");
     got = plat_file_read(path, &got_n);
@@ -135,7 +147,7 @@ int probe_cfg(void) {
     CHECK(m && EQ(m->def, "1") && m->live, "meta: fps60 defaults to 1 and is live");
     m = cfg_meta("ASYNC_PREEMPT");
     CHECK(m && EQ(m->values, "0|1|2") && !m->live, "meta: async_preempt takes 0|1|2 and needs a restart");
-    m = cfg_meta("xcx_vk_present");
+    m = cfg_meta("xc2_vk_present");
     CHECK(m && EQ(m->key, "VK_PRESENT") && EQ(m->values, "mailbox|fifo|immediate") && m->live,
           "meta: prefix and case are accepted");
     m = cfg_meta("RUMBLE_STRENGTH");
@@ -145,20 +157,20 @@ int probe_cfg(void) {
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
           "meta: keys the menu does not show are NULL");
 
-    // cfg_reset: the key's active lines leave xcx.ini, the commented example stays
+    // cfg_reset: the key's active lines leave xc2.ini, the commented example stays
     static const char rbase[] = "[audio]\n# volume = 100\n[input]\nmotion = 0\n";
     static const char *const vol[] = {"VOLUME"};
-    plat_setenv("XCX_VOLUME", NULL);
+    plat_setenv("XC2_VOLUME", NULL);
     CHECK(plat_file_write(path, rbase, sizeof rbase - 1), "write the reset ini");
     CHECK(cfg_load(path) == 1, "load the reset ini");
-    cfg_set("XCX_VOLUME", "40");
+    cfg_set("XC2_VOLUME", "40");
     CHECK(cfg_save_to(path) == 1 && cfg_last_save_ok(), "reset: volume saved");
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 40\n"), "reset: the active line is in the file");
     free(got);
     unsigned v1 = cfg_version();
     CHECK(cfg_reset(vol, 1) == 1, "reset: one key reset");
-    CHECK(cfg_version() > v1 && cfg_get("XCX_VOLUME") == NULL, "reset: the value is gone in memory, the version moved");
+    CHECK(cfg_version() > v1 && cfg_get("XC2_VOLUME") == NULL, "reset: the value is gone in memory, the version moved");
     CHECK(cfg_reset(vol, 1) == 0, "reset: a key already reset counts 0");
     CHECK(cfg_save_to(path) == 1, "reset: save");
     got = plat_file_read(path, &got_n);
@@ -166,31 +178,31 @@ int probe_cfg(void) {
           "reset: no active volume line, the commented example and the other keys stay");
     if (got && (got_n != sizeof rbase - 1 || memcmp(got, rbase, got_n))) fprintf(stderr, "---- saved:\n%s\n----\n", got);
     free(got);
-    cfg_set("XCX_VOLUME", "55");
-    CHECK(cfg_reset(vol, 1) == 1 && cfg_get("XCX_VOLUME") == NULL, "reset: a value set after a save resets too");
-    cfg_set("XCX_VOLUME", "60");
-    CHECK(cfg_save_to(path) == 1 && EQ(cfg_get("XCX_VOLUME"), "60"), "reset then set before the save: the set wins");
+    cfg_set("XC2_VOLUME", "55");
+    CHECK(cfg_reset(vol, 1) == 1 && cfg_get("XC2_VOLUME") == NULL, "reset: a value set after a save resets too");
+    cfg_set("XC2_VOLUME", "60");
+    CHECK(cfg_save_to(path) == 1 && EQ(cfg_get("XC2_VOLUME"), "60"), "reset then set before the save: the set wins");
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 60\n"), "reset then set: the new line is written");
     free(got);
 
     // an active line with an empty value has no entry in memory; Reset still removes it from the file
     static const char rempty[] = "[audio]\n# volume = 100\nvolume =\n[input]\nmotion = 0\n";
-    CHECK(plat_file_write(path, rempty, sizeof rempty - 1) && cfg_load(path) == 1 && cfg_get("XCX_VOLUME") == NULL,
+    CHECK(plat_file_write(path, rempty, sizeof rempty - 1) && cfg_load(path) == 1 && cfg_get("XC2_VOLUME") == NULL,
           "reset: load an ini with an empty value");
     CHECK(cfg_reset(vol, 1) == 0 && cfg_save_to(path) == 1, "reset: an empty-valued key saves");
     got = plat_file_read(path, &got_n);
     CHECK(got && got_n == sizeof rbase - 1 && !memcmp(got, rbase, got_n), "reset: the empty-valued line is gone");
     free(got);
-    cfg_set("XCX_VOLUME", "60");
+    cfg_set("XC2_VOLUME", "60");
     CHECK(cfg_save_to(path) == 1, "reset: volume 60 again for the environment case");
 
     // a key the environment sets is skipped and keeps its file line
-    CHECK(cfg_load(path) == 1 && EQ(cfg_get("XCX_VOLUME"), "60"), "reset: reload");
-    plat_setenv("XCX_VOLUME", "70");
+    CHECK(cfg_load(path) == 1 && EQ(cfg_get("XC2_VOLUME"), "60"), "reset: reload");
+    plat_setenv("XC2_VOLUME", "70");
     CHECK(cfg_reset(vol, 1) == 0, "reset: an environment-set key is skipped");
-    plat_setenv("XCX_VOLUME", NULL);
-    CHECK(EQ(cfg_get("XCX_VOLUME"), "60"), "reset: the skipped key keeps its value");
+    plat_setenv("XC2_VOLUME", NULL);
+    CHECK(EQ(cfg_get("XC2_VOLUME"), "60"), "reset: the skipped key keeps its value");
     CHECK(cfg_save_to(path) == 1, "reset: save after a skip");
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 60\n"), "reset: the skipped key keeps its file line");
@@ -198,16 +210,16 @@ int probe_cfg(void) {
 
     // a failed save: the call fails, cfg_last_save_ok says so, the value stays set and a later save works
     CHECK(cfg_last_save_ok() == 1, "save status: ok after a good save");
-    cfg_set("XCX_VOLUME", "20");
+    cfg_set("XC2_VOLUME", "20");
     char bad[1100];
     snprintf(bad, sizeof bad, "%s", path);
     strcpy(plat_last_sep(bad) + 1, "no-such-dir/cfg-probe.ini");
-    CHECK(cfg_save_to(bad) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("XCX_VOLUME"), "20"),
+    CHECK(cfg_save_to(bad) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("XC2_VOLUME"), "20"),
           "save status: an unwritable path fails, the value stays");
-    cfg_set("XCX_VOLUME", "21");
+    cfg_set("XC2_VOLUME", "21");
     CHECK(plat_file_write(path, rbase, sizeof rbase - 1), "write the read-only ini");
     CHECK(plat_file_set_readonly(path, 1), "set the file read-only");
-    CHECK(cfg_save_to(path) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("XCX_VOLUME"), "21"),
+    CHECK(cfg_save_to(path) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("XC2_VOLUME"), "21"),
           "save status: a read-only file fails, cfg_get returns the new value");
     plat_file_set_readonly(path, 0);
     CHECK(cfg_save_to(path) == 1 && cfg_last_save_ok() == 1, "save status: the retry after the failure works");
@@ -273,19 +285,19 @@ int probe_cfg(void) {
           "pad stick: a square gate's corner stays on the unit circle");
     input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
     CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
-    plat_setenv("XCX_STICK_DEADZONE", "12");
-    plat_setenv("XCX_LSTICK_DEADZONE", NULL);
-    plat_setenv("XCX_RSTICK_DEADZONE", NULL);
+    plat_setenv("XC2_STICK_DEADZONE", "12");
+    plat_setenv("XC2_LSTICK_DEADZONE", NULL);
+    plat_setenv("XC2_RSTICK_DEADZONE", NULL);
     CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.12f) < 1e-6f,
           "pad dead zone: both sticks follow stick_deadzone while lstick/rstick are unset");
-    plat_setenv("XCX_RSTICK_DEADZONE", "20");
+    plat_setenv("XC2_RSTICK_DEADZONE", "20");
     CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.20f) < 1e-6f,
           "pad dead zone: rstick_deadzone sets the right stick alone");
-    plat_setenv("XCX_LSTICK_DEADZONE", "80");
+    plat_setenv("XC2_LSTICK_DEADZONE", "80");
     CHECK(fabsf(input_pad_deadzone(0) - 0.5f) < 1e-6f, "pad dead zone: clamped to 50%");
-    plat_setenv("XCX_STICK_DEADZONE", NULL);
-    plat_setenv("XCX_LSTICK_DEADZONE", NULL);
-    plat_setenv("XCX_RSTICK_DEADZONE", NULL);
+    plat_setenv("XC2_STICK_DEADZONE", NULL);
+    plat_setenv("XC2_LSTICK_DEADZONE", NULL);
+    plat_setenv("XC2_RSTICK_DEADZONE", NULL);
     CHECK(fabsf(input_pad_deadzone(0) - 0.08f) < 1e-6f, "pad dead zone: 8% by default");
     CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
               input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
@@ -367,24 +379,24 @@ int probe_cfg(void) {
     CHECK(!strcmp(line, "none"), "edit: a stick direction without keys is none");
     // defaults live in the CfgMeta table: cfg_value and the typed accessors fall back to it
     cfg_load("cfg-probe-missing.ini");
-    plat_setenv("XCX_FPS60", NULL);
-    plat_setenv("XCX_MOUSE_SENS", NULL);
-    plat_setenv("XCX_FREE_CORES", NULL);
-    CHECK(cfg_bool("XCX_FPS60") == 1, "default: unset FPS60 is on");
-    CHECK(EQ(cfg_value("XCX_VK_PRESENT"), "mailbox") && cfg_int("XCX_SPLIT_DRAWS") == 64, "default: text and integer");
-    plat_setenv("XCX_MOUSE_SENS", "2.5");
-    CHECK(cfg_double("XCX_MOUSE_SENS") == 2.5, "double: the environment value");
-    plat_setenv("XCX_MOUSE_SENS", "fast");
-    CHECK(cfg_double("XCX_MOUSE_SENS") == 1.0, "double: a value that does not parse gives the default");
-    plat_setenv("XCX_MOUSE_SENS", NULL);
-    cfg_set("XCX_MOUSE_SENS", "3");
-    CHECK(cfg_double("XCX_MOUSE_SENS") == 3.0 && cfg_int("XCX_MOUSE_SENS") == 3, "a cfg_set value beats the default");
-    CHECK(cfg_bool("XCX_FREE_CORES") == 0, "free_cores unset: off");
-    plat_setenv("XCX_FREE_CORES", "0");
-    CHECK(cfg_bool("XCX_FREE_CORES") == 0, "free_cores 0 gives the same as unset");
-    plat_setenv("XCX_FREE_CORES", "1");
-    CHECK(cfg_bool("XCX_FREE_CORES") == 1, "free_cores 1: on");
-    plat_setenv("XCX_FREE_CORES", NULL);
+    plat_setenv("XC2_FPS60", NULL);
+    plat_setenv("XC2_MOUSE_SENS", NULL);
+    plat_setenv("XC2_FREE_CORES", NULL);
+    CHECK(cfg_bool("XC2_FPS60") == 1, "default: unset FPS60 is on");
+    CHECK(EQ(cfg_value("XC2_VK_PRESENT"), "mailbox") && cfg_int("XC2_SPLIT_DRAWS") == 64, "default: text and integer");
+    plat_setenv("XC2_MOUSE_SENS", "2.5");
+    CHECK(cfg_double("XC2_MOUSE_SENS") == 2.5, "double: the environment value");
+    plat_setenv("XC2_MOUSE_SENS", "fast");
+    CHECK(cfg_double("XC2_MOUSE_SENS") == 1.0, "double: a value that does not parse gives the default");
+    plat_setenv("XC2_MOUSE_SENS", NULL);
+    cfg_set("XC2_MOUSE_SENS", "3");
+    CHECK(cfg_double("XC2_MOUSE_SENS") == 3.0 && cfg_int("XC2_MOUSE_SENS") == 3, "a cfg_set value beats the default");
+    CHECK(cfg_bool("XC2_FREE_CORES") == 0, "free_cores unset: off");
+    plat_setenv("XC2_FREE_CORES", "0");
+    CHECK(cfg_bool("XC2_FREE_CORES") == 0, "free_cores 0 gives the same as unset");
+    plat_setenv("XC2_FREE_CORES", "1");
+    CHECK(cfg_bool("XC2_FREE_CORES") == 1, "free_cores 1: on");
+    plat_setenv("XC2_FREE_CORES", NULL);
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
     for (int i = 0; cfg_meta_at(i); i++) {
@@ -392,7 +404,7 @@ int probe_cfg(void) {
         if (!*m->def) continue;
         listed++;
         char name[96];
-        snprintf(name, sizeof name, "XCX_%s", m->key);
+        snprintf(name, sizeof name, "XC2_%s", m->key);
         plat_setenv(name, "");
         CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
         int ok = 0;

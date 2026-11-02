@@ -13,7 +13,7 @@
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
 // is allocated.
-// XCX_VRAM_HEADROOM=0 turns it off.
+// XC2_VRAM_HEADROOM=0 turns it off.
 
 #include "cfg.h"
 #include "host.h"
@@ -49,7 +49,7 @@ static void VKAPI_PTR on_allocate(VmaAllocator a, uint32_t type, VkDeviceMemory 
 
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void) {
     static const VmaDeviceMemoryCallbacks cb = {.pfnAllocate = on_allocate};
-    H.on = !cfg_get("XCX_VRAM_HEADROOM") || cfg_bool("XCX_VRAM_HEADROOM");
+    H.on = !cfg_get("XC2_VRAM_HEADROOM") || cfg_bool("XC2_VRAM_HEADROOM");
     return H.on ? &cb : NULL;
 }
 
@@ -136,5 +136,5 @@ void vk_headroom_start(void) {
     }
     H.started = 1;
     rt_log("vk: headroom: the next VMA block of each memory type in use is allocated on a background thread "
-           "(XCX_VRAM_HEADROOM=0 turns it off)");
+           "(XC2_VRAM_HEADROOM=0 turns it off)");
 }

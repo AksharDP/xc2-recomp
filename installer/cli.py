@@ -1,7 +1,7 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE [--dlc FILE ...] --lang CODE --dest DIR
                                      [--root DIR] [--temp DIR] [--verify]
 
-A first install needs every option. On a folder with xcx-install.json (resume after a cancel or failure, or update
+A first install needs every option. On a folder with xc2-install.json (resume after a cancel or failure, or update
 with a newer release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed
 only when the extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed,
 2 bad command line, 3 cancelled (Ctrl+C or Ctrl+Break).

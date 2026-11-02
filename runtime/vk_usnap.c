@@ -15,7 +15,7 @@
 // The design follows MacNativeGames' XCX_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
-// with XCX_REPLAY_ASYNC. XCX_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (XCX_AB).
+// with XC2_REPLAY_ASYNC. XC2_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (XC2_AB).
 #include <stdlib.h>
 #include <string.h>
 

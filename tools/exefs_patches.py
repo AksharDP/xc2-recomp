@@ -13,7 +13,7 @@ file's name, a pchtxt file's @nsobid line (trailing zeros may be left out). Offs
 offsets count the NSO header (0x100 bytes) before main's image; a pchtxt offset adds its `@flag offset_shift` first.
 A pchtxt patch line applies between @enabled and @disabled; @stop ends the file.
 
---out gets the --patches file followed by one set per usable file (`mod_<hash>`, switch XCX_MODPATCH_<HASH>, default
+--out gets the --patches file followed by one set per usable file (`mod_<hash>`, switch XC2_MODPATCH_<HASH>, default
 off) and its sites. --status gets one line per file, mods by name, tab separated:
 
   <file hash> <content hash> <kind> <built-in sets> <note>
@@ -32,7 +32,7 @@ A file the rules cannot express is unsupported as a whole: half of a patch is wo
 Standard library, recomp/ and tools/cheats.py only.
 
 Adapted from totk-pc-recomp tools/exefs_patches.py @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh): XC2's
-title id and XCX_ setting names; --patches may be left out (XC2 3.0.1 has no patch table of its own yet).
+title id and XC2_ setting names; --patches may be left out (XC2 3.0.1 has no patch table of its own yet).
 """
 import argparse
 import re
@@ -175,7 +175,7 @@ def builtin_sites(text):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, required=True)
-    ap.add_argument('--mods', type=Path, required=True, help='the mods folder next to xcx.exe')
+    ap.add_argument('--mods', type=Path, required=True, help='the mods folder next to xc2.exe')
     ap.add_argument('--patches', type=Path, help='the patch file so far')
     ap.add_argument('--out', type=Path, required=True, help='the patch file with the mods\' ExeFS patches added')
     ap.add_argument('--status', type=Path, required=True)
@@ -210,7 +210,7 @@ def main():
         if file_sites:
             name = f'mod_{key.lower()}'
             label = f'{mod}/{rel}'.encode('ascii', 'replace').decode()
-            sets.append(f'set {name} XCX_MODPATCH_{key} 0   # {label}')
+            sets.append(f'set {name} XC2_MODPATCH_{key} 0   # {label}')
             for a, repl in sorted(file_sites.items()):
                 sites.append(f'site {name} main {a:x} {m.word(a):08x} {" ".join(f"{w:08x}" for w in repl)}')
                 over += [s for s in builtin.get(a, []) if s not in over]

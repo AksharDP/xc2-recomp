@@ -1,6 +1,6 @@
-// xcx.exe --probe-nvn: the NVN front end and the null back end, called the way the
+// xc2.exe --probe-nvn: the NVN front end and the null back end, called the way the
 // game calls them: through the real nvnp_* procs with a synthetic Cpu (AAPCS64 arguments in x0..x7 and v0..v7), on the
-// guest main thread, on the null back end whatever XCX_GPU says. Checks, in order:
+// guest main thread, on the null back end whatever XC2_GPU says. Checks, in order:
 //   - pool, buffer, texture, sampler, sync and event objects against MacNativeGames' semantics (hle_nvn.c), the
 //     texture storage sizes against the original-SDK goldens of MNG tests/texture_auto_layout/probe.c;
 //   - every op kind recorded through the CommandBuffer procs and parsed back with nvn_op_first/next/payload, and
@@ -8,7 +8,7 @@
 //   - the null back end's CPU-visible side effects (event write and add, counter report, buffer copy, uniform update,
 //     in stream order across handles) landing in guest memory at submit, and not before;
 //   - the proc table: every name of nvn_procs.inc resolves to its own synthetic address, an unknown name to NULL;
-//   - named fatal stubs stop with their name, each in a child process (this executable again, XCX_PROBE_NVN_CHILD).
+//   - named fatal stubs stop with their name, each in a child process (this executable again, XC2_PROBE_NVN_CHILD).
 // The 40 layout goldens themselves are run by --probe-nvn-tex against nvn_tex.c; here four of them go through the procs.
 // Ported in part from MacNativeGames games/totk/tests/texture_auto_layout/probe.c @ b75be8cf (MIT, Copyright (c) 2026
 // jhaizhou; origin d2r-mobile): the golden metadata, which holds no game bytes.
@@ -22,7 +22,7 @@
 #include "nvn_api.h"
 #include "platform/platform.h"
 
-#define CHILD_ENV "XCX_PROBE_NVN_CHILD"
+#define CHILD_ENV "XC2_PROBE_NVN_CHILD"
 
 #define NVN_PROC(n) void nvnp_##n(Cpu *c);
 #include "nvn_procs.inc"
@@ -867,7 +867,7 @@ static void probe_children(void) {
 int probe_nvn(void) {
     const char *child = getenv(CHILD_ENV);
     if (child && *child) return run_as_child(child);
-    // The probe checks the null back end whatever XCX_GPU says; the choice is made once, at the first object call.
+    // The probe checks the null back end whatever XC2_GPU says; the choice is made once, at the first object call.
     ((RtConfig *)rt_config())->gpu = "null";
     nvn_procs_register();
     hostfn_seal();

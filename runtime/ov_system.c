@@ -5,13 +5,13 @@
 // host. Stub rule: queries and initialisation succeed with neutral values, data paths stop with a named fatal.
 //
 // Environment:
-//   XCX_LANG=<Switch language code>   the game's language as given ("ja", "en-GB", "zh-Hant", ...)
-//   XCX_LOCALE=<BCP 47 tag>           else the language for this locale ("pt-BR"), else the Windows user locale;
+//   XC2_LANG=<Switch language code>   the game's language as given ("ja", "en-GB", "zh-Hant", ...)
+//   XC2_LOCALE=<BCP 47 tag>           else the language for this locale ("pt-BR"), else the Windows user locale;
 //                                      a language the game does not ship becomes en-US
-//   XCX_OPERATION_MODE=docked|handheld   operation and performance mode reported to the game (default docked)
-//   XCX_ASSUME_FOCUS=1                GetCurrentFocusState always reports in focus, whatever the window says; the
+//   XC2_OPERATION_MODE=docked|handheld   operation and performance mode reported to the game (default docked)
+//   XC2_ASSUME_FOCUS=1                GetCurrentFocusState always reports in focus, whatever the window says; the
 //                                      window opens without taking focus (gfx_window_win.c), for scripted runs
-//   XCX_SHARED_FONTS=<dir>            nn::pl shared fonts (tools/extract_fonts.py output), default
+//   XC2_SHARED_FONTS=<dir>            nn::pl shared fonts (tools/extract_fonts.py output), default
 //                                      <romfs>/../../firmware/shared-fonts
 #include <ctype.h>
 #include <stdio.h>
@@ -37,15 +37,15 @@ static void need(int ok, const char *what) {
 static const char *caller(Cpu *c, char *buf, int n) { return ldr_describe(c->x[30] - 4, buf, n); }
 
 // ==== nn::oe (services.c)
-// XCX_OPERATION_MODE, read once: 1 handheld (OperationMode 0, PerformanceMode Normal 0), 0 docked (1, Boost 1).
+// XC2_OPERATION_MODE, read once: 1 handheld (OperationMode 0, PerformanceMode Normal 0), 0 docked (1, Boost 1).
 int ov_handheld(void) {
     static volatile int32_t v = -1;
     int32_t h = v;
     if (h < 0) {
-        const char *e = cfg_value("XCX_OPERATION_MODE");
+        const char *e = cfg_value("XC2_OPERATION_MODE");
         if (!strcmp(e, "docked")) h = 0;
         else if (!strcmp(e, "handheld")) h = 1;
-        else rt_fatal("XCX_OPERATION_MODE must be docked or handheld, not '%s'", e);
+        else rt_fatal("XC2_OPERATION_MODE must be docked or handheld, not '%s'", e);
         if (plat_cas32(&v, h, -1) == -1)
             rt_log("oe: operation mode reported to the game: %s", h ? "handheld (performance normal)"
                                                                   : "docked (performance boost)");
@@ -87,17 +87,17 @@ static const char *switch_language(const char *tag) {
     return "en-US";
 }
 
-// The game's language as a Switch language code (XCX_LANG, else XCX_LOCALE, else the Windows user locale).
+// The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale).
 const char *ov_language(void) {
     static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru",
                                         "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
-    const char *code = cfg_get("XCX_LANG");   // no fixed default: XCX_LOCALE or the Windows user locale decides when unset
+    const char *code = cfg_get("XC2_LANG");   // no fixed default: XC2_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
             if (!strcmp(code, codes[i])) return codes[i];
-        rt_fatal("XCX_LANG '%s' is not a Switch language code", code);
+        rt_fatal("XC2_LANG '%s' is not a Switch language code", code);
     }
-    const char *tag = cfg_get("XCX_LOCALE");
+    const char *tag = cfg_get("XC2_LOCALE");
     char sys[85] = "en-US";
     if (!tag || !*tag) {
         if (*plat_user_locale()) snprintf(sys, sizeof sys, "%s", plat_user_locale());
@@ -167,14 +167,14 @@ static void ov_focus_mode(Cpu *c) {
 }
 
 // FocusState GetCurrentFocusState(): 1 in focus, 2 out of focus (nn::oe::FocusState). In focus until the window
-// reports otherwise through oe_set_focus; XCX_ASSUME_FOCUS=1 (unattended runs) pins it to 1. The caller of
+// reports otherwise through oe_set_focus; XC2_ASSUME_FOCUS=1 (unattended runs) pins it to 1. The caller of
 // oe_set_focus also pushes OE_MSG_FOCUS_STATE_CHANGED.
 static volatile int32_t focus_state = 1;
 static int assume_focus(void) {
     static volatile int32_t v = -1;
     int32_t a = v;
     if (a < 0) {
-        const char *e = cfg_get("XCX_ASSUME_FOCUS");
+        const char *e = cfg_get("XC2_ASSUME_FOCUS");
         a = e && atoi(e) ? 1 : 0;
         plat_xchg32(&v, a);
     }
@@ -813,7 +813,7 @@ static void ov_location_updated(Cpu *c) {
 // them from the user's firmware. Each type is read on first use into guest-visible memory as the BFTTF file the pl
 // shared memory holds; Address is 8 bytes past the file start (after the BFTTF header) and Size the decoded font size,
 // as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
-// Address/Size instead of a hang. XCX_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
+// Address/Size instead of a hang. XC2_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
 #define BFTTF_MAGIC 0x7f9a0218u
 static const char *const font_files[SHARED_FONT_TYPES] = {
@@ -822,10 +822,10 @@ static const char *const font_files[SHARED_FONT_TYPES] = {
 static struct { PlatMutex lock; const uint8_t *file[SHARED_FONT_TYPES]; uint64_t size[SHARED_FONT_TYPES]; } fonts;
 
 const char *ov_shared_font_dir(char *buf, size_t n) {
-    const char *e = cfg_get("XCX_SHARED_FONTS");
+    const char *e = cfg_get("XC2_SHARED_FONTS");
     if (e && *e) snprintf(buf, n, "%s", e);
     else {
-        // shared-fonts next to xcx.exe (tools/package_build.py), else the repo's. exe starts empty: plat_exe_path leaves
+        // shared-fonts next to xc2.exe (tools/package_build.py), else the repo's. exe starts empty: plat_exe_path leaves
         // it unwritten when the path does not fit
         char exe[PLAT_PATH_MAX] = "", probe[PLAT_PATH_MAX + 40];
         int len = plat_exe_path(exe, sizeof exe);
@@ -866,7 +866,7 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         FILE *f = fopen(path, "rb");
         if (!f)
             rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (needed for Chinese and Korean text); run "
-                     "tools/extract_fonts.py --firmware <firmware NCA dir> or set XCX_SHARED_FONTS", fn, (long long)t,
+                     "tools/extract_fonts.py --firmware <firmware NCA dir> or set XC2_SHARED_FONTS", fn, (long long)t,
                      caller(c, lr, sizeof lr), path);
         plat_fseek64(f, 0, SEEK_END);
         int64_t len = plat_ftell64(f);

@@ -273,7 +273,7 @@ NVN_API(nvnMemoryPoolBuilderSetStorage) {
 NVN_API(nvnMemoryPoolBuilderSetFlags) { ((pool_builder_t *)arg_p(c, 0))->flags = (uint32_t)arg_x(c, 1); }
 // NVNboolean nvnMemoryPoolInitialize(NVNmemoryPool *p, const NVNmemoryPoolBuilder *b)
 // Pool setup imports, mirrors and maps memory in the back end (the driver, VirtualAlloc): up to 20 ms on the game's
-// loader threads, which held a virtual core through it while job workers waited (XCX_CORE_DIAG). The thread gives
+// loader threads, which held a virtual core through it while job workers waited (XC2_CORE_DIAG). The thread gives
 // the core up, as for any blocking host call.
 NVN_API(nvnMemoryPoolInitialize) {
     NVN_BLOCKING();
@@ -585,12 +585,12 @@ NVN_API(nvnQueueFinish) {
 // the replay, and that frame draws other objects' matrices (phantom rocks, flat far field).
 // The guard makes the producer wait, at its commit point, until the newest submit has been replayed and completed.
 // lod_entered / lod_issued count submits that entered QueueSubmitCommands / reached the back end; lod_fence holds
-// the fence of the last LOD_RING. XCX_LOD_GUARD=0 turns the wait off.
+// the fence of the last LOD_RING. XC2_LOD_GUARD=0 turns the wait off.
 #define LOD_RING 64
 static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 
 // void nvnQueueSubmitCommands(NVNqueue *q, int n, const NVNcommandHandle *handles): replayed on this thread with its
-// core given up (section 2.2), or queued for the replay thread (XCX_REPLAY_ASYNC, vk_backend.c); the newest fence
+// core given up (section 2.2), or queued for the replay thread (XC2_REPLAY_ASYNC, vk_backend.c); the newest fence
 // value is what QueueFenceSync records. With the queue the fence covers replay and GPU, so the LOD guard below waits
 // for both.
 NVN_API(nvnQueueSubmitCommands) {
@@ -623,12 +623,12 @@ NVN_API(nvnQueueSubmitCommands) {
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
     __atomic_store_n(&lod_fence[no % LOD_RING], f, __ATOMIC_RELAXED);
     __atomic_store_n(&lod_issued, no, __ATOMIC_SEQ_CST);
-    // XCX_SUBMIT_WAIT=1, a test for issue 28: the submit returns only once the GPU has run it, so no game thread can
+    // XC2_SUBMIT_WAIT=1, a test for issue 28: the submit returns only once the GPU has run it, so no game thread can
     // rewrite pool memory the GPU still reads. Costs the CPU/GPU overlap.
     static int wait_on = -1;
     if (wait_on < 0) {
-        wait_on = cfg_bool("XCX_SUBMIT_WAIT");
-        if (wait_on) rt_log("nvn: XCX_SUBMIT_WAIT: every submit waits for the GPU to finish it");
+        wait_on = cfg_bool("XC2_SUBMIT_WAIT");
+        if (wait_on) rt_log("nvn: XC2_SUBMIT_WAIT: every submit waits for the GPU to finish it");
     }
     if (wait_on && gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 2000000000ull);
 }
@@ -641,7 +641,7 @@ static void obs_release_read(Cpu *c) {
     if (lr != 0x70008c70c8ull) return;
     static int on = -1;
     if (on < 0) {
-        on = cfg_bool("XCX_LOD_GUARD");
+        on = cfg_bool("XC2_LOD_GUARD");
     }
     if (!on || *(volatile uint8_t *)(uintptr_t)(obj + 0x528) != *(volatile uint8_t *)(uintptr_t)(obj + 0x529)) return;
     uint64_t e = __atomic_load_n(&lod_entered, __ATOMIC_SEQ_CST);

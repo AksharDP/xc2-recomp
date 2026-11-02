@@ -14,7 +14,7 @@ Versions are the ones the build was verified with; newer patch releases are fine
 |---|---|---|---|
 | MSYS2 UCRT64 | clang/lld 23.1.3 | msys2.org installer to `C:\msys64`, packages below | compiling the generated C and the runtime |
 | Visual Studio Build Tools | 2026, C++ workload, Windows SDK 10.0.26100 | winget `Microsoft.VisualStudio.BuildTools` with `--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended` | the linker .NET NativeAOT calls |
-| .NET SDK | 10.0 | winget `Microsoft.DotNet.SDK.10` | the shader translator (`xcx_xlate.exe`) |
+| .NET SDK | 10.0 | winget `Microsoft.DotNet.SDK.10` | the shader translator (`xc2_xlate.exe`) |
 | Vulkan SDK | 1.4.363 | winget `KhronosGroup.VulkanSDK` | validation layers, `vulkaninfo` |
 | uv | 0.13 | standalone installer from astral.sh | the two Python environments |
 | hactool | 1.4.0 @ `1d64a83` | `.venv\Scripts\python tools\build_hactool.py`, see below | NCA and update extraction |
@@ -72,13 +72,13 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    .venv-py314\Scripts\python tools\extract.py
    ```
 
-4. Shader translator (once; no game files). This publishes `build\xlate\xcx_xlate.exe`:
+4. Shader translator (once; no game files). This publishes `build\xlate\xc2_xlate.exe`:
 
    ```powershell
    .venv\Scripts\python tools\build_xlate.py
    ```
 
-5. Lift the modules to C, write the RomFS half of the frame-rate patches, then compile and link `build\<ver>\xcx.exe`:
+5. Lift the modules to C, write the RomFS half of the frame-rate patches, then compile and link `build\<ver>\xc2.exe`:
 
    ```powershell
    .venv\Scripts\python recomp\gen.py --exefs build\extracted\<ver>\exefs --out generated\<ver> --patches recomp\patches-<ver>.txt
@@ -99,22 +99,22 @@ From the repository root, in PowerShell. Every step that depends on the game ver
 
    Without this step the first launch compiles shaders and pipelines during play and stutters until the caches fill.
    The AMD driver keeps its pipeline cache per exe path and holds a limited amount: preparing another build folder can
-   evict this one's. `xcx.exe --warm-shaders` rebuilds it from the shader cache.
+   evict this one's. `xc2.exe --warm-shaders` rebuilds it from the shader cache.
 
 7. Run. Keep the window in the foreground; an unfocused window stalls the game.
 
    ```powershell
-   build\<ver>\xcx.exe
+   build\<ver>\xc2.exe
    ```
 
-Settings live in `xcx.ini` next to `xcx.exe` ([xcx.ini.example](../xcx.ini.example) lists them). Saves go to
+Settings live in `xc2.ini` next to `xc2.exe` ([xc2.ini.example](../xc2.ini.example) lists them). Saves go to
 `build\profile` for `v121` and `build\profile-<ver>` for other versions (`build_game.py --profile` changes it).
 
 ### Portable folder
 
 `.venv\Scripts\python tools\package_build.py --version <ver>` writes `build\<ver>-portable`, which runs on another of
 your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pass `--with-romfs`; otherwise put it in
-`romfs\` next to the exe or point `XCX_ROMFS` at its folder. Run `xcx.exe --prepare-shaders` once in the copied
+`romfs\` next to the exe or point `XC2_ROMFS` at its folder. Run `xc2.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
 ## Linux (in progress)
@@ -138,8 +138,8 @@ Requirements:
   Vulkan Memory Allocator is a single header (AUR `vulkan-memory-allocator`). Without it, `build_game.py` fetches the
   version the Windows release pins (3.4.0) into `toolchain/vma/` on first use and checks its hash.
 
-The steps are the Windows ones with POSIX paths: `.venv/bin/python` in place of `.venv\Scripts\python`, and `xcx` in
-place of `xcx.exe`. `build_game.py` takes clang, lld and Ninja from PATH (or the ones in `<dir>/bin` with
+The steps are the Windows ones with POSIX paths: `.venv/bin/python` in place of `.venv\Scripts\python`, and `xc2` in
+place of `xc2.exe`. `build_game.py` takes clang, lld and Ninja from PATH (or the ones in `<dir>/bin` with
 `--toolchain <dir>`) and links against the system libraries, with `libstdc++` static and an `$ORIGIN` rpath;
 `build_hactool.py` builds `hactool` with make. `tools/prepare_shaders.py` reads the shader list from
 `refs/MacNativeGames` at `origin/HEAD`, which must be the pinned commit with its history (the list format changed later).
@@ -149,11 +149,11 @@ re-protecting imported memory invalidates the driver's userptr buffer on every s
 amdgpu), and importing pins the pages, which drops their write protection. Each CPU-visible pool therefore gets a
 host-visible copy (shadow storage, `runtime/vk_memory.c`): the pages the CPU wrote go in before each submit, and the GPU's
 writes come back at its fence. In play that costs about 0.2 ms a frame and doubles the memory of those pools (about
-1.1 GB). `XCX_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
+1.1 GB). `XC2_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
 well: the shadow copies are chosen for the measured cost above, not for a missing extension.
 
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
-`XCX_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
+`XC2_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
 
 ## Checks
 
@@ -161,7 +161,7 @@ Before a commit:
 
 - `python tools/check_content.py --staged`: nothing game-derived is staged. CI runs the same check;
   `git config core.hooksPath .githooks` runs it before each local commit and refuses pushes to `master` or `main`.
-- `build\<ver>\xcx.exe --selftest`: layout, dispatch table and host-function registry, without game files.
+- `build\<ver>\xc2.exe --selftest`: layout, dispatch table and host-function registry, without game files.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
@@ -176,7 +176,7 @@ change passes these, all run with `.venv`:
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
-Runtime probes, each a mode of `xcx.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
+Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
 `--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes.
 
 Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --translate` extracts every Maxwell shader

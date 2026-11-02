@@ -1,12 +1,12 @@
-"""Report for a XCX_PROFILE sampling profile (runtime/prof_win.c): top functions and the guest/runtime/outside split.
+"""Report for a XC2_PROFILE sampling profile (runtime/prof_win.c): top functions and the guest/runtime/outside split.
 
-usage: prof_report.py <profile> <xcx.map> [--top 40] [--chains 30]
+usage: prof_report.py <profile> <xc2.map> [--top 40] [--chains 30]
 
-The map is the lld one from the link (build/<version>/xcx.map); its addresses are RVAs, the profile header carries the
+The map is the lld one from the link (build/<version>/xc2.map); its addresses are RVAs, the profile header carries the
 runtime image base, so ASLR does not matter. Symbols in the map are labels without sizes: a Rip belongs to the nearest
 symbol at or below it.
 
-A profile taken with XCX_PROFILE_RENDER=1 or XCX_PROFILE_CHAINS=1 also has call chains: the report then adds the inclusive time per
+A profile taken with XC2_PROFILE_RENDER=1 or XC2_PROFILE_CHAINS=1 also has call chains: the report then adds the inclusive time per
 function (a function counted once per chain), and for each module outside the exe the exe functions that call into it
 and the longest common chains down to it.
 """
@@ -56,7 +56,7 @@ def load_profile(path):
 def report_chains(prof, name_of, in_exe, top):
     stacks = prof['stacks']
     total = sum(n for n, _ in stacks) or 1
-    print(f'\ncall chains: {total} samples in {len(stacks)} chains (render thread, or every thread with XCX_PROFILE_CHAINS)')
+    print(f'\ncall chains: {total} samples in {len(stacks)} chains (render thread, or every thread with XC2_PROFILE_CHAINS)')
     incl = collections.Counter()
     for n, chain in stacks:
         for f in set(name_of(r) for r in chain):

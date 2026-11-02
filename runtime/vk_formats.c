@@ -1,7 +1,7 @@
 // NVN format -> VkFormat for the textures of the graphics layer.
 // Ported from the format table of LAS Recomp runtime/nvn/vulkan/textures.c @ da35b83a (MIT, Copyright (c) 2026 Peiikai).
 // Differences from LAS: the table is indexed by the NVNformat values of nvn.h and covers all of them, ASTC decodes to
-// RGBA8 unless the device samples it (vk_astc.c, XCX_ASTC), D24S8 is always D32S8 (no probing: the RX 9070 lacks
+// RGBA8 unless the device samples it (vk_astc.c, XC2_ASTC), D24S8 is always D32S8 (no probing: the RX 9070 lacks
 // it), 3-component formats expand to 4 components, and formats with no Vulkan equivalent are reported with a reason.
 #include <string.h>
 #include "tex.h"
@@ -116,7 +116,7 @@ int tex_vk_format(int nvn_format, TexVkFormat *o) {
         unsigned i = (f - 0x79) % 14;
         int srgb = f >= 0x87;
         o->ideal = srgb ? astc[i].srgb : astc[i].unorm;
-        if (vk_astc_native(o->ideal)) {   // XCX_ASTC auto / native on a device that samples ASTC: raw blocks, like BC
+        if (vk_astc_native(o->ideal)) {   // XC2_ASTC auto / native on a device that samples ASTC: raw blocks, like BC
             o->vk = o->ideal;
             o->note = "native ASTC";
             return 1;
@@ -125,7 +125,7 @@ int tex_vk_format(int nvn_format, TexVkFormat *o) {
         o->astc_bw = astc[i].bw;
         o->astc_bh = astc[i].bh;
         o->astc_srgb = (uint8_t)srgb;
-        o->note = "no native ASTC: decoded to RGBA8 (vk_astc.c compute decoder, or tex_astc.c with XCX_ASTC=cpu)";
+        o->note = "no native ASTC: decoded to RGBA8 (vk_astc.c compute decoder, or tex_astc.c with XC2_ASTC=cpu)";
         return 1;
     }
     if ((f >= 0x51 && f <= 0x68) || f == 0x6B || f == 0x6C) {

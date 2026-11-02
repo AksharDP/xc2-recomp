@@ -1,12 +1,12 @@
 // Adapted from totk-pc-recomp runtime/mods.h @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
-// Player mods (mods.c): one folder per mod under mods/ next to xcx.exe (XCX_MODS_DIR), unpacked as emulators take
+// Player mods (mods.c): one folder per mod under mods/ next to xc2.exe (XC2_MODS_DIR), unpacked as emulators take
 // them: <mod>/romfs, <mod>/exefs and <mod>/cheats, or the Atmosphere layout (atmosphere/contents/<title id>/romfs,
 // atmosphere/exefs_patches/<name>/*.ips). The RomFS of an add-on content title (<title id> 0100E950040390NN, pack NN in
 // hex) goes over that pack: XC2 looks a file up in every add-on content pack before its base archive, which is how XC2
 // mods replace files inside bf2.arh / bf2.ard. ExeFS patch files (.ips, .pchtxt) for the game's main are patch sets the
 // setup builds into the game (tools/exefs_patches.py), switched with their mod (mods_exefs_switch). The list is scanned
-// once at start (romfs.c overlay_init); its order and switches live in xcx.ini [mods] (XCX_MODS_ORDER: names top
-// first, separated by '|'; XCX_MODS_DISABLED: names switched off). The top mod wins a file two mods replace.
+// once at start (romfs.c overlay_init); its order and switches live in xc2.ini [mods] (XC2_MODS_ORDER: names top
+// first, separated by '|'; XC2_MODS_DISABLED: names switched off). The top mod wins a file two mods replace.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -51,12 +51,12 @@ typedef struct {
 } ModInfo;
 
 void mods_scan(void);              // once; later calls return at once
-const char *mods_dir(void);        // the folder scanned (default: <dir of xcx.exe>/mods)
+const char *mods_dir(void);        // the folder scanned (default: <dir of xc2.exe>/mods)
 int mods_count(void);
 ModInfo *mods_at(int i);           // 0 = top of the order; NULL out of range
 // 1 when mod i was on and usable at start: its files are served and its patches switched on until the next start.
 int mods_started(int i);
-// Menu edits (present path). They change the list mods_at shows and write XCX_MODS_ORDER / XCX_MODS_DISABLED with
+// Menu edits (present path). They change the list mods_at shows and write XC2_MODS_ORDER / XC2_MODS_DISABLED with
 // cfg_set; romfs.c used the start state, so they apply at the next start.
 void mods_set_enabled(int i, int on);
 void mods_move(int i, int delta);  // -1 up, +1 down; nothing at the ends

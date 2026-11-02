@@ -1,4 +1,4 @@
-"""In-launch A/B summary of a XCX_AB run (runtime/prof_win.c rt_ab): per perf window of 60 presents wholly in an A or a
+"""In-launch A/B summary of a XC2_AB run (runtime/prof_win.c rt_ab): per perf window of 60 presents wholly in an A or a
 B block, the frame interval and the replay time; their means per frame on each side, and B - A.
 
 usage: ab_summary.py <log> [--skip <seconds>]
@@ -25,7 +25,7 @@ def main():
             continue   # a window across a block edge
         side[1 if b else 0].append((n, float(m.group(2)), float(m.group(3))))
     if not side[0] or not side[1]:
-        print('no whole A and B windows (XCX_AB unset, or the run too short)')
+        print('no whole A and B windows (XC2_AB unset, or the run too short)')
         return 1
     def means(w):   # per frame over the side's frames: each window weighs its frames
         frames = sum(x[0] for x in w)

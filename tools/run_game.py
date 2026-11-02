@@ -1,15 +1,15 @@
 """Run a build of the game headless on a copy of the user's profile with a backed-up save and scripted input.
 
 The user's profile (build/profile) is never written: each run copies it to <exe dir>/prof-<tag>, swaps in the save
-backup, and deletes the copy afterwards. The log records how many other xcx.exe and ninja.exe processes ran, because
+backup, and deletes the copy afterwards. The log records how many other xc2.exe and ninja.exe processes ran, because
 timings taken next to them are not comparable.
 
-    python tools/run_game.py build/v143 --save <backup> --seconds 15 --tag idle --env XCX_TRACE=perf
+    python tools/run_game.py build/v143 --save <backup> --seconds 15 --tag idle --env XC2_TRACE=perf
     python tools/run_game.py build/v143 --save <backup> --script <input.txt> --seconds 18 --tag fight --quiet \
-        --env XCX_TRACE=perf,sched
+        --env XC2_TRACE=perf,sched
 
 <backup> is a folder of build/save-backup; --script defaults to tools/input/load_save.txt (title screen to the first
-save slot), and a recording made with XCX_INPUT_RECORD replays the same way.
+save slot), and a recording made with XC2_INPUT_RECORD replays the same way.
 """
 import argparse
 import ctypes
@@ -33,7 +33,7 @@ SAVES = ROOT / 'build' / 'save-backup'
 SLOTS = ROOT / 'build' / 'run-slots'
 GPU_LOCK = ROOT / 'build' / '.gpu-run.lock'
 LOCK_OFFSET = 1 << 16   # Windows byte-range lock sits past the holder text, so other processes can still read it
-MAX_RUNS = int(os.environ.get('XCX_MAX_RUNS', '3'))   # more parallel runs exhaust device memory (16 GB RX 9070)
+MAX_RUNS = int(os.environ.get('XC2_MAX_RUNS', '3'))   # more parallel runs exhaust device memory (16 GB RX 9070)
 
 
 def count(image):
@@ -42,12 +42,12 @@ def count(image):
 
 
 def busy():
-    return count('xcx.exe') + count('ninja.exe')
+    return count('xc2.exe') + count('ninja.exe')
 
 
 def keep_in_background(proc):
     """Push the game window behind the user's windows as soon as it appears, for builds older than
-    XCX_BACKGROUND_WINDOW."""
+    XC2_BACKGROUND_WINDOW."""
     user32 = ctypes.windll.user32
     user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
     user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -151,9 +151,9 @@ def profile_copy(dest, save):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('exe_dir', type=Path, help='build directory holding xcx.exe')
+    ap.add_argument('exe_dir', type=Path, help='build directory holding xc2.exe')
     ap.add_argument('--save', help='directory name under build/save-backup; default: the profile as it is')
-    ap.add_argument('--script', type=Path, default=ROOT / 'tools' / 'input' / 'load_save.txt', help='XCX_INPUT_SCRIPT')
+    ap.add_argument('--script', type=Path, default=ROOT / 'tools' / 'input' / 'load_save.txt', help='XC2_INPUT_SCRIPT')
     ap.add_argument('--seconds', type=float, required=True,
                     help='game time to run: the run ends once the world clock (game time since the save loaded) passed '
                          'this many seconds (shot is taken of that frame)')
@@ -161,7 +161,7 @@ def main():
     ap.add_argument('--shot', type=Path, help='PNG of the last frame; turns async pipeline builds off (boot.c)')
     ap.add_argument('--log', type=Path, help='default: <exe dir>/logs/<tag>.log')
     ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='extra environment, repeatable')
-    ap.add_argument('--quiet', action='store_true', help='wait until no other xcx.exe or ninja.exe runs (benchmarks)')
+    ap.add_argument('--quiet', action='store_true', help='wait until no other xc2.exe or ninja.exe runs (benchmarks)')
     ap.add_argument('--show', action='store_true', help='open the window on top; by default it opens behind other windows')
     a = ap.parse_args()
 
@@ -177,18 +177,18 @@ def main():
         prof = exe_dir / f'prof-{a.tag}'
         profile_copy(prof, a.save)
 
-        env = dict(os.environ, XCX_ASSUME_FOCUS='1', XCX_INPUT='none', XCX_INPUT_SCRIPT=str(a.script.resolve()))
+        env = dict(os.environ, XC2_ASSUME_FOCUS='1', XC2_INPUT='none', XC2_INPUT_SCRIPT=str(a.script.resolve()))
         if not a.show:
-            env['XCX_BACKGROUND_WINDOW'] = '1'
+            env['XC2_BACKGROUND_WINDOW'] = '1'
         for kv in a.env:
             k, _, v = kv.partition('=')
             env[k] = v
-        args = [str(exe_dir / 'xcx.exe'), '--profile', str(prof), '--seconds', str(a.seconds)]
+        args = [str(exe_dir / 'xc2.exe'), '--profile', str(prof), '--seconds', str(a.seconds)]
         if a.shot:
             args += ['--shot', str(a.shot.resolve())]
         try:
             with open(log, 'w', encoding='utf-8', errors='replace') as f:
-                f.write(f'run_game: others running before: xcx.exe {count("xcx.exe")}, ninja.exe {count("ninja.exe")}\n')
+                f.write(f'run_game: others running before: xc2.exe {count("xc2.exe")}, ninja.exe {count("ninja.exe")}\n')
                 f.flush()
                 start = time.time()
                 proc = subprocess.Popen(args, cwd=exe_dir, env=env, stdout=f, stderr=subprocess.STDOUT)
@@ -196,7 +196,7 @@ def main():
                     threading.Thread(target=keep_in_background, args=(proc,), daemon=True).start()
                 rc = proc.wait()
                 f.write(f'run_game: rc={rc} wall={time.time() - start:.0f}s; others running after: '
-                        f'xcx.exe {count("xcx.exe")}, ninja.exe {count("ninja.exe")}\n')
+                        f'xc2.exe {count("xc2.exe")}, ninja.exe {count("ninja.exe")}\n')
         finally:
             shutil.rmtree(prof, ignore_errors=True)
     finally:

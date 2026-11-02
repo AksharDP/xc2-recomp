@@ -11,7 +11,7 @@ patch: runtime/cheats.c runs it in its cheat VM.
 The cheat files are <mod>/cheats/<build id>.txt in each folder of --mods (or the Atmosphere places of that folder,
 as runtime/mods.c finds them; the name's case does not matter), the build id the first 8 bytes of main's. Every mod's
 file is built, switched on or off: the runtime decides which run. --out gets the --patches file followed by one set
-per convertible cheat (`cheat_<hash>`, switch XCX_CHEAT_<HASH>, default off) and its sites. --status gets one line
+per convertible cheat (`cheat_<hash>`, switch XC2_CHEAT_<HASH>, default off) and its sites. --status gets one line
 per cheat, mods by name, cheats in file order, tab separated:
 
   <name hash> <content hash> <kind> <buttons> <note>
@@ -33,7 +33,7 @@ at the call site; a conditional skip of one store in the body (cbz wN, +8; str w
 Standard library and recomp/ only.
 
 Adapted from totk-pc-recomp tools/cheats.py @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh): XC2's
-title id and XCX_ setting names; --patches may be left out (XC2 3.0.1 has no patch table of its own yet).
+title id and XC2_ setting names; --patches may be left out (XC2 3.0.1 has no patch table of its own yet).
 """
 import argparse
 import struct
@@ -341,7 +341,7 @@ def classify(main, c):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, required=True)
-    ap.add_argument('--mods', type=Path, required=True, help='the mods folder next to xcx.exe')
+    ap.add_argument('--mods', type=Path, required=True, help='the mods folder next to xc2.exe')
     ap.add_argument('--patches', type=Path, help='the game version\'s patch file')
     ap.add_argument('--out', type=Path, required=True, help='the patch file with the cheats added')
     ap.add_argument('--status', type=Path, required=True)
@@ -357,7 +357,7 @@ def main():
         if c.sites:
             name = f'cheat_{c.key.lower()}'
             label = c.name.encode('ascii', 'replace').decode()   # recomp/patches.py reads the file as ASCII
-            sets.append(f'set {name} XCX_CHEAT_{c.key} {1 if c.kind == "master" else 0}   # {label}')
+            sets.append(f'set {name} XC2_CHEAT_{c.key} {1 if c.kind == "master" else 0}   # {label}')
             for a, repl in sorted(c.sites.items()):
                 sites.append(f'site {name} main {a:x} {m.word(a):08x} {" ".join(f"{w:08x}" for w in repl)}')
         content = fnv(' '.join(f'{w:08X}' for w in c.words).encode())

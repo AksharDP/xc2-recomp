@@ -21,5 +21,5 @@ void gfx_window_mark_dirty(void);          // the window changed size: the next 
 void gfx_window_focus_changed(int in);     // the window gained (1) or lost (0) the focus
 void gfx_window_closed(void);              // the player closed the window: saves, then ends the process
 void gfx_window_set_refresh(double hz);    // the refresh rate of the window's monitor, 0 unknown
-int gfx_cfg_fullscreen(void);              // XCX_FULLSCREEN
-void gfx_cfg_window_size(int *w, int *h);  // XCX_WINDOW_SIZE, the default when unparsable or out of range
+int gfx_cfg_fullscreen(void);              // XC2_FULLSCREEN
+void gfx_cfg_window_size(int *w, int *h);  // XC2_WINDOW_SIZE, the default when unparsable or out of range

@@ -1,4 +1,4 @@
-"""Read a XCX_FLIGHT dump (runtime/flight.c): the frames around the worst interval, the frames whose counts stand out,
+"""Read a XC2_FLIGHT dump (runtime/flight.c): the frames around the worst interval, the frames whose counts stand out,
 and a contact sheet of the thumbnails with frame number and interval on each.
 
     python tools/flight_view.py build/flight/<YYYYMMDD-HHMMSS>-f<frame> [--around FRAME] [--span 48] [--cols 12]

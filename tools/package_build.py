@@ -1,15 +1,15 @@
-"""Package a built xcx.exe into a folder that runs from anywhere: build/<version>-portable by default.
+"""Package a built xc2.exe into a folder that runs from anywhere: build/<version>-portable by default.
 
 The folder holds the exe, its DLLs, the shader translator (NativeAOT: no .NET), the RomFS index and patches, the
 extracted ExeFS (the game code the exe loads), the shared fonts, the prepared shader and pipeline files. There is
-no config file: xcx.exe finds the exefs, romfs, profile and shared-fonts folders next to itself. Without --with-romfs
-the 16 GB RomFS image stays out; copy build/extracted/<version>/romfs/romfs.bin to <folder>/romfs/ or set XCX_ROMFS
+no config file: xc2.exe finds the exefs, romfs, profile and shared-fonts folders next to itself. Without --with-romfs
+the 16 GB RomFS image stays out; copy build/extracted/<version>/romfs/romfs.bin to <folder>/romfs/ or set XC2_ROMFS
 (a path, relative ones to the exe's folder).
 
 The folder contains game code and data derived from the game: for your own machines only, never publish or share it.
 Saves go to <folder>/profile.
 
-    .venv/Scripts/python tools/package_build.py [--version v121] [--build build/v121] [--exe PATH/xcx.exe]
+    .venv/Scripts/python tools/package_build.py [--version v121] [--build build/v121] [--exe PATH/xc2.exe]
                                                 [--out build/v121-portable] [--with-romfs] [--no-shader-cache]
 """
 import argparse
@@ -24,7 +24,7 @@ EXE = '.exe' if os.name == 'nt' else ''
 # A Linux source build links the system's SDL3, Opus and libvpx: the other machine needs them installed
 DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll') if os.name == 'nt' else ()
 # Prepared state next to the exe: translator answers, programs, the prepared list, pipeline cache and its keys, and the
-# variant lists `xcx.exe --prepare-shaders` reads (the driver keys its library cache by exe path, so each copy runs it).
+# variant lists `xc2.exe --prepare-shaders` reads (the driver keys its library cache by exe path, so each copy runs it).
 STATE = ('romfs-index.bin', 'pipeline-cache.bin', 'pipeline-keys.bin', 'shader-answers.bin', 'shader-programs.bin',
          'shader-prepared.bin', 'seed-answers.bin', 'seed-programs.bin')
 
@@ -52,8 +52,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--version', default='v121', help='game version (v121 or v143): the defaults below follow it')
     ap.add_argument('--build', type=Path, help='build dir with the prepared state (default build/<version>)')
-    ap.add_argument('--exe', type=Path, help='xcx.exe to package (default: <build>/xcx.exe); its DLLs are taken from --build')
-    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / f'xcx_xlate{EXE}')
+    ap.add_argument('--exe', type=Path, help='xc2.exe to package (default: <build>/xc2.exe); its DLLs are taken from --build')
+    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / f'xc2_xlate{EXE}')
     ap.add_argument('--extracted', type=Path, help='default build/extracted/<version>')
     ap.add_argument('--out', type=Path, help='default build/<version>-portable')
     ap.add_argument('--with-romfs', action='store_true', help='also copy romfs.bin (about 16 GB)')
@@ -64,7 +64,7 @@ def main():
     a.out = a.out or ROOT / 'build' / f'{a.version}-portable'
 
     build, out = a.build.resolve(), a.out.resolve()
-    exe = (a.exe or build / f'xcx{EXE}').resolve()
+    exe = (a.exe or build / f'xc2{EXE}').resolve()
     fonts = a.extracted.resolve().parent / 'firmware' / 'shared-fonts'
     exefs = a.extracted.resolve() / 'exefs'
     romfs = a.extracted.resolve() / 'romfs' / 'romfs.bin'
@@ -80,13 +80,13 @@ def main():
         print('package_build: warning: the folder holds game code; keep it out of the repository')
 
     out.mkdir(parents=True, exist_ok=True)
-    copy(exe, out / f'xcx{EXE}')
+    copy(exe, out / f'xc2{EXE}')
     for d in DLLS:
         copy(build / d, out / d)
-    copy(a.xlate, out / f'xcx_xlate{EXE}')
+    copy(a.xlate, out / f'xc2_xlate{EXE}')
     idf = a.xlate.with_suffix('.id')
     if idf.exists():
-        copy(idf, out / 'xcx_xlate.id')
+        copy(idf, out / 'xc2_xlate.id')
     for f in STATE:
         if (build / f).exists():
             copy(build / f, out / f)
@@ -103,7 +103,7 @@ def main():
         print('package_build: copying romfs.bin (16 GB) ...')
         shutil.copyfile(romfs, out / 'romfs' / 'romfs.bin')
     print(f'package_build: {out}: {n} files in folders, {size_of(out) / 2**30:.2f} GiB'
-          + ('' if a.with_romfs else f'; no RomFS: put romfs.bin into romfs{os.sep} or set XCX_ROMFS'))
+          + ('' if a.with_romfs else f'; no RomFS: put romfs.bin into romfs{os.sep} or set XC2_ROMFS'))
 
 
 if __name__ == '__main__':

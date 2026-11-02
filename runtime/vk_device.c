@@ -59,9 +59,9 @@ static int create_instance(void) {
     const char *ext[8];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    int validate = cfg_bool("XCX_VK_VALIDATION");
+    int validate = cfg_bool("XC2_VK_VALIDATION");
     if (validate && !layer_present(layers[0])) {
-        rt_log("vk: XCX_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
+        rt_log("vk: XC2_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
     if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
@@ -120,17 +120,17 @@ static int name_has(const char *s, const char *sub) {
     return 0;
 }
 
-// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; XCX_GPU_INDEX (index) or
-// XCX_GPU_NAME (case-insensitive part of the name) overrides.
+// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; XC2_GPU_INDEX (index) or
+// XC2_GPU_NAME (case-insensitive part of the name) overrides.
 static int pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.instance, &n, NULL);
     if (!n) { rt_log("vk: no Vulkan device"); return 0; }
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vkEnumeratePhysicalDevices(g_vk.instance, &n, pd);
-    const char *e = cfg_get("XCX_GPU_INDEX");   // no fixed default: the best device when unset
+    const char *e = cfg_get("XC2_GPU_INDEX");   // no fixed default: the best device when unset
     int want = e && *e ? atoi(e) : -1;
-    const char *name = cfg_get("XCX_GPU_NAME");
+    const char *name = cfg_get("XC2_GPU_NAME");
     int best = -1, best_score = -1;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
@@ -154,8 +154,8 @@ static int pick_device(void) {
         if (score > best_score) { best_score = score; best = (int)i; }
     }
     if (best < 0) {
-        if (want >= 0) rt_log("vk: XCX_GPU_INDEX=%d is not usable (see above)", want);
-        else if (name && *name) rt_log("vk: no usable gpu matches XCX_GPU_NAME=%s (see above)", name);
+        if (want >= 0) rt_log("vk: XC2_GPU_INDEX=%d is not usable (see above)", want);
+        else if (name && *name) rt_log("vk: no usable gpu matches XC2_GPU_NAME=%s (see above)", name);
         else rt_log("vk: no device with Vulkan 1.3 and the required extensions (see above)");
         free(pd);
         return 0;
@@ -204,7 +204,7 @@ typedef struct {
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
 } FeatureChain;
 
-// XCX_VRAM_LIMIT=<MiB>: a test of small cards on a large one. Right after the allocator is made, device-local memory
+// XC2_VRAM_LIMIT=<MiB>: a test of small cards on a large one. Right after the allocator is made, device-local memory
 // is taken in 256 MiB blocks and held until shutdown, until the largest device-local heap has about that many MiB
 // left, so the driver's paging sees a card of that size. vk_mem_vram takes the blocks out of both the usage and the
 // budget it reports, so the mirror budget check (vk_memory.c, mirror_create) also measures its margin against the
@@ -214,7 +214,7 @@ static VkDeviceMemory ballast[BALLAST_MAX];
 static int n_ballast;
 
 static void vram_limit(void) {
-    const char *e = cfg_get("XCX_VRAM_LIMIT");
+    const char *e = cfg_get("XC2_VRAM_LIMIT");
     if (!e || !*e) return;
     uint64_t want = strtoull(e, NULL, 10) << 20;
     const VkPhysicalDeviceMemoryProperties *mp = &g_vk.mem_props;
@@ -228,7 +228,7 @@ static void vram_limit(void) {
         if (mp->memoryTypes[t].heapIndex == heap && mp->memoryTypes[t].propertyFlags == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
             type = t;
     if (heap == UINT32_MAX || type == UINT32_MAX || !want || want >= mp->memoryHeaps[heap].size) {
-        rt_log("vk: XCX_VRAM_LIMIT=%s: no device-local heap larger than that, nothing held", e);
+        rt_log("vk: XC2_VRAM_LIMIT=%s: no device-local heap larger than that, nothing held", e);
         return;
     }
     uint64_t take = mp->memoryHeaps[heap].size - want, held = 0;
@@ -239,7 +239,7 @@ static void vram_limit(void) {
         n_ballast++, held += n;
     }
     g_vk.vram_held = held;
-    rt_log("vk: XCX_VRAM_LIMIT=%s: holding %.0f MiB of heap %u (%.0f MiB) in %d blocks, %.0f MiB left", e,
+    rt_log("vk: XC2_VRAM_LIMIT=%s: holding %.0f MiB of heap %u (%.0f MiB) in %d blocks, %.0f MiB left", e,
            held / 1048576.0, heap, mp->memoryHeaps[heap].size / 1048576.0, n_ballast,
            (mp->memoryHeaps[heap].size - held) / 1048576.0);
 }
@@ -328,13 +328,13 @@ static int create_device(void) {
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
-        const char *e = cfg_get("XCX_FEEDBACK");
+        const char *e = cfg_get("XC2_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
                       : layout_ok && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
-               : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (XCX_FEEDBACK=0)",
+               : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (XC2_FEEDBACK=0)",
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 

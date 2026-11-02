@@ -1,14 +1,14 @@
-"""Compile the generated C for one game version and link it with the runtime into build/<version>/xcx.exe.
+"""Compile the generated C for one game version and link it with the runtime into build/<version>/xc2.exe.
 
 Writes build/<version>/build.ninja and runs MSYS2 UCRT64 Ninja on it. Ninja keeps the build incremental: a chunk is
 recompiled only when it, a header it includes or its flags change.
 
-On Linux the same steps make build/<version>/xcx with the clang, lld and ninja on PATH (or the clang and lld in --toolchain DIR/bin): the
-runtime's *_sdl.* and platform/linux.c take the place of its *_win.*, platform/win32.c and xcx.rc, the libraries are
+On Linux the same steps make build/<version>/xc2 with the clang, lld and ninja on PATH (or the clang and lld in --toolchain DIR/bin): the
+runtime's *_sdl.* and platform/linux.c take the place of its *_win.*, platform/win32.c and xc2.rc, the libraries are
 the system's (Vulkan, SDL3, Opus, libvpx, zstd; libstdc++ static), and the executable finds a libSDL3.so.0 beside it
 first (rpath $ORIGIN). docs/building.md lists the packages.
 
-    .venv\\Scripts\\python tools\\build_game.py                     # generated/v121 -> build/v121/xcx.exe
+    .venv\\Scripts\\python tools\\build_game.py                     # generated/v121 -> build/v121/xc2.exe
     .venv\\Scripts\\python tools\\build_game.py --modules subsdk0   # one module (links if it has no calls into others)
     .venv\\Scripts\\python tools\\build_game.py --jobs 8
     .venv\\Scripts\\python tools\\build_game.py --out build/v121-t2   # a separate build directory
@@ -17,9 +17,9 @@ first (rpath $ORIGIN). docs/building.md lists the packages.
 
 Every runtime/*.c is compiled. build/<version>/modules.c carries the layout, the linked function tables, the
 expected SHA-256 of each ExeFS file (tools/data/expected-<display version>.json) and the default game paths
-(--exefs, --romfs, --profile), which xcx.exe uses unless its own command line names others. tools/romfs_index.py
+(--exefs, --romfs, --profile), which xc2.exe uses unless its own command line names others. tools/romfs_index.py
 writes build/<version>/romfs-index.bin and romfs_config.h from the RomFS directory's index.json (runtime/romfs.c reads
-the index next to xcx.exe).
+the index next to xc2.exe).
 
 Private builds reuse the main build's objects. When --out differs from build/<version>, the main build's generated
 objects are up to date (checked with a dry run of its build.ninja) and every header they include from runtime/ is
@@ -47,7 +47,7 @@ from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx
 (default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs), and the C++
 runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
 
-Split build. --make-runtime-lib compiles only runtime/ into <out>/libxcxrt.a (what CI prebuilds). --runtime-lib PATH
+Split build. --make-runtime-lib compiles only runtime/ into <out>/libxc2rt.a (what CI prebuilds). --runtime-lib PATH
 then compiles only the generated C and the install-time files (modules.c and INSTALL_SIDE, which bake the player's
 game hashes and version in) and links them with that library. The library holds no game-derived data.
 
@@ -77,7 +77,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # them. MAIN_ROOT is where they land, so resolved paths still print and compare relative to a root.
 MAIN_ROOT = (ROOT / 'build').resolve().parent
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-EXE = 'xcx.exe' if WIN else 'xcx'
+EXE = 'xc2.exe' if WIN else 'xc2'
 
 
 def on_path(name):
@@ -95,14 +95,14 @@ GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-lab
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
 if WIN:
-    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xcx.map"']   # the map feeds tools/prof_report.py
+    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xc2.map"']   # the map feeds tools/prof_report.py
     LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
     VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
 else:
     # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
-    # $ORIGIN: a libSDL3.so.0 next to xcx comes before the system's (the release's portable folder).
+    # $ORIGIN: a libSDL3.so.0 next to xc2 comes before the system's (the release's portable folder).
     LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
-                  '"-Wl,-Map=$builddir/xcx.map"']
+                  '"-Wl,-Map=$builddir/xc2.map"']
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
@@ -140,9 +140,9 @@ DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
 # functions sit on it).
 INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c'}
-LIB_NAME = 'libxcxrt.a'
+LIB_NAME = 'libxc2rt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
-WINDRES = UCRT / 'windres.exe'   # runtime/xcx.rc: the manifest of xcx.exe
+WINDRES = UCRT / 'windres.exe'   # runtime/xc2.rc: the manifest of xc2.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
@@ -226,7 +226,7 @@ def write_if_changed(path, text):
 
 
 def copy_romfs_patches(version, out):
-    """xcx.exe loads romfs-patches beside romfs-index.bin (runtime/romfs.c overlay_init). tools/make_romfs_patches.py
+    """xc2.exe loads romfs-patches beside romfs-index.bin (runtime/romfs.c overlay_init). tools/make_romfs_patches.py
     writes them into build/<version> only, so a build in another directory ran without the 60 fps overlay (the quick
     menus' captured background turned black). Copies them when their manifest differs."""
     src = ROOT / 'build' / version / 'romfs-patches'
@@ -241,7 +241,7 @@ def copy_romfs_patches(version, out):
 
 
 def copy_prompts(version, out):
-    """xcx.exe serves the button prompt layouts in prompts/ next to it (runtime/prompts.c); tools/xc2_prompts.py writes
+    """xc2.exe serves the button prompt layouts in prompts/ next to it (runtime/prompts.c); tools/xc2_prompts.py writes
     them into build/<version>. Copies them when their manifest differs."""
     src = ROOT / 'build' / version / 'prompts'
     dst = out / 'prompts'
@@ -262,12 +262,12 @@ RUNTIME = ROOT / 'runtime'   # --runtime: a copy of runtime/ lets a task build w
 
 
 def other_os(name):
-    """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, xcx.rc) off Windows, the SDL window's
+    """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, xc2.rc) off Windows, the SDL window's
     (*_sdl.*) and platform/linux.c on Windows."""
     stem = name.rsplit('.', 1)[0]
     if WIN:
         return stem.endswith('_sdl') or name == 'linux.c'
-    return stem.endswith('_win') or name in ('win32.c', 'xcx.rc')
+    return stem.endswith('_win') or name in ('win32.c', 'xc2.rc')
 
 
 def runtime_sources(skip=()):
@@ -388,9 +388,9 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         sources += [out / 'modules.c']
     for src in sources:
         o = runtime_object(out, src)
-        if src.suffix == '.rc':   # windres writes no depfile: the files xcx.rc embeds are listed by hand
-            lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "xcx.manifest")} '
-                         f'{ninja_path(RUNTIME / "xcx.ico")}')
+        if src.suffix == '.rc':   # windres writes no depfile: the files xc2.rc embeds are listed by hand
+            lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "xc2.manifest")} '
+                         f'{ninja_path(RUNTIME / "xc2.ico")}')
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
         rt.append(o)
@@ -405,7 +405,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     rule = 'link'
     if runtime_lib:
         # Whole archive: the runtime's weak defaults (nvn_procs.c, nvn_api_core.c, vk_sync.c) would otherwise satisfy
-        # references before the linker pulls the members with the strong definitions, which would stay out of xcx.exe.
+        # references before the linker pulls the members with the strong definitions, which would stay out of xc2.exe.
         rule = 'link_lib'
         lines += ['', 'rule link_lib',
                   f'  command = $cc $ldflags @$out.rsp -Wl,--whole-archive {cmd_path(runtime_lib)} -Wl,--no-whole-archive $libs -o $out',
@@ -489,22 +489,23 @@ def link_objects(out, pairs):
 
 
 def copy_translator(exe_dir):
-    """Put xcx_xlate.exe and its .id next to xcx.exe, where gfx_shader.c looks first. Without a translator every
+    """Put xc2_xlate.exe and its .id next to xc2.exe, where gfx_shader.c looks first. Without a translator every
     shader fails and the game draws nothing (black screen, sound plays). Source: build/xlate (tools/build_xlate.py),
-    else the bin directory of the XCX setup whose llvm-mingw --toolchain names."""
+    else the bin directory of the setup whose llvm-mingw --toolchain names: an unpacked XCX-Setup release names its
+    translator xcx_xlate, which is copied under this project's name."""
     suffix = '.exe' if WIN else ''
-    found = [d for d in [ROOT / 'build' / 'xlate', TOOLCHAIN_BIN and TOOLCHAIN_BIN.parent.parent / 'bin']
-             if d and (d / f'xcx_xlate{suffix}').is_file()]
+    found = [(d, stem) for d in [ROOT / 'build' / 'xlate', TOOLCHAIN_BIN and TOOLCHAIN_BIN.parent.parent / 'bin']
+             if d for stem in ('xc2_xlate', 'xcx_xlate') if (d / f'{stem}{suffix}').is_file()]
     if not found:
-        if not (exe_dir / f'xcx_xlate{suffix}').is_file():
-            print('build_game: warning: no xcx_xlate translator found (tools/build_xlate.py builds one); the game '
-                  'will draw nothing unless XCX_XLATE names one', file=sys.stderr)
+        if not (exe_dir / f'xc2_xlate{suffix}').is_file():
+            print('build_game: warning: no xc2_xlate translator found (tools/build_xlate.py builds one); the game '
+                  'will draw nothing unless XC2_XLATE names one', file=sys.stderr)
         return
-    for name in (f'xcx_xlate{suffix}', 'xcx_xlate.id'):
-        src = found[0] / name
-        if src.is_file():
-            shutil.copy2(src, exe_dir / name)
-    print(f'build_game: translator from {found[0]}')
+    src_dir, stem = found[0]
+    for ext in (suffix, '.id'):
+        if (src_dir / f'{stem}{ext}').is_file():
+            shutil.copy2(src_dir / f'{stem}{ext}', exe_dir / f'xc2_xlate{ext}')
+    print(f'build_game: translator from {src_dir}')
 
 
 def unlink_shared(out, mods):
@@ -741,10 +742,10 @@ def main():
                     help='comma-separated runtime/*.c names to leave out (the link needs another definition of what they '
                          'define)')
     ap.add_argument('--exefs', type=Path,
-                    help="xcx.exe's default ExeFS directory (default build/extracted/<version>/exefs)")
-    ap.add_argument('--romfs', type=Path, help="xcx.exe's default RomFS directory with romfs.bin and index.json "
+                    help="xc2.exe's default ExeFS directory (default build/extracted/<version>/exefs)")
+    ap.add_argument('--romfs', type=Path, help="xc2.exe's default RomFS directory with romfs.bin and index.json "
                                                '(default build/extracted/<version>/romfs)')
-    ap.add_argument('--profile', type=Path, help="xcx.exe's default profile directory (default build/profile for v121, "
+    ap.add_argument('--profile', type=Path, help="xc2.exe's default profile directory (default build/profile for v121, "
                                                  "build/profile-<version> otherwise, so trying another version leaves "
                                                  "the main profile alone; saves load on 1.2.1 and 1.4.3 alike)")
     ap.add_argument('--toolchain', type=Path, help='llvm-mingw directory (with bin/clang.exe) to build with instead of '
@@ -757,7 +758,7 @@ def main():
     ap.add_argument('--deps', type=Path, help=f'with --toolchain: include/, lib/ and bin/ of Vulkan, SDL3, Opus, libvpx '
                                               f'and VMA (default {DEFAULT_DEPS.relative_to(ROOT).as_posix()})')
     ap.add_argument('--make-runtime-lib', action='store_true',
-                    help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no xcx.exe)')
+                    help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no xc2.exe)')
     ap.add_argument('--runtime-lib', type=Path, help=f'link against this {LIB_NAME} instead of compiling runtime/ '
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
     ap.add_argument('--expected', type=Path,
@@ -889,13 +890,13 @@ def main():
     code, dt, peak_one, _ = run_measured(base + [flag_path(exe)], env)
     print(f'link: {dt:.1f} s, peak {mib(peak_one)}')
     if code:
-        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running xcx.exe from this dir locks it)',
+        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running xc2.exe from this dir locks it)',
               file=sys.stderr)
         sys.exit(code)
     if args.make_runtime_lib:
         print(f'{below_root(exe)}: {mib(exe.stat().st_size)}')
         return
-    for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xcx.exe
+    for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xc2.exe
         shutil.copy2(dll, exe.parent / dll.name)
     copy_translator(exe.parent)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)

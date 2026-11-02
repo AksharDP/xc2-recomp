@@ -29,7 +29,7 @@ def load_catalog(path=CATALOG):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-GAME_EXE = 'xcx.exe' if os.name == 'nt' else 'xcx'   # {game_exe} in the catalogs
+GAME_EXE = 'xc2.exe' if os.name == 'nt' else 'xc2'   # {game_exe} in the catalogs
 
 
 def render(catalog, id, params=None):

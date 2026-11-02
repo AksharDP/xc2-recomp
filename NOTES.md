@@ -25,7 +25,7 @@ private.
 ```
 
 - `--version` defaults to `v301`; the profile defaults to `build\profile-v301`.
-- The build copies `xcx_xlate.exe` and `xcx_xlate.id` next to `xcx.exe` (from `build\xlate`, else the XCX setup's
+- The build copies `xc2_xlate.exe` and `xc2_xlate.id` next to `xc2.exe` (from `build\xlate`, else the XCX setup's
   `bin\`). Without a translator every shader fails and the game draws nothing while sound plays.
 - If `llvm-windres` fails with "Unable to create temp file", point `TEMP`/`TMP` at a writable folder.
 
@@ -34,10 +34,10 @@ private.
 - Boots, title screen, New Game, opening battle with its scene complete; sound, text, input, 30 fps.
 - Lifter: `tests\diff\lift.py --exefs build\extracted\v301\exefs` (180k cases) and `tests\diff\simd.py` (160k
   cases) pass with 0 failures; only `udf` padding is rejected.
-- Loader: `xcx.exe --probe-loader` passes; 172 host overrides bind (of 340 linked). The other 168 target SDK
+- Loader: `xc2.exe --probe-loader` passes; 172 host overrides bind (of 340 linked). The other 168 target SDK
   functions XC2's SDK 3.5.0 does not have.
 - Version-dependent runtime paths: XC2 builds get `rt_game_version = 0`, so `RT_V143` branches take XCX 1.2.1's side.
-  The only live one (`frame_rate.c` `player_pos`) runs under `XCX_SPEED_PROBE=1` only and reads through a guarded copy.
+  The only live one (`frame_rate.c` `player_pos`) runs under `XC2_SPEED_PROBE=1` only and reads through a guarded copy.
 - XCX's frame-rate and resolution patch sites do not match XC2's `main`; the runtime declines them (native 30 fps,
   native resolution). 60 fps or a resolution option needs XC2's own sites.
 
@@ -51,7 +51,7 @@ coordinates running downwards, so every camera-facing triangle of a back-face-cu
 (drawn in world coordinates with one matrix in `c5`) lost the floor in front of the camera, and the cloud sea showed
 through; props drew their far sides lit from behind and looked like dark silhouettes. `vk_pipeline_set_dynamic`
 now mirrors the front face for the upper-left origin. Verified by rasterizing Gramps' two body meshes on the CPU from
-the dumped triangles and `c5` (`XCX_DUMP_MESH`, `XCX_ONLY_PROG`) against the GPU's pre-pass depth: 164,578 pixels
+the dumped triangles and `c5` (`XC2_DUMP_MESH`, `XC2_ONLY_PROG`) against the GPU's pre-pass depth: 164,578 pixels
 differed before, 4 after.
 
 ### Movies: host VP9 decoder never bound (fixed 2026-11-01)
@@ -60,7 +60,7 @@ XC2's SDK 3.5 movie library constructs `movie::Decoder(DecoderType, DecoderOutpu
 priority arguments, and numbers packed NV12 3 rather than 4. `ov_movie.c` bound only XCX's constructor, so the first of
 the 154 movies (`stream/movie/*.webm`, VP9 1280x720 + Vorbis) would have run the library's NVDEC path and aborted. The
 host decoder now binds XC2's constructor and format. The Vorbis tracks stay on the library's CPU decoder (SoftVorbis),
-which constructs in the running game without NvRm. `xcx.exe --probe-movie` decodes an XC2 movie and passes; a movie
+which constructs in the running game without NvRm. `xc2.exe --probe-movie` decodes an XC2 movie and passes; a movie
 has not been watched in game yet.
 
 ### Audio: voices and effects on one side only (fixed 2026-11-02)
@@ -78,19 +78,19 @@ the back pair; it now uses {front, centre, LFE, back}.
 Ported from totk-pc-recomp (same lineage, MIT): per-stick round dead zones (`stick_deadzone`, `lstick_deadzone`,
 `rstick_deadzone`, with the live "stick now" reading on the Controls tab), the keyboard walk key (`walk_key`,
 `walk_scale`), bindable back paddles (`pad:lpaddle1` ... `pad:rpaddle2`), the post-menu input gate that also waits for
-the sticks to centre, and `XCX_TEST_PAD` (a virtual SDL gamepad with fixed stick values, for runs without a
-controller). Checked in game with `XCX_TEST_PAD=0,20000,0,0 XCX_HID_TRACE=1`: the game reads the left stick's down bit
-with the default 8 % zone and nothing with `XCX_LSTICK_DEADZONE=30`. The walk key was not driven in game: the Win32
+the sticks to centre, and `XC2_TEST_PAD` (a virtual SDL gamepad with fixed stick values, for runs without a
+controller). Checked in game with `XC2_TEST_PAD=0,20000,0,0 XC2_HID_TRACE=1`: the game reads the left stick's down bit
+with the default 8 % zone and nothing with `XC2_LSTICK_DEADZONE=30`. The walk key was not driven in game: the Win32
 back end reads keys with `GetAsyncKeyState` while the window is foreground, which a headless run cannot press.
 TotK's `stick_sens` is not ported: it rewrites TotK's camera parameter pack in the RomFS. An XC2 version needs XC2's
 own camera speed data.
 
 ### Button prompts: Xbox, PlayStation and keyboard (2026-11-02)
 
-`XCX_PROMPTS` (`prompts` in `[input]`, the *Button prompts* row on the Controls tab, after restart): `auto` (default),
+`XC2_PROMPTS` (`prompts` in `[input]`, the *Button prompts* row on the Controls tab, after restart): `auto` (default),
 `switch` (the game's own), `xbox`, `playstation`, `keyboard`. `auto` takes the gamepad's labels (cross on the south
 button: PlayStation; B there: Nintendo, the game's own; else Xbox), and the keyboard without a gamepad. The Xbox and
-PlayStation sets follow `XCX_PAD_LAYOUT`: in the Nintendo layout Switch A is the right button, so A/B and X/Y swap
+PlayStation sets follow `XC2_PAD_LAYOUT`: in the Nintendo layout Switch A is the right button, so A/B and X/Y swap
 (Xbox B, PlayStation circle for A).
 - How XC2 draws them: no button font. `[ML:icon icon=<name>]` tags in the BDAT messages draw cells of an 8x4 atlas of
   64-pixel cells (UVs on that grid in the layout), the 512x256 BC3 texture of `menu/image/button.wilay`;
@@ -105,7 +105,7 @@ PlayStation sets follow `XCX_PAD_LAYOUT`: in the Nintendo layout Switch A is the
   `tools/data/kenney-input-prompts`) over each Switch button and re-encodes only those BC3 blocks; pure Python, the same
   bytes on 3.12 and 3.14, about 20-45 s. Five sets (`xbox`, `xbox_nintendo`, `playstation`, `playstation_nintendo`,
   `keyboard`) of seven layouts go to `build/v301/prompts/<set>/` with a `manifest.tsv`; `build_game.py` copies them next
-  to `xcx.exe`, the installer's Prepare step writes them into the install. The atlas icons take the atlas's style
+  to `xc2.exe`, the installer's Prepare step writes them into the install. The atlas icons take the atlas's style
   (white face, blue letters, the face buttons in their brand colours, blue rim and glow); the battle palette's are
   solid in the brand colour (teal for keys) with white letters. The keyboard set shows `DEFAULT_KEYS` (E, Shift, Space,
   mouse left, Q, R, Z, F, Tab, M, Ctrl, C, WASD, mouse, 1-4), not rebinds. Home, capture, SL and SR stay where a set has
@@ -121,12 +121,12 @@ PlayStation sets follow `XCX_PAD_LAYOUT`: in the Nintendo layout Switch A is the
 
 How players install and make mods: [docs/mods.md](docs/mods.md). The notes below are the implementation's.
 
-A `mods` folder next to `xcx.exe` (`XCX_MODS_DIR`) takes mods as emulators take them, one folder per mod: `romfs/`,
+A `mods` folder next to `xc2.exe` (`XC2_MODS_DIR`) takes mods as emulators take them, one folder per mod: `romfs/`,
 `exefs/` (`.ips`, `.pchtxt`), `cheats/<build id>.txt`, or an SD card mod's `atmosphere/` folder. Order and switches
-are `mods_order` / `mods_disabled` in `xcx.ini` and the menu's Mods tab; cheats switch on the Cheats tab.
-`xcx.exe --probe-mods` checks the scan, order, switches and add-on content lookup without game files.
+are `mods_order` / `mods_disabled` in `xc2.ini` and the menu's Mods tab; cheats switch on the Cheats tab.
+`xc2.exe --probe-mods` checks the scan, order, switches and add-on content lookup without game files.
 
-How XC2 finds a file (measured with `XCX_TRACE=fs` at boot): everything but `stream/` sits in `bf2.arh` / `bf2.ard`.
+How XC2 finds a file (measured with `XC2_TRACE=fs` at boot): everything but `stream/` sits in `bf2.arh` / `bf2.ard`.
 For a file of the archive the game reads `bf2.ard` at the archive's offset and never tries a loose `rom:/` path; before
 that it looks the file up in each add-on content pack (`aoc1:/bdat/common.bdat`, ... `aoc99:/...`). It opens a loose
 `rom:/` path only for files the archive lacks (`stream/`, `bdat/jp.bin`, a few effects and maps). So:
@@ -161,7 +161,7 @@ as made for another version.
 
 `--probe-vkexec` (draw checks) and `--probe-shader` read a shader census of XCX (`build/v121/shaders/jobs.json`) and
 fail without it; XC2 has no census yet. `--probe-vkexec`'s present check also needs a 16:9 window
-(`XCX_WINDOW_SIZE=1280x720`) in environments that size it otherwise. `make_release.py --prove` runs these probes.
+(`XC2_WINDOW_SIZE=1280x720`) in environments that size it otherwise. `make_release.py --prove` runs these probes.
 
 ### Settings that do nothing in XC2
 
@@ -181,10 +181,10 @@ with TEMP pointing at a writable folder).
 
 | Setting | Effect |
 |---|---|
-| `XCX_TRACE=fs` | RomFS opens (and failed ones) and every RomFS read with offset, size and short-read flags |
-| `XCX_DRAW_CALLERS=<frame>` | guest call stacks of every draw, recordings, inlined command lists and submissions |
-| `XCX_DUMP=<frame>` | now also per-draw depth state, vertex inputs, instance streams, vertex position bounds, skipped draws, render conditions and replay order (`note` lines in `passes.txt`) |
-| `XCX_DUMP_MESH=<index count>[,...]` | with `XCX_DUMP`: the triangles (`mesh_<count>_<n>.bin`, float triples) and vertex indices (`.idx`) of draws with that index count |
-| `XCX_ONLY_PROG=<program serial>` | with `XCX_DUMP`: only that program's draws are made in the dump frame |
-| `XCX_OQ_VISIBLE=1` | every samples-passed report counts as visible |
-| `XCX_HID_TRACE=1` | pad polling |
+| `XC2_TRACE=fs` | RomFS opens (and failed ones) and every RomFS read with offset, size and short-read flags |
+| `XC2_DRAW_CALLERS=<frame>` | guest call stacks of every draw, recordings, inlined command lists and submissions |
+| `XC2_DUMP=<frame>` | now also per-draw depth state, vertex inputs, instance streams, vertex position bounds, skipped draws, render conditions and replay order (`note` lines in `passes.txt`) |
+| `XC2_DUMP_MESH=<index count>[,...]` | with `XC2_DUMP`: the triangles (`mesh_<count>_<n>.bin`, float triples) and vertex indices (`.idx`) of draws with that index count |
+| `XC2_ONLY_PROG=<program serial>` | with `XC2_DUMP`: only that program's draws are made in the dump frame |
+| `XC2_OQ_VISIBLE=1` | every samples-passed report counts as visible |
+| `XC2_HID_TRACE=1` | pad polling |

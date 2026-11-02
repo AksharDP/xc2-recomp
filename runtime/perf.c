@@ -1,5 +1,5 @@
-// Frame timing (XCX_TRACE=perf, the frame-time summary, the performance overlay's counts), the A/B switches (rt_ab,
-// rt_knob) and XCX_ONE_PER_CORE. The sampling profiler (XCX_PROFILE) is the OS's (prof_win.c); without one the weak
+// Frame timing (XC2_TRACE=perf, the frame-time summary, the performance overlay's counts), the A/B switches (rt_ab,
+// rt_knob) and XC2_ONE_PER_CORE. The sampling profiler (XC2_PROFILE) is the OS's (prof_win.c); without one the weak
 // prof_sampler_* below do nothing.
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,13 +16,13 @@
 volatile uint32_t prof_render_tid, prof_main_tid, prof_replay_tid;
 
 __attribute__((weak)) int prof_sampler_start(void) {
-    if (cfg_get("XCX_PROFILE")) rt_log("prof: XCX_PROFILE: no sampling profiler on this OS");
+    if (cfg_get("XC2_PROFILE")) rt_log("prof: XC2_PROFILE: no sampling profiler on this OS");
     return 0;
 }
 __attribute__((weak)) void prof_sampler_write(void) {}
 __attribute__((weak)) void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) { (void)frame, (void)now, (void)d; }
 
-// XCX_TRACE=perf, XCX_FLIGHT=1 or the full performance overlay: event counts are taken. Wait times are always taken
+// XC2_TRACE=perf, XC2_FLIGHT=1 or the full performance overlay: event counts are taken. Wait times are always taken
 // (frame-time summary). perf_base: the part fixed at start.
 static int perf_on, perf_base;
 static int overlay;   // performance overlay mode (perf_set_overlay): 0 off, 1 fps, 2 full
@@ -53,8 +53,8 @@ void prof_write(void) {
     prof_sampler_write();
 }
 
-// ---- XCX_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
-// flight recorder (XCX_FLIGHT=1, flight.c) takes the same numbers per frame.
+// ---- XC2_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
+// flight recorder (XC2_FLIGHT=1, flight.c) takes the same numbers per frame.
 static uint64_t wait_ns[PERF_N], frame_ns[PERF_N], worst_ns[PERF_N];   // window totals, this frame, the slowest frame
 
 uint64_t perf_begin(void) { return kern_now_ns(); }
@@ -210,7 +210,7 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
 int rt_ab(void) {
     static int64_t period = -1;   // us of world clock; 0: off
     if (period < 0) {
-        const char *e = cfg_get("XCX_AB");
+        const char *e = cfg_get("XC2_AB");
         period = e && *e ? (int64_t)(atof(e) * 1e6) : 0;
     }
     int64_t w = period ? frame_step_world_us() : -1;
@@ -221,13 +221,13 @@ int rt_ab(void) {
 
 int rt_knob(const char *name, const char *def) {
     char key[64];
-    snprintf(key, sizeof key, "XCX_%s", name);
+    snprintf(key, sizeof key, "XC2_%s", name);
     const char *e = cfg_get(key);
     if (!e || !*e) e = def;
     return !strcmp(e, "ab") ? 2 : strcmp(e, "0") != 0;
 }
 
-// XCX_ONE_PER_CORE=1: the process keeps the first logical processor of each physical core, so busy threads (the
+// XC2_ONE_PER_CORE=1: the process keeps the first logical processor of each physical core, so busy threads (the
 // render thread, the guest cores, the job workers) never share a core's execution units with another; "ab" switches
 // it with the A/B blocks. Off by default until measured here; Savage Wind Recomp
 // reported +4-10% from the same rule on an 8-core SMT CPU.
@@ -268,9 +268,9 @@ void perf_present(uint64_t frame) {
         last = now;
         return;
     }
-    static uint64_t slow_ns;   // XCX_PERF_SLOW_MS (default 50): frames at least this long get a line of their own
+    static uint64_t slow_ns;   // XC2_PERF_SLOW_MS (default 50): frames at least this long get a line of their own
     if (!slow_ns) {
-        const char *e = cfg_get("XCX_PERF_SLOW_MS");
+        const char *e = cfg_get("XC2_PERF_SLOW_MS");
         slow_ns = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 50) * 1000000ull;
     }
     if (last) {

@@ -61,8 +61,8 @@ class App:
         self.fitted = None               # the (width, height) fit last gave the window
 
         root.title(self.cat('ui.title'))
-        icon = layout.runtime / 'xcx.ico'
-        png = layout.runtime / 'xcx.png'   # Tk loads no .ico off Windows; the Linux release converts it
+        icon = layout.runtime / 'xc2.ico'
+        png = layout.runtime / 'xc2.png'   # Tk loads no .ico off Windows; the Linux release converts it
         if os.name == 'nt' and icon.is_file():
             root.iconbitmap(default=str(icon))
         elif png.is_file():

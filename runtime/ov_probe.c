@@ -3,9 +3,9 @@
 // arguments, on the guest main thread. Checks that each one matches a relocation of the loaded modules, then the
 // values: language, operation mode, notification messages, account, time round trips, controllers, codec state,
 // graphics records, the system events behind nfp and vi, the software keyboard with arguments built by the guest SDK
-// (answers from XCX_SWKBD_ANSWER, then the window pressed by XCX_SWKBD_TEST) and the shared fonts when
+// (answers from XC2_SWKBD_ANSWER, then the window pressed by XC2_SWKBD_TEST) and the shared fonts when
 // tools/extract_fonts.py has written them. The named fatal stubs, and the account UID of a second run, are checked in
-// child processes (this executable again, XCX_PROBE_SERVICES_CHILD=<case>).
+// child processes (this executable again, XC2_PROBE_SERVICES_CHILD=<case>).
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +23,7 @@
 #include "utf16.h"
 #include "ui_text.h"
 
-#define CHILD_ENV "XCX_PROBE_SERVICES_CHILD"
+#define CHILD_ENV "XC2_PROBE_SERVICES_CHILD"
 #define TRY_WAIT_SYSTEM_EVENT "_ZN2nn2os18TryWaitSystemEventEPNS0_15SystemEventTypeE"
 
 typedef struct { const char *key, *name; int fatal; uint64_t addr; int bound, calls; } Ov;
@@ -184,7 +184,7 @@ static const char *const observers[] = {"_ZN2nn2os21AllocateAddressRegionEPmm", 
 
 // Fatal stubs, each in its own child process: the case name, the override, what its FATAL line must say and an
 // environment variable the child runs with (the shared fonts: a font directory that does not exist).
-#define NO_FONTS "XCX_SHARED_FONTS=:probe-services:no-such-dir"
+#define NO_FONTS "XC2_SHARED_FONTS=:probe-services:no-such-dir"
 static const struct { const char *child, *key, *fatal, *env; } fatals[] = {
     {"opus", "codec.Decode", "FATAL: nn::codec::DecodeOpusInterleavedWithHardware"},
     {"font-address", "pl.GetSharedFontAddress", "FATAL: nn::pl::GetSharedFontAddress(0)", NO_FONTS},
@@ -259,8 +259,8 @@ static char *lang(void) {
 static void set_env(const char *name, const char *value) { plat_setenv(name, value); }   // NULL removes it
 
 static void probe_oe(void) {
-    char *keep_lang = cfg_get("XCX_LANG") ? strdup(cfg_get("XCX_LANG")) : NULL;
-    char *keep_locale = cfg_get("XCX_LOCALE") ? strdup(cfg_get("XCX_LOCALE")) : NULL;
+    char *keep_lang = cfg_get("XC2_LANG") ? strdup(cfg_get("XC2_LANG")) : NULL;
+    char *keep_locale = cfg_get("XC2_LOCALE") ? strdup(cfg_get("XC2_LOCALE")) : NULL;
     static const struct { const char *lang, *locale, *want; } cases[] = {
         {NULL, "en-US", "en-US"}, {NULL, "be-BY", "en-US"}, {NULL, "xx", "en-US"},     {NULL, "ja-JP", "ja"},
         {NULL, "fr-CA", "fr-CA"}, {NULL, "es-MX", "es-419"}, {NULL, "es_ES", "es"},     {NULL, "zh-Hant-TW", "zh-Hant"},
@@ -268,29 +268,29 @@ static void probe_oe(void) {
         {"en-US", NULL, "en-US"}};
     int bad = 0;
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
-        set_env("XCX_LANG", cases[i].lang);
-        set_env("XCX_LOCALE", cases[i].locale);
+        set_env("XC2_LANG", cases[i].lang);
+        set_env("XC2_LOCALE", cases[i].locale);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
-            printf("  FAIL: language for XCX_LANG=%s XCX_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
+            printf("  FAIL: language for XC2_LANG=%s XC2_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
                    cases[i].locale ? cases[i].locale : "", got, cases[i].want);
         }
     }
-    set_env("XCX_LANG", NULL);
-    set_env("XCX_LOCALE", NULL);
+    set_env("XC2_LANG", NULL);
+    set_env("XC2_LOCALE", NULL);
     char sys[16];
     snprintf(sys, sizeof sys, "%s", lang());
-    set_env("XCX_LOCALE", "en-US");
+    set_env("XC2_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("XCX_LANG", keep_lang);
-    set_env("XCX_LOCALE", keep_locale);
+    set_env("XC2_LANG", keep_lang);
+    set_env("XC2_LOCALE", keep_locale);
     free(keep_lang);
     free(keep_locale);
     checks++;
     failures += bad > 0;
-    printf("oe: language %s by default (en-US locale), %s for this user's locale; %d locale/XCX_LANG cases %s\n",
+    printf("oe: language %s by default (en-US locale), %s for this user's locale; %d locale/XC2_LANG cases %s\n",
            def, sys, (int)(sizeof cases / sizeof *cases), bad ? "FAILED" : "ok");
 
     CALL("oe.Initialize", 0);
@@ -514,18 +514,18 @@ static void probe_feedback(uint32_t pid, uint32_t style) {
           "six-axis handle %#x", sh[0]);
     CHECK((int32_t)CALL("hid.GetVibrationDeviceHandles", U(dual), 2, U(&zero), 4) == 2 && dual[0] == 5 &&
           dual[1] == 0x10005, "Joy-Con pair vibration handles %#x %#x (SDK: 0x5 0x10005)", dual[0], dual[1]);
-    char *keep_r = cfg_get("XCX_RUMBLE") ? strdup(cfg_get("XCX_RUMBLE")) : NULL;
-    char *keep_m = cfg_get("XCX_MOTION") ? strdup(cfg_get("XCX_MOTION")) : NULL;
-    set_env("XCX_RUMBLE", "0");
-    set_env("XCX_MOTION", "0");
+    char *keep_r = cfg_get("XC2_RUMBLE") ? strdup(cfg_get("XC2_RUMBLE")) : NULL;
+    char *keep_m = cfg_get("XC2_MOTION") ? strdup(cfg_get("XC2_MOTION")) : NULL;
+    set_env("XC2_RUMBLE", "0");
+    set_env("XC2_MOTION", "0");
     uint32_t none[2] = {0xdead, 0xdead}, six_off[2] = {0};
     CHECK((int32_t)CALL("hid.GetVibrationDeviceHandles", U(none), 2, U(&pid), style) == 0 && none[0] == 0xdead,
-          "XCX_RUMBLE=0 still reports vibration handles");
-    // XCX_MOTION is live: the handle stays (the sensor reads at rest while it is 0)
+          "XC2_RUMBLE=0 still reports vibration handles");
+    // XC2_MOTION is live: the handle stays (the sensor reads at rest while it is 0)
     CHECK((int32_t)CALL("hid.GetSixAxisSensorHandles", U(six_off), 2, U(&pid), style) == 1 && six_off[0] == sh[0],
-          "XCX_MOTION=0 drops the six-axis handle %#x", six_off[0]);
-    set_env("XCX_RUMBLE", keep_r);
-    set_env("XCX_MOTION", keep_m);
+          "XC2_MOTION=0 drops the six-axis handle %#x", six_off[0]);
+    set_env("XC2_RUMBLE", keep_r);
+    set_env("XC2_MOTION", keep_m);
     free(keep_r);
     free(keep_m);
 
@@ -748,9 +748,9 @@ static void probe_swkbd(void) {
         arg[KB_UTF8] = (uint8_t)k->utf8;
         memcpy(arg + ARG_WORK, &w, 8), memcpy(arg + ARG_WORK_SIZE, &ws, 8);
         if (k->initial) rt_call(gc, initial, 2, U(arg), U(u16(k->initial)));
-        set_env(k->window ? "XCX_SWKBD_TEST" : "XCX_SWKBD_ANSWER", k->answer);
+        set_env(k->window ? "XC2_SWKBD_TEST" : "XC2_SWKBD_ANSWER", k->answer);
         uint32_t r = (uint32_t)CALL("swkbd.ShowKeyboard", U(str), U(arg));
-        set_env("XCX_SWKBD_TEST", NULL), set_env("XCX_SWKBD_ANSWER", NULL);
+        set_env("XC2_SWKBD_TEST", NULL), set_env("XC2_SWKBD_ANSWER", NULL);
         int ok = r == k->result && (k->utf8 ? !strcmp((const char *)out, k->want) : u16_is(out, k->want));
         checks++;
         if (!ok) bad++, printf("  FAIL: swkbd case %d (%s%s): result %#x\n", i, k->window ? "window " : "", k->answer, r);
@@ -830,7 +830,7 @@ static void probe_fonts(void) {
 }
 
 // The host catalog (ui_text.c): every menu id has its own English and Russian text, the software keyboard keeps its
-// game-language rows, and menu_text follows XCX_MENU_LANG.
+// game-language rows, and menu_text follows XC2_MENU_LANG.
 static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
@@ -851,11 +851,11 @@ static void probe_menu_text(void) {
     CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f"),
           "overlay format lost its conversion");
     // menu_text follows the setting live
-    cfg_set("XCX_MENU_LANG", "ru");
+    cfg_set("XC2_MENU_LANG", "ru");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("ru", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=ru");
-    cfg_set("XCX_MENU_LANG", "en");
+    cfg_set("XC2_MENU_LANG", "en");
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
-    cfg_set("XCX_MENU_LANG", "");
+    cfg_set("XC2_MENU_LANG", "");
     const char *sys = plat_ui_language();
     int ru = !strncmp(sys, "ru", 2);
     CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(ru ? "ru" : "en", UI_MENU_CONTINUE), "menu_text auto ignores the system language");
@@ -878,7 +878,7 @@ static void probe_main(Cpu *c) {
 }
 
 // ---- child processes
-// Runs this executable again with the same command line and XCX_PROBE_SERVICES_CHILD=<mode>; its stdout and stderr
+// Runs this executable again with the same command line and XC2_PROBE_SERVICES_CHILD=<mode>; its stdout and stderr
 // into out. Returns the exit code.
 static uint32_t run_child(const char *mode, const char *env, char *out, size_t cap) {
     char name[64] = "";

@@ -33,7 +33,7 @@ typedef struct {
     float replay_ms, gpu_ms, pipe_wait_ms, xlate_ms, tex_ms, tex_uploads;
 } PerfStats;
 
-// Overlay mode 0 off, 1 fps, 2 full (XCX_PERF_OVERLAY), from the present path when the setting changes. Full starts
+// Overlay mode 0 off, 1 fps, 2 full (XC2_PERF_OVERLAY), from the present path when the setting changes. Full starts
 // the machine sampling thread (twice a second) and turns on the event counts and GPU timestamps; leaving full stops
 // them. Off: perf_present skips perfmon_frame and nothing samples.
 void perfmon_mode(int mode);

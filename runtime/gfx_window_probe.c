@@ -1,6 +1,6 @@
 // --probe-window: presents 300 frames of a cycling clear colour through vk_present_image, reads the swapchain image back
 // and compares every pixel, measures the vsync rate, flips the focus state and drives the cursor release with synthetic
-// window events (the window back end's wsys_probe_*, gfx_wsys.h) and resizes the window. Run with XCX_VK_VALIDATION=1
+// window events (the window back end's wsys_probe_*, gfx_wsys.h) and resizes the window. Run with XC2_VK_VALIDATION=1
 // to count validation errors.
 #include <stdio.h>
 #include <string.h>

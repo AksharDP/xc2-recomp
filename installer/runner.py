@@ -2,7 +2,7 @@
 
 Each step has a key: a fingerprint of everything its output depends on, computed before anything runs (a step's key
 includes the keys of the steps it reads from, so a change upstream reaches every step below it). A step is skipped
-when xcx-install.json records it with the same key and its output still matches the record (Step.current, cheap).
+when xc2-install.json records it with the same key and its output still matches the record (Step.current, cheap).
 Otherwise it runs. A transient step (its output lives in the temp folder and only the next step reads it) runs only
 when the next step runs. `always` steps (check, cleanup) run every time.
 

@@ -110,7 +110,7 @@ static uint64_t level_offset(const nvn_texdesc *d, unsigned level, unsigned dpl,
 static int minimal_layout_on(void) {
     static _Atomic int enabled = -1;
     int value = atomic_load(&enabled);
-    if (value < 0) { const char *e = cfg_get("XCX_MINIMAL_LAYOUT"); value = !(e && !strcmp(e, "0")); atomic_store(&enabled, value); }
+    if (value < 0) { const char *e = cfg_get("XC2_MINIMAL_LAYOUT"); value = !(e && !strcmp(e, "0")); atomic_store(&enabled, value); }
     return value;
 }
 static uint64_t layer_bytes(const nvn_texdesc *d, unsigned dpl, int layered,

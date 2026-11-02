@@ -1,7 +1,7 @@
-// ASTC textures on the GPU: the XCX_ASTC knob, a compute decoder that turns raw blocks into the RGBA8 image the CPU
+// ASTC textures on the GPU: the XC2_ASTC knob, a compute decoder that turns raw blocks into the RGBA8 image the CPU
 // decoder (tex_astc.c) would have written, and the native ASTC formats where the device samples them itself.
 //
-// XCX_ASTC = auto (default): native when the device reports textureCompressionASTC_LDR and the format's features,
+// XC2_ASTC = auto (default): native when the device reports textureCompressionASTC_LDR and the format's features,
 // else gpu. gpu: compute decode into RGBA8 (runtime/shaders/astc_decode.comp). native: like auto, but logs when the
 // device cannot. cpu: astc_decode_ldr_mt on the uploading thread, as before. check: gpu, and every upload is also
 // decoded on the CPU and compared (waits for the GPU; for testing only).
@@ -106,7 +106,7 @@ static struct {
 } G = {.mode = -1};
 static uint64_t n_dispatch, n_texels, n_chunks;   // n_chunks: the breadcrumb number of the next scratch chunk
 
-// XCX_ASTC_TIME=1 (or vk_astc_time_enable): timestamps around the dispatches of each scratch chunk (the decode
+// XC2_ASTC_TIME=1 (or vk_astc_time_enable): timestamps around the dispatches of each scratch chunk (the decode
 // alone) and around a whole vk_astc_record call (one texture upload or WriteTexels: copies and barriers included),
 // read back by later calls. Per footprint: texels and dispatch time; a new largest call is logged with both times.
 // Needs hostQueryReset (a slot is reset on the host after its read).
@@ -130,7 +130,7 @@ static uint8_t t_max_fp;
 
 static void time_init(VkCtx *c) {   // t_lock held
     if (t_on < 0) {
-        const char *e = cfg_get("XCX_ASTC_TIME");
+        const char *e = cfg_get("XC2_ASTC_TIME");
         t_on = e && *e && *e != '0';
     }
     if (t_on <= 0 || (t_pool && t_dev == c->device)) return;
@@ -148,7 +148,7 @@ static void time_init(VkCtx *c) {   // t_lock held
     VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
                                 .queryCount = 2 * TQ};
     if (!f12.hostQueryReset || !bits || vkCreateQueryPool(c->device, &qi, NULL, &t_pool) != VK_SUCCESS) {
-        rt_log("vk: XCX_ASTC_TIME: no hostQueryReset or no timestamps on the queue; ASTC decodes not timed");
+        rt_log("vk: XC2_ASTC_TIME: no hostQueryReset or no timestamps on the queue; ASTC decodes not timed");
         t_pool = VK_NULL_HANDLE;
         t_on = 0;
         return;
@@ -306,13 +306,13 @@ int vk_astc_mode(void) {
     plat_mutex_lock(&g_lock);
     reset_for(c);
     if (G.mode < 0) {
-        const char *e = cfg_value("XCX_ASTC");
+        const char *e = cfg_value("XC2_ASTC");
         int want = !strcmp(e, "auto") ? -1 : !strcmp(e, "cpu") ? VK_ASTC_CPU : !strcmp(e, "gpu") ? VK_ASTC_GPU
                  : !strcmp(e, "native") ? VK_ASTC_NATIVE : !strcmp(e, "check") ? VK_ASTC_CHECK : -2;
-        if (want == -2) rt_log("vk: XCX_ASTC=%s is not cpu, gpu, native, check or auto: auto", e), want = -1;
+        if (want == -2) rt_log("vk: XC2_ASTC=%s is not cpu, gpu, native, check or auto: auto", e), want = -1;
         if ((want == -1 || want == VK_ASTC_NATIVE) && native_device(c)) m = VK_ASTC_NATIVE;
         else {
-            if (want == VK_ASTC_NATIVE) rt_log("vk: XCX_ASTC=native: the device lacks textureCompressionASTC_LDR; gpu");
+            if (want == VK_ASTC_NATIVE) rt_log("vk: XC2_ASTC=native: the device lacks textureCompressionASTC_LDR; gpu");
             m = want == VK_ASTC_CPU ? VK_ASTC_CPU : want == VK_ASTC_CHECK ? VK_ASTC_CHECK : VK_ASTC_GPU;
         }
         if ((m == VK_ASTC_GPU || m == VK_ASTC_CHECK || m == VK_ASTC_NATIVE) && !G.pipe && !G.failed &&

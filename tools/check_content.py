@@ -28,7 +28,7 @@ BLOCKED_SUFFIXES = {
 BLOCKED_NAMES = {"main", "sdk", "rtld", "subsdk0", "subsdk1", "main.npdm"}
 
 # Written by the code generator into every file it emits.
-GENERATED_MARKER = "XCX_RECOMP_" + "GENERATED_FROM_GAME_CODE"
+GENERATED_MARKER = "XC2_RECOMP_" + "GENERATED_FROM_GAME_CODE"
 
 # A prod.keys / title.keys line: name containing key, kek or seed, then hex.
 KEY_LINE = re.compile(

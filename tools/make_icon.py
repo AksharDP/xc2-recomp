@@ -1,4 +1,4 @@
-"""Draw runtime/xcx.ico: an original mark for XCX Recomp (no game artwork), a cyan X on a dark rounded square.
+"""Draw runtime/xc2.ico: an original mark for XC2 Recomp (no game artwork), a cyan X on a dark rounded square.
 
     .venv\\Scripts\\python tools\\make_icon.py
 
@@ -65,8 +65,8 @@ def main():
         out += struct.pack('<BBBBHHII', n % 256, n % 256, 0, 0, 1, 32, len(e), offset)
         offset += len(e)
     out += b''.join(entries)
-    (ROOT / 'runtime' / 'xcx.ico').write_bytes(out)
-    print(f'runtime/xcx.ico: {len(SIZES)} sizes, {len(out)} bytes')
+    (ROOT / 'runtime' / 'xc2.ico').write_bytes(out)
+    print(f'runtime/xc2.ico: {len(SIZES)} sizes, {len(out)} bytes')
 
 
 if __name__ == '__main__':

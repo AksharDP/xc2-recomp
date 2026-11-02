@@ -1,0 +1,5 @@
+/* The application manifest of xc2.exe (xc2.manifest) and its icon (xc2.ico, also the icon of XC2-Setup.exe and of
+   the installer window). tools/build_game.py compiles it with the runtime objects, so it is also a member of
+   libxc2rt.a, which the release links with --whole-archive. */
+1 24 "xc2.manifest"
+1 ICON "xc2.ico"

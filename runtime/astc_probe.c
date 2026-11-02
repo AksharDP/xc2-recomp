@@ -191,7 +191,7 @@ static int test_case(VkCtx *c, uint32_t bw, uint32_t bh, int srgb) {
 }
 
 // One 2048 x 2048 texture of valid blocks: the CPU worker-pool decode against the GPU time of the dispatches alone
-// (vk_astc.c timestamps, XCX_ASTC_TIME) and the wall time of the upload batch.
+// (vk_astc.c timestamps, XC2_ASTC_TIME) and the wall time of the upload batch.
 static void timing(VkCtx *c, uint32_t bw, uint32_t bh) {
     uint32_t w = 2048, h = 2048;
     size_t n = (size_t)((w + bw - 1) / bw) * ((h + bh - 1) / bh);
@@ -225,7 +225,7 @@ int probe_astc(void) {
            vk_astc_mode());
     int bad = 0;
     if (!vk_astc_gpu()) {
-        printf("probe-astc: FAIL the compute decoder is not available (XCX_ASTC=cpu or pipeline creation failed)\n");
+        printf("probe-astc: FAIL the compute decoder is not available (XC2_ASTC=cpu or pipeline creation failed)\n");
         bad = 1;
     }
     for (int i = 0; i < 14 && !bad; i++)

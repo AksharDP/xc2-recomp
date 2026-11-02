@@ -25,7 +25,7 @@ void kern_fiber_current(Cpu *c);
 
 uint64_t kern_threads_created(void);
 
-void kern_pc_sample_start(uint32_t ms);   // XCX_PC_SAMPLE
+void kern_pc_sample_start(uint32_t ms);   // XC2_PC_SAMPLE
 
 // The guest frame-pointer chain from c->x[29] to stderr.
 void kern_backtrace(const Cpu *c);

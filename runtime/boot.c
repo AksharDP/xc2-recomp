@@ -139,7 +139,7 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
 
 // ---- --seconds S
 // A PNG with stored (uncompressed) deflate blocks: no compression library, and the shot is only read by tools.
-// rt_write_png (declared in vk.h) is shared with the XCX_DUMP frame dump (vk_dump.c).
+// rt_write_png (declared in vk.h) is shared with the XC2_DUMP frame dump (vk_dump.c).
 static uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n) {
     static uint32_t table[256];
     if (!table[1])
@@ -224,9 +224,9 @@ static void save_shot(const tex_t *t, const char *path) {
     rt_logf("boot: shot %s (%ux%u)\n", path, w, h);
 }
 
-// XCX_SHOTS=lo-hi:step [XCX_SHOTS_DIR=dir]: every step-th present in [lo, hi] saved as <dir>/f<n>.png (n the
-// present), box-filtered to 480x270; XCX_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
-// present at or after each step (full size with XCX_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
+// XC2_SHOTS=lo-hi:step [XC2_SHOTS_DIR=dir]: every step-th present in [lo, hi] saved as <dir>/f<n>.png (n the
+// present), box-filtered to 480x270; XC2_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
+// present at or after each step (full size with XC2_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
 // pictures show what a player sees.
 static void series_shot(const tex_t *t, uint64_t n) {
     static int parsed;
@@ -234,14 +234,14 @@ static void series_shot(const tex_t *t, uint64_t n) {
     static const char *dir;
     static int full, world;
     if (!parsed) {
-        full = cfg_get("XCX_SHOTS_FULL") != NULL;
-        const char *e = cfg_get("XCX_SHOTS");
+        full = cfg_get("XC2_SHOTS_FULL") != NULL;
+        const char *e = cfg_get("XC2_SHOTS");
         double wl, wh, ws;
         if (e && e[0] == 'w' && sscanf(e + 1, "%lf-%lf:%lf", &wl, &wh, &ws) == 3 && ws > 0)   // world-clock seconds
             world = 1, lo = (unsigned long long)(wl * 1e6), hi = (unsigned long long)(wh * 1e6),
             step = (unsigned long long)(ws * 1e6), next = lo;
         else if (!e || sscanf(e, "%llu-%llu:%llu", &lo, &hi, &step) != 3 || !step) hi = 0;
-        dir = cfg_get("XCX_SHOTS_DIR") ? cfg_get("XCX_SHOTS_DIR") : ".";
+        dir = cfg_get("XC2_SHOTS_DIR") ? cfg_get("XC2_SHOTS_DIR") : ".";
         if (hi) plat_file_mkdir_p(dir);
         parsed = 1;
     }
@@ -257,7 +257,7 @@ static void series_shot(const tex_t *t, uint64_t n) {
     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
     uint32_t w = t->d.width, h = t->d.height, ow = full ? w : 480, oh = full ? h : 270;
     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
-    if (!px || !out) rt_fatal("boot: out of memory for a XCX_SHOTS frame");
+    if (!px || !out) rt_fatal("boot: out of memory for a XC2_SHOTS frame");
     view_t view;
     memset(&view, 0, sizeof view);
     NVNcopyRegion r = {.width = (int)w, .height = (int)h, .depth = 1};
@@ -283,9 +283,9 @@ static void series_shot(const tex_t *t, uint64_t n) {
     free(px);
 }
 
-// XCX_HANG_DUMP=<seconds>: when no frame was presented for that long, kern_hang_dump logs every guest thread's wait
+// XC2_HANG_DUMP=<seconds>: when no frame was presented for that long, kern_hang_dump logs every guest thread's wait
 // and call chain, once per stall. Started by the first present, so loading before it does not count.
-// XCX_STATE_DUMP=<seconds>: the same dump three times, that long after the first present and 0.3 s apart, stall or
+// XC2_STATE_DUMP=<seconds>: the same dump three times, that long after the first present and 0.3 s apart, stall or
 // not (what the threads wait for in a frame that runs slow).
 static volatile int64_t g_last_present_ms;
 
@@ -314,13 +314,13 @@ static void hang_note_present(void) {
     static volatile int32_t started;
     plat_xchg64(&g_last_present_ms, (int64_t)plat_now_ms());
     if (started || plat_xchg32(&started, 1)) return;
-    const char *e = cfg_get("XCX_HANG_DUMP");
+    const char *e = cfg_get("XC2_HANG_DUMP");
     long s = e ? strtol(e, NULL, 10) : 0;
     if (s > 0) plat_thread_detach(plat_thread_new(hang_watch, (void *)(uintptr_t)s, "hang_watch"));
-    e = cfg_get("XCX_STATE_DUMP");
+    e = cfg_get("XC2_STATE_DUMP");
     s = e ? strtol(e, NULL, 10) : 0;
     if (s > 0) plat_thread_detach(plat_thread_new(state_watch, (void *)(uintptr_t)s, "state_watch"));
-    e = cfg_get("XCX_PC_SAMPLE");
+    e = cfg_get("XC2_PC_SAMPLE");
     s = e ? strtol(e, NULL, 10) : 0;
     if (s > 0) kern_pc_sample_start((uint32_t)s);
 }
@@ -368,7 +368,7 @@ static void guest_main(Cpu *c) {
 static void prewarm_main(void *arg) {
     (void)arg;
     vk_pipeline_prewarm();
-    const char *prep = cfg_get("XCX_TEST_PREPARE_SHADERS");   // Task 2.3 test hook; Task 2.6 builds the preparation
+    const char *prep = cfg_get("XC2_TEST_PREPARE_SHADERS");   // Task 2.3 test hook; Task 2.6 builds the preparation
     if (prep && !strcmp(prep, "1")) {
         int cpus = (int)plat_cpu_count();
         gfx_shader_prepare_recorded(cpus, cpus / 2 > 16 ? 16 : cpus / 2 < 1 ? 1 : cpus / 2);

@@ -39,7 +39,7 @@ const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size);   // path
 const char *romfs_image_path(void);                        // the romfs.bin path fs_init opened
 size_t romfs_overlay_count(void);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
-void fs_trace(const char *what, const char *path);         // XCX_TRACE=fs: one line per open
+void fs_trace(const char *what, const char *path);         // XC2_TRACE=fs: one line per open
 
 // ---- fs_host.c
 int fs_aoc_list(int32_t *out, int offset, int count);       // add-on content indices present (fs_host.c)

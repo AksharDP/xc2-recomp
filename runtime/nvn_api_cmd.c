@@ -737,14 +737,14 @@ NVN_API(nvnCommandBufferSetPolygonOffsetClamp) {
     *REC(cmd_of(c), OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){arg_s(c, 0), arg_s(c, 1), arg_s(c, 2)};
 }
 // void nvnCommandBufferDrawArrays(NVNcommandBuffer *cmd, NVNdrawPrimitive prim, int first, int count)
-// XCX_DRAW_CALLERS=<frame> (diagnostic): for that presented frame and the next, every draw call logs its primitive,
+// XC2_DRAW_CALLERS=<frame> (diagnostic): for that presented frame and the next, every draw call logs its primitive,
 // count and the game's return addresses, walked through the AArch64 frame records (x29 -> {fp, lr}). A lifted
 // function stores x29 and x30 back before it calls the host, so the chain is the guest's own.
-// 1 inside the XCX_DRAW_CALLERS window (also used by EndRecording, CallCommands and QueueSubmitCommands)
+// 1 inside the XC2_DRAW_CALLERS window (also used by EndRecording, CallCommands and QueueSubmitCommands)
 int nvn_callers_on(void) {
     static int64_t from = -2;
     if (from == -2) {
-        const char *e = cfg_get("XCX_DRAW_CALLERS");
+        const char *e = cfg_get("XC2_DRAW_CALLERS");
         from = e && *e ? strtoll(e, NULL, 0) : -1;
     }
     if (from < 0) return 0;

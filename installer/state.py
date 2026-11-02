@@ -1,4 +1,4 @@
-"""xcx-install.json in the install folder: what built it and which steps finished.
+"""xc2-install.json in the install folder: what built it and which steps finished.
 
     {"format": 1, "release": "...", "lang": "en-US",
      "inputs": {"base": {"name", "size", "sha256"}, "update": {...}},
@@ -13,7 +13,8 @@ import json
 import os
 from pathlib import Path
 
-NAME = 'xcx-install.json'
+NAME = 'xc2-install.json'
+LEGACY = 'xcx-install.json'   # the name before the rename to XC2; load renames it when NAME is absent
 FORMAT = 1
 
 
@@ -30,6 +31,12 @@ def empty(release):
 def load(dest):
     """The state of dest, or None when the folder has none. StateError for an unreadable or newer file."""
     path = Path(dest) / NAME
+    legacy = Path(dest) / LEGACY
+    if legacy.is_file() and not path.exists():   # made before the rename to XC2: renamed before it is read
+        try:
+            os.replace(legacy, path)
+        except OSError:
+            raise StateError('state.unreadable', legacy) from None
     if not path.is_file():
         return None
     try:

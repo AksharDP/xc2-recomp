@@ -3,7 +3,7 @@
 A public release that turns the player's own *Xenoblade Chronicles 2* files into a playable folder. The release
 carries no game data and no code derived from the game: the installer builds the game on the player's machine. The
 installed folder holds only the game; the installer and its tools stay outside it. It is XCX Recomp's installer with
-XC2's inputs; file names inside the game folder (`xcx.exe`, `xcx.ini`) stay XCX Recomp's.
+XC2's inputs; file names inside the game folder (`xc2.exe`, `xc2.ini`) are XC2 Recomp's own, not XCX Recomp's.
 
 ## What the player does
 
@@ -14,26 +14,26 @@ XC2's inputs; file names inside the game folder (`xcx.exe`, `xcx.ini`) stay XCX 
    - their `prod.keys`;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `xcx.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
+4. Plays `xc2.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
 ```
 <install folder>/
-  xcx.exe, SDL3.dll, libopus-0.dll, xcx_xlate.exe
-  xcx.ini                       language; the other keys as commented defaults (xcx.ini.example)
+  xc2.exe, SDL3.dll, libopus-0.dll, xc2_xlate.exe
+  xc2.ini                       language; the other keys as commented defaults (xc2.ini.example)
   exefs/, romfs/                 extracted from the player's files (base merged with 3.0.1; RomFS about 13 GiB)
   aoc/<index>/                   each add-on's RomFS (about 4.6 GiB for all seven; packs 5 and 6 hold only a key file)
   profile/                       saves
-  logs/                          xcx.log of the last run, xcx.1.log to xcx.4.log of the runs before it
+  logs/                          xc2.log of the last run, xc2.1.log to xc2.4.log of the runs before it
   shader and pipeline caches     prepared by the setup
-  xcx-install.json              what built this folder: release version, input hashes, finished steps
+  xc2-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
 ## Updating the port
 
-The player runs a newer installer on the same folder. It reads `xcx-install.json`, keeps `romfs/`, `exefs/`, `aoc/`,
-`profile/` and `xcx.ini` after checking their hashes, rebuilds `xcx.exe` and re-prepares the shaders. A newer
+The player runs a newer installer on the same folder. It reads `xc2-install.json`, keeps `romfs/`, `exefs/`, `aoc/`,
+`profile/` and `xc2.ini` after checking their hashes, rebuilds `xc2.exe` and re-prepares the shaders. A newer
 release that changes nothing game-derived skips the rebuild. Add-on content can be added later: only the add-on step
 runs again.
 
@@ -50,14 +50,14 @@ runs again.
    `recomp/patches-v301.txt` is passed when it exists; XC2 has none yet. `patches-upd.txt` and the `v121`/`v143`
    tables are XCX's and never used.
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
-   and RomFS hashes) and link them with the prebuilt runtime library into `xcx.exe` (`build_game.py --runtime-lib`).
-6. **Prepare**: puts the shader translator beside `xcx.exe`. XC2 has no shader list to translate ahead of play yet, so
+   and RomFS hashes) and link them with the prebuilt runtime library into `xc2.exe` (`build_game.py --runtime-lib`).
+6. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
    shaders are translated on first use and cached in `shader-cache/`.
 7. **Clean up** the temp folder (generated C and objects).
 
 A full first install from the base game, 3.0.1 and all seven add-ons took about 8 minutes on a 24-core machine.
 
-A cancelled or failed setup resumes from the last finished step (`xcx-install.json`).
+A cancelled or failed setup resumes from the last finished step (`xc2-install.json`).
 
 ## Command line
 
@@ -73,7 +73,7 @@ beside the repository (`installer/layout.py` `tools_fallback`). It needs the run
 `tools/build_game.py --make-runtime-lib --out build/install-rtlib --expected tools/data/expected-xc2-3.0.1.json`
 with that release's `--toolchain` and `--ninja`.
 
-- On a folder with `xcx-install.json` only `--dest` is needed; the game files only when the extraction must run again.
+- On a folder with `xc2-install.json` only `--dest` is needed; the game files only when the extraction must run again.
 - stdout: one JSON event per line, types `start`, `plan`, `step` (started, done, skipped), `progress` (step, phase,
   done/total/unit), `space` (bytes needed and free on the install disk and the temp disk), `warning`, `error`, `end` (`installer/events.py`). Messages are ids with parameters;
   `installer/text/en.json` holds their English text. The human-readable log goes to `<temp>/logs/`.
@@ -86,7 +86,7 @@ with that release's `--toolchain` and `--ninja`.
 - Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form, step list with
   progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
   finish screen with Open folder. English or Russian, chosen from the Windows display language, switchable in the
-  window; every sentence is an id in `installer/text/<en|ru>.json`. A folder with `xcx-install.json` needs only the
+  window; every sentence is an id in `installer/text/<en|ru>.json`. A folder with `xc2-install.json` needs only the
   folder. `--selftest [--shots DIR]` builds every screen in both languages and closes itself.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and an extracted game; see its docstring).
@@ -103,10 +103,10 @@ installer/            the installer: steps, CLI, window, en/ru text catalog
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
-runtime/              libxcxrt.a and the headers the generated code and modules.c/romfs.c/patches.c include
-bin/                  xcx_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
+runtime/              libxc2rt.a and the headers the generated code and modules.c/romfs.c/patches.c include
+bin/                  xc2_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
 THIRD_PARTY_NOTICES.md
-xcx.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
+xc2.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
 
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
@@ -116,26 +116,26 @@ xcx.ini.example, VERSION  the default ini; the release string (the repository's 
 
 ## Linux release
 
-Not adapted to XC2 yet: `tools/make_release_linux.py` still names XCX-Setup and proves the build on XCX's
-`generated/upd`. What follows describes it as XCX Recomp ships it.
+Not tested with XC2 yet: `tools/make_release_linux.py` uses XC2's names and proves the build on `generated/v301`, but no
+Linux release of XC2 has been built.
 
-`tools/make_release_linux.py` builds the same setup for Linux and packs it as `XCX-Setup-<version>-linux.AppImage` (the static
+`tools/make_release_linux.py` builds the same setup for Linux and packs it as `XC2-Setup-<version>-linux.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
 Desktop Mode. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
-Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `xcx` there with
+Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `xc2` there with
 `libSDL3.so.0` beside it. The folder inside the AppImage:
 
 ```
 AppRun                starts python/bin/python3 -m installer.gui (no bytecode written into the read-only mount)
-xcx-setup.desktop, xcx-setup.png
-installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, xcx.ini.example, VERSION   as on Windows
+xc2-setup.desktop, xc2-setup.png
+installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION   as on Windows
 python/               python-build-standalone 3.14 (with tkinter) + the installer's packages; a .pth puts the folder,
                       tools/ and recomp/ on sys.path
 llvm/                 LLVM 23 (clang, lld, llvm-ar) and llvm/sysroot: the files of the Steam Runtime 3 "sniper" SDK the
                       game's compile and link read (about 130 files)
-runtime/              libxcxrt.a, headers, the install-side sources, xcx.png; deps/ with the Vulkan headers, VMA and a
+runtime/              libxc2rt.a, headers, the install-side sources, xc2.png; deps/ with the Vulkan headers, VMA and a
                       static zstd
-bin/                  xcx_xlate, hactool, ninja, libSDL3.so.0
+bin/                  xc2_xlate, hactool, ninja, libSDL3.so.0
 ```
 
 - What we compile is built against the sniper sysroot (glibc 2.31): the game, hostcheck, hactool and the translator
@@ -146,7 +146,7 @@ bin/                  xcx_xlate, hactool, ninja, libSDL3.so.0
   message on an older system.
 - The setup's temp folder is `.setup-temp` inside the install folder (`--temp` changes it): the AppImage is mounted
   read-only, and a Steam Deck's `/home` is often too full for the generated C while the game goes to the SD card.
-- The game keeps Mesa's shader cache in `mesa-cache` beside `xcx` unless `MESA_SHADER_CACHE_DIR` is set, for the
+- The game keeps Mesa's shader cache in `mesa-cache` beside `xc2` unless `MESA_SHADER_CACHE_DIR` is set, for the
   same reason: RADV fills its default folder in `~/.cache` up to 1 GB.
 - The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
@@ -162,7 +162,7 @@ bin/                  xcx_xlate, hactool, ninja, libSDL3.so.0
   ...`), which prints one JSON progress event per line. Tests and CI use the CLI.
 - Paths may hold any Unicode characters (a Cyrillic user name puts the temp and install folders under it). Every exe
   the setup runs or builds reads its arguments and paths as UTF-8 through an `activeCodePage` manifest: hactool
-  (our patch, [building.md](building.md)), xcx.exe (`runtime/xcx.rc`), ninja (upstream). The Python steps write
+  (our patch, [building.md](building.md)), xc2.exe (`runtime/xc2.rc`), ninja (upstream). The Python steps write
   their files and logs as UTF-8, and `build_game.py` quotes paths with spaces on its Ninja command lines.
 - A game file whose data fails its hash checks or ends early stops the setup with `check.input_damaged`, which names
   the file and asks to copy it again (`extract.DamagedFile`). A failed merge checks the base Program NCA alone to tell

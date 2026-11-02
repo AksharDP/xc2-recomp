@@ -6,14 +6,14 @@
 // {docked width, height, handheld width, height}, shipped {1920, 1080, 1280, 720}. Its users (main+0x971a30,
 // +0x9ca190, +0xa478d8) take the frame size and the aspect ratio from it, so a wider table widens the 3D view as well.
 // The mods rewrite the table; res_init writes it once the modules are loaded, before the game runs: the docked size is
-// XCX_OUTPUT_RES = <w>x<h> (default 1920x1080), the handheld size half of it.
+// XC2_OUTPUT_RES = <w>x<h> (default 1920x1080), the handheld size half of it.
 //
 // One more site reads the table: main+0x9ccce0 sizes two buffers from a width it loads (main+0x9cccec) and the table's
 // docked height (main+0x9ccd00). The mods replace both loads with sizes of their own that differ per mod (1280x720 at
 // 3840x2160, 1920x1080 at 2560x1440, none at 5160x2160). The patch set "resbuf" (recomp/patches-upd.txt) loads them
-// from the patch page's +0x50 and +0x54 instead: XCX_RES_BUFFER = <w>x<h> switches it on, unset keeps the game's.
+// from the patch page's +0x50 and +0x54 instead: XC2_RES_BUFFER = <w>x<h> switches it on, unset keeps the game's.
 //
-// XCX_RENDER_SCALE sets the share of the game resolution the 3D scene draws in. The game picks that share itself by
+// XC2_RENDER_SCALE sets the share of the game resolution the 3D scene draws in. The game picks that share itself by
 // dynamic resolution (at 100 % in every run so far, even at 19 fps), only inside its full-size render targets, so a scale
 // above 100 would draw outside them: the patch sets "scene" and "scenefull" (recomp/patches-upd.txt) replace the game's
 // share with a fixed smaller or a whole one, and a higher value counts as 100. "game" keeps the dynamic one. Supersampling
@@ -36,7 +36,7 @@ static struct {
     int decided;
     unsigned ow, oh;   // output (docked)
     int on;            // res_init wrote the table
-    int scale;         // XCX_RENDER_SCALE in percent, 0 for the game's own
+    int scale;         // XC2_RENDER_SCALE in percent, 0 for the game's own
 } R;
 
 static int parse(const char *s, unsigned *w, unsigned *h) {
@@ -49,24 +49,24 @@ static void decide(void) {
     R.decided = 1;
     R.ow = BASE_W;
     R.oh = BASE_H;
-    const char *o = cfg_value("XCX_OUTPUT_RES");
+    const char *o = cfg_value("XC2_OUTPUT_RES");
     unsigned w, h;
     if (parse(o, &w, &h)) {
         R.ow = w & ~1u;
         R.oh = h & ~1u;
     } else {
-        rt_log("resolution: XCX_OUTPUT_RES=%s is not <width>x<height> in 640x360..7680x4320; 1920x1080", o);
+        rt_log("resolution: XC2_OUTPUT_RES=%s is not <width>x<height> in 640x360..7680x4320; 1920x1080", o);
     }
-    const char *s = cfg_value("XCX_RENDER_SCALE");
+    const char *s = cfg_value("XC2_RENDER_SCALE");
     int pct = s ? atoi(s) : 0;
     if (pct >= 25) {
         R.scale = pct > 100 ? 100 : pct;
     } else if (s && strcmp(s, "game")) {
-        rt_log("resolution: XCX_RENDER_SCALE=%s is not game or a percentage from 25; the game's own", s);
+        rt_log("resolution: XC2_RENDER_SCALE=%s is not game or a percentage from 25; the game's own", s);
     }
 }
 
-// Switches the game's scene scale for XCX_RENDER_SCALE; unset keeps the game's.
+// Switches the game's scene scale for XC2_RENDER_SCALE; unset keeps the game's.
 static void scene_scale(void) {
     int part = rt_patch_set("scene"), full = rt_patch_set("scenefull");
     uint8_t *page = rt_patch_page();
@@ -106,7 +106,7 @@ void res_init(void) {
     int resbuf = rt_patch_set("resbuf");
     uint8_t *page = rt_patch_page();
     // patches.c switched the set on for any value but 0; only a size keeps it on.
-    if (resbuf >= 0 && page && parse(cfg_get("XCX_RES_BUFFER"), &bw, &bh)) {
+    if (resbuf >= 0 && page && parse(cfg_get("XC2_RES_BUFFER"), &bw, &bh)) {
         uint32_t v[2] = {bw, bh};
         memcpy(page + 0x50, v, sizeof v);
         rt_patch_switch(resbuf, 1);

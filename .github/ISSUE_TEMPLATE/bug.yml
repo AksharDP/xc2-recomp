@@ -9,7 +9,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: The title line of the settings menu (F1), for example "XCX Recomp 0.1.0, game 1.4.3".
+      description: The title line of the settings menu (F1), for example "XC2 Recomp 0.1.0, game 3.0.1".
     validations:
       required: true
   - type: input
@@ -29,4 +29,4 @@ body:
     id: log
     attributes:
       label: Log
-      description: Attach logs\xcx.log from the folder of xcx.exe. After a crash, copy it before you start the game again.
+      description: Attach logs\xc2.log from the folder of xc2.exe. After a crash, copy it before you start the game again.

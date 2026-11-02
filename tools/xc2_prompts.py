@@ -1,4 +1,4 @@
-"""Make XC2's Xbox, PlayStation and keyboard button prompts (runtime/prompts.c, XCX_PROMPTS) from the player's archive.
+"""Make XC2's Xbox, PlayStation and keyboard button prompts (runtime/prompts.c, XC2_PROMPTS) from the player's archive.
 
 XC2 draws its button prompts from textures: the [ML:icon icon=<name>] tags of the BDAT messages draw cells of the
 512x256 BC3 atlas at the end of menu/image/button.wilay (8x4 cells of 64 pixels), and some layouts carry their own
@@ -9,7 +9,7 @@ probes. The Switch prompts are the game's own and need no files.
 
 The icons take the atlas's style: a white face, the letters or symbols in the game's blue (the face buttons in their
 console's colours), a blue rim and a glow. Sets, one folder each:
-  xbox, playstation                    gamepad layout Xbox (XCX_PAD_LAYOUT, runtime/input_map.h): Switch A is the
+  xbox, playstation                    gamepad layout Xbox (XC2_PAD_LAYOUT, runtime/input_map.h): Switch A is the
                                        bottom button, Xbox A, PlayStation cross
   xbox_nintendo, playstation_nintendo  Nintendo layout: Switch A is the right button, Xbox B, PlayStation circle
   keyboard                             the default keys and mouse buttons (runtime/input_map.c DEFAULT_KEYS)
@@ -17,7 +17,7 @@ Only the texture blocks under a replaced cell are re-encoded; every other byte o
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, tools/extract.py). Output: <out>/<set>/menu/image/
 <file>.wilay and <out>/manifest.tsv (set, path, size, SHA-256), by default build/<version>/prompts, which
-tools/build_game.py copies next to xcx.exe. Nothing it writes may be committed. --png <dir> also writes every texture
+tools/build_game.py copies next to xc2.exe. Nothing it writes may be committed. --png <dir> also writes every texture
 before and after as PNG; --survey <dir> writes the textures of the image layouts whose names match --match as PNG, to
 look for more button art. Runs on either Python: no third-party modules.
 """

@@ -5,7 +5,7 @@ XC2 Recomp loads the same mods as Switch emulators and Atmosphere: replaced game
 
 ## Install a mod
 
-1. Open the `mods` folder next to `xcx.exe`. In game, press F1, go to the Mods tab and choose **Open mods folder**. The
+1. Open the `mods` folder next to `xc2.exe`. In game, press F1, go to the Mods tab and choose **Open mods folder**. The
    game creates the folder if it does not exist.
 2. Unpack each mod into its own folder, `mods\<any name>\`. Keep the folders the mod came with. These layouts all work:
 
@@ -38,13 +38,13 @@ On the Mods tab:
 - If two mods change the same file, the higher one wins.
 - Changes take effect the next time you start the game.
 
-The menu saves the list to `xcx.ini`:
+The menu saves the list to `xc2.ini`:
 
 ```ini
 [mods]
 mods_order = Better Battles|X2plus|My Music   # top first, names separated by |
 mods_disabled = My Music                      # turned off
-# mods_dir = D:\XC2 mods                       # a different mods folder (default: mods next to xcx.exe)
+# mods_dir = D:\XC2 mods                       # a different mods folder (default: mods next to xc2.exe)
 ```
 
 Folders missing from `mods_order` go below the listed ones, sorted by name.
@@ -93,7 +93,7 @@ mods\<mod>\cheats\4F5C96E2D97F45AC.txt
 
 Upper or lower case in the name does not matter. Files for other game versions have another build id and are not read.
 
-The Cheats tab lists the cheats by mod. Every cheat starts off. Your choices are saved in `xcx.ini` under `[cheats]` as
+The Cheats tab lists the cheats by mod. Every cheat starts off. Your choices are saved in `xc2.ini` under `[cheats]` as
 `cheat_<hash> = 1`.
 
 | Kind of cheat | What happens |
@@ -134,8 +134,8 @@ version. Renaming them does not help: their offsets point at different code in 3
 
 ### Replace or add a file
 
-1. Find the file and where the game looks for it. Set `XCX_TRACE=fs` as an environment variable, or `trace = fs` under
-   `[diagnostics]` in `xcx.ini`. The log then lists every file the game opens, for example `read aoc1:/bdat/common.bdat`
+1. Find the file and where the game looks for it. Set `XC2_TRACE=fs` as an environment variable, or `trace = fs` under
+   `[diagnostics]` in `xc2.ini`. The log then lists every file the game opens, for example `read aoc1:/bdat/common.bdat`
    followed by reads of `bf2.ard`.
 2. Get the original file:
    - Loose files (`stream\`) are in the installed `romfs\romfs.bin`.
@@ -143,7 +143,7 @@ version. Renaming them does not help: their offsets point at different code in 3
    - Add-on content files are in the install's `aoc\<pack>\` folders.
 3. Put your file at the same path under `mods\<your mod>\atmosphere\contents\<title id>\romfs\`. For an archived file,
    use an add-on content title id. For a loose file, use `0100E95004038000`, or put it straight under `romfs\`.
-4. Restart the game and read the log. `mods: <your mod>: on, ...` lists what the game found. With `XCX_TRACE=fs`, the
+4. Restart the game and read the log. `mods: <your mod>: on, ...` lists what the game found. With `XC2_TRACE=fs`, the
    line `read from a mod <path>` (add-on content) or `rom from an overlay <path>` (base game) shows the game reading
    your file.
 

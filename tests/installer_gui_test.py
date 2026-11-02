@@ -4,7 +4,7 @@
 
 The end-to-end test runs the real CLI in --verify mode on a finished install (every step skips) and folds its events
 through the same code the window uses (the fixture's step keys are recomputed for the checkout under test, because the keys fingerprint recomp/, tools/ and runtime/). The install is build/inst-gui/e2e-install: hard links to build/install-test, so
-nothing there is written, except the state file and xcx.ini, which a run rewrites and which are copied. The run hashes
+nothing there is written, except the state file and xc2.ini, which a run rewrites and which are copied. The run hashes
 the 17 GB RomFS; it is skipped when the hash differs from the expected one in all three tries. On the developer machine
 (RAM with a bad bit) a buffered read of a file sometimes returns flipped bits from the page cache while the file on
 disk is intact (an unbuffered read of install-test's romfs.bin gives the expected hash), so such a skip is the machine,
@@ -36,7 +36,7 @@ from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
-COPIED = ('xcx.ini', statefile.NAME)   # written by a run, so never linked
+COPIED = ('xc2.ini', statefile.NAME)   # written by a run, so never linked
 START = {'type': 'start', 'release': 'r1', 'mode': 'install', 'dest': 'D:\\T', 'log': 'D:\\T.log',
          'steps': ['check', 'extract', 'lift', 'compile', 'prepare', 'cleanup']}
 

@@ -318,7 +318,7 @@ uintptr_t plat_exe_base(void);                            // where the executabl
 int plat_module_of(uintptr_t addr, char *name, size_t cap, uintptr_t *base);
 #define PLAT_PATH_MAX 1024   // path buffers of the runtime
 #ifdef _WIN32
-#define PLAT_EXE_SUFFIX ".exe"   // of the programs the runtime starts (xcx_xlate)
+#define PLAT_EXE_SUFFIX ".exe"   // of the programs the runtime starts (xc2_xlate)
 #else
 #define PLAT_EXE_SUFFIX ""
 #endif

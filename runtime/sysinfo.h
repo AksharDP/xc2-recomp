@@ -7,13 +7,13 @@ extern "C" {
 #endif
 
 // Plain text, one item per line: OS and build, CPU, RAM, the GPU and its driver as the Vulkan device reports them, and
-// every setting with a value (xcx.ini, the menu, the environment). Technical text for the developers, in English like
+// every setting with a value (xc2.ini, the menu, the environment). Technical text for the developers, in English like
 // the log. The length written (truncated to n - 1), or 0 on failure.
 int sysinfo_text(char *buf, size_t n);
 // The CPU's brand string ("AMD Ryzen 7 7800X3D 8-Core Processor"); "" when the CPU has none.
 void sysinfo_cpu_name(char *out, size_t n);
-// The folder with the log: the folder of logs\xcx.log when this run writes it, else of the file stderr goes to, else
-// of xcx.exe. 0 on failure.
+// The folder with the log: the folder of logs\xc2.log when this run writes it, else of the file stderr goes to, else
+// of xc2.exe. 0 on failure.
 int sysinfo_log_folder(char *out, size_t n);
 
 #ifdef __cplusplus

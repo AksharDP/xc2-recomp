@@ -18,12 +18,12 @@ static char dir[1200];               // prompts/<set> of the chosen set, "" for 
 static char *files[MAX_FILES];       // the set's paths from the manifest
 static int nfiles;
 
-// The set XCX_PROMPTS and the gamepad pick: a folder of tools/xc2_prompts.py, NULL for the game's own prompts.
+// The set XC2_PROMPTS and the gamepad pick: a folder of tools/xc2_prompts.py, NULL for the game's own prompts.
 static const char *pick(const char **why) {
-    const char *v = cfg_value("XCX_PROMPTS");
+    const char *v = cfg_value("XC2_PROMPTS");
     int south = PAD_LABEL_NONE, layout = PAD_LAYOUT_XBOX;
     int pad = input_pad_identity(&south, &layout);
-    if (!pad) layout = input_pad_layout_pick(cfg_value("XCX_PAD_LAYOUT"), 0);
+    if (!pad) layout = input_pad_layout_pick(cfg_value("XC2_PAD_LAYOUT"), 0);
     const char *kind = v;
     *why = "prompts = ";
     if (!strcmp(v, "auto")) {
@@ -40,7 +40,7 @@ static const char *pick(const char **why) {
 static void init(void *arg) {
     (void)arg;
     const char *why = NULL, *set = pick(&why);
-    const char *v = cfg_value("XCX_PROMPTS");
+    const char *v = cfg_value("XC2_PROMPTS");
     if (!set) {
         rt_log("prompts: the game's own (%s%s)", why, !strcmp(why, "prompts = ") ? v : "");
         return;

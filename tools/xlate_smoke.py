@@ -1,4 +1,4 @@
-"""Smoke test for build/xlate/xcx_xlate(.exe): no game files needed.
+"""Smoke test for build/xlate/xc2_xlate(.exe): no game files needed.
 
 Sends one hand-assembled Maxwell fragment shader (writes the constant colour 1.0, 0.5, 0.25, 1.0 to render target 0)
 through --serve, checks the reply, validates the SPIR-V with spirv-val, then sends a malformed line and checks the
@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXE = ROOT / "build" / "xlate" / ("xcx_xlate.exe" if os.name == "nt" else "xcx_xlate")
+EXE = ROOT / "build" / "xlate" / ("xc2_xlate.exe" if os.name == "nt" else "xc2_xlate")
 SPIRV_VAL = (Path(r"C:\msys64\ucrt64\bin\spirv-val.exe") if os.name == "nt"
              else Path(shutil.which("spirv-val") or "/usr/bin/spirv-val"))
 

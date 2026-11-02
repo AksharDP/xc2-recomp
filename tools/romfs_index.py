@@ -84,7 +84,7 @@ def write(romfs, out):
 
 
 def write_placeholder(out):
-    """romfs_config.h without a RomFS (no extracted game on this machine): xcx.exe builds, and fs_init stops with a
+    """romfs_config.h without a RomFS (no extracted game on this machine): xc2.exe builds, and fs_init stops with a
     named fatal."""
     (out / 'romfs-index.bin').unlink(missing_ok=True)
     config = (f'// No RomFS found by tools/romfs_index.py; do not edit. {GENERATED_MARKER}\n'

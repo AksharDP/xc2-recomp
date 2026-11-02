@@ -1,6 +1,6 @@
 // The SDL3 back end of the window (gfx_wsys.h), for hosts without Win32: the window on a thread of its own that also
-// runs SDL's event loop, F11 fullscreen (borderless, the desktop's mode), the settings XCX_WINDOW_SIZE and
-// XCX_FULLSCREEN, the display's refresh rate, focus, the Vulkan surface. The swapchain and the present are
+// runs SDL's event loop, F11 fullscreen (borderless, the desktop's mode), the settings XC2_WINDOW_SIZE and
+// XC2_FULLSCREEN, the display's refresh rate, focus, the Vulkan surface. The swapchain and the present are
 // gfx_present.c's. Keyboard and mouse events go to input_sdl.c and to the menu (ui/menu_sdl.cpp).
 //
 // SDL wants its video calls on the thread that initialised video, so this thread does them all: the others hand it
@@ -8,7 +8,7 @@
 // exists: the Vulkan instance asks for SDL's surface extensions first (gfx_window_vk_extensions), the window comes with
 // gfx_window_start (wsys_open).
 //
-// XCX_WINDOW_SIZE is in pixels. On a display that scales windows (Wayland, HiDPI) the window asks for its pixels in
+// XC2_WINDOW_SIZE is in pixels. On a display that scales windows (Wayland, HiDPI) the window asks for its pixels in
 // the display's units (SDL_GetWindowDisplayScale), and SDL reports mouse positions in those units: input_sdl.c and the
 // menu scale them back (gfx_window_sdl_density).
 #include <stdio.h>
@@ -69,7 +69,7 @@ static char g_applied_size[32];
 static int g_applied_fs;
 
 static void note_applied(void) {
-    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("XCX_WINDOW_SIZE"));
+    snprintf(g_applied_size, sizeof g_applied_size, "%s", cfg_value("XC2_WINDOW_SIZE"));
     g_applied_fs = gfx_cfg_fullscreen();
 }
 
@@ -92,7 +92,7 @@ static void set_fullscreen(int on) {
 // Window thread: the window takes the size and fullscreen state of the settings when they changed. A window resized by
 // hand keeps its size when another setting changes.
 static void apply_settings(void) {
-    int size_changed = strcmp(cfg_value("XCX_WINDOW_SIZE"), g_applied_size) != 0, fs = gfx_cfg_fullscreen();
+    int size_changed = strcmp(cfg_value("XC2_WINDOW_SIZE"), g_applied_size) != 0, fs = gfx_cfg_fullscreen();
     int fs_changed = fs != g_applied_fs;
     note_applied();
     if (size_changed) {
@@ -156,7 +156,7 @@ static void handle(const SDL_Event *e) {
     case SDL_EVENT_KEY_DOWN:
         if (e->key.scancode == SDL_SCANCODE_F11 && !e->key.repeat) {
             set_fullscreen(!is_fullscreen());
-            cfg_set("XCX_FULLSCREEN", is_fullscreen() ? "1" : "0");   // the menu shows it; the next start keeps it
+            cfg_set("XC2_FULLSCREEN", is_fullscreen() ? "1" : "0");   // the menu shows it; the next start keeps it
             cfg_save();
             note_applied();
         }
@@ -188,7 +188,7 @@ static void handle(const SDL_Event *e) {
 static void window_main(void *arg) {
     (void)arg;
     g_window_tid = plat_thread_id();
-    SDL_SetHint(SDL_HINT_APP_ID, "xcx-recomp");   // Wayland's app id: the desktop file and the taskbar match it
+    SDL_SetHint(SDL_HINT_APP_ID, "xc2-recomp");   // Wayland's app id: the desktop file and the taskbar match it
     SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "0");
     g_video_ok = SDL_Init(SDL_INIT_VIDEO);
     if (!g_video_ok) rt_log("gfx: SDL video init failed (%s)", SDL_GetError());
@@ -256,7 +256,7 @@ static void open_window(void *arg) {
     density_update();
     note_applied();
     refresh_rate_update();
-    if (cfg_get("XCX_BACKGROUND_WINDOW")) rt_log("gfx: XCX_BACKGROUND_WINDOW has no effect with SDL windows");
+    if (cfg_get("XC2_BACKGROUND_WINDOW")) rt_log("gfx: XC2_BACKGROUND_WINDOW has no effect with SDL windows");
     if (gfx_cfg_fullscreen()) SDL_SetWindowFullscreen(g_win, true);
     SDL_SyncWindow(g_win);
     input_sdl_window(g_win);

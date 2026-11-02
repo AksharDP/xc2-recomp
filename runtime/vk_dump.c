@@ -1,8 +1,8 @@
-// XCX_DUMP=<frame>: a frame dump for the Vulkan back end, which RenderDoc cannot capture (it hides
+// XC2_DUMP=<frame>: a frame dump for the Vulkan back end, which RenderDoc cannot capture (it hides
 // VK_EXT_external_memory_host). Between presents frame-1 and frame, the replay's command buffers also copy, after each
 // render pass, its colour and depth targets and, after each dispatch, the storage images it writes into host buffers;
 // the completion thread turns them into 8-bit PNGs once the submission is done. 3D textures (LUTs, volumes) sampled or
-// written in the frame are copied once each, slices side by side. Files in XCX_DUMP_DIR (default "dump"):
+// written in the frame are copied once each, slices side by side. Files in XC2_DUMP_DIR (default "dump"):
 //   pass_<seq>_t<i>_<w>x<h>_<vkformat>_<name>.png   colour target i (td: depth; img<slot>: storage image; lut<id>: 3D;
 //                                                    a BC target drawn through a block view: its blocks as that view)
 //   ..._tm.png                                       float formats: x/(1+x) of the same image (the plain one clamps)
@@ -11,21 +11,21 @@
 //   images.txt   per image: channel min/max, distinct texel values over the image and over its top quarter
 // Sampled 8-bit 2D textures up to TEX2D_CAP texels are copied once each as pass_<seq>_tex<id>_... at the end of the pass
 // that samples them; texture lines carry the storage address, mirror state, upload count and the image's and slot's
-// swizzle. Copies and texture clears are logged as "copy/clear after pass N". XCX_DUMP_LOG=<from> also logs the
-// frames from..frame-1 to passes.txt, with PNGs only of targets up to 64K texels. XCX_DUMP_BUF=<addr>:<size>[:...]
+// swizzle. Copies and texture clears are logged as "copy/clear after pass N". XC2_DUMP_LOG=<from> also logs the
+// frames from..frame-1 to passes.txt, with PNGs only of targets up to 64K texels. XC2_DUMP_BUF=<addr>:<size>[:...]
 // snapshots one GPU buffer range after every logged pass (buf_<pass>.bin and bufs.txt, see buf_snap).
 // PNGs are opaque (alpha dropped). Integer formats are scaled by the image maximum, depth by its min..max range, SNORM
 // as x/2+1/2, UNORM and sRGB bytes written as stored. Caps: MAX_PASSES passes copied, PNG_CAP bytes of PNGs.
-// XCX_DUMP_TEX=<id>|<w>x<h>[,...]: those texture slots, or 2D textures of that size, are copied where first sampled,
+// XC2_DUMP_TEX=<id>|<w>x<h>[,...]: those texture slots, or 2D textures of that size, are copied where first sampled,
 // whatever their format.
-// XCX_DUMP_UBO=1: each listed pipeline also prints the first 16 vec4 of its user uniform blocks (c3 and up), read from
+// XC2_DUMP_UBO=1: each listed pipeline also prints the first 16 vec4 of its user uniform blocks (c3 and up), read from
 // guest memory when the entry is listed. A block the submission rewrites with UpdateUniformBuffer shows its value from
 // before the submission (vk_exec_draw.c upd_note).
-// XCX_DUMP_ONLY=<w>x<h>: only images of that size are copied (the others still count as logged), so passes late in
+// XC2_DUMP_ONLY=<w>x<h>: only images of that size are copied (the others still count as logged), so passes late in
 // the frame are reached before the PNG cap.
-// XCX_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
+// XC2_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
 // (the terrain decals draw one pass each into the G-buffer and would use up both caps).
-// XCX_DUMP_PASS=<lo>[-<hi>]: passes and dispatches numbered lo..hi are copied even when a skip run would drop them, so
+// XC2_DUMP_PASS=<lo>[-<hi>]: passes and dispatches numbered lo..hi are copied even when a skip run would drop them, so
 // a G-buffer pass that follows another pass into the same targets can be inspected.
 #include <math.h>
 #include <stdarg.h>
@@ -48,18 +48,18 @@
 #define TEX2D_CAP (1u << 20)        // texels of a sampled 2D texture that is dumped
 
 int vk_dump_armed;
-static uint64_t dump_frame, log_from;   // log_from: XCX_DUMP_LOG, first frame logged to passes.txt without images
+static uint64_t dump_frame, log_from;   // log_from: XC2_DUMP_LOG, first frame logged to passes.txt without images
 static char dir[400];
 static FILE *passes_f, *images_f;
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
-static int skip_runs, dump_ubo;        // XCX_DUMP_SKIP_RUNS, XCX_DUMP_UBO
-static int pass_lo = -1, pass_hi = -1; // XCX_DUMP_PASS: passes/dispatches always copied
-static uint32_t want_tex[16][2];       // XCX_DUMP_TEX: slot id and 0, or width and height
+static int skip_runs, dump_ubo;        // XC2_DUMP_SKIP_RUNS, XC2_DUMP_UBO
+static int pass_lo = -1, pass_hi = -1; // XC2_DUMP_PASS: passes/dispatches always copied
+static uint32_t want_tex[16][2];       // XC2_DUMP_TEX: slot id and 0, or width and height
 static int nwant_tex;
 static uint64_t last_targets;          // targets_sig of the last render pass; 0 after a dispatch
 static const char *pass_skip;          // why the current pass copies nothing, or NULL
 static volatile int64_t png_bytes, inflight;
-static uint32_t only_w, only_h;   // XCX_DUMP_ONLY=<w>x<h>: copy images of that size only
+static uint32_t only_w, only_h;   // XC2_DUMP_ONLY=<w>x<h>: copy images of that size only
 static PlatMutex rec_lock = PLAT_MUTEX_INIT, img_lock = PLAT_MUTEX_INIT;
 
 // ---- formats
@@ -302,7 +302,7 @@ static const char *copy_region(VkExec *ex, VkImage image, VkFormat vf, VkImageAs
     else if (aspect != VK_IMAGE_ASPECT_COLOR_BIT) return "stencil only";
     uint64_t bytes = (uint64_t)w * h * d * f->bytes;
     uint64_t est = ((uint64_t)h * (1 + 4ull * w * d) + 128) * (mode_of(f) == M_FLOAT ? 2 : 1);
-    if (only_w && (w != only_w || h != only_h)) return "not the XCX_DUMP_ONLY size";
+    if (only_w && (w != only_w || h != only_h)) return "not the XC2_DUMP_ONLY size";
     if ((uint64_t)png_bytes + est > PNG_CAP) return "PNG cap reached";
     if ((uint64_t)inflight + bytes > INFLIGHT_CAP) return "too many copies in flight";
     Job *j = calloc(1, sizeof *j);
@@ -347,7 +347,7 @@ static const char *copy_out(VkExec *ex, VkImage image, VkFormat vf, VkImageAspec
     return copy_region(ex, image, vf, aspect, level, layer, 0, (VkExtent3D){w, h, d}, w, h, d, name);
 }
 
-// ---- XCX_DUMP_BUF=<addr>:<size>[:<off>:<stride>:<w>:<h>]: after every pass and dispatch that is logged, the GPU
+// ---- XC2_DUMP_BUF=<addr>:<size>[:<off>:<stride>:<w>:<h>]: after every pass and dispatch that is logged, the GPU
 // buffer range is copied to a host buffer; when it differs from the previous copy it goes to buf_<pass>.bin, and
 // bufs.txt gets the changed bytes' extent plus, with the grid arguments, one map per dword of the w x h records of
 // `stride` bytes at `off` (each record a letter: its value's index in the table under the map).
@@ -913,30 +913,30 @@ void vk_dump_note(const char *fmt, ...) {
 static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
 void vk_dump_init(void) {
-    const char *e = cfg_get("XCX_DUMP");
+    const char *e = cfg_get("XC2_DUMP");
     if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
-    const char *lf = cfg_get("XCX_DUMP_LOG");
+    const char *lf = cfg_get("XC2_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
-    const char *sr = cfg_get("XCX_DUMP_SKIP_RUNS");
+    const char *sr = cfg_get("XC2_DUMP_SKIP_RUNS");
     skip_runs = sr && *sr && *sr != '0';
-    const char *pp = cfg_get("XCX_DUMP_PASS");
+    const char *pp = cfg_get("XC2_DUMP_PASS");
     if (pp && *pp) {
         char *q;
         long lo = strtol(pp, &q, 10);
         long hi = *q == '-' ? strtol(q + 1, NULL, 10) : lo;
         if (lo >= 0 && hi >= lo) pass_lo = (int)lo, pass_hi = (int)hi;
     }
-    const char *du = cfg_get("XCX_DUMP_UBO");
+    const char *du = cfg_get("XC2_DUMP_UBO");
     dump_ubo = du && *du && *du != '0';
-    const char *only = cfg_get("XCX_DUMP_ONLY");
+    const char *only = cfg_get("XC2_DUMP_ONLY");
     if (only && sscanf(only, "%ux%u", &only_w, &only_h) != 2) only_w = only_h = 0;
-    const char *wt = cfg_get("XCX_DUMP_TEX");
+    const char *wt = cfg_get("XC2_DUMP_TEX");
     for (char *q = (char *)wt; q && *q && nwant_tex < 16; q += *q == ',') {
         uint32_t *w = want_tex[nwant_tex++];
         w[0] = (uint32_t)strtoul(q, &q, 10);
         w[1] = *q == 'x' ? (uint32_t)strtoul(q + 1, &q, 10) : 0;
     }
-    const char *d = cfg_get("XCX_DUMP_DIR");
+    const char *d = cfg_get("XC2_DUMP_DIR");
     snprintf(dir, sizeof dir, "%s", d && *d ? d : "dump");
     make_dirs(dir);
     char path[600];
@@ -945,7 +945,7 @@ void vk_dump_init(void) {
     snprintf(path, sizeof path, "%s/images.txt", dir);
     images_f = fopen(path, "w");
     if (!passes_f || !images_f) rt_fatal("vk_dump: cannot write to %s", dir);
-    const char *bf = cfg_get("XCX_DUMP_BUF");
+    const char *bf = cfg_get("XC2_DUMP_BUF");
     if (bf && *bf) {
         char *q;
         bd_addr = strtoull(bf, &q, 0);

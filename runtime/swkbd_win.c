@@ -2,7 +2,7 @@
 // thread that called. The text starts as the game's initial text, else a default name from the catalog (ui_text.c),
 // selected, so a controller can confirm it: A = OK, B = cancel (each after it was seen released); Enter / Esc and the
 // buttons work too.
-//   XCX_SWKBD_TEST=ok|cancel   open the window, then press OK / Cancel on the first timer tick
+//   XC2_SWKBD_TEST=ok|cancel   open the window, then press OK / Cancel on the first timer tick
 #include <windows.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,7 +29,7 @@ typedef struct {
     size_t n;
     int result;                          // 0 open, 1 OK, -1 cancelled
     uint64_t armed;                      // buttons seen released since the window opened
-    int test;                            // XCX_SWKBD_TEST: 1 press OK, -1 press Cancel
+    int test;                            // XC2_SWKBD_TEST: 1 press OK, -1 press Cancel
 } Entry;
 
 static wchar_t *wide(const char *utf8, wchar_t *buf, int cap) {
@@ -91,7 +91,7 @@ static HWND child(HWND parent, const wchar_t *cls, const wchar_t *text, DWORD st
 
 // Shows the window and waits for the answer. Returns 1 with the text in out (n units), 0 when cancelled.
 int text_entry_run(const SwkbdRequest *req, uint16_t *out, size_t cap, size_t *n) {
-    static const wchar_t cls[] = L"XCXTextEntry";
+    static const wchar_t cls[] = L"XC2TextEntry";
     HINSTANCE inst = GetModuleHandleW(NULL);
     WNDCLASSEXW wc = {.cbSize = sizeof wc, .lpfnWndProc = entry_proc, .hInstance = inst,
                       .hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW), .hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1),
@@ -100,7 +100,7 @@ int text_entry_run(const SwkbdRequest *req, uint16_t *out, size_t cap, size_t *n
         rt_fatal("nn::swkbd::ShowKeyboard: RegisterClassEx (error %lu)", GetLastError());
 
     Entry e = {.req = req, .armed = 0};
-    const char *test = cfg_get("XCX_SWKBD_TEST");
+    const char *test = cfg_get("XC2_SWKBD_TEST");
     if (test && *test) e.test = !strcmp(test, "cancel") ? -1 : 1;
     NONCLIENTMETRICSW ncm = {.cbSize = sizeof ncm};
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof ncm, &ncm, 0);

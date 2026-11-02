@@ -8,7 +8,7 @@
 #include "host.h"
 #include "nvn_obj.h"
 
-// NVN_API(nvnX) { body }: the strong nvnp_nvnX(Cpu *c); counts the call in gfx_counters, XCX_TRACE=gfx logs the first.
+// NVN_API(nvnX) { body }: the strong nvnp_nvnX(Cpu *c); counts the call in gfx_counters, XC2_TRACE=gfx logs the first.
 #define NVN_API(n)                                                                                                   \
     static void nvn_impl_##n(Cpu *c);                                                                                \
     void nvnp_##n(Cpu *c) {                                                                                          \
@@ -18,7 +18,7 @@
     }                                                                                                                \
     static void nvn_impl_##n(Cpu *c)
 void nvn_called(uint8_t *seen, const char *name);          // the counting prologue of NVN_API
-#define NVN_LOG(...) do { if (rt_trace & RT_TRACE_GFX) rt_log("nvn: " __VA_ARGS__); } while (0)   // XCX_TRACE=gfx
+#define NVN_LOG(...) do { if (rt_trace & RT_TRACE_GFX) rt_log("nvn: " __VA_ARGS__); } while (0)   // XC2_TRACE=gfx
 // A wait for the GPU, the display or another thread gives the virtual core up until the end of the enclosing scope.
 #define NVN_BLOCKING() __attribute__((cleanup(kern_core_back))) int nvn_away_ = kern_core_away()
 static inline int nvn_arg_bool(const Cpu *c, int i) { return (int)(arg_x(c, i) & 0xff); }   // NVNboolean: low 8 bits only
@@ -44,11 +44,11 @@ _Static_assert(sizeof(nvn_mapping_t) == 0x28, "NVNmappingRequest stride");
 const pool_t *nvn_pool_find(uint64_t addr, uint64_t len);  // GPU-visible pool holding [addr, addr+len], NULL if none
 uint64_t nvn_new_serial(void);                             // next tex_t / prog_t serial, from 1
 uint64_t nvn_fence_last(void);                             // fence value of the newest submit (0 before the first)
-int nvn_callers_on(void);                                  // XCX_DRAW_CALLERS window (nvn_api_cmd.c)
+int nvn_callers_on(void);                                  // XC2_DRAW_CALLERS window (nvn_api_cmd.c)
 int nvn_origin_upper_left(void);                           // 1 after DeviceSetWindowOriginMode(UPPER_LEFT), else 0
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads
-// XCX_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
+// XC2_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
 // CPU class (0 CPU_CACHED, 1 CPU_UNCACHED, 2 other) since the previous call.
 void nvn_flush_stats(uint64_t out[2][3][2]);
 void nvn_submit_prepare(const uint64_t *handles, int n);   // weak no-op; the command-buffer slice reads deferred binds

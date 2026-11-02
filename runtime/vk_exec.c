@@ -44,7 +44,7 @@ static VkExec X;
 static int x_ready;
 static _Thread_local int x_here;   // this thread is inside vk_exec_record (vk_exec_inline_begin)
 
-// ---- XCX_TRACE=gfx frame counters
+// ---- XC2_TRACE=gfx frame counters
 
 VkExecFrame vk_exec_frame;
 static struct { const uint8_t *mem; uint32_t w, h, fmt, n; } fw[64];   // textures written this frame
@@ -143,7 +143,7 @@ static int view_format(const tex_t *t, const view_t *v, int blocks, VkFormat *ou
 }
 
 // ---- 3D BC render targets
-// A 3D BC texture has no block views (vk_texture.c create_tex, XCX_BLOCK_VIEWS_3D): on RDNA2 cards such an image made
+// A 3D BC texture has no block views (vk_texture.c create_tex, XC2_BLOCK_VIEWS_3D): on RDNA2 cards such an image made
 // BLOCK_TEXEL_VIEW_COMPATIBLE and 2D_ARRAY_COMPATIBLE took writes past the end of its memory (TotK Recomp issue #5).
 // Draws into it through an uncompressed view of its blocks (TotK's agl BC4 encoder fills 32x32x32 and 64x64x64 volumes
 // and their levels at the logo) go to a stand-in: a 2D array of the blocks of one level in the view's format, one layer
@@ -770,13 +770,13 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 
 // ---- command buffer parts
 // NVN starts the GPU as soon as commands are submitted; one Vulkan command buffer per submission starts it only after
-// the whole replay. Between passes, once XCX_SPLIT_DRAWS (64; 0 off) draws and dispatches were recorded since the
+// the whole replay. Between passes, once XC2_SPLIT_DRAWS (64; 0 off) draws and dispatches were recorded since the
 // last part, the part goes to the queue (vk_sync_split) and the replay continues in a new command buffer. Only
 // command-buffer state is lost there (bindings and dynamic state: vk_exec_draw_new_cb, ex->dirty); barriers, layouts and
 // queries are not: a barrier's first scope is everything earlier in submission order, image layouts belong to the image,
 // and occlusion queries end with their pass. Fences, completion callbacks and reports stay per submission: only the last
 // part signals the value. nxnative commits every 64 draws between passes; MacNativeGames after 30, then every 40.
-// A part also spans at least XCX_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
+// A part also spans at least XC2_SPLIT_US (1000) of replay time: a split costs about 40 us of the render thread
 // (vkQueueSubmit2, a command buffer, the mirror prologue), and a fight frame of 2,000 draws made 15 parts on the 7900X;
 // a millisecond of recording is a fraction of a millisecond of GPU work, so the GPU still starts early.
 static int split_n = -1, split_draws, part_start;
@@ -785,9 +785,9 @@ static uint64_t n_parts, n_subs;
 
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
-        split_n = cfg_int("XCX_SPLIT_DRAWS");
+        split_n = cfg_int("XC2_SPLIT_DRAWS");
         if (split_n < 0) split_n = 0;
-        int us = cfg_int("XCX_SPLIT_US");
+        int us = cfg_int("XC2_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
         rt_log("vk: replay command buffer split every %d draws between passes, parts of at least %d us%s", split_n,
                us > 0 ? us : 0, split_n ? "" : " (off)");

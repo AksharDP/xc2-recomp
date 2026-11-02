@@ -1,7 +1,8 @@
-// xcx.ini: file-backed defaults for the XCX_* environment variables (docs/controls.md, xcx.ini.example).
+// xc2.ini: file-backed defaults for the XC2_* environment variables (docs/controls.md, xc2.ini.example).
 // Format: "key = value" lines, '#' or ';' at the start of a line begins a comment, [sections] only group. A key is a
-// variable name without "XCX_" (an optional XCX_ prefix is accepted), case-insensitive. A value is the rest of the
-// line, trimmed, optionally in double quotes; an empty value counts as unset. The environment wins over the file.
+// variable name without "XC2_", case-insensitive. The XCX_ prefix of an install from before the rename is accepted as
+// well (XC2_ wins when both are set). A value is the rest of the line, trimmed, optionally in double quotes; an empty
+// value counts as unset. The environment wins over the file.
 //
 // Live settings: cfg_set changes a value in memory (readers see the new pointer; the old string is kept, so a pointer
 // cfg_get handed out stays valid) and cfg_save writes only the changed keys back, keeping the rest of the file.
@@ -15,11 +16,13 @@
 #include "host.h"
 #include "platform/platform.h"
 
-#define PREFIX "XCX_"
-#define PREFIX_LEN 4
+#define PREFIX "XC2_"
+#define LEGACY_PREFIX "XCX_"   // the spelling of installs from before the rename: read when the XC2_ name is not set
+#define PREFIX_LEN 4           // both prefixes have this length
 #define CFG_MAX_KEYS 512
 
-typedef struct { char *key, *value; int dirty, removed; } CfgEntry;   // key upper-case, without the prefix; value NULL after cfg_reset
+// key upper-case, without the prefix; value NULL after cfg_reset; legacy: the file line had the XCX_ prefix
+typedef struct { char *key, *value; int dirty, removed, legacy; } CfgEntry;
 
 static CfgEntry entries[CFG_MAX_KEYS];
 static int n_entries;
@@ -53,7 +56,7 @@ static const char *const known[] = {
     "WALK_KEY", "WALK_SCALE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
-// The xcx.ini section a key cfg_set may write goes to when the file lacks it (xcx.ini.example's sections).
+// The xc2.ini section a key cfg_set may write goes to when the file lacks it (xc2.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"}, {"CUTSCENE_30", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
@@ -159,27 +162,50 @@ static char *trim(char *s) {
     return s;
 }
 
+// The part of a setting name after its prefix (XC2_ or the legacy XCX_), or NULL for a name with neither.
+static const char *key_of(const char *name) {
+    return !strncmp(name, PREFIX, PREFIX_LEN) || !strncmp(name, LEGACY_PREFIX, PREFIX_LEN) ? name + PREFIX_LEN : NULL;
+}
+
+// The environment's value of a setting name: XC2_KEY when set, else the legacy XCX_KEY (XC2_ wins when both are set).
+// A name with neither prefix is looked up as it is.
+static const char *env_get(const char *name) {
+    const char *key = key_of(name);
+    if (!key) return getenv(name);
+    char var[128];
+    snprintf(var, sizeof var, PREFIX "%s", key);
+    const char *e = getenv(var);
+    if (!e) {
+        snprintf(var, sizeof var, LEGACY_PREFIX "%s", key);
+        e = getenv(var);
+    }
+    return e;
+}
+
 // The upper-case key without the prefix, in place.
 static char *norm_key(char *key) {
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
-    return strncmp(key, PREFIX, PREFIX_LEN) ? key : key + PREFIX_LEN;
+    return key_of(key) ? key + PREFIX_LEN : key;
 }
 
 static void add(char *key, char *value, int line) {
+    int legacy = !strncasecmp(key, LEGACY_PREFIX, PREFIX_LEN);   // before norm_key upper-cases the name
     key = norm_key(key);
     size_t vl = strlen(value);
     if (vl >= 2 && value[0] == '"' && value[vl - 1] == '"') value[vl - 1] = 0, value++;
     if (!*key) return;
-    if (!is_known(key)) rt_log("cfg: xcx.ini line %d: unknown key '%s'", line, key);
+    if (!is_known(key)) rt_log("cfg: xc2.ini line %d: unknown key '%s'", line, key);
     if (!*value) return;   // "key =" leaves the setting at its default
     for (int i = 0; i < n_entries; i++)
-        if (!strcmp(entries[i].key, key)) {   // a repeated key: the later line wins
+        if (!strcmp(entries[i].key, key)) {   // a repeated key: the later line wins, but an XC2_ line beats an XCX_ one
+            if (legacy && !entries[i].legacy) return;
             free(entries[i].value);
             entries[i].value = strdup(value);
+            entries[i].legacy = legacy;
             return;
         }
     if (n_entries == CFG_MAX_KEYS) return;
-    entries[n_entries++] = (CfgEntry){strdup(key), strdup(value), 0, 0};
+    entries[n_entries++] = (CfgEntry){strdup(key), strdup(value), 0, 0, legacy};
 }
 
 int cfg_load(const char *path) {
@@ -195,7 +221,7 @@ int cfg_load(const char *path) {
         char *s = trim(p);
         char *eq = strchr(s, '=');
         if (*s && *s != '#' && *s != ';' && *s != '[') {
-            if (!eq) rt_log("cfg: xcx.ini line %d: no '=' in '%s'", line, s);
+            if (!eq) rt_log("cfg: xc2.ini line %d: no '=' in '%s'", line, s);
             else {
                 *eq = 0;
                 add(trim(s), trim(eq + 1), line);
@@ -208,12 +234,12 @@ int cfg_load(const char *path) {
     return 1;
 }
 
-// ---- device profiles: defaults for a known machine, below the environment and xcx.ini and above the table, so any
-// key the player sets wins and resetting a key in the menu returns to the profile's value. XCX_DEVICE_PROFILE = auto
+// ---- device profiles: defaults for a known machine, below the environment and xc2.ini and above the table, so any
+// key the player sets wins and resetting a key in the menu returns to the profile's value. XC2_DEVICE_PROFILE = auto
 // (default: the Steam Deck when the firmware says so), desktop (none) or deck.
 //
 // The Steam Deck (LCD Jupiter, OLED Galileo; 1280x800, 16:10, 4 Zen 2 cores, RDNA 2 with 8 CUs sharing 16 GB): the game
-// at 1280x720 with its own 5/6 scene, letterboxed in the 16:10 screen (XCX_PICTURE_FIT) until the game draws 16:10
+// at 1280x720 with its own 5/6 scene, letterboxed in the 16:10 screen (XC2_PICTURE_FIT) until the game draws 16:10
 // itself; fullscreen and vsync, as gamescope composes Game Mode; 40 fps, which divides 40 Hz (and 120 Hz on the OLED).
 // Starting points to replace with measured ones (docs/tester-guide.md, Steam Deck).
 static const struct { const char *key, *value; } DECK[] = {
@@ -257,33 +283,35 @@ static int profile_of(void) {
 const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
 
 static const char *raw_get(const char *name) {
-    const char *e = getenv(name);
-    if (e || strncmp(name, PREFIX, PREFIX_LEN)) return e;
+    const char *e = env_get(name);
+    const char *key = key_of(name);
+    if (e || !key) return e;
     int n = __atomic_load_n(&n_entries, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; i++)
-        if (!strcasecmp(entries[i].key, name + PREFIX_LEN)) return __atomic_load_n(&entries[i].value, __ATOMIC_ACQUIRE);
+        if (!strcasecmp(entries[i].key, key)) return __atomic_load_n(&entries[i].value, __ATOMIC_ACQUIRE);
     return NULL;
 }
 
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
+    const char *key = key_of(name);
+    if (v || !key || !profile_of()) return v;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
-        if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
+        if (!strcasecmp(DECK[i].key, key)) return DECK[i].value;
     return NULL;
 }
 
-// Whether name's value comes from the player (the environment or xcx.ini), not a profile or the table.
+// Whether name's value comes from the player (the environment or xc2.ini), not a profile or the table.
 int cfg_is_set(const char *name) { return raw_get(name) != NULL; }
 
 unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE); }
 
-int cfg_from_env(const char *name) { return getenv(name) != NULL; }
+int cfg_from_env(const char *name) { return env_get(name) != NULL; }
 
 void cfg_set(const char *name, const char *value) {
-    if (strncmp(name, PREFIX, PREFIX_LEN) || !value) return;
+    if (!key_of(name) || !value) return;
     char key[64];
-    snprintf(key, sizeof key, "%s", name + PREFIX_LEN);
+    snprintf(key, sizeof key, "%s", key_of(name));
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
     plat_mutex_lock(&set_lock);
     int i = 0, n = n_entries;
@@ -310,7 +338,7 @@ int cfg_reset(const char *const *keys, int n) {
         snprintf(key, sizeof key, "%s", keys[k]);
         const char *name = norm_key(key);
         snprintf(var, sizeof var, PREFIX "%s", name);
-        if (getenv(var)) continue;   // the environment wins; the file line stays
+        if (env_get(var)) continue;   // the environment wins; the file line stays
         int i = 0;
         while (i < n_entries && strcmp(entries[i].key, name)) i++;
         if (i == n_entries) {   // no value in memory ("key =" in the file): the line still has to go
@@ -342,7 +370,7 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
     for (size_t i = 0; i < sizeof known / sizeof *known; i++) {
         char var[80];
         snprintf(var, sizeof var, PREFIX "%s", known[i]);
-        const char *e = getenv(var);
+        const char *e = env_get(var);
         if (e) cb(known[i], e, 1, ctx);
     }
 }
@@ -452,7 +480,7 @@ static void put(Out *o, const char *s, size_t n) {
     if (o->n + n + 1 > o->cap) {
         o->cap = (o->n + n + 1) * 2;
         o->buf = realloc(o->buf, o->cap);
-        if (!o->buf) rt_fatal("cfg: out of memory writing xcx.ini");
+        if (!o->buf) rt_fatal("cfg: out of memory writing xc2.ini");
     }
     memcpy(o->buf + o->n, s, n);
     o->n += n;
@@ -501,7 +529,7 @@ int cfg_save_to(const char *path) {
     // after[i]: entries to write after line i (-1 = none); replace[i]: the entry whose value line i now carries
     int *replace = malloc(sizeof(int) * ((size_t)nl + 1)), *after_key = malloc(sizeof(int) * (size_t)(n + 1));
     char *drop = calloc((size_t)nl + 1, 1);   // lines of a reset key
-    if (!lines || !replace || !after_key || !drop) rt_fatal("cfg: out of memory writing xcx.ini");
+    if (!lines || !replace || !after_key || !drop) rt_fatal("cfg: out of memory writing xc2.ini");
     for (int i = 0, at = 0; i < nl; i++) {
         size_t start = (size_t)at;
         while ((uint64_t)at < size && text[at] != '\n') at++;
@@ -520,11 +548,16 @@ int cfg_save_to(const char *path) {
                 if (line_key(t, 0, k, sizeof k) && !strcmp(k, entries[e].key)) drop[i] = 1;
             }
         if (!entries[e].dirty) continue;
-        int last = -1;
+        // the last line of the key; an XC2_ line beats an XCX_ one, since that is the one a load keeps
+        int last = -1, legacy_last = -1;
         for (int i = 0; i < nl; i++) {
             line_text(&lines[i], i == 0, t, sizeof t);
-            if (line_key(t, 0, k, sizeof k) && !strcmp(k, entries[e].key)) last = i;
+            if (line_key(t, 0, k, sizeof k) && !strcmp(k, entries[e].key)) {
+                if (strncasecmp(t, LEGACY_PREFIX, PREFIX_LEN)) last = i;
+                else legacy_last = i;
+            }
         }
+        if (last < 0) last = legacy_last;
         if (last >= 0) {
             replace[last] = e;
             continue;
@@ -615,8 +648,13 @@ static int find_ini(void) {
     char *cut = plat_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
     if (!cut || cut + 10 >= path + sizeof path) return 0;
-    strcpy(cut + 1, "xcx.ini");
-    snprintf(ini_path, sizeof ini_path, "%s", path);
+    strcpy(cut + 1, "xc2.ini");
+    // An install from before the rename has xcx.ini and no xc2.ini: that file is read, and saves go back to the file
+    // that was read, so none of its keys is lost.
+    char legacy[1024];
+    strcpy(legacy, path);
+    strcpy(legacy + (cut + 1 - path), "xcx.ini");
+    snprintf(ini_path, sizeof ini_path, "%s", !plat_file_exists(path) && plat_file_exists(legacy) ? legacy : path);
     return 1;
 }
 
@@ -636,13 +674,13 @@ static void load_ini(void) {
     for (int i = 0; i < n_entries; i++) {
         char var[128];
         snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
-        if (getenv(var)) rt_log("cfg: %s is set in the environment and overrides xcx.ini", var);
+        if (env_get(var)) rt_log("cfg: %s is set in the environment and overrides %s", var, ini_path);
     }
 }
 
 void cfg_init(void) {
     load_ini();
     if (profile_of())
-        rt_log("cfg: device profile Steam Deck: defaults for the keys xcx.ini does not set (XCX_DEVICE_PROFILE=desktop "
+        rt_log("cfg: device profile Steam Deck: defaults for the keys xc2.ini does not set (XC2_DEVICE_PROFILE=desktop "
                "turns it off)");
 }

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Embedded by xcx.rc. activeCodePage makes UTF-8 the process code page (Windows 10 1903 and later): the narrow file
+<!-- Embedded by xc2.rc. activeCodePage makes UTF-8 the process code page (Windows 10 1903 and later): the narrow file
      functions (fopen, CreateFileA, GetModuleFileNameA) and getenv then carry UTF-8, the same encoding platform/win32.c
      and fs_host.c convert with, so an install folder or user profile with a non-ASCII name works. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">

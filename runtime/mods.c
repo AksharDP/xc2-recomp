@@ -14,14 +14,14 @@
 // loose base RomFS file serves only paths the game opens as loose files (stream/, a few probed paths) and bf2.arh /
 // bf2.ard themselves.
 //
-// The order and the switches are xcx.ini keys (cfg.c): XCX_MODS_ORDER lists names top first, separated by '|' (a
+// The order and the switches are xc2.ini keys (cfg.c): XC2_MODS_ORDER lists names top first, separated by '|' (a
 // Windows file name cannot hold '|'; a folder whose name does on Linux is listed as unusable); a folder it does not name
-// goes below the named ones, by name. XCX_MODS_DISABLED lists the switched-off names. The menu changes the list in
+// goes below the named ones, by name. XC2_MODS_DISABLED lists the switched-off names. The menu changes the list in
 // place and writes both keys; the scan's state is kept to tell the menu a restart is due.
 //
 // ExeFS patch files: an .ips or .pchtxt file in the exefs folder or in atmosphere/exefs_patches/<name>/ is for the game
 // when its build id is main's (an IPS file's name, a pchtxt file's @nsobid line); others are another version's and
-// counted. The setup builds every mod's files into patch sets and writes build-cache/exefs.status next to xcx.exe
+// counted. The setup builds every mod's files into patch sets and writes build-cache/exefs.status next to xc2.exe
 // (tools/exefs_patches.py has the format): a file whose line is missing or has another content hash waits for the setup
 // to run again, and its mod stays off until then.
 #include <ctype.h>
@@ -166,7 +166,7 @@ static int list_pos(const char *list, const char *name) {
     return -1;
 }
 
-static const char *order_list;   // XCX_MODS_ORDER while sorting
+static const char *order_list;   // XC2_MODS_ORDER while sorting
 static int by_order(const void *a, const void *b) {
     const ModInfo *x = a, *y = b;
     int px = list_pos(order_list, x->name), py = list_pos(order_list, y->name);
@@ -223,7 +223,7 @@ static int same_build(const char *hex, size_t n) {
     return 1;
 }
 
-// build-cache/exefs.status next to xcx.exe, read once; "" when there is none.
+// build-cache/exefs.status next to xc2.exe, read once; "" when there is none.
 static const char *exefs_status(void) {
     static char *text;
     if (text) return text;
@@ -394,7 +394,7 @@ void mods_scan(void) {
     static int done;
     if (done) return;
     done = 1;
-    const char *d = cfg_get("XCX_MODS_DIR");
+    const char *d = cfg_get("XC2_MODS_DIR");
     if (d && *d) {
         snprintf(dir, sizeof dir, "%s", d);
     } else {
@@ -411,8 +411,8 @@ void mods_scan(void) {
     }
     mods = calloc(MAX_MODS, sizeof *mods);
     if (!mods) return;
-    plat_fs_list(dir, scan_cb, (void *)cfg_get("XCX_MODS_DISABLED"));
-    order_list = cfg_get("XCX_MODS_ORDER");
+    plat_fs_list(dir, scan_cb, (void *)cfg_get("XC2_MODS_DISABLED"));
+    order_list = cfg_get("XC2_MODS_ORDER");
     qsort(mods, nmods, sizeof *mods, by_order);
     order_list = NULL;
     for (int i = 0; i < nmods; i++) {
@@ -583,7 +583,7 @@ int mods_aoc_file(int index, const char *rel, char *out, size_t cap, int *is_dir
     return 0;
 }
 
-// XCX_MODS_ORDER as every listed name top first; XCX_MODS_DISABLED as the switched-off names. A name holding '|'
+// XC2_MODS_ORDER as every listed name top first; XC2_MODS_DISABLED as the switched-off names. A name holding '|'
 // would split into two; it is left out of both (its mod is unusable anyway).
 static void write_keys(void) {
     size_t cap = (size_t)nmods * 257 + 1;
@@ -598,8 +598,8 @@ static void write_keys(void) {
                 strcat(off, mods[i].name);
             }
         }
-        cfg_set("XCX_MODS_ORDER", order);
-        cfg_set("XCX_MODS_DISABLED", off);
+        cfg_set("XC2_MODS_ORDER", order);
+        cfg_set("XC2_MODS_DISABLED", off);
     }
     free(order);
     free(off);

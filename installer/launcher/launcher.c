@@ -1,9 +1,9 @@
-/* XCX-Setup.exe: starts python\pythonw.exe -m installer.gui with this exe's folder as the working directory.
+/* XC2-Setup.exe: starts python\pythonw.exe -m installer.gui with this exe's folder as the working directory.
 
    No console window. The two message strings come from the catalog (installer/text/<lang>.json, ids launcher.title and
    launcher.python_missing); tools/make_release.py writes them into launcher_text.h before it compiles this file.
    Build: llvm/bin/llvm-windres -I runtime -O coff launcher.rc -o launcher_rc.o, then
-   llvm/bin/clang -O2 -mwindows launcher.c launcher_rc.o -o XCX-Setup.exe */
+   llvm/bin/clang -O2 -mwindows launcher.c launcher_rc.o -o XC2-Setup.exe */
 #include <windows.h>
 #include <wchar.h>
 

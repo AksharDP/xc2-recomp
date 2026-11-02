@@ -329,7 +329,7 @@ int ipc_svc(Cpu *c, uint32_t imm) {
 // use: sm: -> audren:u -> GetWorkBufferSize -> an audio renderer with the null mixer, whose frame event the probe
 // times while it sends RequestUpdate every frame. A child process checks the unknown-service fatal.
 #define PROBE_FRAMES 200
-#define PROBE_CHILD_ENV "XCX_PROBE_IPC_CHILD"
+#define PROBE_CHILD_ENV "XC2_PROBE_IPC_CHILD"
 #define PROBE_UNKNOWN_SERVICE "lm"
 #define H_CURRENT_PROCESS 0xFFFF8001u
 

@@ -1,5 +1,5 @@
 """installer/ bookkeeping with fake steps: fresh install, resume after a failure or cancel, transient steps, update
-with a newer release, xcx.ini and the event stream. No game files, no tools; stdlib only.
+with a newer release, xc2.ini and the event stream. No game files, no tools; stdlib only.
 
 Run: python tests/installer_test.py
 """
@@ -220,7 +220,7 @@ class IniTest(unittest.TestCase):
     def test_write_keeps_user_lines(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            example = d / 'xcx.ini.example'
+            example = d / 'xc2.ini.example'
             example.write_text(self.EXAMPLE)
             path = ini.write(d / '', 'en-GB', example)
             self.assertEqual(ini.get_language(path.read_text()), 'en-GB')

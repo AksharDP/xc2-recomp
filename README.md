@@ -18,7 +18,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Native code, not emulation
 - Update 3.0.1 and all seven add-on content packs
-- Built from your own NSP files and `prod.keys` (the XCX-Setup installer is not yet adapted to XC2)
+- Built from your own NSP files and `prod.keys` by the XC2-Setup installer
 - In-game settings menu (F1) and performance overlay (F10)
 - Keyboard, mouse and gamepad
 
@@ -33,16 +33,16 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 28 GiB free during setup (20 GiB after).
 
-1. Download `XCX-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
-2. Start `XCX-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
+1. Download `XC2-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
+2. Start `XC2-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
-4. Play `xcx.exe` from the install folder.
+4. Play `xc2.exe` from the install folder.
 
-To update, run a newer `XCX-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xcx.ini` ([xcx.ini.example](xcx.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
+To update, run a newer `XC2-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
 
 ## Credits
 
-XCX Recomp builds on the projects below. What was taken from each, with its license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+XC2 Recomp builds on the projects below. What was taken from each, with its license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 - [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh, the project XCX Recomp is forked from
 - [LAS Recomp](https://github.com/peiikai/LASRecomp)
@@ -61,7 +61,7 @@ XCX Recomp builds on the projects below. What was taken from each, with its lice
 
 The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The license grants nothing for Nintendo's game.
 
-XCX Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Xenoblade Chronicles X* and *Nintendo Switch* are trademarks of Nintendo; Xenoblade Chronicles X is developed by Monolith Soft.
+XC2 Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Xenoblade Chronicles X* and *Nintendo Switch* are trademarks of Nintendo; Xenoblade Chronicles X is developed by Monolith Soft.
 
 ## Building from source
 

@@ -116,7 +116,7 @@ class Form:
     dest: str = ''
 
     def installed_state(self):
-        """The recorded state of the install folder (xcx-install.json), or None. Never raises."""
+        """The recorded state of the install folder (xc2-install.json), or None. Never raises."""
         if not self.dest.strip():
             return None
         try:
@@ -128,7 +128,7 @@ class Form:
         return self.installed_state() is not None
 
     def problems(self):
-        """Ids of the entries that are missing or wrong, in screen order. A folder with xcx-install.json needs only
+        """Ids of the entries that are missing or wrong, in screen order. A folder with xc2-install.json needs only
         itself; the CLI asks for the game files when it must extract again."""
         found = []
         update = self.update_mode()

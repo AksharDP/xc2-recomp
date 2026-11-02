@@ -5,8 +5,8 @@ bundled hactool; lift and compile run the bundled Python on recomp/gen.py and to
 <temp>/logs/<step>-<tool>.log and is read for progress. No Win32 call here: the host check is a small C program built
 with the bundled clang (hostcheck.c).
 
-Install folder: exefs/, romfs/ (romfs.bin, index.json), aoc/<index>/ (the add-on content's RomFS), profile/, xcx.exe
-and its DLLs, romfs-index.bin, xcx_xlate.exe, xcx.ini, xcx-install.json, mods/ (the player's, never written) and
+Install folder: exefs/, romfs/ (romfs.bin, index.json), aoc/<index>/ (the add-on content's RomFS), profile/, xc2.exe
+and its DLLs, romfs-index.bin, xc2_xlate.exe, xc2.ini, xc2-install.json, mods/ (the player's, never written) and
 build-cache/ (cheats.status and exefs.status: what of the mods' code the build has, runtime/cheats.c and mods.c).
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from . import ini
-from .layout import APP_ID, BASE, EXE, GAME_EXE, SUPPORTED, version_tag
+from .layout import APP_ID, BASE, EXE, GAME_EXE, LEGACY_EXE, SUPPORTED, version_tag
 from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
@@ -36,14 +36,14 @@ from package_select import program_nca  # noqa: E402
 from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
 
 GiB = 1 << 30
-DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, xcx.exe
+DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, xc2.exe
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
 # recomp/patches-<version tag>.txt: the code patch sets of the update (recomp/patches.py). XC2 has none yet, so the lift
 # runs without one; patches-upd.txt beside it is XCX 2.0.0's and must never reach XC2's code.
 PATCHES = 'patches-{tag}.txt'
-XLATE = 'xcx_xlate' + EXE   # the translator's name beside xcx.exe; runtime/gfx_shader.c starts it by this name
+XLATE = 'xc2_xlate' + EXE   # the translator's name beside xc2.exe; runtime/gfx_shader.c starts it by this name
 
 
 # ---- helpers
@@ -604,7 +604,7 @@ def dlc_record(f, path, keys):
 
 
 class Dlc(Step):
-    """Extracts the RomFS of each add-on content file into aoc/<index>/, where xcx.exe mounts it (runtime/fs_host.c
+    """Extracts the RomFS of each add-on content file into aoc/<index>/, where xc2.exe mounts it (runtime/fs_host.c
     mount_aoc). Without --dlc it keeps what an earlier run extracted."""
     id = 'dlc'
 
@@ -738,7 +738,7 @@ class Lift(Step):
 
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
         table = layout.recomp / PATCHES.format(tag=version_tag(game_version(ctx)))
-        plain = table if table.is_file() else None   # code patch sites the runtime switches (XCX_FPS60 and the like)
+        plain = table if table.is_file() else None   # code patch sites the runtime switches (XC2_FPS60 and the like)
         # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
         # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
         # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
@@ -823,7 +823,7 @@ class Compile(Step):
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
-        exe = build / ('xcx' + EXE)
+        exe = build / ('xc2' + EXE)
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
         try:
@@ -839,7 +839,7 @@ class Compile(Step):
 # ---- 5. prepare
 
 class Prepare(Step):
-    """Puts the shader translator beside xcx.exe and draws the Xbox, PlayStation and keyboard button prompts from the
+    """Puts the shader translator beside xc2.exe and draws the Xbox, PlayStation and keyboard button prompts from the
     player's archive into prompts/ (tools/xc2_prompts.py, runtime/prompts.c). XC2 has no shader list to translate
     ahead of play yet: shaders are translated on first use and cached in shader-cache/."""
     id = 'prepare'
@@ -888,10 +888,15 @@ class Cleanup(Step):
         rep.progress('cleanup', 'ini', force=True)
         try:
             ini.write(dest, ctx.lang, ctx.layout.ini_example)
-        except (OSError, ValueError) as e:   # ValueError: an xcx.ini saved in another encoding than UTF-8
+        except (OSError, ValueError) as e:   # ValueError: an xc2.ini saved in another encoding than UTF-8
             raise InstallError('cleanup.ini_failed', detail=str(e)) from None
         ctx.state['lang'] = ctx.lang
         (dest / 'profile').mkdir(exist_ok=True)
+        if (dest / GAME_EXE).is_file():   # an install from before the rename keeps the old exe until the new one is in
+            try:
+                remove(dest / LEGACY_EXE)
+            except OSError:   # still running: the next run tries again (cleanup runs every time)
+                pass
         rep.progress('cleanup', 'temp', force=True)
         for stale in dest.glob('update-merge-*'):
             remove(stale)

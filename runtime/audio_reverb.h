@@ -1,7 +1,7 @@
 // Adapted from MacNativeGames games/totk/runtime/audio_reverb.c @ b75be8c (MIT, Copyright (c) 2026 MacNativeGames
 // contributors), based on Ryujinx.Audio (MIT, Copyright (c) Ryujinx Team and Contributors).
-#ifndef XCX_AUDIO_REVERB_H
-#define XCX_AUDIO_REVERB_H
+#ifndef XC2_AUDIO_REVERB_H
+#define XC2_AUDIO_REVERB_H
 #include <stdint.h>
 typedef struct {
     uint8_t input[6], output[6]; uint16_t channel_max, channels;

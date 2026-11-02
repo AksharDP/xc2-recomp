@@ -1,13 +1,13 @@
 // Adapted from totk-pc-recomp runtime/cheats.c @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
 // Cheats of the mods' Atmosphere cheat files (cheats.h). Each enabled mod the port can use (mods.h) may hold
 // <build id>.txt in its cheats folder, the build id the first 8 bytes of main's NSO build id, as Atmosphere and the
-// emulators name it; the file name's case does not matter. Each cheat's switch is the setting XCX_CHEAT_<hash>
-// (cheat_<hash> under [cheats] in xcx.ini), the hash FNV-1a 32 of "<mod folder name>/<cheat name>", so two mods'
+// emulators name it; the file name's case does not matter. Each cheat's switch is the setting XC2_CHEAT_<hash>
+// (cheat_<hash> under [cheats] in xc2.ini), the hash FNV-1a 32 of "<mod folder name>/<cheat name>", so two mods'
 // cheats of one name keep their own switches.
 //
 // Code cheats (opcode 0 writes into main's code) cannot be applied here: the game's code is lifted C. tools/cheats.py
 // turns the code cheats of every mod into patch sets cheat_<hash> when the game is built and writes
-// build-cache\cheats.status next to xcx.exe, one line per cheat: name hash, content hash, kind, buttons, note
+// build-cache\cheats.status next to xc2.exe, one line per cheat: name hash, content hash, kind, buttons, note
 // (tools/cheats.py has the format). A cheat whose status line is missing or has another content hash was added or
 // edited after the build: a data cheat runs anyway, a code cheat waits for the setup to run again (TotK Recomp starts
 // that rebuild itself; this port only says so in the log and the Cheats tab).
@@ -53,7 +53,7 @@ typedef struct {
 static Cheat *g_cheats;
 static int g_n, g_cap, g_vm;   // g_vm: some cheat needs cheats_frame
 static char g_file[64];        // "<build id>.txt"
-static char g_dir[PLAT_PATH_MAX];   // the folder of xcx.exe, with a trailing separator
+static char g_dir[PLAT_PATH_MAX];   // the folder of xc2.exe, with a trailing separator
 static int g_files;            // mods whose file was read
 static uint64_t g_main, g_main_size, g_code_end;   // main's image; its code with the padding up to .rodata
 
@@ -504,7 +504,7 @@ void cheats_init(void) {
         c->content = fnv(t, tl);
         snprintf(content, sizeof content, "%08X", c->content);
         free(t);
-        snprintf(c->info.key, sizeof c->info.key, "XCX_CHEAT_%s", key);
+        snprintf(c->info.key, sizeof c->info.key, "XC2_CHEAT_%s", key);
         int master = c->info.kind == CHEAT_MASTER;
         char *f[5];
         CheatKind kind;

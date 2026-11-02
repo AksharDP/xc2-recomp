@@ -3,12 +3,12 @@
 # (2db612b), each original word checked against the 1.2.1 main. The patch page holds two floats the runtime writes at
 # every present (frame_rate.c): +0 the 30 Hz ratio (seconds * 30), +4 the frame step in seconds.
 
-set fps60    XCX_FPS60          1
-set realtime XCX_REALTIME       1
-set cloth    XCX_CLOTH_REALTIME 1
-set bounce   XCX_HIGHFPS_FIX    1
-set output   XCX_PATCH_OUTPUT   0
-set scene    XCX_PATCH_SCENE    0
+set fps60    XC2_FPS60          1
+set realtime XC2_REALTIME       1
+set cloth    XC2_CLOTH_REALTIME 1
+set bounce   XC2_HIGHFPS_FIX    1
+set output   XC2_PATCH_OUTPUT   0
+set scene    XC2_PATCH_SCENE    0
 
 # 60 fps: the adaptive present-interval controller (main+0x8f26c8, 1.0.0 0x8f6bec) gets the minimum interval 1.
 site fps60 main 8f273c 6b08015f 7100055f   # clamp: cmp w10, #1 (was cmp w10, w8 = minimum)
@@ -65,7 +65,7 @@ site scene main cc3f70 bd0cc660 2d420520    # str s0, [x19, #0xcc4] -> ldp s0, s
 site scene main cc3f74 5e21d921 bd0cc660    # scvtf s1, s9 -> str s0, [x19, #0xcc4]
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v121/exefs --patches recomp/patches-v121.txt: loops that only
-# another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), XCX_SPIN=0 keeps the core.
+# another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), XC2_SPIN=0 keeps the core.
 spin main ac600 ac620 ac630   # 13 instructions; loads
 spin main ac680 ac6a8 ac6b8   # 15 instructions; loads
 spin main ac6f0 ac718 ac728   # 15 instructions; loads

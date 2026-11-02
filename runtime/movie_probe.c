@@ -1,12 +1,12 @@
-// xcx.exe --probe-movie: the host movie::Decoder (ov_movie.c) on one XC2 movie from the RomFS.
+// xc2.exe --probe-movie: the host movie::Decoder (ov_movie.c) on one XC2 movie from the RomFS.
 // A small Matroska/WebM demuxer reads the VP9 frames of stream/movie/<name>.webm (the smallest one, or the first whose
-// path contains XCX_PROBE_MOVIE). The probe then drives the decoder through the same HOST_OVERRIDE entries the game
+// path contains XC2_PROBE_MOVIE). The probe then drives the decoder through the same HOST_OVERRIDE entries the game
 // calls, with a Cpu of its own; the guest functions the decoder calls (nn::os::SignalEvent, movie::Buffer,
 // movie::MediaData) are host stand-ins registered as host functions, so rt_call reaches them as it reaches the SDK's.
 //   1. unpaced: every frame in, every frame out: frame count, size, output format, PTS order, events, decode cost;
 //   2. paced at 60 presents per second (fake clock): at most one frame per present, one frame per 2 presents, no drops;
 //   3. paced at 15 presents per second: late frames are dropped, the frame handed over is the one due.
-// Without the RomFS (no game data) it prints why and exits 0. XCX_PROBE_MOVIE_SHOT=<file.ppm> saves the middle frame.
+// Without the RomFS (no game data) it prints why and exits 0. XC2_PROBE_MOVIE_SHOT=<file.ppm> saves the middle frame.
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -184,7 +184,7 @@ static int md_int(PMd *m, const char *k) {
     return e && MDE(e)->kind == K_INT ? MDE(e)->i : -1;
 }
 
-// XCX_PROBE_MOVIE_SHOT=<file.ppm>: the middle frame as RGB (BT.709, limited range), to look at the NV12 output.
+// XC2_PROBE_MOVIE_SHOT=<file.ppm>: the middle frame as RGB (BT.709, limited range), to look at the NV12 output.
 static void save_ppm(const char *path, const uint8_t *nv12, int w, int h) {
     FILE *f = fopen(path, "wb");
     if (!f) { printf("probe-movie: cannot write %s\n", path); return; }
@@ -277,7 +277,7 @@ int probe_movie(void) {
         return 0;
     }
     fs_init();
-    const char *want = cfg_get("XCX_PROBE_MOVIE");
+    const char *want = cfg_get("XC2_PROBE_MOVIE");
     const char *name = NULL;
     uint64_t best = UINT64_MAX;
     int movies = 0;
@@ -401,7 +401,7 @@ int probe_movie(void) {
                 CHECK(time == t.f[got].pts, "frame %d: PTS %lld, the container says %lld", got, (long long)time,
                       (long long)t.f[got].pts);
                 prev = time;
-                if (got == t.n / 2 && cfg_get("XCX_PROBE_MOVIE_SHOT")) save_ppm(cfg_get("XCX_PROBE_MOVIE_SHOT"), frame, t.w, t.h);
+                if (got == t.n / 2 && cfg_get("XC2_PROBE_MOVIE_SHOT")) save_ppm(cfg_get("XC2_PROBE_MOVIE_SHOT"), frame, t.w, t.h);
                 if (got % 30 == 0) {   // mean luma of a centre row band: a decoded picture, not a blank buffer
                     uint64_t sum = 0;
                     for (int y = t.h / 2 - 8; y < t.h / 2 + 8; y++)

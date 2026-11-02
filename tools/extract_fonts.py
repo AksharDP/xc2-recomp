@@ -1,6 +1,6 @@
 """Extract the Switch system shared fonts (nn::pl) from the user's firmware into build/extracted/firmware/shared-fonts.
 
-XCX needs them only with Simplified Chinese, Korean or Traditional Chinese text: those font archives fall back to the
+XC2 needs them only with Simplified Chinese, Korean or Traditional Chinese text: those font archives fall back to the
 Standard shared font (runtime/ov_system.c). The fonts come from the system data NCAs 0100000000000810..814 of a
 firmware NCA directory (an unpacked firmware, or an emulator's installed `registered` directory such as
 %APPDATA%\\Ryujinx\\bis\\system\\Contents\\registered). The keys file named in config.local.toml decrypts them; key

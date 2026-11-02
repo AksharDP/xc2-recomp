@@ -1,7 +1,7 @@
 """Compile the runtime's own GLSL shaders (runtime/shaders/*.comp) into C headers of SPIR-V words.
 
 Each runtime/shaders/<name>.comp becomes runtime/<name>_spv.h, which declares `static const uint32_t <name>_spv[]`
-and records the SHA-256 of the source it came from. The headers are committed, so building xcx.exe needs no shader
+and records the SHA-256 of the source it came from. The headers are committed, so building xc2.exe needs no shader
 compiler; tools/build_game.py refuses to build when a header no longer matches its source. Run this after editing a
 shader. Needs glslc and spirv-val from MSYS2 UCRT64 (package mingw-w64-ucrt-x86_64-shaderc, spirv-tools).
 

@@ -24,7 +24,7 @@ GfxStats gfx_stats(void) {
     return s;
 }
 
-// XCX_GPU=null|vulkan, default vulkan (rt_config); chosen once.
+// XC2_GPU=null|vulkan, default vulkan (rt_config); chosen once.
 const GfxBackend *gfx_backend(void) {
     static const GfxBackend *chosen;
     const GfxBackend *b = __atomic_load_n(&chosen, __ATOMIC_ACQUIRE);

@@ -4,7 +4,7 @@
 
 // Bits of libnx HidNpadButton (A=0 B=1 X=2 Y=3 StickL=4 StickR=5 L=6 R=7 ZL=8 ZR=9 Plus=10 Minus=11 Left=12 Up=13 Right=14
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
-// Sticks are -32767..32767, up is +y. XCX_INPUT=none reports no input. Callable from any thread.
+// Sticks are -32767..32767, up is +y. XC2_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
 // reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
@@ -19,7 +19,7 @@ void input_menu(int open);
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
 int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
-// The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; XCX_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
+// The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; XC2_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
 // How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full
 // deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
@@ -33,7 +33,7 @@ int input_pad_label(int pad);
 // The open gamepad for the button prompts (prompts.c): 1 with *south the label of its south button (PAD_LABEL_*) and
 // *layout its layout (PAD_LAYOUT_*), 0 without one. Starts the input if nothing polled it yet. Any thread.
 int input_pad_identity(int *south, int *layout);
-// The menu's remapping rows (Controls tab). input_map_snapshot copies the tables in effect (after any changed XCX_BIND_* line).
+// The menu's remapping rows (Controls tab). input_map_snapshot copies the tables in effect (after any changed XC2_BIND_* line).
 // input_capture polls the keys, the mouse buttons and the gamepad for a press: reset 1 takes what is held now as the
 // start (a held key counts once released and pressed again) and returns NONE; then it returns KEY or PAD with *id the
 // key or pad id (input_map.h) pressed since the last call, or CANCEL for Esc. Keys count only while the game window is in front.
@@ -57,13 +57,13 @@ int input_cursor_released(void);   // Esc or a non-client activation released th
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
-// XCX_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
+// XC2_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
 
-// Motion (XCX_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
+// Motion (XC2_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
 // gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
 void input_motion_start(void);
-// XCX_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
+// XC2_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.

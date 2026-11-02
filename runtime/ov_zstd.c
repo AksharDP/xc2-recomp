@@ -9,7 +9,7 @@
 // - A guest ZSTD_DDict (zstd's struct: dictBuffer, dictContent, dictSize first) becomes a host ZSTD_DDict made from a
 //   copy of its content, cached by guest address, content address, size and a fingerprint of the content.
 // - Inputs of at least AWAY_BYTES give the virtual core up while they decode (other guest threads run on it).
-// XCX_ZSTD_NATIVE=0 keeps the guest decoder (the patch set switch); XCX_ZSTD_CHECK=1 decodes each call both ways,
+// XC2_ZSTD_NATIVE=0 keeps the guest decoder (the patch set switch); XC2_ZSTD_CHECK=1 decodes each call both ways,
 // keeps the guest's result and logs every call where the two differ.
 #include <stdint.h>
 #include <stdlib.h>
@@ -52,7 +52,7 @@ static struct {
 
 static int check_mode(void) {
     static int v = -1;
-    if (v < 0) v = cfg_bool("XCX_ZSTD_CHECK");
+    if (v < 0) v = cfg_bool("XC2_ZSTD_CHECK");
     return v;
 }
 

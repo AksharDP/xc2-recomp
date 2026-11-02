@@ -26,7 +26,7 @@ typedef struct {
     const char *note;     // why it is unsupported ("" otherwise)
     CheatKind kind;
     uint32_t buttons;     // CHEAT_KEY: HidNpadButton mask
-    char key[24];         // its setting, XCX_CHEAT_<hash of "<mod>/<name>">
+    char key[24];         // its setting, XC2_CHEAT_<hash of "<mod>/<name>">
 } CheatInfo;
 
 void cheats_init(void);                    // after rt_patches_init: reads the mods' files and their build status
@@ -35,7 +35,7 @@ int cheats_count(void);
 int cheats_unbuilt(void);
 const CheatInfo *cheats_info(int i);
 int cheats_on(int i);                      // the player's switch (1 for a master cheat)
-void cheats_set(int i, int on);            // switches at once and sets the cheat's setting (the menu saves xcx.ini)
+void cheats_set(int i, int on);            // switches at once and sets the cheat's setting (the menu saves xc2.ini)
 const char *cheats_file(void);             // "<build id>.txt", the name the files have for this game version
 // Every presented frame (the present path): the data cheats' VM and the button state of CHEAT_KEY cheats.
 void cheats_frame(uint64_t frame);

@@ -3,25 +3,25 @@
 // Read-only game RomFS backed by the player's extracted image.
 //
 // Input: <romfs>/romfs.bin (rt_config()->romfs), whose six IVFC levels and SHA-256 tools/extract.py verified, and
-// romfs-index.bin next to xcx.exe (XCX_ROMFS_INDEX overrides), which tools/romfs_index.py wrote together with
+// romfs-index.bin next to xc2.exe (XC2_ROMFS_INDEX overrides), which tools/romfs_index.py wrote together with
 // romfs_config.h. fs_init checks the index's SHA-256 and layout and the image size. The full 17 GB hash runs only with
-// XCX_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in XCX_ROMFS_PROOF_DIR) keyed by
-// the file's volume, file id, size and times skips it on later starts, XCX_ROMFS_VERIFY=force ignores the proof.
+// XC2_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in XC2_ROMFS_PROOF_DIR) keyed by
+// the file's volume, file id, size and times skips it on later starts, XC2_ROMFS_VERIFY=force ignores the proof.
 //
 // Reads are positional (platform.h plat_file_pread), so threads read the image in parallel without a file-pointer
-// lock. XCX_ROMFS_MMAP=1 maps the image instead.
+// lock. XC2_ROMFS_MMAP=1 maps the image instead.
 //
 // Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
 // path, the overlay's size and SHA-256 and the original's SHA-256 ("-" adds a file the RomFS lacks; it is numbered
-// after the RomFS's own files, file_count + k in path order). The directories, in this order: XCX_ROMFS_PATCHES and
-// XCX_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
+// after the RomFS's own files, file_count + k in path order). The directories, in this order: XC2_ROMFS_PATCHES and
+// XC2_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
 //
 // Player mods (mods.c; adapted from totk-pc-recomp runtime/romfs.c @ ab1dee5b, MIT, Copyright (c) 2026 Valiantsin
 // Dzerakh): the files under each enabled mod's base RomFS root are overlays too, checked by identity only (no hash, no
 // manifest). A path several overlays give is served by one: a player mod higher in the order beats a lower one, any
-// player mod beats the XCX_ROMFS_MODS manifest, which beats romfs-patches (overlay_contest). A mod path that matches a
+// player mod beats the XC2_ROMFS_MODS manifest, which beats romfs-patches (overlay_contest). A mod path that matches a
 // RomFS path only without case is served under the RomFS spelling. The add-on content files of the mods are fs_host.c's
 // (mods_aoc_file).
 #include <stdio.h>
@@ -47,7 +47,7 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Entry;
 _Static_assert(sizeof(Entry) == 24, "index entry layout");
 
 typedef struct { uint32_t volume, pad; uint64_t file_id, size, write_time, create_time; } Identity;   // no padding
-// prio: which overlay serves a path two of them give (the higher); romfs-patches 0, the XCX_ROMFS_MODS manifest 1, a
+// prio: which overlay serves a path two of them give (the higher); romfs-patches 0, the XC2_ROMFS_MODS manifest 1, a
 // player mod 2 + its distance from the bottom of the order. mod: its index in mods_at + 1, 0 for any other overlay.
 typedef struct { uint64_t index, size; char *path, *name; Identity id; int prio, mod; } Overlay;
 
@@ -130,9 +130,9 @@ static void sha_range(PlatFile *f, uint64_t offset, uint64_t size, char hex[65],
 typedef struct { char magic[16], sha256[65]; uint8_t pad[7]; Identity id; } RomfsProof;
 
 static void verify_image(const char *dir) {
-    const char *mode = cfg_get("XCX_ROMFS_VERIFY");
+    const char *mode = cfg_get("XC2_ROMFS_VERIFY");
     if (!mode || (strcmp(mode, "full") && strcmp(mode, "force"))) return;
-    const char *pdir = cfg_get("XCX_ROMFS_PROOF_DIR");
+    const char *pdir = cfg_get("XC2_ROMFS_PROOF_DIR");
     if (pdir && *pdir) dir = pdir;
     RomfsProof want = {0}, saved;
     memcpy(want.magic, "XCXRFS-PROOF-1", 16);
@@ -213,7 +213,7 @@ static uint32_t overlay_slot(uint64_t i) {
 }
 
 // ---- overlays
-// prio: the Overlay field (0 for the port's own folder, 1 for the XCX_ROMFS_MODS manifest).
+// prio: the Overlay field (0 for the port's own folder, 1 for the XC2_ROMFS_MODS manifest).
 static void overlay_load(const char *dir, int prio) {
     char path[2100];
     need(snprintf(path, sizeof path, "%s/manifest.tsv", dir) < (int)sizeof path, "overlay path");
@@ -509,15 +509,15 @@ static void heapdef_overlay(void) {
 }
 
 static void overlay_init(void) {
-    // XCX_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py)
+    // XC2_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py)
     char def[2100];
-    const char *patches = cfg_get("XCX_ROMFS_PATCHES");
+    const char *patches = cfg_get("XC2_ROMFS_PATCHES");
     if (!patches && snprintf(def, sizeof def, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof def &&
         plat_file_exists(def)) {
         def[strlen(def) - strlen("/manifest.tsv")] = 0;
         patches = def;
     }
-    const char *dirs[2] = {patches, cfg_get("XCX_ROMFS_MODS")};
+    const char *dirs[2] = {patches, cfg_get("XC2_ROMFS_MODS")};
     for (int i = 0; i < 2; i++)
         if (dirs[i] && *dirs[i] && strcmp(dirs[i], "0")) overlay_load(dirs[i], i);
     mods_overlay_init();
@@ -533,9 +533,9 @@ static void overlay_init(void) {
 }
 
 // ---- start
-// romfs-index.bin next to xcx.exe, or XCX_ROMFS_INDEX.
+// romfs-index.bin next to xc2.exe, or XC2_ROMFS_INDEX.
 static void index_path(char *out, size_t cap) {
-    const char *e = cfg_get("XCX_ROMFS_INDEX");
+    const char *e = cfg_get("XC2_ROMFS_INDEX");
     if (e && *e) {
         need(snprintf(out, cap, "%s", e) < (int)cap, "index path");
         return;
@@ -556,7 +556,7 @@ static void load_index(void) {
     else strcpy(index_dir, ".");
     uint64_t sz = 0;
     index_bytes = plat_file_read(path, &sz);
-    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to xcx.exe)", path);
+    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to xc2.exe)", path);
     need(sz >= 24 && sz < (128 << 20), "index size");
     index_size = (size_t)sz;
     uint8_t d[32];
@@ -595,7 +595,7 @@ static void init_once(void *param) {
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
     image = open_read(image_file);
-    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to xcx or set XCX_ROMFS",
+    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to xc2 or set XC2_ROMFS",
                          image_file);
     PlatFileId sz;
     need(plat_file_id(image, &sz), "image size");
@@ -604,7 +604,7 @@ static void init_once(void *param) {
                  (unsigned long long)sz.size, (unsigned long long)ROMFS_IMAGE_SIZE);
     rt_log("RomFS image %s: size ok (%llu bytes)", image_file, (unsigned long long)ROMFS_IMAGE_SIZE);
     verify_image(index_dir);
-    const char *mm = cfg_get("XCX_ROMFS_MMAP");
+    const char *mm = cfg_get("XC2_ROMFS_MMAP");
     if (mm && strcmp(mm, "0")) {
         const void *v = plat_file_map(image);
         if (v) {
@@ -738,7 +738,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
     PlatFile *f;
     uint64_t base, fsize;
     if (!out || offset < 0 || !handle_source(h, &f, &base, &fsize)) return FS_R_INVALID;
-    if (rt_trace & RT_TRACE_FS) {   // XCX_TRACE=fs: every read, with what it asked for and what the file has
+    if (rt_trace & RT_TRACE_FS) {   // XC2_TRACE=fs: every read, with what it asked for and what the file has
         char what[96];
         uint64_t i = handles[h - ROMFS_HANDLE_BASE];
         snprintf(what, sizeof what, "rom read %#llx+%#llx of %#llx%s", (unsigned long long)offset,

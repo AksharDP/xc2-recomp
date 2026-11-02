@@ -663,10 +663,10 @@ const char *ui_text_in(const char *lang, UiTextId id) {
 
 const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language()), id); }
 
-// The menu language, re-read when cfg_version changes. XCX_MENU_LANG "ru" or "en"; anything else (unset included)
+// The menu language, re-read when cfg_version changes. XC2_MENU_LANG "ru" or "en"; anything else (unset included)
 // follows the system UI language: Russian for "ru", "ru-RU", ..., else English.
 static const char *resolve_menu_lang(void) {
-    const char *v = cfg_value("XCX_MENU_LANG");
+    const char *v = cfg_value("XC2_MENU_LANG");
     if (v && !strcmp(v, "ru")) return "ru";
     if (v && !strcmp(v, "en")) return "en";
     const char *sys = plat_ui_language();

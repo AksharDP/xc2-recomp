@@ -1,4 +1,4 @@
-"""Critical path of each frame from a XCX_CRIT recording (runtime/kernel.c crit_frame).
+"""Critical path of each frame from a XC2_CRIT recording (runtime/kernel.c crit_frame).
 
 Walks back from every present on the presenting thread to the previous one. While the thread runs, waits for a
 virtual core, sits in a host call or sleeps, the time goes to that thread and state. When it waits on a guest object,

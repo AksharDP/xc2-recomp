@@ -4,10 +4,10 @@
 // the setting is read at start, and is greyed out with a note when an environment variable fixes it.
 //
 //   opt_begin("##screen", scale);
-//   opt_toggle("XCX_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+//   opt_toggle("XC2_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
 //   opt_end();
 //
-// key: the setting's XCX_ name, which must have a cfg_meta row. Present path only (ImGui).
+// key: the setting's XC2_ name, which must have a cfg_meta row. Present path only (ImGui).
 #pragma once
 #include "imgui.h"
 
@@ -64,7 +64,7 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
                 const char *fmt = "%g", const char *note = nullptr, const char *fallback = nullptr);
 
 // Binding rows (remapping on the Controls tab): a label and three cells, each selectable on its own (left / right move between them).
-// opt_bind_header: the column titles above them. opt_bind_row: key is the setting's name without XCX_ (BIND_A; the
+// opt_bind_header: the column titles above them. opt_bind_row: key is the setting's name without XC2_ (BIND_A; the
 // description names it when the environment sets it); a disabled cell shows its text greyed and takes no cursor; note
 // (NULL none) follows the description. Returns the cell A / Enter / a click activated (0..2), 10 + the cell Delete,
 // Backspace or X cleared, or -1. opt_focus_key("<key>#<cell>") puts the cursor on a cell.
@@ -72,9 +72,9 @@ void opt_bind_header(UiTextId c0, UiTextId c1, UiTextId c2);
 int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *const cells[3], const bool enabled[3],
                  const char *note = nullptr);
 
-// xcx.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
+// xc2.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
 // closes. opt_save_tick: on every frame the menu lays out; force: write now if anything is pending. 1 while a write is
 // pending.
 int opt_save_tick(int force);
-// A change made outside a row (Reset, F10): xcx.ini is written as after a row's change.
+// A change made outside a row (Reset, F10): xc2.ini is written as after a row's change.
 void opt_save_soon(void);

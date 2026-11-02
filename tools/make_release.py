@@ -10,11 +10,11 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     python/    python.org embeddable 3.14.9 + the packages of tools/requirements-installer.txt + tkinter (the Tcl/Tk 9.0
                files come out of the python.org installer's own component MSI, unpacked with msiexec /a and expand.exe;
                the installer is never run)
-    llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xcx.exe
-    runtime/   libxcxrt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
+    llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
+    runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
-    bin/       xcx_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
-    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xcx.ini.example
+    bin/       xc2_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
+    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626 (VERSION alone outside a git checkout); the
                installer's release string
     XC2-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
@@ -23,7 +23,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
 release, or the TotK Recomp release whose bin/totk_xlate.exe is the same translator) instead of downloading and
 unpacking them; runtime/, the sources and the launcher are still built from this checkout.
 
---prove compiles generated/v301 and links build/release-check/xcx.exe with nothing but the folder's python/, llvm/,
+--prove compiles generated/v301 and links build/release-check/xc2.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there. It needs a
 generated/v301 and build/extracted/v301 from the usual game build (they are read, nothing is written to them).
 
@@ -90,7 +90,7 @@ PINS = {
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
 SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
 
-# llvm-mingw: what clang and lld need to compile and link xcx.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
+# llvm-mingw: what clang and lld need to compile and link xc2.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
             'llvm-objdump.exe', 'llvm-objcopy.exe', 'llvm-strip.exe', 'llvm-readobj.exe', 'llvm-dlltool.exe',
             'llvm-rc.exe', 'llvm-cvtres.exe', 'llvm-windres.exe', 'llvm-wrapper.exe', 'mingw32-common.cfg',
@@ -284,7 +284,7 @@ def build_llvm(out):
 def build_bin(out):
     b = out / 'bin'
     b.mkdir(parents=True, exist_ok=True)
-    for f in ('xcx_xlate.exe', 'xcx_xlate.id'):
+    for f in ('xc2_xlate.exe', 'xc2_xlate.id'):
         shutil.copy2(MAIN_ROOT / 'build' / 'xlate' / f, b / f)
     shutil.copy2(MAIN_ROOT / 'toolchain' / 'hactool' / 'hactool.exe', b / 'hactool.exe')
     dll = unpack('sdl3-dll') / 'SDL3.dll'
@@ -341,31 +341,31 @@ def collect_licenses(out):
 
 
 def take_prebuilt(out, src):
-    """python/, llvm/, runtime/deps/, bin/ and licenses/ copied from the unpacked release src. The translator is renamed
-    to xcx_xlate when src is the TotK Recomp release."""
+    """python/, llvm/, runtime/deps/, bin/ and licenses/ copied from the unpacked release src. The translator is copied as
+    xc2_xlate, whatever name src gives it (xc2_xlate, xcx_xlate or totk_xlate)."""
     for d in ('python', 'llvm', 'licenses'):
         copy_tree(src / d, out / d, lambda r: '__pycache__' in r)
     copy_tree(src / 'runtime' / 'deps', out / 'runtime' / 'deps')
     (out / 'bin').mkdir(parents=True, exist_ok=True)
     for name in ('hactool.exe', 'ninja.exe', 'SDL3.dll', 'libopus-0.dll'):
         shutil.copy2(src / 'bin' / name, out / 'bin' / name)
-    stem = 'xcx_xlate' if (src / 'bin' / 'xcx_xlate.exe').is_file() else 'totk_xlate'
+    stem = next((s for s in ('xc2_xlate', 'xcx_xlate') if (src / 'bin' / (s + '.exe')).is_file()), 'totk_xlate')
     for ext in ('.exe', '.id'):
-        shutil.copy2(src / 'bin' / (stem + ext), out / 'bin' / ('xcx_xlate' + ext))
+        shutil.copy2(src / 'bin' / (stem + ext), out / 'bin' / ('xc2_xlate' + ext))
     return out / 'llvm'
 
 
 # ---- runtime/, recomp/, tools/, data/ ---------------------------------------------------------------------------------
 
 def runtime_lib(out, llvm):
-    """Build libxcxrt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
+    """Build libxc2rt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
     build = MAIN_ROOT / 'build' / 'release-check' / 'rtlib'
     run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--version', VERSION_TAG,
          '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,
          '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe', '--out', build],
         env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
-    shutil.copy2(build / 'libxcxrt.a', rt / 'libxcxrt.a')
+    shutil.copy2(build / 'libxc2rt.a', rt / 'libxc2rt.a')
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -382,7 +382,7 @@ def build_sources(out):
     for d in TOOLS_DIRS:
         copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
     copy_tree(ROOT / 'installer', out / 'installer', lambda r: '__pycache__' in r or r.startswith('launcher/'))
-    shutil.copy2(ROOT / 'xcx.ini.example', out / 'xcx.ini.example')
+    shutil.copy2(ROOT / 'xc2.ini.example', out / 'xc2.ini.example')
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
@@ -398,7 +398,7 @@ def version():
     return semver + '+' + r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else semver
 
 
-# ---- XCX-Setup.exe --------------------------------------------------------------------------------------------------
+# ---- XC2-Setup.exe --------------------------------------------------------------------------------------------------
 
 def c_wide(text):
     """A C wide string literal of text: ASCII as is, everything else as a universal character name."""
@@ -492,7 +492,7 @@ def write_zip(out, path):
 
 
 def prove(out):
-    """Compile generated/upd and link xcx.exe with the folder's tools only, then run the probes next to it."""
+    """Compile generated/upd and link xc2.exe with the folder's tools only, then run the probes next to it."""
     out = out.resolve()
     gen = MAIN_ROOT / 'generated' / VERSION_TAG
     ext = MAIN_ROOT / 'build' / 'extracted' / VERSION_TAG
@@ -501,7 +501,7 @@ def prove(out):
     t0 = time.time()
     run([out / 'python' / 'python.exe', out / 'tools' / 'build_game.py', '--version', VERSION_TAG,
          '--expected', out / 'tools' / 'data' / EXPECTED, '--toolchain', out / 'llvm',
-         '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime', '--runtime-lib', out / 'runtime' / 'libxcxrt.a',
+         '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime', '--runtime-lib', out / 'runtime' / 'libxc2rt.a',
          '--ninja', out / 'bin' / 'ninja.exe', '--gen', gen, '--out', chk, '--exefs', ext / 'exefs', '--romfs', ext / 'romfs',
          '--profile', chk / 'profile'], env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
@@ -511,7 +511,7 @@ def prove(out):
         shutil.copy2(out / 'llvm' / 'bin' / dll, chk / dll)
     failed = []
     for probe in PROBES:
-        r = subprocess.run([str(chk / 'xcx.exe'), probe], cwd=chk, env=clean_env(chk), capture_output=True, text=True,
+        r = subprocess.run([str(chk / 'xc2.exe'), probe], cwd=chk, env=clean_env(chk), capture_output=True, text=True,
                            timeout=900)
         tail = (r.stdout.strip().splitlines() or [''])[-1]
         print(f'{probe}: exit {r.returncode}: {tail}')

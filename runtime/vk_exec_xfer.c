@@ -232,10 +232,10 @@ static void oq_cb(void *arg) {
     else {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
-        // XCX_OQ_VISIBLE=1 (diagnostic): every report says a full screen of samples passed, so nothing the game tests
+        // XC2_OQ_VISIBLE=1 (diagnostic): every report says a full screen of samples passed, so nothing the game tests
         // with a query is culled; isolates occlusion-query bugs from missing geometry
         static int all_visible = -1;
-        if (all_visible < 0) all_visible = cfg_get("XCX_OQ_VISIBLE") && !strcmp(cfg_get("XCX_OQ_VISIBLE"), "1");
+        if (all_visible < 0) all_visible = cfg_get("XC2_OQ_VISIBLE") && !strcmp(cfg_get("XC2_OQ_VISIBLE"), "1");
         if (s->addr) write_counter(s->addr, all_visible ? oq_count + (1u << 22) : oq_count);
     }
     free(s);

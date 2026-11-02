@@ -1,6 +1,6 @@
-# xcx.ini: settings for xcx.exe. Copy this file to xcx.ini next to xcx.exe and remove the '#' of a line to change it.
-# Each line shows the default; on a Steam Deck the device profile ([display]) changes a few of them. A XCX_*
-# environment variable of the same name (XCX_FPS_LIMIT for fps_limit) overrides the file. Keys are case-insensitive;
+# xc2.ini: settings for xc2.exe. Copy this file to xc2.ini next to xc2.exe and remove the '#' of a line to change it.
+# Each line shows the default; on a Steam Deck the device profile ([display]) changes a few of them. A XC2_*
+# environment variable of the same name (XC2_FPS_LIMIT for fps_limit) overrides the file. Keys are case-insensitive;
 # '#' and ';' start a comment; [sections] only group lines.
 
 [frame rate]
@@ -164,7 +164,7 @@
 # Button prompts the game draws: xbox, playstation, keyboard (the default keys), switch (the game's own) or auto (the
 # connected gamepad's: playstation for a PlayStation pad, switch for a Nintendo one, xbox for the others; keyboard
 # without a gamepad). The Xbox and PlayStation prompts follow pad_layout. The setup draws them from your game into
-# prompts/ next to xcx.exe; the game reads them through its add-on content, so with no add-on content installed it
+# prompts/ next to xc2.exe; the game reads them through its add-on content, so with no add-on content installed it
 # keeps its own. Takes effect at the next start.
 # prompts = auto
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
@@ -212,7 +212,7 @@
 # Folder with the player's mods, one subfolder per mod, unpacked as emulators take them: <name>/romfs, <name>/exefs
 # (.ips, .pchtxt), <name>/cheats (<build id>.txt), or an SD card mod's atmosphere folder. An add-on content title's
 # romfs (atmosphere/contents/0100E950040390NN/romfs) goes over that pack: XC2 mods replace archived files (bf2.arh)
-# that way. Code patches and code cheats are built in by the setup. Default: mods next to xcx.exe.
+# that way. Code patches and code cheats are built in by the setup. Default: mods next to xc2.exe.
 # mods_dir =
 # Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
 # mods_order =
@@ -228,7 +228,7 @@
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's
 # Performance log sets perf (frame timings). Default: none.
 # trace = perf
-# Flight recorder: keeps the last frames and saves them to a flight folder next to the folder of xcx.exe when a frame
+# Flight recorder: keeps the last frames and saves them to a flight folder next to the folder of xc2.exe when a frame
 # takes longer than flight_spike_ms (0 to 60000).
 # flight = 0
 # flight_spike_ms = 100

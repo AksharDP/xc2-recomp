@@ -1,4 +1,4 @@
-// xcx.exe --probe-vkexec: the Vulkan replay, through gfx_vulkan_backend. Sync part: empty
+// xc2.exe --probe-vkexec: the Vulkan replay, through gfx_vulkan_backend. Sync part: empty
 // submissions get consecutive fence values; fence_wait and fence_done agree; completion callbacks run in submit order on
 // the completion thread; a guest-memory word a callback writes is visible once fence_wait returns; finish drains every
 // submission; a present of a cleared vk_texture.c image (layout GENERAL) reads back exactly through the swapchain
@@ -127,7 +127,7 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
 
     uint64_t frames = gfx_stats().frames;
     // the exact colour check needs the bilinear blit: FSR's approximate reciprocals move a flat colour by 1/255
-    plat_setenv("XCX_UPSCALER", "bilinear");
+    plat_setenv("XC2_UPSCALER", "bilinear");
     vk_present_capture(1);
     const int crop[4] = {0, 0, TEX_W, TEX_H};
     b->present(&t, crop, 0);
@@ -679,7 +679,7 @@ static int test_c0(void) {
 }
 
 // A texture in a physical pool's memory that nothing wrote reads zero, as Switch pool memory starts zeroed
-// (XCX_FIX_ZERO; the driver may return zeros without it, then this is a guard).
+// (XC2_FIX_ZERO; the driver may return zeros without it, then this is a guard).
 static int test_zero(const GfxBackend *b, uint8_t *guest, int *bytes) {
     pool_t phys = {.magic = NVN_POOL_MAGIC, .flags = 0x189, .mem = (uint8_t *)(uintptr_t)RT_GPU_VA_BASE, .size = 0x100000,
                    .game_mem = guest + 0xA00000};
@@ -909,8 +909,8 @@ int probe_vkexec(void) {
            "Downsample 64x64 -> 32x32 within 1 of the 2x2 average, stencil view aspect of D24S8, %d bytes compared)\n",
            nvnx_bytes);
     printf("probe-vkexec: c0 and zero parts passed (c0 tables, dispatch size, point size and base instance at their offsets, "
-           "unbound slots zero; %d bytes of an unwritten physical-pool texture read zero, XCX_FIX_ZERO=%s)\n",
-           zero_bytes, cfg_value("XCX_FIX_ZERO"));
+           "unbound slots zero; %d bytes of an unwritten physical-pool texture read zero, XC2_FIX_ZERO=%s)\n",
+           zero_bytes, cfg_value("XC2_FIX_ZERO"));
     if (vk_mirror_on)
         printf("probe-vkexec: mirror part passed (B2B and fill in a VRAM mirror written back by the fence, a CPU write "
                "between submissions mirrored, CPU bytes beside a fill kept, %d bytes compared)\n", mirror_bytes);

@@ -49,7 +49,7 @@ _Static_assert(O_EVENT_W < O_SESSION, "handle kinds");
 enum { W_NONE = KERN_WAIT_NONE, W_LOCK = KERN_WAIT_LOCK, W_CONDVAR = KERN_WAIT_CONDVAR, W_ADDRESS = KERN_WAIT_ADDRESS,
        W_SYNC = KERN_WAIT_SYNC };
 
-// Scheduler accounting states (XCX_TRACE=sched).
+// Scheduler accounting states (XC2_TRACE=sched).
 enum { S_OFF, S_RUN, S_CORE, S_HOST, S_SLEEP, S_SYNC, S_CV, S_LOCK, S_ADDR, S_N };
 static const char *const s_name[S_N] = {"off", "run", "core", "host", "sleep", "sync", "cv", "lock", "addr"};
 
@@ -86,7 +86,7 @@ struct RtThread {
     Fiber *fiber;              // current guest fiber, NULL on the thread's own context
     Fiber *leaving;            // fiber just switched away from, released by whoever resumes next
     int exit_pending;          // ExitThread on a fiber: unwind once back on the thread's own context
-    // XCX_TRACE=sched accounting (holding G)
+    // XC2_TRACE=sched accounting (holding G)
     uint32_t tid;              // host thread id
     int st;                    // S_* state since st_since
     uint64_t st_since, st_ns[S_N], nblk, npre, pre_since, cpu_last;
@@ -96,19 +96,19 @@ struct RtThread {
     uint64_t lw_ns, lw_n, lw_max, lg_ns, lg_n, lg_max, sl_n, sl_req, sl_act;   // those latencies; SleepThread asked/took
     uint64_t sp_n, sp_ho, sp_site;   // spin wait passes and core handoffs, the last loop head (the thread writes them)
     RtThread *target;          // as a core waiter: the owner core_kick asked to give its core up for it (holding G)
-    // XCX_ASYNC_PREEMPT (holding G)
+    // XC2_ASYNC_PREEMPT (holding G)
     PlatIntr *hthr;            // the host thread, for plat_intr_stop / resume; open while it may own a core
     uint64_t ap_rip;           // the interrupted host rip kern_ap_stub returns to
     uint64_t ap_last;          // the last redirect attempt on this owner
     int ap_pending;            // redirected to kern_ap_stub, which has not reached kern_ap_yield yet
-    // XCX_CORE_DIAG (holding G, except dg_host_end, which only the thread itself writes)
+    // XC2_CORE_DIAG (holding G, except dg_host_end, which only the thread itself writes)
     uint64_t dg_since;         // as a waiter: core wait start
     int dg_cls;                // as a waiter: DG_* class at the start of the wait
     uint64_t dg_kick;          // as an owner: the preempt request
     uint64_t dg_host_end;      // as an owner: the return from the host call or SVC it was in at the request
     uint64_t dg_pc, dg_lr;     // as an owner: guest pc and lr at the checkpoint that gave the core up
     int dg_host_kick;          // as an owner: in a host call or SVC at the request
-    uint32_t dg_svc;           // the thread's latest SVC (XCX_CORE_DIAG: what an owner in a host call is in)
+    uint32_t dg_svc;           // the thread's latest SVC (XC2_CORE_DIAG: what an owner in a host call is in)
     struct DgRel { uint64_t kick, host_end, pc, lr; int host, pre, prio; uint32_t h; } dg_rel;   // as a waiter: the
                                                                                                  // owner that released
 };
@@ -127,9 +127,9 @@ static void unlock(void) { plat_mutex_unlock(&G); }
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
 
-// ---- XCX_CRIT=<first>-<last frame> with XCX_TRACE=sched: every state change and wake of the guest threads and
-// every present over those frames, written to XCX_CRIT_OUT (default crit.bin) at the last one, for
-// tools/crit_path.py, which walks the chain of waits back from each present (holding G). XCX_CRIT=w<lo>-<hi> takes
+// ---- XC2_CRIT=<first>-<last frame> with XC2_TRACE=sched: every state change and wake of the guest threads and
+// every present over those frames, written to XC2_CRIT_OUT (default crit.bin) at the last one, for
+// tools/crit_path.py, which walks the chain of waits back from each present (holding G). XC2_CRIT=w<lo>-<hi> takes
 // world-clock seconds instead (frame_step_world_us): from the first present at or after lo to the first after hi, so a
 // session covers the same game time at any frame rate.
 typedef struct { uint64_t ts, obj; uint32_t a, b; uint16_t kind, st; uint32_t pad; } CritEv;
@@ -145,7 +145,7 @@ static void crit_add(int kind, uint32_t a, uint32_t b, int st, uint64_t obj, uin
     if (g_crit_n < CRIT_N) g_crit[g_crit_n++] = (CritEv){ts, obj, a, b, (uint16_t)kind, (uint16_t)st, 0};
 }
 
-// ---- XCX_TRACE=sched accounting (holding G)
+// ---- XC2_TRACE=sched accounting (holding G)
 #define RW_N 32
 static RtThread *g_render;                               // the thread that presents (sched trace, core diag)
 typedef struct { int st; uint32_t waker; uint64_t obj, ns; } WaitRec;
@@ -299,7 +299,7 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
 // and gives it up only where Horizon would switch threads (waits, sleep, yield, exit, blocking host calls); a free
 // core goes to the best waiting thread. A waiter better than a holder asks one holder to give its core up (core_kick),
 // which it does at its next SVC or indirect call (kern_checkpoint, rt_dispatch), as Horizon runs the better thread at
-// once; guest code without either keeps the core until it reaches one. XCX_FREE_CORES=1 turns the gate off.
+// once; guest code without either keeps the core until it reaches one. XC2_FREE_CORES=1 turns the gate off.
 static RtThread *g_core_owner[NCORE], *g_core_wait;
 static int g_cores_on = -1, g_held_max;
 
@@ -308,7 +308,7 @@ static void ap_init(void);
 
 static int cores_enabled(void) {
     if (g_cores_on < 0) {
-        g_cores_on = !cfg_bool("XCX_FREE_CORES");   // "0" keeps the gate, like unset
+        g_cores_on = !cfg_bool("XC2_FREE_CORES");   // "0" keeps the gate, like unset
         diag_init();
         ap_init();
     }
@@ -317,11 +317,11 @@ static int cores_enabled(void) {
 
 static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) & 1); }
 
-// ---- asynchronous preemption (XCX_ASYNC_PREEMPT, on unless 0)
+// ---- asynchronous preemption (XC2_ASYNC_PREEMPT, on unless 0)
 // Adapted from MacNativeGames games/totk/runtime/threads.c @ 33e8fa8 (8bf0893, PR #488; MIT, Copyright (c) 2026
 // MacNativeGames contributors): Horizon gives a core to a strictly better thread the moment that thread is ready.
 // Here a better waiter only marks the owner, which gives the core up at its next SVC or indirect call; an owner in a
-// stretch of game code with neither keeps it (XCX_CORE_DIAG: 0.5-1.1 ms of thread-time per frame, waits to 16 ms and
+// stretch of game code with neither keeps it (XC2_CORE_DIAG: 0.5-1.1 ms of thread-time per frame, waits to 16 ms and
 // more). With it on, three parts, all of which MacNativeGames found necessary:
 // - The waiter interrupts the owner (plat_intr_stop) when it has waited AP_FIRST_NS, then every
 //   millisecond: if the owner's host rip is in the lifted modules' code (g_gen_lo..g_gen_hi) and its host depth is 0
@@ -336,11 +336,11 @@ static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) 
 //   (interrupt_flag) is set. Such an owner is not preempted, at a checkpoint either: interrupt_flag is set and the
 //   switch happens at that SVC. Preempting it anyway hung MacNativeGames' game at "Continue" (the lock holder lost its
 //   core to a thread that then spun on that lock).
-// XCX_ASYNC_PREEMPT=0 keeps the old scheduling exactly: raw priorities, no interruption, no disable_count; =2 keeps
+// XC2_ASYNC_PREEMPT=0 keeps the old scheduling exactly: raw priorities, no interruption, no disable_count; =2 keeps
 // inheritance and the preemption disable without interrupting owners.
 #define AP_FIRST_NS 250000ull   // the waiter spins this long before the first interruption (most waits end sooner)
 #define AP_GAP_NS 1000000ull    // and interrupts the same owner at most this often
-static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (XCX_ASYNC_PREEMPT=2: inheritance and disable only)
+static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (XC2_ASYNC_PREEMPT=2: inheritance and disable only)
 static int g_ap_log;              // redirects logged so far (AP_LOG_N)
 #define AP_LOG_N 40
 static uintptr_t g_gen_lo, g_gen_hi;   // host code of the lifted modules: first and last function start
@@ -349,7 +349,7 @@ void kern_ap_stub(void);
 
 static void ap_init(void) {
     if (g_ap >= 0) return;
-    const char *e = cfg_value("XCX_ASYNC_PREEMPT");
+    const char *e = cfg_value("XC2_ASYNC_PREEMPT");
     g_ap = strcmp(e, "0") != 0;
     g_ap_int = g_ap && strcmp(e, "2") != 0;
     if (g_ap) {
@@ -377,7 +377,7 @@ static void ap_init(void) {
         }
     }
     rt_log("kernel: asynchronous preemption of virtual cores %s, priority inheritance and preemption disable %s; lifted "
-           "code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off", g_ap ? "on (XCX_ASYNC_PREEMPT=0 turns all off)" : "off",
+           "code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off", g_ap ? "on (XC2_ASYNC_PREEMPT=0 turns all off)" : "off",
            (unsigned long long)(g_gen_lo ? g_gen_lo - plat_exe_base() : 0),
            (unsigned long long)(g_gen_hi ? g_gen_hi - plat_exe_base() : 0));
 }
@@ -393,7 +393,7 @@ static int eff_prio(const RtThread *o) {
     return p;
 }
 
-// The priority the virtual cores go by: raw with XCX_ASYNC_PREEMPT=0, as before.
+// The priority the virtual cores go by: raw with XC2_ASYNC_PREEMPT=0, as before.
 static int prio_of(const RtThread *t) { return g_ap > 0 ? eff_prio(t) : t->prio; }
 
 // TLR+0x100 disable_count, +0x102 interrupt_flag (any thread may read them; the flag is set from outside as the
@@ -631,13 +631,13 @@ static int ap_try(RtThread *w) {
     return r;
 }
 
-// ---- XCX_CORE_DIAG=1: why ready threads wait for a virtual core, and for how long
+// ---- XC2_CORE_DIAG=1: why ready threads wait for a virtual core, and for how long
 // Each core wait is split into classes: the owner asked to give the core up ran game code (DG_GAME, the part an
 // asynchronous preemption would remove), was in a host call or SVC that kept the core (DG_HOST), every owner the waiter
 // may displace was of better or equal priority (DG_EQ: Horizon waits too), or the worse owners were claimed by better
 // waiters (DG_NOCORE). Per 60 presents: time per frame and a wait-length histogram per class, the owners that cost
 // most; a line per present over 25 ms; a line per wait with over 2 ms of DG_GAME (where the owner reached its
-// checkpoint), and one host RIP sample of the owner per such wait (exe RVA, for xcx.map).
+// checkpoint), and one host RIP sample of the owner per such wait (exe RVA, for xc2.map).
 enum { DG_GAME, DG_HOST, DG_EQ, DG_NOCORE, DG_N };
 static const char *const dg_name[DG_N] = {"game", "host", "eq", "nocore"};
 #define DG_NB 8   // wait lengths: < 0.05, 0.25, 1, 2, 4, 8, 16 ms, longer
@@ -658,11 +658,11 @@ static uint64_t g_dg_samples, g_dg_lines, g_sync36, g_sync36_flag;
 
 static void diag_init(void) {
     if (g_diag >= 0) return;
-    const char *e = cfg_get("XCX_CORE_DIAG");
+    const char *e = cfg_get("XC2_CORE_DIAG");
     g_diag = e && *e && strcmp(e, "0");
     if (g_diag) {
         kern_host_track = 1;
-        rt_log("core-diag: on (XCX_CORE_DIAG)");
+        rt_log("core-diag: on (XC2_CORE_DIAG)");
     }
 }
 
@@ -766,7 +766,7 @@ static void dg_sample(RtThread *t) {
 
 // perf_present, every present: a line for a present over 25 ms, the 60-present summary.
 void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns) {
-    if (g_ap > 0 && frame && frame % 600 == 0) {   // XCX_ASYNC_PREEMPT counters since the start
+    if (g_ap > 0 && frame && frame % 600 == 0) {   // XC2_ASYNC_PREEMPT counters since the start
         lock();
         uint64_t v[8] = {g_ap_sent, g_ap_taken, g_ap_host, g_ap_pc, g_ap_deferred, g_ap_fail, g_ap_spin_ok, g_sync36};
         unlock();
@@ -836,7 +836,7 @@ static void core_count(void) {
     if (n > g_held_max) g_held_max = n;
 }
 
-static struct DgRel g_dg_rel;   // XCX_CORE_DIAG: the owner core_put is releasing, for core_grant
+static struct DgRel g_dg_rel;   // XC2_CORE_DIAG: the owner core_put is releasing, for core_grant
 
 static void core_migrate(void);
 
@@ -1047,7 +1047,7 @@ int kern_core_away(void) {
     lock();
     core_put(t);
     acct(t, S_HOST);
-    if (rt_trace & RT_TRACE_SCHED)   // the caller as an exe RVA (xcx.map)
+    if (rt_trace & RT_TRACE_SCHED)   // the caller as an exe RVA (xc2.map)
         t->wobj = (uintptr_t)__builtin_return_address(0) - plat_exe_base();
     unlock();
     return 1;
@@ -1069,10 +1069,10 @@ void kern_core_back(int *away) {
 // where a better thread pinned there preempts it; here it holds a virtual core and a host core, and pollers that take a
 // lock on every pass hand its cache line between their host cores so the thread whose item it is rarely gets it
 // (nxnative found this in Breath of the Wild's job queue). Every pass pauses the host core once. A wait is a run of
-// passes through the same loop at most SPIN_GAP_NS apart; once one has lasted XCX_SPIN_HANDOFF_US (default 50) and a
+// passes through the same loop at most SPIN_GAP_NS apart; once one has lasted XC2_SPIN_HANDOFF_US (default 50) and a
 // thread waits for a virtual core, each pass gives the core to the waiter, whatever its priority, yields the host CPU
 // and takes a core again. Shorter waits keep the core: a lock held for a moment would otherwise make the next pass wait
-// for another thread's next SVC (MacNativeGames). XCX_SPIN=0 keeps the core always (the gate's own cost only).
+// for another thread's next SVC (MacNativeGames). XC2_SPIN=0 keeps the core always (the gate's own cost only).
 #define SPIN_GAP_NS 20000ull
 static int g_spin_on = -1;
 static uint64_t g_spin_handoff_ns;
@@ -1084,9 +1084,9 @@ void rt_spin_gate(Cpu *c, uint64_t head) {
     RtThread *t = tcur;
     if (!t) return;
     if (g_spin_on < 0) {
-        const char *e = cfg_get("XCX_SPIN_HANDOFF_US");
+        const char *e = cfg_get("XC2_SPIN_HANDOFF_US");
         g_spin_handoff_ns = (uint64_t)(e && *e ? atoll(e) : 50) * 1000;
-        g_spin_on = !(cfg_get("XCX_SPIN") && !cfg_bool("XCX_SPIN"));
+        g_spin_on = !(cfg_get("XC2_SPIN") && !cfg_bool("XC2_SPIN"));
     }
     t->sp_n++;
     t->sp_site = head;
@@ -1179,18 +1179,18 @@ void kern_core_stats_reset(void) {
     unlock();
 }
 
-// XCX_TRACE=sched: every 120 presents, the time split of the busiest threads (running, waiting for a core, host
+// XC2_TRACE=sched: every 120 presents, the time split of the busiest threads (running, waiting for a core, host
 // calls) and of the render thread, the render and the main thread's longest waits by object and by the thread whose
 // signal ended them, and the preemption latency.
 #define REP_N 8
-// At each present (holding G): starts recording at XCX_CRIT's first frame, stops and writes the file at its last.
+// At each present (holding G): starts recording at XC2_CRIT's first frame, stops and writes the file at its last.
 // File: "CRIT", thread count, event count (u32 each); per thread handle, priority, flags (1 main, 2 presents), host
 // tid (u32 each); then the CritEv records.
 static void crit_frame(RtThread *self, uint64_t frame) {
     static int parsed;
     if (!parsed) {
         parsed = 1;
-        const char *e = cfg_get("XCX_CRIT");
+        const char *e = cfg_get("XC2_CRIT");
         unsigned long long lo, hi;
         double wl, wh;
         if (e && e[0] == 'w' && sscanf(e + 1, "%lf-%lf", &wl, &wh) == 2 && wl >= 0 && wl < wh &&
@@ -1217,7 +1217,7 @@ static void crit_frame(RtThread *self, uint64_t frame) {
     crit_add(CRIT_FRAME, self ? self->handle : 0, 0, 0, frame, kern_now_ns());
     if (frame < g_crit_hi) return;
     g_crit_on = 0;
-    const char *path = cfg_get("XCX_CRIT_OUT");
+    const char *path = cfg_get("XC2_CRIT_OUT");
     FILE *f = fopen(path && *path ? path : "crit.bin", "wb");
     if (!f) {
         rt_log("crit: cannot write %s", path && *path ? path : "crit.bin");
@@ -1238,7 +1238,7 @@ static void crit_frame(RtThread *self, uint64_t frame) {
            (unsigned long long)g_crit_hi, g_crit_n >= CRIT_N ? " (buffer full: the last frames are incomplete)" : "");
 }
 
-// XCX_HANG_DUMP (runtime/boot.c hang_watch): every guest thread's state and its guest call chain, read without stopping
+// XC2_HANG_DUMP (runtime/boot.c hang_watch): every guest thread's state and its guest call chain, read without stopping
 // anything. A blocked thread's registers are the ones it entered its SVC or host call with; a running thread's only say
 // where it last dispatched.
 static int dump_readable(uint64_t a) { return plat_mem_readable(a, 16); }
@@ -1330,7 +1330,7 @@ void kern_hang_dump(void) {
     unlock();
 }
 
-// XCX_PC_SAMPLE=<ms>: every N ms, every guest thread's state, wait object and guest pc/lr. The hang dump says where a
+// XC2_PC_SAMPLE=<ms>: every N ms, every guest thread's state, wait object and guest pc/lr. The hang dump says where a
 // thread waits; this samples over time what a thread that never waits is doing.
 static void pc_sample(void *arg) {
     uint32_t ms = (uint32_t)(uintptr_t)arg;
@@ -1594,7 +1594,7 @@ static void thread_finish(RtThread *t) {
 // is offset, and the landing code then reads its locals through the wrong base.)
 static __attribute__((noreturn)) void exit_now(RtThread *t) { longjmp(t->exit_jmp, 1); }
 
-// The calling host thread, for ap_try (XCX_ASYNC_PREEMPT) and dg_sample (XCX_CORE_DIAG).
+// The calling host thread, for ap_try (XC2_ASYNC_PREEMPT) and dg_sample (XC2_CORE_DIAG).
 static PlatIntr *ap_open_self(void) {
     if (!cores_enabled() || (!g_ap_int && g_diag <= 0)) return NULL;
     PlatIntr *h = plat_intr_self();
