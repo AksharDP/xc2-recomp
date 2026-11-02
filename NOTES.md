@@ -85,25 +85,38 @@ back end reads keys with `GetAsyncKeyState` while the window is foreground, whic
 TotK's `stick_sens` is not ported: it rewrites TotK's camera parameter pack in the RomFS. An XC2 version needs XC2's
 own camera speed data.
 
-### Xbox button prompts: how XC2 draws them (investigated 2026-11-02, not implemented)
+### Button prompts: Xbox, PlayStation and keyboard (2026-11-02)
 
-TotK's `prompts` setting rewrites button glyphs in a font. XC2 has no button font: its prompts are textures.
-- Text prompts are `[ML:icon icon=<name>]` tags in the BDAT messages (names `A B X Y L R ZL ZR L3 R3 plus minus up down
-  left right`; the English tables use 176 of them). They draw cells of one shared atlas, the 512x256 BC3 texture (MIBL
-  format 68, block-linear) at the end of `menu/image/button.wilay` in `bf2.arh/ard`: round A B X Y, L R ZL ZR in two
-  shapes, plus, minus, home, stick and D-pad icons, SL and SR.
-- Layouts also carry their own button art, for example the battle palette's styled B X Y in
-  `menu/image/mnu032_button_icon.wilay`. There are 5,064 image layouts; which others show buttons is still to be found.
-- Delivery: the game asks every add-on content mount (`aoc1` to `aoc99`) for a menu file before it reads `bf2.ard`
-  (`XCX_TRACE=fs` at boot shows the probes for `menu/image/button.wilay`). A patched layout served through one of those
-  mounts, or through a RomFS overlay, replaces the archive's copy without touching `bf2.arh/ard`.
-- So the TotK approach carries over: a tool reads the player's own archive (`arh1` header with a XOR key, a path trie,
-  24-byte file entries; `xbc1` zlib blocks in the `.ard`), swaps the A/B and X/Y cells for the Nintendo layout, and
-  draws LB RB LT RT Menu View over L R ZL ZR plus minus. Then it re-encodes the texture and writes the loose files under
-  `build/`. Nothing from the game ships. Not done yet: the archive reader as a tool, the texture writer, the cell map,
-  the survey of the other layouts, the runtime overlay, a `prompts` setting, and an in-game check on a screen that shows
-  `[ML:icon]` text.
-
+`XCX_PROMPTS` (`prompts` in `[input]`, the *Button prompts* row on the Controls tab, after restart): `auto` (default),
+`switch` (the game's own), `xbox`, `playstation`, `keyboard`. `auto` takes the gamepad's labels (cross on the south
+button: PlayStation; B there: Nintendo, the game's own; else Xbox), and the keyboard without a gamepad. The Xbox and
+PlayStation sets follow `XCX_PAD_LAYOUT`: in the Nintendo layout Switch A is the right button, so A/B and X/Y swap
+(Xbox B, PlayStation circle for A).
+- How XC2 draws them: no button font. `[ML:icon icon=<name>]` tags in the BDAT messages draw cells of an 8x4 atlas of
+  64-pixel cells (UVs on that grid in the layout), the 512x256 BC3 texture of `menu/image/button.wilay`;
+  `font_icon.wilay` has the same atlas at 24 pixels. A survey of the 177 image layouts whose names suggest buttons
+  (`tools/xc2_prompts.py --survey`) found button art in five more: `mnu032_button_icon(_new)` (the battle palette's
+  A B X Y spheres), `mnu032_button_push_main` (tilted A A B B X X Y Y discs, textures 2-9), `mnu032_btn_circle` (a large
+  B in a ring) and `mnu001_btn` (plus). The others are not buttons (`mainmenu_keyinfo` is a placeholder bar).
+- MIBL footer: the image starts `size` bytes before the footer's end, unless the swizzled image fills its pages
+  exactly; then the footer has a 4 KiB page of its own (`button.wilay`: 131,072 bytes of image in 135,168). Block
+  height as tegra_swizzle's `block_height_mip0` (one and a half times the height in blocks).
+- `tools/xc2_prompts.py` reads `bf2.arh/ard` from the merged RomFS, pastes Kenney's Input Prompts (CC0, the 66 icons in
+  `tools/data/kenney-input-prompts`) over each Switch button and re-encodes only those BC3 blocks; pure Python, the same
+  bytes on 3.12 and 3.14, about 20-45 s. Five sets (`xbox`, `xbox_nintendo`, `playstation`, `playstation_nintendo`,
+  `keyboard`) of seven layouts go to `build/v301/prompts/<set>/` with a `manifest.tsv`; `build_game.py` copies them next
+  to `xcx.exe`, the installer's Prepare step writes them into the install. The atlas icons take the atlas's style
+  (white face, blue letters, the face buttons in their brand colours, blue rim and glow); the battle palette's are
+  solid in the brand colour (teal for keys) with white letters. The keyboard set shows `DEFAULT_KEYS` (E, Shift, Space,
+  mouse left, Q, R, Z, F, Tab, M, Ctrl, C, WASD, mouse, 1-4), not rebinds. Home, capture, SL and SR stay where a set has
+  no icon.
+- Delivery (`runtime/prompts.c`, `fs_host.c` `prompts_aoc_path`): the game asks every add-on content mount for each menu
+  file before it reads `bf2.ard`; those probes get the chosen set's file, and a player mod's file for the same path
+  still wins. Without add-on content installed there is no mount to ask and the game keeps its own prompts.
+- Checked in game (opening battle, New Game then PLUS and A to skip each scene): the tutorial's "press [A]", "press
+  [RB]" and "holding down [RB] and pressing [B]" with `prompts = xbox`; ○, R1 and ✕ with `prompts = playstation` and
+  `pad_layout = nintendo`; `auto` without a gamepad picks the keyboard set. The game tints text icons with the text
+  colour (yellow there). The arts palette's letters were not caught on screen: the battle ended on auto-attacks first.
 ## Mods and cheats (ported from TotK Recomp, 2026-11-02)
 
 How players install and make mods: [docs/mods.md](docs/mods.md). The notes below are the implementation's.

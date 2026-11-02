@@ -834,17 +834,20 @@ class Compile(Step):
 # ---- 5. prepare
 
 class Prepare(Step):
-    """Puts the shader translator beside xcx.exe. XC2 has no shader list to translate ahead of play yet: shaders are
-    translated on first use and cached in shader-cache/."""
+    """Puts the shader translator beside xcx.exe and draws the Xbox, PlayStation and keyboard button prompts from the
+    player's archive into prompts/ (tools/xc2_prompts.py, runtime/prompts.c). XC2 has no shader list to translate
+    ahead of play yet: shaders are translated on first use and cached in shader-cache/."""
     id = 'prepare'
 
     def key(self, ctx):
         layout = ctx.layout
-        return fingerprint('prepare-2', ctx.keys['compile'], layout.xlate, layout.xlate.with_suffix('.id'))
+        return fingerprint('prepare-3', ctx.keys['compile'], layout.xlate, layout.xlate.with_suffix('.id'),
+                           layout.tools / 'xc2_prompts.py', layout.tools / 'data' / 'kenney-input-prompts')
 
     def current(self, ctx, record):
         xlate = ctx.dest / XLATE
-        return xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256')
+        return (xlate.is_file() and file_sha256(xlate) == record.get('xlate_sha256') and
+                (ctx.dest / 'prompts' / 'manifest.tsv').is_file())
 
     def run(self, ctx):
         layout, dest = ctx.layout, ctx.dest
@@ -858,6 +861,14 @@ class Prepare(Step):
             replace_file(xlate_id, xlate.with_suffix('.id'))
         else:
             remove(xlate.with_suffix('.id'))
+        # the prompts are optional: without them the game shows its own, so a failure is logged, not fatal
+        ctx.reporter.progress('prepare', 'prompts', force=True)
+        remove(dest / 'prompts')
+        code, log = run_tool(ctx, 'prepare', layout.tools / 'xc2_prompts.py',
+                             ['--romfs', dest / 'romfs', '--out', dest / 'prompts'])
+        if code:
+            remove(dest / 'prompts')
+            ctx.reporter.log(f'xc2_prompts.py failed (exit code {code}); the game keeps its own button prompts. {log}')
         return {'xlate_sha256': file_sha256(xlate)}
 
 

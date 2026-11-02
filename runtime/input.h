@@ -30,6 +30,9 @@ int input_pad_stick_percent(double pct[2]);
 enum { PAD_LABEL_NONE, PAD_LABEL_A, PAD_LABEL_B, PAD_LABEL_X, PAD_LABEL_Y, PAD_LABEL_CROSS, PAD_LABEL_CIRCLE,
        PAD_LABEL_SQUARE, PAD_LABEL_TRIANGLE };
 int input_pad_label(int pad);
+// The open gamepad for the button prompts (prompts.c): 1 with *south the label of its south button (PAD_LABEL_*) and
+// *layout its layout (PAD_LAYOUT_*), 0 without one. Starts the input if nothing polled it yet. Any thread.
+int input_pad_identity(int *south, int *layout);
 // The menu's remapping rows (Controls tab). input_map_snapshot copies the tables in effect (after any changed XCX_BIND_* line).
 // input_capture polls the keys, the mouse buttons and the gamepad for a press: reset 1 takes what is held now as the
 // start (a held key counts once released and pressed again) and returns NONE; then it returns KEY or PAD with *id the

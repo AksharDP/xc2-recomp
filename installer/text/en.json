@@ -4,7 +4,7 @@
  "step.dlc": "Extracting the add-on content",
  "step.lift": "Translating the game code to C",
  "step.compile": "Compiling {game_exe}",
- "step.prepare": "Installing the shader translator",
+ "step.prepare": "Installing the shader translator and button prompts",
  "step.cleanup": "Cleaning up",
  "phase.check.host": "Checking the processor and the graphics card",
  "phase.check.verify": "Checking the files already installed",
@@ -169,5 +169,6 @@
  "lang.zh-TW": "Chinese (Traditional, Taiwan)",
  "lang.zh-Hans": "Chinese (Simplified)",
  "lang.zh-Hant": "Chinese (Traditional)",
- "phase.prepare.translator": "Copying the shader translator"
+ "phase.prepare.translator": "Copying the shader translator",
+ "phase.prepare.prompts": "Drawing the Xbox, PlayStation and keyboard button prompts"
 }

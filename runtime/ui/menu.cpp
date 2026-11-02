@@ -606,6 +606,9 @@ static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX};
     opt_choice("XCX_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 3, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    static const UiTextId prompts[] = {UI_MENU_PROMPTS_AUTO, UI_MENU_PROMPTS_SWITCH, UI_MENU_PROMPTS_XBOX,
+                                       UI_MENU_PROMPTS_PLAYSTATION, UI_MENU_PROMPTS_KEYBOARD};
+    opt_choice("XCX_PROMPTS", UI_MENU_PROMPTS, prompts, 5, UI_MENU_PROMPTS_DESC);
     opt_toggle("XCX_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("XCX_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("XCX_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");

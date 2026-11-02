@@ -161,6 +161,12 @@
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # pad_layout = auto
+# Button prompts the game draws: xbox, playstation, keyboard (the default keys), switch (the game's own) or auto (the
+# connected gamepad's: playstation for a PlayStation pad, switch for a Nintendo one, xbox for the others; keyboard
+# without a gamepad). The Xbox and PlayStation prompts follow pad_layout. The setup draws them from your game into
+# prompts/ next to xcx.exe; the game reads them through its add-on content, so with no add-on content installed it
+# keeps its own. Takes effect at the next start.
+# prompts = auto
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
 # stick_deadzone = 8

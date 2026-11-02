@@ -615,6 +615,16 @@ int input_pad_layout(void) {
     return (int)plat_cas32(&pad_layout_shown, 0, 0);
 }
 
+int input_pad_identity(int *south, int *layout) {
+    plat_mutex_lock(&lock);
+    if (!state) start();
+    int ok = state == 1 && pad && SDL_GamepadConnected(pad);
+    if (ok) *layout = pad_layout_get();
+    plat_mutex_unlock(&lock);
+    if (ok) *south = input_pad_label(PAD_SOUTH);
+    return ok;
+}
+
 int input_pad_label(int pad_id) {
     if (pad_id < PAD_SOUTH || pad_id > PAD_NORTH) return PAD_LABEL_NONE;
     return (int)plat_cas32(&pad_labels[pad_id - PAD_SOUTH], 0, 0);

@@ -26,6 +26,7 @@
 #include "host.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "prompts.h"
 #include "romfs_path.h"
 
 #define XCX_APPLICATION_ID 0x0100453019aa8000ull   // XCX DE (the name stays to keep the diff against XCX Recomp small)
@@ -680,6 +681,21 @@ static int mod_aoc_path(const char *path, char *out, size_t cap, int *is_dir) {
     return index && mods_aoc_file(index, colon + 2, out, cap, is_dir);
 }
 
+// The redrawn button prompt layout for an add-on content path (prompts.c prompts_file): the game asks every pack for
+// a menu file before its base archive. Into out the host file; 0 for another path or with the game's own prompts. A
+// mod's file for the same path wins (mod_aoc_path after it).
+static int prompts_aoc_path(const char *path, char *out, size_t cap) {
+    const char *colon = path ? strchr(path, ':') : NULL;
+    if (!colon || colon[1] != '/') return 0;
+    size_t n = (size_t)(colon - path);
+    int aoc = 0;
+    plat_mutex_lock_shared(&lock);
+    for (int i = 0; i < NMOUNTS; i++)
+        if (mounts[i].kind == M_AOC && strlen(mounts[i].name) == n && !strncmp(mounts[i].name, path, n)) aoc = 1;
+    plat_mutex_unlock_shared(&lock);
+    return aoc && prompts_file(colon + 2, out, cap);
+}
+
 typedef struct { int32_t index; uint8_t reserved[0x1c]; } CacheStorageInfo;
 _Static_assert(sizeof(CacheStorageInfo) == 0x20, "nn::fs::CacheStorageInfo");
 typedef struct { int list[64]; int count, next; } CacheList;
@@ -784,6 +800,10 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
     uint32_t r = host_path_kind(path, p, sizeof p, &kind);
     if (r) return r;
     char m[PATH_CAP];
+    if (kind == M_AOC && prompts_aoc_path(path, m, sizeof m)) {
+        memcpy(p, m, sizeof p);
+        fs_trace("read from the prompts", m);
+    }
     if (kind == M_AOC && mod_aoc_path(path, m, sizeof m, &is_dir) && !is_dir) {
         memcpy(p, m, sizeof p);
         fs_trace("read from a mod", m);
@@ -940,6 +960,7 @@ static uint32_t entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID_ARGUMENT;
     int kind = plat_fs_kind(p), is_dir = 0;
     char m[PATH_CAP];
+    if (prompts_aoc_path(path, m, sizeof m)) kind = PLAT_FS_FILE;
     if (mod_aoc_path(path, m, sizeof m, &is_dir)) kind = is_dir ? PLAT_FS_DIR : PLAT_FS_FILE;   // a mod's file wins
     if (kind == PLAT_FS_MISSING) return FS_R_PATH_NOT_FOUND;
     *out = kind == PLAT_FS_DIR ? FS_ENTRY_DIRECTORY : FS_ENTRY_FILE;

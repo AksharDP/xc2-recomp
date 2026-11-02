@@ -240,6 +240,20 @@ def copy_romfs_patches(version, out):
     print(f'romfs patches: copied from {src}')
 
 
+def copy_prompts(version, out):
+    """xcx.exe serves the button prompt layouts in prompts/ next to it (runtime/prompts.c); tools/xc2_prompts.py writes
+    them into build/<version>. Copies them when their manifest differs."""
+    src = ROOT / 'build' / version / 'prompts'
+    dst = out / 'prompts'
+    if src.resolve() == dst.resolve() or not (src / 'manifest.tsv').is_file():
+        return
+    if (dst / 'manifest.tsv').is_file() and (dst / 'manifest.tsv').read_bytes() == (src / 'manifest.tsv').read_bytes():
+        return
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst)
+    print(f'button prompts: copied from {src}')
+
+
 def c_string(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
@@ -819,6 +833,7 @@ def main():
         romfs_index.write_placeholder(out)
         print(f'build_game: warning: no {paths["romfs"] / "index.json"}; {EXE} will have no RomFS', file=sys.stderr)
     copy_romfs_patches(args.version, out)
+    copy_prompts(args.version, out)
     global RUNTIME
     RUNTIME = (args.runtime or RUNTIME).resolve()
     stale = stale_shaders(RUNTIME)
