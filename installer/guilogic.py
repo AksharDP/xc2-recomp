@@ -110,7 +110,7 @@ def amount(cat, done, total, unit):
 class Form:
     base: str = ''
     update: str = ''
-    dlc: str = ''          # optional: the add-on content NSP
+    dlc: tuple = ()        # optional: the add-on content NSPs, any number
     keys: str = ''
     lang: str = ''
     dest: str = ''
@@ -148,16 +148,21 @@ class Form:
                 value = getattr(self, name).strip()
                 if value and not Path(value).is_file():
                     found.append(f'ui.missing_{name}')
-        if self.dlc.strip() and not Path(self.dlc.strip()).is_file():
+        if any(not Path(p).is_file() for p in self.dlc_paths()):
             found.append('ui.missing_dlc')
         return found
 
+    def dlc_paths(self):
+        return [p.strip() for p in self.dlc if p.strip()]
+
     def command(self, python, root=None, temp=None, verify=False):
         cmd = [str(python), '-m', 'installer']
-        for flag, value in (('--base', self.base), ('--update', self.update), ('--dlc', self.dlc),
-                            ('--keys', self.keys), ('--lang', self.lang), ('--dest', self.dest)):
+        for flag, value in (('--base', self.base), ('--update', self.update), ('--keys', self.keys),
+                            ('--lang', self.lang), ('--dest', self.dest)):
             if value.strip():
                 cmd += [flag, value.strip()]
+        if self.dlc_paths():
+            cmd += ['--dlc', *self.dlc_paths()]
         if root:
             cmd += ['--root', str(root)]
         if temp:

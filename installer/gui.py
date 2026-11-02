@@ -53,6 +53,7 @@ class App:
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
         self.vars = {n: tk.StringVar() for n in ('base', 'update', 'dlc', 'keys', 'dest')}
         self.vars['lang'] = tk.StringVar()
+        self.dlc_files = []              # the add-on NSPs; vars['dlc'] shows their names
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
@@ -191,7 +192,14 @@ class App:
         for i, (name, label_id, pick_id) in enumerate(rows):
             lab = self.label(grid, label_id)
             lab.grid(row=i, column=0, sticky='w', pady=4, padx=(0, 10))
-            ttk.Entry(grid, textvariable=self.vars[name]).grid(row=i, column=1, sticky='ew', pady=4)
+            if name == 'dlc':   # several files: shown joined, chosen with the picker, emptied with Clear
+                cell = ttk.Frame(grid)
+                cell.columnconfigure(0, weight=1)
+                ttk.Entry(cell, textvariable=self.vars[name], state='readonly').grid(row=0, column=0, sticky='ew')
+                self.button(cell, 'ui.clear', self.clear_dlc).grid(row=0, column=1, padx=(8, 0))
+                cell.grid(row=i, column=1, sticky='ew', pady=4)
+            else:
+                ttk.Entry(grid, textvariable=self.vars[name]).grid(row=i, column=1, sticky='ew', pady=4)
             b = self.button(grid, 'ui.browse', lambda n=name, p=pick_id: self.pick_file(n, p))
             b.grid(row=i, column=2, padx=(8, 0))
             self.form_rows[name] = lab
@@ -264,7 +272,7 @@ class App:
     # ---- form -----------------------------------------------------------------------------------------------------
 
     def form(self):
-        return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=self.vars['dlc'].get(),
+        return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=tuple(self.dlc_files),
                     keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
 
     def refresh_form(self):
@@ -284,9 +292,21 @@ class App:
             types = [(self.cat('ui.type_nsp'), '*.nsp'), (self.cat('ui.type_all'), '*.*')]
         if name == 'keys':
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
+        if name == 'dlc':   # the add-on packs are separate NSPs: pick them together
+            paths = filedialog.askopenfilenames(title=self.cat(pick_id), filetypes=types)
+            if paths:
+                self.set_dlc([os.path.normpath(p) for p in self.tk.splitlist(paths)])
+            return
         path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
         if path:
             self.vars[name].set(os.path.normpath(path))
+
+    def set_dlc(self, paths):
+        self.dlc_files = list(paths)
+        self.vars['dlc'].set('; '.join(os.path.basename(p) for p in paths))
+
+    def clear_dlc(self):
+        self.set_dlc([])
 
     def pick_dest(self):
         path = filedialog.askdirectory(title=self.cat('ui.pick_dest'), mustexist=False)
@@ -492,14 +512,14 @@ class App:
 
 # ---- self test ---------------------------------------------------------------------------------------------------
 
-SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/XCX', 'log': 'D:\\log.txt',
+SAMPLE_START = {'type': 'start', 'release': 'selftest', 'mode': 'install', 'dest': 'Z:/selftest/XC2', 'log': 'D:\\log.txt',
                 'steps': ['check', 'extract', 'lift', 'compile', 'prepare', 'cleanup']}
 SAMPLE_RUN = [
     SAMPLE_START,
     {'type': 'plan', 'run': ['check', 'extract'], 'skip': {}},
     {'type': 'step', 'step': 'check', 'state': 'started'},
     {'type': 'progress', 'step': 'check', 'phase': 'inputs'},
-    {'type': 'space', 'dest': 'Z:/selftest/XCX', 'need': 36_400_000_000, 'free': 210_000_000_000, 'temp': 'C:\\t',
+    {'type': 'space', 'dest': 'Z:/selftest/XC2', 'need': 36_400_000_000, 'free': 210_000_000_000, 'temp': 'C:\\t',
      'temp_need': 0, 'temp_free': 0, 'same_disk': True},
     {'type': 'warning', 'id': 'warn.lang_needs_fonts', 'params': {'lang': 'ko'}},
     {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 12.0},
@@ -550,9 +570,10 @@ def selftest(layout, shots=None):
             app.ui_var.set(lang)
             app.switch_language()
             tag = lang
-            app.vars['dest'].set('Z:/selftest/XCX')
-            app.vars['base'].set('Z:/selftest/xcx.nsp')
-            app.vars['update'].set('Z:/selftest/xcx-2.0.0.nsp')
+            app.vars['dest'].set('Z:/selftest/XC2')
+            app.vars['base'].set('Z:/selftest/xc2.nsp')
+            app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
+            app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
             app.vars['keys'].set('Z:/selftest/prod.keys')
             app.show('form')
             app.start()   # missing files: shows the problems
@@ -578,14 +599,14 @@ def selftest(layout, shots=None):
             app.model = Model()
             for e in SAMPLE_OK:
                 app.model.apply(e)
-            app.model.dest = 'Z:/selftest/XCX'
+            app.model.dest = 'Z:/selftest/XC2'
             app.model.finish(0)
             app.refresh_finish()
             app.show('finish')
             shot(f'finish-ok-{tag}')
             app.model = Model()
             for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
-                                        'params': {'path': 'Z:/selftest/XCX', 'need_gb': 36.4, 'free_gb': 20.1}},
+                                        'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
                                        {'type': 'end', 'result': 'failed', 'seconds': 3}]:
                 app.model.apply(e)
             app.model.finish(1)
