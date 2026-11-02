@@ -45,6 +45,7 @@
  "check.inputs_needed": "Нужны игровые файлы: выберите базовую игру, обновление 3.0.1 и prod.keys.",
  "check.input_missing": "Файл не найден ({input}): {path}",
  "check.keys_unreadable": "Не удаётся прочитать файл ключей. Выберите файл prod.keys.",
+ "check.dlc_keys_needed": "Для добавления дополнительного контента нужен prod.keys: выберите его вместе с файлами дополнений.",
  "check.keys_no_header_key": "В файле ключей нет header_key. Снова получите prod.keys со своей консоли.",
  "check.keys_wrong": "Эти ключи не открывают файл «{input}». Используйте prod.keys со своей консоли.",
  "check.keys_too_old": "Файл ключей слишком старый для файла «{input}» (нужно поколение ключей {generation}). Получите prod.keys с консоли с более новой прошивкой.",

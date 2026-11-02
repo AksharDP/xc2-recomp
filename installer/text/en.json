@@ -45,6 +45,7 @@
  "check.inputs_needed": "The game files are needed: choose the base game, the 3.0.1 update and prod.keys.",
  "check.input_missing": "File not found ({input}): {path}",
  "check.keys_unreadable": "The keys file cannot be read. Choose a prod.keys file.",
+ "check.dlc_keys_needed": "Adding add-on content needs prod.keys: choose it together with the add-on files.",
  "check.keys_no_header_key": "The keys file has no header_key. Dump prod.keys from your console again.",
  "check.keys_wrong": "The keys cannot open the {input} file. Use the prod.keys of your console.",
  "check.keys_too_old": "The keys file is too old for the {input} file (needs key generation {generation}). Dump prod.keys from a console with newer firmware.",

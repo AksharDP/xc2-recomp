@@ -255,7 +255,30 @@ class Check(Step):
         if ctx.will_run('extract'):
             rep.progress('check', 'versions', force=True)
             self.versions(ctx)
+        elif dlc_inputs(ctx):   # add-ons added to an installed folder: inputs() did not see them
+            self.dlc_files(ctx)
         return {}
+
+    def dlc_files(self, ctx):
+        """Add-on files chosen without the game files: they need the keys too (their NCAs are encrypted), and each must
+        hold this game's add-on content. Stops before any step writes."""
+        o = ctx.options
+        if not o.keys:
+            raise InstallError('check.dlc_keys_needed')
+        if not Path(o.keys).is_file():
+            raise InstallError('check.input_missing', input='keys', path=str(o.keys))
+        try:
+            keys = load_keys(Path(o.keys))
+        except (ValueError, OSError, UnicodeDecodeError):
+            raise InstallError('check.keys_unreadable') from None
+        if 'header_key' not in keys:
+            raise InstallError('check.keys_no_header_key')
+        for path in dlc_inputs(ctx):
+            if not path.is_file():
+                raise InstallError('check.input_missing', input='dlc', path=str(path))
+            with path.open('rb') as f:
+                dlc_record(f, path, keys)
+        del keys
 
     def host(self, ctx):
         layout, work = ctx.layout, ctx.temp / 'check'
@@ -579,8 +602,12 @@ class Dlc(Step):
 
     def run(self, ctx):
         files, dest, rep = dlc_inputs(ctx), ctx.dest, ctx.reporter
+        # packs an earlier run extracted stay installed (add-ons can be added a few at a time) and stay recorded, so
+        # current() keeps checking them; a pack chosen again is extracted again
+        before = [i for i in (ctx.state.get('steps', {}).get('dlc') or {}).get('indices', [])
+                  if (dest / 'aoc' / str(i)).is_dir()]
         if not files:
-            return {'indices': []}
+            return {'indices': before}
         keys_path = Path(ctx.options.keys)
         keys = load_keys(keys_path)
         logs = ctx.temp / 'logs'
@@ -608,7 +635,7 @@ class Dlc(Step):
             rep.log(f'dlc: {path.name} is add-on content {index} ({title_id})')
             indices.append(index)
         rep.progress('dlc', 'extract', len(files), len(files), 'files')
-        return {'indices': sorted(set(indices))}
+        return {'indices': sorted(set(before) | set(indices))}
 
 
 # ---- 3. lift

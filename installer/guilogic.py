@@ -148,6 +148,8 @@ class Form:
                 value = getattr(self, name).strip()
                 if value and not Path(value).is_file():
                     found.append(f'ui.missing_{name}')
+            if self.dlc_paths() and not self.keys.strip():   # add-ons are encrypted: adding them needs the keys
+                found.append('ui.need_keys')
         if any(not Path(p).is_file() for p in self.dlc_paths()):
             found.append('ui.missing_dlc')
         return found
