@@ -54,12 +54,24 @@ now mirrors the front face for the upper-left origin. Verified by rasterizing Gr
 the dumped triangles and `c5` (`XCX_DUMP_MESH`, `XCX_ONLY_PROG`) against the GPU's pre-pass depth: 164,578 pixels
 differed before, 4 after.
 
+### Movies: host VP9 decoder never bound (fixed 2026-11-01)
+
+XC2's SDK 3.5 movie library constructs `movie::Decoder(DecoderType, DecoderOutputFormat)` without XCX's mode and
+priority arguments, and numbers packed NV12 3 rather than 4. `ov_movie.c` bound only XCX's constructor, so the first of
+the 154 movies (`stream/movie/*.webm`, VP9 1280x720 + Vorbis) would have run the library's NVDEC path and aborted. The
+host decoder now binds XC2's constructor and format. The Vorbis tracks stay on the library's CPU decoder (SoftVorbis),
+which constructs in the running game without NvRm. `xcx.exe --probe-movie` decodes an XC2 movie and passes; a movie
+has not been watched in game yet.
+
 ## Known issues
 
 ### SDK 3.5.0 boundary
 
-The 147 overrides that bind by name were written for SDK 19-20 structures. Input, oe, apm, applet and account were
-adapted (`ov_input.c`, `ov_system.c`); the rest have not been audited struct by struct against SDK 3.5.0.
+The overrides that bind by name were written for SDK 19-20 structures. Input, oe, apm, applet and account were
+adapted (`ov_input.c`, `ov_system.c`). Of the 172 that bind, 60 run between boot and the opening battle; every one of
+those that writes a structure into guest memory matches XC2's own SDK code (calendar additional info 0x18, NpadFullKeyState
+0x28, TouchScreenState<16> 0x290, the save fs calls). The rest are unaudited. `--probe-fs` passes (165 checks; run it
+with TEMP pointing at a writable folder).
 
 ## Diagnostics added for XC2
 

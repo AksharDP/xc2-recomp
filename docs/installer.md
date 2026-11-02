@@ -1,15 +1,16 @@
 # Installer
 
-A public release that turns the player's own game files into a playable XCX folder. The release carries no game
-data and no code derived from the game: the installer builds the game on the player's machine. The installed folder
-holds only the game; the installer and its tools stay outside it.
+A public release that turns the player's own *Xenoblade Chronicles 2* files into a playable folder. The release
+carries no game data and no code derived from the game: the installer builds the game on the player's machine. The
+installed folder holds only the game; the installer and its tools stay outside it. It is XCX Recomp's installer with
+XC2's inputs; file names inside the game folder (`xcx.exe`, `xcx.ini`) stay XCX Recomp's.
 
 ## What the player does
 
-1. Downloads `XCX-Setup-<version>-windows.zip` from GitHub Releases (none is published yet), unpacks it anywhere and
-   starts `XCX-Setup.exe`.
+1. Downloads `XC2-Setup-<version>-windows.zip` (none is published), unpacks it anywhere and starts `XC2-Setup.exe`.
 2. Picks:
-   - the base game (XCI or NSP) and the 1.2.1 or 1.4.3 update (NSP);
+   - the base game (XCI or NSP), the 3.0.1 update (NSP) and, optionally, the add-on content NSPs (the Expansion Pass
+     packs 1 to 6 and *Torna ~ The Golden Country*, title ids 0100E95004039001..9006 and 0100E95004039063);
    - their `prod.keys`;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
@@ -21,7 +22,8 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 <install folder>/
   xcx.exe, SDL3.dll, libopus-0.dll, xcx_xlate.exe
   xcx.ini                       language; the other keys as commented defaults (xcx.ini.example)
-  exefs/, romfs/                 extracted from the player's files
+  exefs/, romfs/                 extracted from the player's files (base merged with 3.0.1; RomFS about 13 GiB)
+  aoc/<index>/                   each add-on's RomFS (about 4.6 GiB for all seven; packs 5 and 6 hold only a key file)
   profile/                       saves
   logs/                          xcx.log of the last run, xcx.1.log to xcx.4.log of the runs before it
   shader and pipeline caches     prepared by the setup
@@ -30,28 +32,30 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 
 ## Updating the port
 
-The player runs a newer installer on the same folder. It reads `xcx-install.json`, keeps `romfs/`, `exefs/`,
+The player runs a newer installer on the same folder. It reads `xcx-install.json`, keeps `romfs/`, `exefs/`, `aoc/`,
 `profile/` and `xcx.ini` after checking their hashes, rebuilds `xcx.exe` and re-prepares the shaders. A newer
-release that changes nothing game-derived skips the rebuild.
-
-Given another update file than the recorded one (1.2.1, then 1.4.3), the installer extracts and builds again from it and
-keeps `profile/`. Saves carry over both ways: 1.4.3 converts a 1.2.1 save on load, and 1.2.1 loads the saves 1.4.3 wrote.
+release that changes nothing game-derived skips the rebuild. Add-on content can be added later: only the add-on step
+runs again.
 
 ## Setup steps
 
-1. **Check** before writing anything: the files open with the keys, the update is 1.2.1 or 1.4.3 (by hash, as
-   `tools/extract.py`), the keys are new enough for the update, enough space is free on the target disk (about 36 GiB at the peak of a
-   first install, 20 GiB after it), the CPU has
-   AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one clear message.
-2. **Extract** ExeFS and RomFS into the install folder and verify the hashes.
-3. **Lift** the ExeFS to C (`recomp/gen.py`, `recomp/patches-v121.txt` or `patches-v143.txt`) into a temp folder next
-   to the installer.
-4. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
-   hashes and the game version's patch page) and link
-   them with the prebuilt runtime library into `xcx.exe` (`build_game.py --runtime-lib`; about 3 min on 24 cores).
-5. **Prepare** the RomFS patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
-   `xcx.exe --prepare-shaders`) in the install folder.
-6. **Clean up** the temp folder (generated C and objects, about 1.3 GB).
+1. **Check** before writing anything: the files open with the keys, the base game and the update are 1.0.0 and 3.0.1
+   (by the hashes in `tools/data/expected-xc2-<version>.json`), the keys are new enough for the update, enough space
+   is free on the target disk, the CPU has AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one
+   clear message.
+2. **Extract** ExeFS and RomFS into the install folder (hactool merges the BKTR patch) and verify the hashes.
+3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
+   are encrypted with the title key from the NSP's ticket). Its log is `logs/dlc-<index>.log` in the temp folder.
+4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
+   `recomp/patches-v301.txt` is passed when it exists; XC2 has none yet. `patches-upd.txt` and the `v121`/`v143`
+   tables are XCX's and never used.
+5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
+   and RomFS hashes) and link them with the prebuilt runtime library into `xcx.exe` (`build_game.py --runtime-lib`).
+6. **Prepare**: puts the shader translator beside `xcx.exe`. XC2 has no shader list to translate ahead of play yet, so
+   shaders are translated on first use and cached in `shader-cache/`.
+7. **Clean up** the temp folder (generated C and objects).
+
+A full first install from the base game, 3.0.1 and all seven add-ons took about 8 minutes on a 24-core machine.
 
 A cancelled or failed setup resumes from the last finished step (`xcx-install.json`).
 
@@ -60,8 +64,14 @@ A cancelled or failed setup resumes from the last finished step (`xcx-install.js
 `installer/` (stdlib only; `installer/layout.py` maps the release folder and, in a repository, the dev toolchain):
 
 ```
-python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--root DIR] [--temp DIR] [--verify]
+python -m installer --base FILE --update FILE --keys FILE [--dlc FILE ...] --lang CODE --dest DIR [--root DIR] [--temp DIR] [--verify]
 ```
+
+In a repository checkout (dev mode, no release folder) the installer borrows Python, llvm-mingw, Ninja, hactool and
+the translator from an unpacked XCX-Setup release: `XC2_SETUP_TOOLS`, else the newest `../tools/xcx-setup/XCX-Setup-*`
+beside the repository (`installer/layout.py` `tools_fallback`). It needs the runtime library built once:
+`tools/build_game.py --make-runtime-lib --out build/install-rtlib --expected tools/data/expected-xc2-3.0.1.json`
+with that release's `--toolchain` and `--ninja`.
 
 - On a folder with `xcx-install.json` only `--dest` is needed; the game files only when the extraction must run again.
 - stdout: one JSON event per line, types `start`, `plan`, `step` (started, done, skipped), `progress` (step, phase,
@@ -71,15 +81,15 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   installer's process group.
 - Each step records a key over its inputs (runner.py). A step with the recorded key and intact output is skipped, so
   resume and update are one rule; output kept from another release is re-hashed first.
-- Peak space on the install disk is about 36 GiB, not 22: the extraction copies both Program NCAs (16.3 GiB) next to
-  the merged RomFS (15.9 GiB) before it deletes them. The check computes the exact figure.
+- Peak space on the install disk is well above the finished folder's: the extraction copies both Program NCAs next to
+  the merged RomFS before it deletes them. The check computes the exact figure.
 - Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form, step list with
   progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
   finish screen with Open folder. English or Russian, chosen from the Windows display language, switchable in the
   window; every sentence is an id in `installer/text/<en|ru>.json`. A folder with `xcx-install.json` needs only the
   folder. `--selftest [--shots DIR]` builds every screen in both languages and closes itself.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
-  of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
+  of the CLI in `--verify` mode (needs `build/install-test` and an extracted game; see its docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
   `config.local.toml`.
 
@@ -88,14 +98,13 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
 The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 
 ```
-XCX-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
+XC2-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
 installer/            the installer: steps, CLI, window, en/ru text catalog
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
 runtime/              libxcxrt.a and the headers the generated code and modules.c/romfs.c/patches.c include
 bin/                  xcx_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
-data/                 shader_list.tsv (MacNativeGames, MIT)
 THIRD_PARTY_NOTICES.md
 xcx.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
@@ -106,6 +115,9 @@ xcx.ini.example, VERSION  the default ini; the release string (the repository's 
   finishes.
 
 ## Linux release
+
+Not adapted to XC2 yet: `tools/make_release_linux.py` still names XCX-Setup and proves the build on XCX's
+`generated/upd`. What follows describes it as XCX Recomp ships it.
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `XCX-Setup-<version>-linux.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
@@ -139,9 +151,8 @@ bin/                  xcx_xlate, hactool, ninja, libSDL3.so.0
 - The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
-- Building the release needs one game version extracted and lifted (`tools/extract.py`, `recomp/gen.py`, either
-  version): the runtime library includes the generated `layout.h`, whose shared part (`MOD_COUNT`, `MOD_MAIN_BASE`)
-  is the same for both. `tools/make_release.py` takes `generated/v121`, else `generated/v143`.
+- Building either release needs the game extracted and lifted (`tools/extract.py`, `recomp/gen.py`): the runtime
+  library includes the generated `layout.h`. `tools/make_release.py` takes `generated/v301`.
 
 ## Constraints
 

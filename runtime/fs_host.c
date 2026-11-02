@@ -1216,7 +1216,8 @@ static void probe_paths(void) {
 
 static uint64_t probe_romfs(void) {
     uint64_t count = romfs_file_count(), cache = ~0ull;
-    CHECK(RES(S_QUERY_CACHE, U(&cache)) == 0 && cache == 0, "QueryMountRomCacheSize");
+    // nonzero: XC2 mallocs the answer and asserts the pointer (romfs.c ov_query_cache)
+    CHECK(RES(S_QUERY_CACHE, U(&cache)) == 0 && cache == 0x1000, "QueryMountRomCacheSize");
     CHECK(RES(S_MOUNT_ROM, U("rom"), 0, 0) == 0, "MountRom(\"rom\")");
     CHECK(RES(S_MOUNT_ROM, U("rom"), 0, 0) == 0, "MountRom(\"rom\") again");
     CHECK(RES(S_MOUNT_ROM, U("../x"), 0, 0) == FS_R_INVALID, "MountRom with a bad name");

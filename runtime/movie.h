@@ -9,7 +9,7 @@
 #include "host.h"
 
 // Entries in the order of movie_symbols[]: the imported constructor, then the 19 slots of the vtable for movie::Decoder
-// (subsdk0+0x560700..0x560790, each an ABS64 relocation by name).
+// (3.0.1 subsdk0+0x586f38..0x586fc8, each an ABS64 relocation by name).
 enum { MOVIE_CTOR, MOVIE_D2, MOVIE_D0, MOVIE_CONFIGURE, MOVIE_REGISTER_EVENTS, MOVIE_GET_OUTPUT_FORMAT, MOVIE_START,
        MOVIE_STOP, MOVIE_RESET, MOVIE_FLUSH, MOVIE_ACQUIRE_INPUT, MOVIE_GET_INPUT, MOVIE_SEND_INPUT, MOVIE_ACQUIRE_OUTPUT,
        MOVIE_GET_OUTPUT, MOVIE_GET_OUTPUT_SIZE, MOVIE_RELEASE_OUTPUT, MOVIE_GET_LAST_ERROR, MOVIE_GET_OUTPUT_MD,
@@ -27,7 +27,10 @@ typedef struct {
 } MovieGuest;
 
 enum { MOVIE_EV_INPUT, MOVIE_EV_OUTPUT, MOVIE_EV_FORMAT, MOVIE_EV_ERROR };   // DecoderEvents: EventType * per event
-enum { MOVIE_TYPE_VP9 = 3, MOVIE_MODE_BUFFER = 1, MOVIE_FORMAT_NV12 = 4, MOVIE_FLAG_EOS = 4 };
+// XC2's SDK 3.5 numbering: DecoderType 1 AVC, 2 VP8, 3 VP9, 4 AAC, 5 Vorbis (DecoderImpl::DecoderTypeToMime);
+// DecoderOutputFormat 3 is packed NV12, the one DecoderImpl::ConvertDecoderOutputFormat copies plane by plane (XCX's
+// newer library calls it 4). Input flag 4 is MediaCodec's end of stream in both.
+enum { MOVIE_TYPE_VP9 = 3, MOVIE_FORMAT_NV12 = 3, MOVIE_FLAG_EOS = 4 };
 
 typedef struct { uint64_t frames, decode_ns, max_ns, errors, dropped, handed; } MovieStats;
 

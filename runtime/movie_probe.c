@@ -1,5 +1,5 @@
-// xcx.exe --probe-movie: the host movie::Decoder (ov_movie.c) on one XCX movie from the RomFS.
-// A small Matroska/WebM demuxer reads the VP9 frames of Event/Movie/<name>.webm (the smallest one, or the first whose
+// xcx.exe --probe-movie: the host movie::Decoder (ov_movie.c) on one XC2 movie from the RomFS.
+// A small Matroska/WebM demuxer reads the VP9 frames of stream/movie/<name>.webm (the smallest one, or the first whose
 // path contains XCX_PROBE_MOVIE). The probe then drives the decoder through the same HOST_OVERRIDE entries the game
 // calls, with a Cpu of its own; the guest functions the decoder calls (nn::os::SignalEvent, movie::Buffer,
 // movie::MediaData) are host stand-ins registered as host functions, so rt_call reaches them as it reaches the SDK's.
@@ -28,6 +28,7 @@
         }                                                                                                              \
     } while (0)
 #define U(x) ((uint64_t)(uintptr_t)(x))
+#define MOVIE_DIR "stream/movie/"   // XC2's pre-rendered movies (XCX's are in Event/Movie/)
 
 // ---- WebM: the VP9 track's frames
 typedef struct { uint32_t off, size; int64_t pts; } Frame;   // pts in microseconds
@@ -284,16 +285,16 @@ int probe_movie(void) {
         uint64_t size;
         const char *p = romfs_entry(i, NULL, &size);
         size_t n = p ? strlen(p) : 0;
-        if (!p || strncmp(p, "Event/Movie/", 12) || n < 5 || strcmp(p + n - 5, ".webm")) continue;
+        if (!p || strncmp(p, MOVIE_DIR, sizeof MOVIE_DIR - 1) || n < 5 || strcmp(p + n - 5, ".webm")) continue;
         movies++;
         if (want ? strstr(p, want) && !name : size < best) { name = p; best = size; }
     }
     if (!name) {
-        printf("probe-movie: skipped: no Event/Movie/*.webm%s%s in the RomFS index (%d movies)\n",
+        printf("probe-movie: skipped: no " MOVIE_DIR "*.webm%s%s in the RomFS index (%d movies)\n",
                want ? " matching " : "", want ? want : "", movies);
         return 0;
     }
-    printf("probe-movie: %d movies in Event/Movie; decoding %s (%.1f MiB)\n", movies, name, best / 1048576.0);
+    printf("probe-movie: %d movies in " MOVIE_DIR "; decoding %s (%.1f MiB)\n", movies, name, best / 1048576.0);
 
     CHECK(romfs_mount("probe") == 0, "RomFS mount");
     char path[512];
@@ -353,8 +354,7 @@ int probe_movie(void) {
     C->x[2] = (uint64_t)t.h;
     s_set_int32(C);
 
-    call(MOVIE_CTOR, 5, obj, (uint64_t)MOVIE_TYPE_VP9, (uint64_t)MOVIE_FORMAT_NV12, (uint64_t)MOVIE_MODE_BUFFER,
-         (uint64_t)0);
+    call(MOVIE_CTOR, 3, obj, (uint64_t)MOVIE_TYPE_VP9, (uint64_t)MOVIE_FORMAT_NV12);
     CHECK(obj_mem[0] == g.vptr && obj_mem[1], "constructor: object holds %#llx %#llx", (unsigned long long)obj_mem[0],
           (unsigned long long)obj_mem[1]);
     CHECK((uint32_t)call(MOVIE_REGISTER_EVENTS, 2, obj, U(events)) == 0, "RegisterClientEvents");

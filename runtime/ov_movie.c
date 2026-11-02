@@ -1,16 +1,18 @@
 // Adapted from MacNativeGames games/totk/runtime/movie_host.c @ b75be8cf (MIT, Copyright (c) 2026 MacNativeGames
 // contributors).
 // movie::Decoder for VP9 on the host with libvpx (BSD-3-Clause, linked statically).
-// XCX's pre-rendered movies (Event/Movie/*.webm, 28 files: VP9 profile 0, 1920x1080, 30 fps, video only) play through
-// the SDK movie library in subsdk0, Android's MediaCodec over NVIDIA NvMM. Its decoder opens NVDEC through NvRm, whose
-// first NvOsDrvOpen (sdk+0x3f9050) aborts with "Use of nv::InitializeGraphics is required." because ov_gfx.c takes
+// XC2's pre-rendered movies (stream/movie/*.webm, 154 files: VP9 1280x720 with a Vorbis track) play through the SDK
+// movie library in subsdk0, Android's MediaCodec over NVIDIA NvMM. Its video decoder opens NVDEC through NvRm, whose
+// first NvOsDrvOpen aborts with "Use of nv::InitializeGraphics is required." because ov_gfx.c takes
 // nv::InitializeGraphics over; nvdrv and mm:u are not served either. The game's own demuxer (movie::Extractor) runs as
-// guest code; only the decoder is replaced.
+// guest code; only the video decoder is replaced. The Vorbis track's decoder (type 5) stays the library's SoftVorbis,
+// which runs on the CPU and constructs without NvRm.
 // main imports the constructor and calls the decoder through the vtable for movie::Decoder, whose slots are ABS64
-// relocations by name: the HOST_OVERRIDE entries below replace them. A VP9 buffer-mode decoder (type 3, mode 1) is a host
-// object, +0 the library's vtable, +8 the host Movie (where the library keeps its DecoderImpl); any other decoder runs
-// the original code. Behaviour follows DecoderImpl:
-// - output format 4 is packed NV12 (Y plane, then interleaved UV; stride = width), copied into the client's Buffer;
+// relocations by name: the HOST_OVERRIDE entries below replace them. A VP9 decoder (type 3; XC2's SDK 3.5 library has
+// buffer mode only, see ov_ctor) is a host object, +0 the library's vtable, +8 the host Movie (where the library keeps
+// its DecoderImpl); any other decoder runs the original code. Behaviour follows DecoderImpl:
+// - output format 3 (movie.h MOVIE_FORMAT_NV12) is packed NV12 (Y plane, then interleaved UV; stride = width), copied
+//   into the client's Buffer;
 // - input and output buffers are indices handed out FIFO, as MediaCodec does; input flag 4 / output flag 4 = end of stream;
 // - client events {input available, output available, format changed, error} (DecoderEvents, 4 EventType pointers) are
 //   signalled with nn::os::SignalEvent on a guest thread.
@@ -41,7 +43,7 @@ enum { ST_OK = 0, ST_ERROR = 0x1000, ST_NULL = 0x100b, ST_NO_OUTPUT = 0x100e, ST
        ST_UNSUPPORTED = 0x2001, ST_NOT_CONFIGURED = 0x2002 };
 
 const char *const movie_symbols[MOVIE_ENTRIES] = {
-    "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", "_ZN5movie7DecoderD2Ev",
+    "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE", "_ZN5movie7DecoderD2Ev",
     "_ZN5movie7DecoderD0Ev", "_ZN5movie7Decoder9ConfigureEPNS_9MediaDataE",
     "_ZN5movie7Decoder20RegisterClientEventsEPNS_13DecoderEventsE", "_ZN5movie7Decoder15GetOutputFormatEPNS_9MediaDataE",
     "_ZN5movie7Decoder5StartEv", "_ZN5movie7Decoder4StopEv", "_ZN5movie7Decoder5ResetEv", "_ZN5movie7Decoder5FlushEv",
@@ -437,14 +439,16 @@ int movie_quiet(uint64_t obj) {
 }
 
 // ---- entries
-// Decoder(DecoderType type, DecoderOutputFormat format, DecoderMode mode, int priority)
+// Decoder(DecoderType type, DecoderOutputFormat format): XC2's SDK 3.5 movie library has no DecoderMode or priority
+// argument (XCX's 1.2.1/1.4.3 one does); its decoders are always buffer mode (DecoderImpl's constructor without the
+// native-window flag).
 static void ov_ctor(Cpu *c) {
     uint64_t obj = arg_x(c, 0);
-    int type = (int)arg_x(c, 1), format = (int)arg_x(c, 2), mode = (int)arg_x(c, 3);
+    int type = (int)arg_x(c, 1), format = (int)arg_x(c, 2);
     guest_init();
-    if (type != MOVIE_TYPE_VP9 || mode != MOVIE_MODE_BUFFER || host_off()) {
-        rt_log("movie: decoder type %d mode %d format %d left to the library%s", type, mode, format,
-               host_off() ? " (XCX_MOVIE_HOST=0)" : " (only VP9 in buffer mode runs on the host)");
+    if (type != MOVIE_TYPE_VP9 || host_off()) {
+        rt_log("movie: decoder type %d format %d left to the library%s", type, format,
+               host_off() ? " (XCX_MOVIE_HOST=0)" : " (only VP9 runs on the host)");
         pass(c, MOVIE_CTOR);
         return;
     }
@@ -518,7 +522,7 @@ static void ov_configure(Cpu *c) {
     if (!m) { pass(c, MOVIE_CONFIGURE); return; }
     if (!md) { ret_x(c, ST_NULL); return; }
     if (m->format != MOVIE_FORMAT_NV12) {
-        rt_log("movie: output format %d not implemented on the host (NV12 = 4 only)", m->format);
+        rt_log("movie: output format %d not implemented on the host (NV12 = %d only)", m->format, MOVIE_FORMAT_NV12);
         ret_x(c, ST_UNSUPPORTED);
         return;
     }
@@ -854,7 +858,9 @@ static void ov_get_output_md(Cpu *c) {
     ret_x(c, (uint32_t)st);
 }
 
-HOST_OVERRIDE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", ov_ctor);
+HOST_OVERRIDE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE", ov_ctor);
+// main imports C1; C2 is the same code (no virtual bases).
+HOST_OVERRIDE("_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatE", ov_ctor);
 HOST_OVERRIDE("_ZN5movie7DecoderD2Ev", ov_d2);
 // 1.4.3's vtable and a PLT call name the complete-object destructor; without virtual bases it is D2.
 HOST_OVERRIDE("_ZN5movie7DecoderD1Ev", ov_d2);
