@@ -304,6 +304,27 @@ static LONG CALLBACK diag_handler(EXCEPTION_POINTERS *ep) {
                     code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2 ? ", address " : "",
                     code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2
                         ? (unsigned long long)ep->ExceptionRecord->ExceptionInformation[1] : 0ull);
+            // The host frames down to our code, through the modules' unwind data, to name the call into the DLL.
+            CONTEXT cx = *ep->ContextRecord;
+            for (int n = 0; n < 16 && cx.Rip; n++) {
+                DWORD64 img = 0;
+                PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cx.Rip, &img, NULL);
+                HMODULE fm = NULL;
+                wchar_t fn[MAX_PATH] = L"?";
+                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       (LPCWSTR)cx.Rip, &fm))
+                    GetModuleFileNameW(fm, fn, MAX_PATH);
+                const wchar_t *fb = wcsrchr(fn, L'\\');
+                rt_logf("  host frame %2d: %ls+%#llx\n", n, fb ? fb + 1 : fn, (unsigned long long)(cx.Rip - (uintptr_t)fm));
+                if (!f) {   // a leaf: the return address is on top of the stack
+                    cx.Rip = *(DWORD64 *)cx.Rsp;
+                    cx.Rsp += 8;
+                    continue;
+                }
+                void *handler_data;
+                DWORD64 frame;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, img, cx.Rip, f, &cx, &handler_data, &frame, NULL);
+            }
             fflush(stderr);
         }
         return EXCEPTION_CONTINUE_SEARCH;

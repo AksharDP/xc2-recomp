@@ -1,5 +1,5 @@
 // --probe-shader: the shader service client (gfx_shader.c) against 32 census shaders. Needs build/xlate/xc2_xlate.exe and
-// build/v121/shaders/ (tools/shader_census.py); uses a throwaway cache directory.
+// GFX_CENSUS_DIR (tools/shader_census.py); uses a throwaway cache directory.
 //   1. Translate 32 shaders (mixed stages) through gfx_shader_get; each SPIR-V starts with the magic 0x07230203.
 //   2. Drop the memory cache and ask again: 32 hits from disk, 0 service requests. A third pass returns the same pointers.
 //   3. Send a malformed line straight to the service: it answers with an error line and still serves a valid request.
@@ -48,7 +48,7 @@ static const char *str_field(const char *from, const char *to, const char *name,
 
 static int hexval(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
 
-// The repository root: the nearest parent of xc2.exe holding build/v121/shaders/jobs.json.
+// The repository root: the nearest parent of xc2.exe holding GFX_CENSUS_DIR/jobs.json.
 static int find_root(char *root, size_t n) {
     char exe[PLAT_PATH_MAX * 2];
     int len = plat_exe_path(exe, sizeof exe);
@@ -56,10 +56,25 @@ static int find_root(char *root, size_t n) {
     for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
         *cut = 0;
         char p[PLAT_PATH_MAX * 2 + 40];
-        snprintf(p, sizeof p, "%s/build/v121/shaders/jobs.json", exe);
+        snprintf(p, sizeof p, "%s/" GFX_CENSUS_DIR "/jobs.json", exe);
         if (plat_file_exists(p)) return snprintf(root, n, "%s", exe) < (int)n;
     }
     return 0;
+}
+
+static char root[PLAT_PATH_MAX * 2];
+
+// FNV-1a of an entry's code file; 0 when it cannot be read.
+static uint64_t code_hash(const Entry *e) {
+    char path[PLAT_PATH_MAX * 2 + 64];
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/code/%s.code", root, e->key);
+    size_t size;
+    char *body = slurp(path, &size);
+    if (!body) return 0;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < size; i++) h = (h ^ (uint8_t)body[i]) * 0x100000001b3ull;
+    free(body);
+    return h ? h : 1;
 }
 
 static int pick_entries(const char *jobs, Entry *out) {
@@ -83,19 +98,25 @@ static int pick_entries(const char *jobs, Entry *out) {
         per_stage[e->stage == GFX_STAGE_VS ? 0 : e->stage == GFX_STAGE_FS ? 1 : 2]++;
         n++;
     }
-    // 11 vertex, 11 fragment, 10 compute shaders, spread evenly over each stage's list
+    // 11 vertex, 11 fragment, 10 compute shaders, spread evenly over each stage's list. XC2's shader archives keep the
+    // same code under several control sections; translate() rebuilds a program from its code alone, so an entry whose
+    // code an earlier pick has would be the same translation, and the next entry of that stage is taken instead.
     int want[3] = {11, 11, 10}, taken[3] = {0, 0, 0}, seen[3] = {0, 0, 0}, got = 0;
+    uint64_t picked[WANT];
     for (int i = 0; i < n; i++) {
         int s = all[i].stage == GFX_STAGE_VS ? 0 : all[i].stage == GFX_STAGE_FS ? 1 : 2;
         if (per_stage[s] < want[s]) want[s] = per_stage[s];
-        if (taken[s] < want[s] && seen[s] == (int)((long long)taken[s] * per_stage[s] / want[s])) out[got++] = all[i], taken[s]++;
+        if (taken[s] < want[s] && seen[s] >= (int)((long long)taken[s] * per_stage[s] / want[s])) {
+            uint64_t h = code_hash(&all[i]);
+            int dup = !h;
+            for (int k = 0; k < got && !dup; k++) dup = picked[k] == h;
+            if (!dup) picked[got] = h, out[got++] = all[i], taken[s]++;
+        }
         seen[s]++;
     }
     free(all);
     return got;
 }
-
-static char root[PLAT_PATH_MAX * 2];
 
 // Builds the program the game would hand NVN for a census entry and translates it.
 static const GfxShader *translate(const Entry *e, int *err) {
@@ -103,7 +124,7 @@ static const GfxShader *translate(const Entry *e, int *err) {
     uint8_t c1[8192], control[0x880] = {0};
     if (e->c1_len > sizeof c1) return *err = 1, NULL;
     for (size_t b = 0; b < e->c1_len; b++) c1[b] = (uint8_t)(hexval(e->c1[b * 2]) << 4 | hexval(e->c1[b * 2 + 1]));
-    snprintf(path, sizeof path, "%s/build/v121/shaders/code/%s.code", root, e->key);
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/code/%s.code", root, e->key);
     size_t body_size;
     char *body = slurp(path, &body_size);
     if (!body) return *err = 1, NULL;
@@ -137,8 +158,8 @@ static void remove_dir(const char *dir) {
 
 int probe_shader(void) {
     char path[PLAT_PATH_MAX * 2 + 64];
-    CHECK(find_root(root, sizeof root), "build/v121/shaders/jobs.json not found (run tools/shader_census.py)");
-    snprintf(path, sizeof path, "%s/build/v121/shaders/jobs.json", root);
+    CHECK(find_root(root, sizeof root), GFX_CENSUS_DIR "/jobs.json not found (run tools/shader_census.py)");
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/jobs.json", root);
     size_t jobs_size;
     char *jobs = slurp(path, &jobs_size);
     CHECK(jobs, "cannot read %s", path);
@@ -206,7 +227,7 @@ int probe_shader(void) {
     *o = 0;
     const Entry *e = &entries[0];
     snprintf(line, sizeof line,
-             "{\"job\":{\"key\":\"%.64sa\",\"stage\":\"%s\",\"debug\":false,\"c1\":\"%.*s\",\"code\":\"%s/build/v121/shaders/code/%.64s.code\"},\"out\":\"%s\"}",
+             "{\"job\":{\"key\":\"%.64sa\",\"stage\":\"%s\",\"debug\":false,\"c1\":\"%.*s\",\"code\":\"%s/" GFX_CENSUS_DIR "/code/%.64s.code\"},\"out\":\"%s\"}",
              e->key, e->stage == GFX_STAGE_VS ? "vs" : e->stage == GFX_STAGE_FS ? "ps" : "cs", (int)(e->c1_len * 2), e->c1,
              esc_root, e->key, dir_json);
     FAIL_IF(!gfx_shader_raw_request(line, reply, sizeof reply), "service did not answer a valid request after the malformed one");

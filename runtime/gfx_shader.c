@@ -862,7 +862,7 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
     memcpy(p, a->frag_out_type, 8), p += 8;
     for (int i = 0; i < 3; i++) *p++ = (uint8_t)a->local[i], *p++ = (uint8_t)(a->local[i] >> 8);
     put_u32(&p, a->shared_bytes);
-    *p++ = a->depth_minus_w;
+    *p++ = (uint8_t)(a->depth_minus_w | a->a2c_dither << 1);   // bit 1 only when set: older keys stay the same
     return (size_t)(p - o);
 }
 
@@ -894,6 +894,7 @@ static void mask_answers(const GfxShaderAnswers *a, const UseMask *m, GfxShaderA
         if (m->fouts >> i & 1) o->frag_out_type[i] = a->frag_out_type[i];
     memcpy(o->local, a->local, sizeof o->local);
     o->shared_bytes = a->shared_bytes;
+    o->a2c_dither = a->a2c_dither;
 }
 
 // The cache key of an input id under the current translator.
@@ -971,6 +972,9 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
        ae8f4f4). Without it a shader that stores to memory is depth-tested late, and the G-buffer draws' EQUAL test
        after the depth prepass fails along contour lines. Already part of the code hash (the whole control section). */
     if (!strcmp(stage, "ps") && (control[0x718] & 1)) o += sprintf(o, ",\"early_fragment_tests\":true");
+    // Maxwell dithers alpha to coverage on a single-sample target (docs/maxwell.md 5.7); Vulkan does not, so the
+    // fragment shader discards the uncovered pixels of a 2x2 pattern itself (Ryujinx's alpha-to-coverage dither).
+    if (!strcmp(stage, "ps") && a && a->a2c_dither) o += sprintf(o, ",\"a2c_dither\":true");
     int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
@@ -1612,7 +1616,8 @@ static void unpack_answers(const uint8_t *p, GfxShaderAnswers *a) {
     memcpy(a->frag_out_type, p, 8), p += 8;
     for (int i = 0; i < 3; i++) a->local[i] = (uint16_t)(p[0] | p[1] << 8), p += 2;
     memcpy(&a->shared_bytes, p, 4), p += 4;
-    a->depth_minus_w = *p;
+    a->depth_minus_w = *p & 1;
+    a->a2c_dither = *p >> 1 & 1;
 }
 
 // Reads a record file's body (after its header) into *body; 0 when absent, and a file with another header is removed.

@@ -92,8 +92,11 @@ static class SwshXlate
             // "early_fragment_tests": the fragment shader's NVN control byte +0x718 (the driver's early-Z-force, Ryujinx's
             // EarlyZForce); the SPIR-V then declares EarlyFragmentTests (MacNativeGames ae8f4f4).
             bool earlyZ = _job["early_fragment_tests"] is JsonValue ez && ez.TryGetValue<bool>(out bool eb) && eb;
+            // "a2c_dither": the draw has Maxwell's dithered alpha to coverage on a single-sample target (gfx_shader.c);
+            // Ryujinx's EmitterContext then discards the uncovered pixels of its 2x2 pattern.
+            bool a2c = _job["a2c_dither"] is JsonValue ad && ad.TryGetValue<bool>(out bool ab) && ab;
             return new GpuGraphicsState(earlyZ, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
-                false, false, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
+                a2c, a2c, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* 不做 Y 取反 | no Y flip */, true /* 原点左上 | origin upper-left */, false);
         }
         public bool QueryHostSupportsDepthClipControl() => true;

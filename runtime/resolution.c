@@ -18,6 +18,7 @@
 // above 100 would draw outside them: the patch sets "scene" and "scenefull" (recomp/patches-upd.txt) replace the game's
 // share with a fixed smaller or a whole one, and a higher value counts as 100. "game" keeps the dynamic one. Supersampling
 // is a game resolution above the window's.
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,8 @@
 
 #define BASE_W 1920
 #define BASE_H 1080
+#define XC2_W 1280
+#define XC2_H 720
 #define TABLE (MOD_MAIN_BASE + 0x17fe914)
 
 static struct {
@@ -37,6 +40,7 @@ static struct {
     unsigned ow, oh;   // output (docked)
     int on;            // res_init wrote the table
     int scale;         // XC2_RENDER_SCALE in percent, 0 for the game's own
+    int xc2;           // XC2's patch sets (xc2_res_init): ow x oh is the size it composes, on or not
 } R;
 
 static int parse(const char *s, unsigned *w, unsigned *h) {
@@ -82,10 +86,50 @@ static void scene_scale(void) {
     rt_patch_switch(full, R.scale == 100);
 }
 
+// XC2 (recomp/patches-v301.txt, set xc2res): the game composes 1280x720 in both modes. Its graphics device's size
+// getters and the window texture setup read the patch page's +0x70 (width) and +0x74 (height) instead. The render
+// targets come from the graphics heap GLIBPXL (+0x78, 362 MiB at 1280x720), inside the game's 512 MiB graphics block
+// (+0x7c), inside the application pool (memory.c): all three grow by the same amount. 2560x1440 runs through the first
+// battle and Goldmouth with 650 MiB more and aborts at boot with 578 (its first 1 MiB from GLIBPXL, main+0x701388), so
+// 232 MiB per 1280x720 of extra area, in 2 MiB steps. The game sums its memory layout (main+0x6421b4, 0xbbc00000
+// bytes) in 32 bits, so the growth stops at 1080 MiB: a larger size is scaled down to the largest that fits, at the
+// same shape (about 2920x1642 at 16:9).
+#define XC2_PIXEL_HEAP 0x16a00000ull
+#define XC2_GFX_BLOCK 0x20000000ull
+#define XC2_MIB_PER_AREA 232.0
+#define XC2_EXTRA_MAX_MIB 1080.0
+
+static struct {
+    int decided;       // 1: an XC2 build (the set xc2res exists), -1: not
+    unsigned w, h;     // XC2_OUTPUT_RES
+    uint64_t extra;    // bytes added to each of the three
+} X;
+
+static int xc2_decide(void) {
+    if (X.decided) return X.decided > 0;
+    X.decided = rt_patch_set("xc2res") >= 0 ? 1 : -1;
+    if (X.decided < 0) return 0;
+    const char *o = cfg_value("XC2_OUTPUT_RES");
+    unsigned w = XC2_W, h = XC2_H;
+    if (!parse(o, &w, &h)) rt_log("resolution: XC2_OUTPUT_RES=%s is not <width>x<height> in 640x360..7680x4320; %ux%u", o, XC2_W, XC2_H);
+    double area = (double)w * h / (XC2_W * XC2_H), most = 1 + XC2_EXTRA_MAX_MIB / XC2_MIB_PER_AREA;
+    if (area > most) {
+        double k = sqrt(most / area);
+        unsigned fw = (unsigned)(w * k), fh = (unsigned)(h * k);
+        rt_log("resolution: %ux%u needs more graphics memory than XC2 can address; %ux%u", w, h, fw & ~1u, fh & ~1u);
+        w = fw, h = fh, area = (double)(w & ~1u) * (h & ~1u) / (XC2_W * XC2_H);
+    }
+    X.w = w & ~1u, X.h = h & ~1u;
+    double mib = (area - 1) * XC2_MIB_PER_AREA;
+    X.extra = mib > 0 ? ((uint64_t)mib + 2) & ~1ull : 0;
+    X.extra <<= 20;
+    return 1;
+}
+
 // TotK Recomp grows the texture heap through its HeapDef table; XCX has no such table, and the 1.0.1 mods run at
-// 3840x2160 without a bigger heap.
+// 3840x2160 without a bigger heap. XC2 grows its own heaps (xc2_decide).
 uint64_t res_heap_extra_kib(void) { return 0; }
-uint64_t res_heap_extra_bytes(void) { return 0; }
+uint64_t res_heap_extra_bytes(void) { return xc2_decide() ? X.extra : 0; }
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     (void)in, (void)n, (void)out_n;
     *out = NULL;
@@ -93,8 +137,39 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
 }
 void res_heapdef_served(void) {}
 
+static int xc2_res_init(void) {
+    uint8_t *page = rt_patch_page();
+    if (!xc2_decide() || !page) return 0;
+    int set = rt_patch_set("xc2res");
+    R.ow = X.w, R.oh = X.h;
+    // +0x80: the camera viewport the markers are placed with (patches-v301.txt), 1280x720 at 16:9; the camera takes its
+    // aspect ratio from it, so another shape keeps the height and widens or narrows
+    uint32_t ui_w = (uint32_t)((double)XC2_H * X.w / X.h + 0.5);
+    uint32_t v[6] = {X.w, X.h, (uint32_t)(XC2_PIXEL_HEAP + X.extra), (uint32_t)(XC2_GFX_BLOCK + X.extra), ui_w, XC2_H};
+    memcpy(page + 0x70, v, sizeof v);
+    float pivot = (float)XC2_H / X.h;   // +0x88: rotated interface panes' pivot back in interface units
+    memcpy(page + 0x88, &pivot, sizeof pivot);
+    R.xc2 = 1;
+    R.on = X.w != XC2_W || X.h != XC2_H;
+    rt_patch_switch(set, R.on);
+    if (R.on) rt_log("resolution: %ux%u, graphics heaps %llu MiB larger", X.w, X.h, (unsigned long long)(X.extra >> 20));
+    else rt_log("resolution: the game's own (%ux%u)", X.w, X.h);
+    // XC2_RENDER_SCALE: the set xc2scale fixes lib_nx.ini's scene shares (dynamic 70 to 100 %) at the page's +0x58
+    int scale = rt_patch_set("xc2scale");
+    if (scale < 0) {
+        if (R.scale) rt_log("resolution: this build has no 3D render scale; the game's own");
+        R.scale = 0;
+    } else {
+        float f = R.scale / 100.0f;
+        memcpy(page + 0x58, &f, sizeof f);
+        rt_log(R.scale ? "resolution: 3D render scale %d %%" : "resolution: 3D render scale the game's (dynamic, 70 to 100 %%)", R.scale);
+    }
+    rt_patch_switch(scale, R.scale != 0);
+    return 1;
+}
 void res_init(void) {
     decide();
+    if (xc2_res_init()) return;
     scene_scale();
     uint32_t table[4];
     if (!plat_mem_read(TABLE, table, sizeof table) || table[0] != BASE_W || table[1] != BASE_H || table[2] != 1280 ||
@@ -140,7 +215,7 @@ static unsigned scene_side(unsigned side, float scale) {
 
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
-    out[0] = R.on ? R.ow : BASE_W, out[1] = R.on ? R.oh : BASE_H;
+    out[0] = R.on || R.xc2 ? R.ow : BASE_W, out[1] = R.on || R.xc2 ? R.oh : BASE_H;
     uint8_t *page = rt_patch_page();
     uint32_t used[2] = {0, 0};   // the patch set sceneread
     if (page) {

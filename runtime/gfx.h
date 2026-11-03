@@ -35,6 +35,7 @@ typedef struct {                                           // the translator's a
     uint8_t attr_type[32], frag_out_type[8];               // GFX_TYPE_*
     uint16_t local[3]; uint32_t shared_bytes;
     uint8_t depth_minus_w;
+    uint8_t a2c_dither;                                    // fs: Maxwell's dithered alpha to coverage, in the shader
 } GfxShaderAnswers;
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
@@ -48,6 +49,9 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
 const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                   const GfxShaderAnswers *a);
 uint64_t gfx_shader_async_done(void);                      // translations finished by the background worker
+// The shader census the probes and the pipeline self-test read, under the repository root (tools/shader_census.py
+// --version v301): jobs.json and code/<key>.code.
+#define GFX_CENSUS_DIR "build/v301/shaders"
 void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (XC2_TRACE=perf)
 // Translator answers for this device (vk_caps.c): shaderFloat64, storage offset rounding, subgroup size per vs/fs/cs.
 void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits);

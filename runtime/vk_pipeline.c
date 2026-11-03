@@ -163,8 +163,29 @@ static void cache_path_init(void) {
     snprintf(P.cache_path, sizeof P.cache_path, "%s/pipeline-cache.bin", exe);
 }
 
+// Intel's Windows driver (igvk64.dll, Iris Xe) faults in vkGetPipelineCacheData while another thread builds a
+// pipeline into the same cache, which Vulkan allows: on Intel the builds hold cache_rw shared and the autosave's copy
+// holds it alone (a stall of the copy's length, about 60 ms, every 20 s at most while pipelines are new).
+static PlatMutex cache_rw = PLAT_MUTEX_INIT;
+static int cache_sync;
+
+static VkResult cache_build_graphics(const VkGraphicsPipelineCreateInfo *pi, VkPipeline *out) {
+    if (cache_sync) plat_mutex_lock_shared(&cache_rw);
+    VkResult r = vkCreateGraphicsPipelines(P.device, P.cache, 1, pi, NULL, out);
+    if (cache_sync) plat_mutex_unlock_shared(&cache_rw);
+    return r;
+}
+
+static VkResult cache_build_compute(const VkComputePipelineCreateInfo *ci, VkPipeline *out) {
+    if (cache_sync) plat_mutex_lock_shared(&cache_rw);
+    VkResult r = vkCreateComputePipelines(P.device, P.cache, 1, ci, NULL, out);
+    if (cache_sync) plat_mutex_unlock_shared(&cache_rw);
+    return r;
+}
+
 // Cache data whose header names another device or driver is dropped before Vulkan sees it.
 static void cache_load(VkCtx *c) {
+    cache_sync = c->props.vendorID == 0x8086;
     cache_path_init();
     void *data = NULL;
     size_t size = 0;
@@ -545,6 +566,13 @@ void vk_pipe_state_defaults(VkPipeState *s) {
                     NVN_STENCIL_OP_KEEP, NVN_STENCIL_OP_KEEP, NVN_STENCIL_OP_KEEP};
 }
 
+// Maxwell dithers alpha to coverage on a single-sample target, a screen-door fade (docs/maxwell.md 5.7); Vulkan's
+// alpha to coverage there is a 0.5 alpha test, so a fading surface pops in and out. The fragment shader does the
+// dither instead (GfxShaderAnswers.a2c_dither) and the pipeline's own alpha to coverage stays off. XC2's opening
+// battle and Goldmouth draw nothing with alpha to coverage.
+static int a2c_in_shader(const VkPipeState *s) { return s->ms.a2c && s->ms.a2c_dither && s->samples <= 1; }
+static int a2c_host(const VkPipeState *s) { return s->ms.a2c && !a2c_in_shader(s); }
+
 void vk_pipeline_answers(const VkPipeState *s, GfxShaderAnswers *vs, GfxShaderAnswers *fs) {
     if (vs)
         for (int i = 0; i < 16; i++) {
@@ -554,11 +582,15 @@ void vk_pipeline_answers(const VkPipeState *s, GfxShaderAnswers *vs, GfxShaderAn
             if (a.fmt) vk_vertex_format((int)a.fmt, &type);
             vs->attr_type[i] = (uint8_t)type;
         }
-    if (fs)
+    if (fs) {
         for (int i = 0; i < 8; i++) {
             VkFormat f = target_format(s->color_fmt[i], NULL, NULL);
             fs->frag_out_type[i] = (uint8_t)(f == VK_FORMAT_UNDEFINED ? GFX_TYPE_FLOAT : format_type(f));
         }
+        fs->a2c_dither = (uint8_t)a2c_in_shader(s);
+        static int32_t told;
+        if (fs->a2c_dither && !plat_xchg32(&told, 1)) rt_log("vk_pipeline: alpha to coverage dithered in the fragment shader");
+    }
 }
 
 // ---- vertex input (pipeline state, or vkCmdSetVertexInputEXT)
@@ -1275,7 +1307,7 @@ static void gkey_fill(const VkPipeState *s, GKey *k) {
     k->fbl = s->fs ? s->feedback : 0;
     if (!P.dyn_clamp) k->clamp = s->depth_clamp && P.f_depth_clamp;
     if (!P.dyn_poly) k->poly_mode = (uint8_t)polygon_mode(s->poly.mode);
-    if (!P.dyn_a2c) k->a2c = s->ms.a2c != 0;
+    if (!P.dyn_a2c) k->a2c = (uint8_t)a2c_host(s);
     if (P.f_logic_op && s->color.logic_op != NVN_LOGIC_OP_COPY) k->logic_op = (uint8_t)(s->color.logic_op + 1);
     for (int i = 0; i < k->n_color; i++) {
         int on = (s->color.blend_en >> i & 1) && blendable(k->color[i]);
@@ -1441,7 +1473,7 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
     if (k->fbl & 1) pi.flags |= VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     if (k->fbl & 2) pi.flags |= VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
     uint64_t p0 = perf_begin();
-    VkResult r = vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe);
+    VkResult r = cache_build_graphics(&pi, &pipe);
     perf_end(PERF_PIPE, p0);   // counts on the render thread only, so background builds stay out of it
     if (r != VK_SUCCESS) {
         rt_log("vk_pipeline: vkCreateGraphicsPipelines failed (%d)", (int)r);
@@ -1592,7 +1624,7 @@ static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPi
         ri.depthAttachmentFormat = (VkFormat)k->depth, ri.stencilAttachmentFormat = (VkFormat)k->stencil;
         pi.pColorBlendState = &cb, pi.pMultisampleState = &ms;
     }
-    if (vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+    if (cache_build_graphics(&pi, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
 out:
     if (m) vkDestroyShaderModule(P.device, m, NULL);
     free(patched);
@@ -2525,7 +2557,7 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
                                       .layout = l->layout};
     pin_subgroup32(&ci.stage, &rqc, code, words);
     VkPipeline pipe = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(P.device, P.cache, 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+    if (cache_build_compute(&ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
     vkDestroyShaderModule(P.device, m, NULL);
     return pipe;
 }
@@ -2981,7 +3013,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     }
     if (P.dyn_clamp) rec_bool(P.set_clamp, cb, s->depth_clamp != 0);
     if (P.dyn_poly) rec_polygon_mode(P.set_poly, cb, polygon_mode(pl->mode));
-    if (P.dyn_a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, s->ms.a2c != 0);   // the same signature
+    if (P.dyn_a2c) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, (VkBool32)a2c_host(s));   // the same signature
     int n = target_count(s);
     if (!n) return;
     VkBool32 en[8];
@@ -3045,10 +3077,11 @@ void vk_pipeline_save(void) {
     }
     size_t size = 0;
     void *data = NULL;
-    if (vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
-        vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS) {
-        if (!plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
-    }
+    if (cache_sync) plat_mutex_lock(&cache_rw);
+    int got = vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
+              vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS;
+    if (cache_sync) plat_mutex_unlock(&cache_rw);
+    if (got && !plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
     free(data);
     plat_mutex_unlock(&save_lock);
 }
@@ -3127,7 +3160,7 @@ void vk_pipeline_shutdown(void) {
     plat_mutex_unlock(&P.lock);
 }
 
-// ---- self-test: census shaders (build/v121/shaders, tools/shader_census.py) through gfx_shader_get into pipelines.
+// ---- self-test: census shaders (GFX_CENSUS_DIR, tools/shader_census.py) through gfx_shader_get into pipelines.
 // Graphics pairs are a fragment shader and a vertex shader of the same source file, spread over the census; compute
 // shaders are spread the same way. Every pipeline is built twice (the second call must hit the cache) and the
 // dynamic state of the first graphics pipeline is recorded into a throwaway command buffer.
@@ -3157,7 +3190,7 @@ static int census_cmp(const void *x, const void *y) {
 
 static char *census_read(const char *root, size_t *size) {
     char path[PLAT_PATH_MAX * 2 + 64];
-    snprintf(path, sizeof path, "%s/build/v121/shaders/jobs.json", root);
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/jobs.json", root);
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
@@ -3204,7 +3237,7 @@ static const GfxShader *census_shader(const char *root, const CensusEntry *e) {
     uint8_t control[0x880] = {0};
     if (e->c1_len > sizeof c1) return NULL;
     for (size_t b = 0; b < e->c1_len; b++) c1[b] = (uint8_t)(hexv(e->c1[b * 2]) << 4 | hexv(e->c1[b * 2 + 1]));
-    snprintf(path, sizeof path, "%s/build/v121/shaders/code/%.64s.code", root, e->key);
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/code/%.64s.code", root, e->key);
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
@@ -3231,7 +3264,7 @@ static int census_root(char *root, size_t n) {
     for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
         *cut = 0;
         char p[PLAT_PATH_MAX * 2 + 40];
-        snprintf(p, sizeof p, "%s/build/v121/shaders/jobs.json", exe);
+        snprintf(p, sizeof p, "%s/" GFX_CENSUS_DIR "/jobs.json", exe);
         if (plat_file_exists(p)) return snprintf(root, n, "%s", exe) < (int)n;
     }
     return 0;
@@ -3291,7 +3324,7 @@ int vk_pipeline_selftest(void) {
     enum { MAXN = 20000, WANT_PAIRS = 64, WANT_CS = 16 };
     char root[PLAT_PATH_MAX * 2];
     if (!vk_init() || !ensure_init()) { printf("vk_pipeline selftest: FAILED: no Vulkan device\n"); return 1; }
-    if (!census_root(root, sizeof root)) { printf("vk_pipeline selftest: FAILED: build/v121/shaders/jobs.json not found\n"); return 1; }
+    if (!census_root(root, sizeof root)) { printf("vk_pipeline selftest: FAILED: " GFX_CENSUS_DIR "/jobs.json not found\n"); return 1; }
     size_t size;
     char *jobs = census_read(root, &size);
     CensusEntry *e = malloc(sizeof *e * MAXN);

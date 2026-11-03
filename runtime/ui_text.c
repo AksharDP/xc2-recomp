@@ -51,11 +51,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
-    [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in. Above 1920 x 1080 the game needs "
+    [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in; the game's own is 1280 x 720. Above it the game needs "
                                 "more video memory and GPU time.",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
-    [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
-                                  "that size. Game leaves it to the game's dynamic resolution; a percentage fixes it. "
+    [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game scales it up to "
+                                  "that size. Game leaves it to the game's dynamic resolution (70 to 100 %); a "
+                                  "percentage fixes it. "
                                   "For supersampling, set the game resolution above the window's. Takes effect after "
                                   "a restart.",
     [UI_MENU_RENDER_SCALE_GAME] = "Game (dynamic)",
@@ -347,11 +348,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_PERF_LINE_FPS] = "%.0f к/с",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
-    [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс. Выше 1920 × 1080 игре нужно больше "
+    [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс; свой у игры 1280 × 720. Выше него игре нужно больше "
                                 "видеопамяти и времени GPU.",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
-    [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
-                                  "«Как в игре» оставляет его динамическому разрешению игры; процент фиксирует его. "
+    [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; игра растягивает её до этого размера. "
+                                  "«Как в игре» оставляет его динамическому разрешению игры (от 70 до 100 %); процент "
+                                  "фиксирует его. "
                                   "Для суперсэмплинга задайте разрешение игры выше разрешения окна. Применяется после "
                                   "перезапуска.",
     [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (динамически)",

@@ -9,9 +9,11 @@
 
 ## Status
 
-Early development. The game boots to the title screen and runs New Game into the opening battle and Goldmouth with
-sound, text and input, at 60 fps by default (30 to 360 with the frame rate limit), at game resolutions from 1280x720
-up and with a fixed or the game's own dynamic 3D render scale. See [Known issues](#known-issues).
+Early development. The game boots to the title screen and runs New Game through the opening battle into Goldmouth
+with sound, text and input. It runs at 60 fps by default; the limit goes from 30 to 360. The game resolution starts at
+the console's 1280x720 and goes up to about 3040x1710 (larger sizes are scaled down to fit the game's memory), and the
+3D render scale is either the game's dynamic one or fixed. See
+[Known issues](#known-issues).
 
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -39,8 +39,8 @@ DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
-# recomp/patches-<version tag>.txt: the code patch sets of the update (recomp/patches.py). XC2 has none yet, so the lift
-# runs without one; patches-upd.txt beside it is XCX 2.0.0's and must never reach XC2's code.
+# recomp/patches-<version tag>.txt: the code patch sets of the update (recomp/patches.py): XC2's frame rate and game
+# resolution (patches-v301.txt). patches-upd.txt beside it is XCX 2.0.0's and must never reach XC2's code.
 PATCHES = 'patches-{tag}.txt'
 XLATE = 'xc2_xlate' + EXE   # the translator's name beside xc2.exe; runtime/gfx_shader.c starts it by this name
 

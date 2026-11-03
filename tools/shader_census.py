@@ -1,4 +1,11 @@
-"""Census of every Maxwell shader in the extracted XCX RomFS and ExeFS, and an offline translation pass.
+"""Census of every Maxwell shader in the extracted XC2 or XCX RomFS and ExeFS, and an offline translation pass.
+
+XC2 keeps its shaders in Monolith shader archives inside bf2.ard (xc2_inventory, spch_shaders); the probes and the
+pipeline self-test read build/v301/shaders (runtime/gfx.h GFX_CENSUS_DIR):
+
+    .venv-py314\\Scripts\\python tools\\shader_census.py --version v301
+
+The rest of this docstring describes the XCX path.
 
 Port of MacNativeGames games/totk/scripts/prepare_shader_seed.py (inventory, bnsh_shaders, sharcb_shaders, sarc) and the
 package walk of locate_shaders.py @ b75be8cf (MIT, Copyright (c) 2026 MacNativeGames contributors). Differences: no
@@ -28,7 +35,8 @@ import struct
 import subprocess
 import sys
 import time
-from collections import defaultdict
+import zlib
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import lz4.block
@@ -172,6 +180,81 @@ def startup_package(name):
             name.startswith('Shader/') and name.endswith('.zs'))
 
 
+def spch_shaders(data, at, name):
+    """The shaders of the Monolith shader archive (magic HCPS) at data[at:]. Header after the magic: u32 version, then
+    (offset, count) of the program table (u32 Slct offset, u32 flags each), (offset, count) of a table not read here, and
+    (offset, size) of the Slct, xV4 (code) and control sections, all relative to the magic. A Slct ('SLCT') holds at +40
+    the offset and size of its controls in the control section and of its code in the xV4 section. Its variants lie
+    there back to back: each stage's NVN control section, sized by its own u32 at +0x20 (0x838 or 0x848), and that
+    stage's code, sized by the control's code length (+0x704). Each walk must end exactly at the Slct's code size.
+    The control handed to NVN is the 0x880 bytes from its start, as the game passes it. Yields (key, stage, control,
+    code, source); the source names the variant, so a variant's vertex and fragment shader share it."""
+    if len(data) < at + 48:
+        raise ValueError('shader archive header outside the data')
+    _, _, poff, pcount, _, _, soff, _, xoff, xsize, coff, csize = struct.unpack_from('<4s11I', data, at)
+    if at + max(poff + 8 * pcount, xoff + xsize, coff + csize) > len(data):
+        raise ValueError('shader archive sections outside the data')
+    slcts = sorted({struct.unpack_from('<I', data, at + poff + 8 * i)[0] for i in range(pcount)})
+    for n, s in enumerate(slcts):
+        s = at + soff + s
+        if data[s:s + 4] != b'SLCT':
+            raise ValueError('shader archive program without SLCT')
+        co, cs, xo, xs = struct.unpack_from('<4I', data, s + 40)
+        c, k, end, variant, last = at + coff + co, at + xoff + xo, at + coff + co + cs, 0, -1
+        if co + cs > csize or xo + xs > xsize:
+            raise ValueError('SLCT outside its sections')
+        while c < end:
+            control = data[c:c + 0x880].ljust(0x880, b'\0')
+            size, length, stage = (struct.unpack_from('<I', control, o)[0] for o in (0x20, 0x704, 0x714))
+            if control[:4] != CONTROL_MAGIC or not 0x700 < size <= 0x880 or k + length > at + xoff + xo + xs:
+                raise ValueError('SLCT control without its magic or outside its code')
+            variant += stage <= last
+            last = stage
+            if stage in STAGE_IDS:
+                code = data[k:k + length]
+                yield digest(control + code), STAGE_IDS[stage], control, code, f'{name}#{at:x}/{n}/{variant}'
+            c += size
+            k += length
+        if k != at + xoff + xo + xs:
+            raise ValueError('SLCT code does not add up to its size')
+
+
+def xc2_inventory(romfs, rejected):
+    """XC2: every file of bf2.arh/bf2.ard (tools/xc2_prompts.py Archive) that carries shader archives. The engine's
+    shader libraries (.wishp) are the startup shaders; models (.wimdo, .wismt), map models (.wismda) and effects
+    (.wiefb) carry their own, the .wismt ones inside zlib xbc1 blocks. rejected[0] counts archives that do not parse."""
+    from xc2_prompts import Archive
+    archive = Archive(romfs)
+    shaders = {}
+    for name in archive.names():
+        ext = name.rsplit('.', 1)[-1]
+        if ext not in ('wishp', 'wimdo', 'wismt', 'wismda', 'wiefb'):
+            continue
+        data = archive.read(name)
+        blobs, pos = [data], 0
+        while (pos := data.find(b'xbc1', pos)) >= 0:
+            kind, size, csize = struct.unpack_from('<III', data, pos + 4) if pos + 16 <= len(data) else (0, 0, 0)
+            pos += 4
+            if kind == 1 and size <= 512 << 20:
+                try:
+                    blob = zlib.decompress(data[pos + 44:pos + 44 + csize])
+                except zlib.error:
+                    continue
+                if len(blob) == size and b'HCPS' in blob:
+                    blobs.append(blob)
+        for blob in blobs:
+            at = 0
+            while (at := blob.find(b'HCPS', at)) >= 0:
+                try:
+                    for key, stage, control, code, source in spch_shaders(blob, at, name):
+                        shaders.setdefault(key, dict(stage=stage, control=control, code=code, source=source,
+                                                     origin=ext, startup=ext == 'wishp'))
+                except (ValueError, struct.error):
+                    rejected[0] += 1
+                at += 4
+    return shaders
+
+
 def inventory(romfs, exefs):
     """Every unique shader: key -> dict(stage, control, code, source, origin, startup). As in MNG, a shader is a startup
     shader when it comes from an agl package, a game module, or a startup_package() RomFS file; the others come from
@@ -183,6 +266,8 @@ def inventory(romfs, exefs):
     entries = {r['path']: r for r in index['files']}
     shaders = {}
     rejected = [0]
+    if 'bf2.arh' in entries:
+        return xc2_inventory(romfs, rejected), rejected[0]
 
     def add(origin, name, found, startup):
         for key, stage, control, code in found:
@@ -322,7 +407,7 @@ def translate(jobs, out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--version', required=True, help='v121 (build/extracted/<version>)')
+    ap.add_argument('--version', required=True, help='v301 for XC2, v121 for XCX (build/extracted/<version>)')
     ap.add_argument('--all', action='store_true', help='also the layout and effect shaders MNG leaves to bind-state variants')
     ap.add_argument('--translate', action='store_true', help='translate every shader and run spirv-val')
     args = ap.parse_args()
@@ -332,10 +417,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     shaders, rejected = inventory(extracted / 'romfs', extracted / 'exefs')
     jobs = write_shaders(shaders, out, args.all)
-    a, b, c = (sum(1 for j in jobs.values() if j['origin'] == o) for o in ('bnsh', 'sharcb', 'main'))
     print(f'{len(shaders)} unique shaders found in all, {len(jobs)} selected; {rejected} .sharcb record candidates '
-          f'without a control section rejected', flush=True)
-    summary = f'shaders {len(jobs)} (bnsh {a}, sharcb {b}, main {c})'
+          f'(XC2: shader archives) rejected', flush=True)
+    origins = Counter(j['origin'] for j in jobs.values())
+    summary = f'shaders {len(jobs)} ({", ".join(f"{o} {n}" for o, n in sorted(origins.items()))})'
     print(f'extracted {summary} in {time.monotonic() - t0:.1f} s', flush=True)
     if not args.translate:
         print(f'{summary}, total {time.monotonic() - t0:.1f} s')

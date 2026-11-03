@@ -1,6 +1,6 @@
 # XC2 Recomp
 
-Static recompilation of *Xenoblade Chronicles 2* (base, update 3.0.1 and its add-on content; Switch, ARM64) into a native Windows x86-64 exe with a Vulkan renderer. It is a fork of XCX Recomp, and most of the docs still describe XCX: the design ([docs/architecture.md](docs/architecture.md)) and the toolchain, build commands and tests ([docs/building.md](docs/building.md)) carry over. XC2's inputs, build defaults, state and open issues are in [NOTES.md](NOTES.md); read it first.
+Static recompilation of *Xenoblade Chronicles 2* (base, update 3.0.1 and its add-on content; Switch, ARM64) into a native Windows x86-64 exe with a Vulkan renderer. It is a fork of XCX Recomp, and most of the docs still describe XCX: the design ([docs/architecture.md](docs/architecture.md)) and the toolchain, build commands and tests ([docs/building.md](docs/building.md)) carry over. XC2's inputs, build defaults, state and open issues are in `notes/NOTES.md`, a local file that git ignores; read it first when it is there.
 
 ## Game content boundary
 

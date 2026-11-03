@@ -142,11 +142,20 @@ static int test_present(const GfxBackend *b, uint8_t *guest, int *w_out, int *h_
     if (fmt == VK_FORMAT_B8G8R8A8_UNORM) want[0] = to_byte(rgba[2]), want[1] = to_byte(rgba[1]), want[2] = to_byte(rgba[0]);
     else if (fmt == VK_FORMAT_R8G8B8A8_UNORM) want[0] = to_byte(rgba[0]), want[1] = to_byte(rgba[1]), want[2] = to_byte(rgba[2]);
     else CHECK(0, "swapchain format %d is not UNORM RGBA/BGRA", (int)fmt);
-    uint32_t wv;
+    uint32_t wv, bar;
     memcpy(&wv, want, 4);
+    memcpy(&bar, (const uint8_t[4]){0, 0, 0, 255}, 4);
+    // A window of another aspect ratio than the 16:9 texture shows it in gfx_fit_rect's rectangle, black bars around
+    int to[4];
+    gfx_fit_rect(TEX_W, TEX_H, w, h, to);
     const uint32_t *p = (const uint32_t *)px;
-    for (long k = 0, n = (long)w * h; k < n; k++)
-        CHECK(p[k] == wv, "presented pixel %ld is %08x, expected %08x", k, p[k], wv);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int in = x >= to[0] && x < to[0] + to[2] && y >= to[1] && y < to[1] + to[3];
+            uint32_t v = p[(long)y * w + x], expect = in ? wv : bar;
+            CHECK(v == expect, "presented pixel (%d, %d) is %08x, expected %08x (picture at %d,%d %dx%d of %dx%d)", x, y,
+                  v, expect, to[0], to[1], to[2], to[3], w, h);
+        }
     vk_present_capture(0);
     b->texture_release(&t);
     b->pool_fini(&pool);
@@ -240,7 +249,7 @@ static int test_clear(const GfxBackend *b, uint8_t *guest, int *n_inside) {
 }
 
 // ---- draw part: the pipeline self-test, then a hand-built stream that clears an RGBA8 target, binds a census
-// vertex + fragment pair and draws one triangle; a census compute shader is dispatched. The census (build/v121/shaders,
+// vertex + fragment pair and draws one triangle; a census compute shader is dispatched. The census (GFX_CENSUS_DIR,
 // tools/shader_census.py) is read the way vk_pipeline_selftest reads it: a pair is a fragment shader and a vertex
 // shader of the same source file.
 
@@ -315,7 +324,7 @@ static int dr_root(char *root, size_t n) {
     for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
         *cut = 0;
         char p[PLAT_PATH_MAX * 2 + 40];
-        snprintf(p, sizeof p, "%s/build/v121/shaders/jobs.json", exe);
+        snprintf(p, sizeof p, "%s/" GFX_CENSUS_DIR "/jobs.json", exe);
         if (plat_file_exists(p)) return snprintf(root, n, "%s", exe) < (int)n;
     }
     return 0;
@@ -330,7 +339,7 @@ static prog_t *dr_prog(const char *root, const DrawEnt *e[], int n) {
     p->magic = NVN_PROG_MAGIC, p->serial = ++serial;
     for (int i = 0; i < n; i++) {
         char path[PLAT_PATH_MAX * 2 + 128];
-        snprintf(path, sizeof path, "%s/build/v121/shaders/code/%.64s.code", root, e[i]->key);
+        snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/code/%.64s.code", root, e[i]->key);
         long body;
         char *raw = dr_read(path, &body);
         if (!raw) return free(p), NULL;
@@ -396,8 +405,8 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
 
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs) {
     char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
-    CHECK(dr_root(root, sizeof root), "build/v121/shaders/jobs.json not found");
-    snprintf(path, sizeof path, "%s/build/v121/shaders/jobs.json", root);
+    CHECK(dr_root(root, sizeof root), GFX_CENSUS_DIR "/jobs.json not found");
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/jobs.json", root);
     long size;
     char *jobs = dr_read(path, &size);
     DrawEnt *e = malloc(sizeof *e * 20000);

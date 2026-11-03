@@ -218,8 +218,21 @@ NVN_API(nvnTextureInitialize) {
     }
     o->serial = nvn_new_serial();
     live_put(o);
-    NVN_LOG("Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx", (void *)o, o->d.width, o->d.height,
-            o->d.depth, o->d.levels, o->d.format, o->d.target, o->d.flags, (unsigned long long)o->L.size);
+    if (rt_trace & RT_TRACE_GFX) {   // with the game's return addresses, as XC2_DRAW_CALLERS walks them
+        char who[160];
+        int n = snprintf(who, sizeof who, " %#llx", (unsigned long long)c->x[30]);
+        uint64_t fp = c->x[29];
+        for (int k = 0; k < 6 && n < (int)sizeof who - 24; k++) {
+            if (!fp || (fp & 7) || fp >= (1ull << 39) || fp < 0x10000) break;
+            uint64_t next = ((const uint64_t *)(uintptr_t)fp)[0];
+            n += snprintf(who + n, sizeof who - n, " %#llx", (unsigned long long)((const uint64_t *)(uintptr_t)fp)[1]);
+            if (next <= fp) break;
+            fp = next;
+        }
+        rt_log("nvn: Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx, from%s", (void *)o, o->d.width,
+               o->d.height, o->d.depth, o->d.levels, o->d.format, o->d.target, o->d.flags,
+               (unsigned long long)o->L.size, who);
+    }
     ret_x(c, 1);
 }
 // void nvnTextureFinalize(NVNtexture *t)
@@ -506,6 +519,7 @@ NVN_API(nvnChannelMaskStateSetChannelMask) {
 NVN_API(nvnMultisampleStateSetDefaults) {
     memset(arg_p(c, 0), 0, sizeof(ms_st));
     ST(ms_st, c)->enable = 1;
+    ST(ms_st, c)->a2c_dither = 1;   // dithered alpha to coverage by default, as Maxwell (0x12e0) and deko3d's defaults
 }
 NVN_API(nvnMultisampleStateSetMultisampleEnable) { ST(ms_st, c)->enable = nvn_arg_bool(c, 1) != 0; }
 NVN_API(nvnMultisampleStateSetSamples) { ST(ms_st, c)->samples = (uint8_t)arg_x(c, 1); }
@@ -644,6 +658,7 @@ NVN_API(nvnWindowSetCrop) {
 // ready, at most at the frame limit (XC2_FPS_LIMIT: 30 to 360 per second or the monitor's rate): holding it to the
 // 2nd or 3rd tick would only add latency and 50 ms frames.
 #define VSYNC_HZ 60ull
+static uint64_t frame_fence;   // the newest submit at the last present (the frame guard)
 static uint64_t present_period(const win_t *o) {
     if (frame_step_realtime() || frame_rate_paced()) return frame_step_cap_ns();
     return (o->interval > 0 ? (uint64_t)o->interval : 1ull) * 1000000000ull / VSYNC_HZ;
@@ -686,6 +701,23 @@ NVN_API(nvnWindowAcquireTexture) {
         sleep_until(at);
         perf_end(PERF_PACE, p0);
     }
+    // Frame guard: the next frame starts once the GPU has run the previous frame's submissions. NVN starts the GPU when
+    // the submit returns; here the replay records first and the GPU reads vertex and storage data in pool memory when
+    // it runs (vk_usnap.c copies only uniform blocks). XC2 rewrites that data for its next frame with no fence, so above
+    // 30 fps, when its limiter no longer idles the rest of a 1/30 s frame, late draws read the next frame's data:
+    // props slid against the ground and flickered when the camera moved or shook. Waiting at every submit
+    // (XC2_SUBMIT_WAIT) cost 20-25 % on Iris Xe; this wait keeps the overlap of the GPU with the rest of the frame.
+    // XC2_FRAME_GUARD=0 turns it off.
+    {
+        static int on = -1;
+        if (on < 0) on = RT_KNOB_ON(rt_knob("FRAME_GUARD", "1"));
+        uint64_t f = __atomic_load_n(&frame_fence, __ATOMIC_ACQUIRE);
+        if (on && f && gfx_backend()->fence_done() < f) {
+            uint64_t p0 = perf_begin();
+            gfx_backend()->fence_wait(f, 200000000ull);
+            perf_end(PERF_FENCE, p0);
+        }
+    }
     // The sync means "the display no longer reads this image". Presents are copies queued in submit order, so it is
     // already satisfied: fenced = 3 with fence 0.
     if (s) {
@@ -707,6 +739,7 @@ NVN_API(nvnQueuePresentTexture) {
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
     o->presents++;
+    __atomic_store_n(&frame_fence, nvn_fence_last(), __ATOMIC_RELEASE);   // the frame guard in nvnWindowAcquireTexture
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);

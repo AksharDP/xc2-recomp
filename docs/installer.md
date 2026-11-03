@@ -49,7 +49,7 @@ runs again.
 3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
    are encrypted with the title key from the NSP's ticket). Its log is `logs/dlc-<index>.log` in the temp folder.
 4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
-   `recomp/patches-v301.txt` is passed when it exists; XC2 has none yet. `patches-upd.txt` and the `v121`/`v143`
+   `recomp/patches-v301.txt` is passed when it exists (XC2's frame rate and game resolution). `patches-upd.txt` and the `v121`/`v143`
    tables are XCX's and never used.
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
    and RomFS hashes) and link them with the prebuilt runtime library into `xc2.exe` (`build_game.py --runtime-lib`).

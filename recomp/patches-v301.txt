@@ -1,0 +1,155 @@
+# Code patches for XC2 3.0.1 main (recomp/patches.py).
+
+# xc2fps (XC2_FPS60, on): the frame rate of the frame limit XC2_FPS_LIMIT (frame_rate.c). XC2 paces its frames as
+# XCX 2.0.0 does (recomp/patches-upd.txt, set xcx60): a frame interval in vsyncs at main+0xb75c40, set to 2 at boot; a
+# vsync period, a virtual of the graphics device that returns 1/60 s (main+0x6bdc50); a frame-time getter that returns
+# interval * period (main+0x6a36bc), the step the game takes; and a limiter (main+0x6aafd8) that spins until the time
+# since the frame started passes interval * period * 0.997. Found in 3.0.1 by profiling the main thread (XC2_PROFILE);
+# masagrator's Xenoblade2DynFPS (2.1.0, GPL-2.0, read for behaviour only) sets the same interval from the present
+# interval and scales the game's step.
+set xc2fps XC2_FPS60 1
+# The boot setter's interval (main+0x6e3f44 calls main+0x6a4078 with 2): 1 vsync per frame; frame_rate.c sets 2 again
+# in cutscenes.
+site xc2fps main 6e3f44 321f03e0 320003e0
+# The vsync period: the patch page's +0x40 (1 / limit, or the measured frame time in play), so interval * period, the
+# game's step, follows the frames.
+site xc2fps main 6bdc54 bd459500 @page:x8 bd404100
+# The limiter's wait, interval * period * 0.997 against the time since the frame started: the page's +0x48, the frame
+# time of the limit. x8 is dead here: the loop calls main+0x6e26f8 next, or returns.
+site xc2fps main 6ab168 1e2a0800 @page:x8 bd404900
+# The grass and wind sway step (main+0x748658: s6 = 1/30, the step it moves per frame): the page's +0x50, the step the
+# game takes this frame (frame_rate.c xc2_steps_store). x8 is the constant's page here and unused after.
+site xc2fps main 74865c bd414906 @page:x8 bd405106
+# Right-stick camera turn: the player camera's update (around main+0x1d1240) adds the stick, after its smoothing, times
+# the yaw speed (+0x52dc) and the pitch speed (+0x52e0) of its speed table (camera.param's YawRotSpeed and
+# PitchRotSpeed per camera speed option, filled at main+0x1cdda8) to the yaw (+0xb8) and the pitch (+0xc0) each frame,
+# with no frame time, so above 30 fps the camera turned faster. Both speeds are scaled where they are loaded by the
+# page's +0x54, the step this frame times 30 (frame_rate.c xc2_steps_store), as XCX's turn (patches-upd.txt, xc260).
+# x8 is rewritten before it is read again at both (a call, then an adrp); s1 is free at both.
+site xc2fps main 1d12c8 bc696900 bc696900 @page:x8 bd405501 1e210800
+site xc2fps main 1d1314 bc696900 bc696900 @page:x8 bd405501 1e210800
+
+# xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
+# handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
+# setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70
+# (width) and +0x74 (height) instead.
+set xc2res XC2_OUTPUT_RES 0
+site xc2res main 6e3fc8 5280a000 @page:x0 b9407000
+site xc2res main 6e3fd0 52805a00 @page:x0 b9407400
+site xc2res main 700640 5280a015 @page:x21 b94072b5
+site xc2res main 700644 52805a16 @page:x22 b94076d6
+# The graphics heaps (main+0x6f4ee4 fills their sizes, main+0x705c20 carves GLIBCNT, GLIBPXL, GLIBVTX, ... from one
+# block of their sum): the render targets come from GLIBPXL, 0x16a00000 bytes (362 MiB), the high half of x9 here;
+# above 1280x720 the game aborts in its allocator (main+0x6e927c). The size is the page's +0x78 instead
+# (resolution.c xc2_res_init); the movk that follows sets the low half, GLIBCNT, as before.
+site xc2res main 6f4f74 d2e2d409 @page:x9 b9407929 d3607d29
+# The game's memory layout (main+0x6421b4, handed to main+0x6e3f34): the main heap, then a 512 MiB graphics block
+# (orr w8, wzr, #0x20000000) that GLIB's heaps are carved from. Its size is the page's +0x7c instead (the same growth).
+site xc2res main 6421c4 320303e8 @page:x8 b9407d08
+
+# Markers on the 3D scene (target cursor, damage numbers, talk and quest icons) are placed in the interface's
+# 1280x720 space with the camera's viewport (+0x1e0, +0x1e4), which the world-to-screen (main+0x6c3aa0), the
+# screen-to-world (main+0x6c3c84) and game code read. The camera update (main+0x6c2b90) copies the viewport from the
+# render surface's size (main+0x6d76f0, the frame size); its three loads of that size read the page's +0x80/+0x84
+# instead (1280, 720), so the markers follow the 1280x720 the game was made for. The aspect it derives (+0x1f0) is the
+# same at any 16:9 size, and the renderer takes its viewport from the render targets, so the scene keeps the frame
+# size. x9 and x10 are the loaded values themselves. Game code (below main+0x600000) that asks the graphics device for
+# the screen size (main+0x6a2edc width, main+0x6a2efc height) to place things on screen or to compare with projected
+# points gets 1280 and 720 too; the graphics framework and the renderer above it keep the frame size.
+# Rotated interface panes (the tutorial arrow, main+0x48c764, is an up arrow turned by pi about its centre): the layout
+# library's transform (main+0x832f68) rotates about a pivot that the pane's origin function (table [main+0xb8e6d0])
+# takes from the pane's size, which above 1280x720 is in frame pixels (+0x194, 132 for an 88 pane at 1920x1080), while
+# the position the turn is added to is in the interface's 1280x720 units: the pivot came out 1.5 times too far and a
+# half turn moved the arrow by half its size, down and right. The pivot (sp+8) is scaled by the page's +0x88 (720 /
+# frame height) where it is loaded. x8 is free after the origin function's blr x8; s3 is written next.
+site xc2res main 833090 2d410be0 2d410be0 @page:x8 bd408903 1e230800 1e230842
+site xc2res main 6c2bd8 b9400be9 @page:x9 b9408129
+site xc2res main 6c2be8 b9400fea @page:x10 b940854a
+site xc2res main 6c2bf8 b9400fea @page:x10 b940854a
+site xc2res main b7e08 9417ac35 5280a000
+site xc2res main b7e14 9417ac3a 52805a00
+site xc2res main b7e84 9417ac16 5280a000
+site xc2res main b7e90 9417ac1b 52805a00
+site xc2res main b7f1c 9417abf8 52805a00
+site xc2res main b7f24 9417abee 5280a000
+site xc2res main b7f30 9417abf3 52805a00
+site xc2res main b7f90 9417abd3 5280a000
+site xc2res main b7f98 9417abd1 5280a000
+site xc2res main b7fa0 9417abd7 52805a00
+site xc2res main b7fe4 9417abc6 52805a00
+site xc2res main b8000 9417abb7 5280a000
+site xc2res main b800c 9417abbc 52805a00
+site xc2res main b8074 9417aba2 52805a00
+site xc2res main b808c 9417ab94 5280a000
+site xc2res main b8098 9417ab99 52805a00
+site xc2res main b80f8 9417ab79 5280a000
+site xc2res main b810c 9417ab74 5280a000
+site xc2res main b8120 9417ab77 52805a00
+site xc2res main b8170 9417ab5b 5280a000
+site xc2res main b8188 9417ab55 5280a000
+site xc2res main b81a0 9417ab57 52805a00
+site xc2res main c61a8 94177355 52805a00
+site xc2res main c61b4 9417734a 5280a000
+site xc2res main c6208 94177335 5280a000
+site xc2res main c8304 94176af6 5280a000
+site xc2res main d0830 941749ab 5280a000
+site xc2res main d0a84 94174916 5280a000
+site xc2res main ef56c 9416ce5c 5280a000
+site xc2res main ef578 9416ce61 52805a00
+site xc2res main f8014 9416abb2 5280a000
+site xc2res main f9c78 9416a499 5280a000
+site xc2res main fde98 94169411 5280a000
+site xc2res main fdeb0 9416940b 5280a000
+site xc2res main fec78 94169099 5280a000
+site xc2res main fefa0 94168fcf 5280a000
+site xc2res main 1065ec 94167244 52805a00
+site xc2res main 1065f8 94167239 5280a000
+site xc2res main 1069b0 94167153 52805a00
+site xc2res main 1069bc 94167148 5280a000
+site xc2res main 10728c 94166f1c 52805a00
+site xc2res main 10d508 94165675 5280a000
+site xc2res main 111634 9416462a 5280a000
+site xc2res main 111640 9416462f 52805a00
+site xc2res main 114e40 94163827 5280a000
+site xc2res main 114e4c 9416382c 52805a00
+site xc2res main 11663c 94163230 52805a00
+site xc2res main 116648 94163225 5280a000
+site xc2res main 116694 94163212 5280a000
+site xc2res main 117038 94162fb1 52805a00
+site xc2res main 117044 94162fa6 5280a000
+site xc2res main 117098 94162f91 5280a000
+site xc2res main 119b0c 941624f4 5280a000
+site xc2res main 11cc6c 9416189c 5280a000
+site xc2res main 1232d0 9415ff03 5280a000
+site xc2res main 127754 9415ede2 5280a000
+site xc2res main 1333b4 9415bed2 52805a00
+site xc2res main 1333c0 9415bec7 5280a000
+site xc2res main 1334a4 9415be8e 5280a000
+site xc2res main 1424e4 9415827e 5280a000
+site xc2res main 1425bc 94158250 52805a00
+site xc2res main 1cdc58 941354a1 5280a000
+site xc2res main 1cdc60 941354a7 52805a00
+site xc2res main 1cf4b4 94134e8a 5280a000
+site xc2res main 1cf4c0 94134e8f 52805a00
+site xc2res main 1d4324 94133aee 5280a000
+site xc2res main 1d432c 94133af4 52805a00
+site xc2res main 328d88 940de855 5280a000
+site xc2res main 328d98 940de859 52805a00
+site xc2res main 329110 940de773 5280a000
+site xc2res main 329120 940de777 52805a00
+
+# xc2scale (XC2_RENDER_SCALE, resolution.c): the share of the frame the 3D scene draws in. XC2 takes it from
+# /monolib/shader/lib_nx.ini, parsed by main+0x716e68: red_sclX/Y (1.0, +0x1928/+0x192c of the shader settings) and
+# red_hdsclX/Y (0.75 handheld, +0x193c/+0x1940) when red_Auto is off, and with red_Auto=on (shipped) a dynamic share
+# between red_AtMinX/Y (0.7) and red_AtMaxX/Y (1.0) of the dynamic-resolution object at +0x5c8 of its owner (+0x18/+0x1c
+# and +0x10/+0x14). Each value is replaced by the patch page's +0x58 (the scale, 0.25 to 1.0) as it is stored, so the
+# share is fixed whichever mode runs. x10 is rewritten before it is read after every case (main+0x719214).
+set xc2scale XC2_RENDER_SCALE 0
+site xc2scale main 717cd4 bd192b00 @page:x10 bd405940 bd192b00
+site xc2scale main 717d00 bd192f00 @page:x10 bd405940 bd192f00
+site xc2scale main 717d2c bd193f00 @page:x10 bd405940 bd193f00
+site xc2scale main 717d58 bd194300 @page:x10 bd405940 bd194300
+site xc2scale main 717db8 bd001120 @page:x10 bd405940 bd001120
+site xc2scale main 717dec bd001520 @page:x10 bd405940 bd001520
+site xc2scale main 717e20 bd001920 @page:x10 bd405940 bd001920
+site xc2scale main 717e54 bd001d20 @page:x10 bd405940 bd001d20

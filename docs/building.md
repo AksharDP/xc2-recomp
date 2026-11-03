@@ -177,10 +177,13 @@ change passes these, all run with `.venv`:
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
 Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
-`--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes.
+`--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes. `--probe-vkexec` and
+`--probe-shader` read XC2's shader census, so run the census below with `--version v301` once first.
 
 Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --translate` extracts every Maxwell shader
 to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; failure groups go to `failures.txt`.
+For XC2 (`v301`) the census reads the shader archives in `bf2.ard`: the engine's `.wishp` libraries by default,
+models and effects too with `--all`.
 `tools\xlate_smoke.py` checks the translator alone, without game files.
 
 ## Reverse engineering (optional)

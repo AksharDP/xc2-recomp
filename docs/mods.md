@@ -191,4 +191,4 @@ To find the log, open the Advanced tab and choose **Open log folder**. At start 
 
 The mod loader is in `runtime/mods.c` (finding mods), `runtime/romfs.c` and `runtime/fs_host.c` (serving their files)
 and `runtime/cheats.c` (cheats). `tools/cheats.py` and `tools/exefs_patches.py` build code cheats and patches into the
-game. To build them without the setup, use the commands in [NOTES.md](../NOTES.md) under "Mods and cheats".
+game. To build them without the setup, use the commands shown above in this file.
