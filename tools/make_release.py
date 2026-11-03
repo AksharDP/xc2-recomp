@@ -317,6 +317,12 @@ def build_deps(out):
     shutil.copy2(zstd / 'lib' / 'libzstd.a', d / 'lib')
 
 
+def mng_license():
+    """MacNativeGames' licence: from refs/ when it is checked out, else the copy beside its vendored extractors."""
+    ref = MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE'
+    return ref if ref.is_file() else ROOT / 'tools' / 'vendor' / 'macnativegames' / 'LICENSE'
+
+
 def collect_licenses(out):
     lic = out / 'licenses'
     lic.mkdir(parents=True, exist_ok=True)
@@ -328,7 +334,7 @@ def collect_licenses(out):
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
-        (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
+        (mng_license(), 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
         shutil.copy2(src, lic / name)

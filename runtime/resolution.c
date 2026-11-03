@@ -26,14 +26,13 @@
 
 #include "cfg.h"
 #include "host.h"
-#include "layout.h"
 #include "platform/platform.h"
 
 #define BASE_W 1920
 #define BASE_H 1080
 #define XC2_W 1280
 #define XC2_H 720
-#define TABLE (MOD_MAIN_BASE + 0x17fe914)
+#define TABLE (RT_MAIN_BASE + 0x17fe914)
 
 static struct {
     int decided;

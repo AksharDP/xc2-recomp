@@ -153,8 +153,10 @@ bin/                  xc2_xlate, ninja, libSDL3.so.0
 - The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
-- Building either release needs the game extracted and lifted (`tools/extract.py`, `recomp/gen.py`): the runtime
-  library includes the generated `layout.h`. `tools/make_release.py` takes `generated/v301`.
+- Building either release needs no game files: the runtime library takes main's base and the module limit from
+  `runtime/dispatch.h` (`RT_MAIN_BASE`, `RT_MODULES_MAX`) instead of the generated `layout.h`, and each install's
+  `modules.c` checks them against its layout. `.github/workflows/release.yml` builds both releases from a bare
+  checkout when a `v<VERSION>` tag is pushed. Only `--prove` reads `generated/v301` and `build/extracted/v301`.
 
 ## Constraints
 

@@ -14,7 +14,6 @@
 
 #include "cfg.h"
 #include "host.h"
-#include "layout.h"
 #include "platform/platform.h"
 
 #define PAGE 0x1000ull
@@ -54,7 +53,7 @@ static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias regi
 typedef struct { uint64_t dst, src, size; } StackMap;
 static StackMap stack_maps[MAX_STACK_MAPS];
 static unsigned nstack_maps;
-static uint8_t *module_perm[MOD_COUNT];   // per data page of each module: perm | ATTR_PERMISSION_LOCKED
+static uint8_t *module_perm[RT_MODULES_MAX];   // per data page of each module: perm | ATTR_PERMISSION_LOCKED
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
@@ -211,7 +210,7 @@ static void reexec_or_fail(const char *what) {
 void mem_init(void) {
     if (L.pool) return;
     // Fixed window: modules, kernel region, host-function addresses.
-    mods_lo = MOD_MAIN_BASE;
+    mods_lo = RT_MAIN_BASE;
     mods_hi = align_up(rt_layout[rt_layout_count - 1].base + rt_layout[rt_layout_count - 1].size, 0x10000);
     if (mods_hi > RT_KERNEL_BASE) rt_fatal("memory: modules end at %#llx, inside the kernel region",
                                            (unsigned long long)mods_hi);
@@ -480,7 +479,7 @@ uint32_t mem_unmap_physical(uint64_t a, uint64_t n) { return alias_map(1, a, n);
 // as taken (Code, RX), so the SDK never picks it.
 static void taken_gap(uint64_t a, uint64_t *base, uint64_t *size) {
     uint64_t lo = 0, hi = RT_ADDRESS_LIMIT;
-    RtRange known[3 + MOD_COUNT + 2];
+    RtRange known[3 + RT_MODULES_MAX + 2];
     int n = 0;
     known[n++] = (RtRange){L.aslr.base, LOW_SIZE};
     known[n++] = L.alias;

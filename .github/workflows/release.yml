@@ -1,0 +1,128 @@
+name: Release
+
+# Builds the Windows setup (tools/make_release.py, a zip) and the Linux setup (tools/make_release_linux.py, an
+# AppImage) from a bare checkout: neither needs game files (docs/installer.md, "Linux release"). A pushed tag
+# v<VERSION> publishes both as a GitHub release; a manual run only builds them and keeps them as workflow artifacts.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Read VERSION and match it to the tag
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match VERSION $version (expected v$version)"
+            exit 1
+          fi
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      ZIP: build/release/XC2-Setup-${{ needs.version.outputs.version }}-windows.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"   # make_release.py: tarfile reads the MSYS2 .zst packages
+      - uses: astral-sh/setup-uv@v6   # make_release.py installs the bundled Python's packages with uv
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"   # the shader translator (NativeAOT; MSVC and vswhere come with the image)
+      - name: Cache pinned downloads
+        uses: actions/cache@v4
+        with:
+          path: toolchain/release-dl
+          key: release-dl-windows-${{ hashFiles('tools/make_release.py') }}
+          restore-keys: release-dl-windows-
+      - name: Check content
+        run: python tools/check_content.py
+      - name: Build the shader translator
+        run: python tools/build_xlate.py
+      - name: Build the release folder and zip
+        run: python tools/make_release.py --out build/release/XC2-Setup --zip ${{ env.ZIP }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XC2-Setup-windows
+          path: ${{ env.ZIP }}
+          if-no-files-found: error
+          compression-level: 0   # already a zip
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      APPIMAGE: build/release/XC2-Setup-${{ needs.version.outputs.version }}-linux.AppImage
+    steps:
+      - name: Free disk space   # the LLVM release and the sniper SDK sysroot unpack to several GB
+        run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends make pkg-config xvfb xauth fonts-dejavu-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Pillow   # make_release_linux.py turns xc2.ico into the window's PNG
+        run: python -m pip install pillow==12.3.0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Cache pinned downloads
+        uses: actions/cache@v4
+        with:
+          path: toolchain/release-dl
+          key: release-dl-linux-${{ hashFiles('tools/make_release.py', 'tools/make_release_linux.py', 'tools/build_game.py') }}
+          restore-keys: release-dl-linux-
+      - name: Check content
+        run: python tools/check_content.py
+      # Tk needs a display for the bundle check and the window's --selftest
+      - name: Build the release folder and AppImage
+        run: xvfb-run -a python tools/make_release_linux.py --out build/release/XC2-Setup-linux --appimage "$APPIMAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XC2-Setup-linux
+          path: ${{ env.APPIMAGE }}
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "XC2 Recomp ${{ needs.version.outputs.version }}" \
+            --generate-notes \
+            --verify-tag

@@ -294,6 +294,8 @@ def module_glue(layout, linked, hashes, paths, version):
         u = name.upper()
         out.append(f'_Static_assert(MOD_{u}_BASE == {base:#x}ull && MOD_{u}_SIZE == {size:#x}ull, '
                    f'"layout.h and layout.json disagree on {name}");')
+    out += ['_Static_assert(MOD_MAIN_BASE == RT_MAIN_BASE && MOD_COUNT <= RT_MODULES_MAX, '
+            '"the layout breaks what the runtime library assumes (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX)");']
     out += ['', 'const RtLayoutEntry rt_layout[] = {']
     out += [f'    {{"{n}", MOD_{n.upper()}_BASE, MOD_{n.upper()}_SIZE}},' for n, _, _ in layout]
     out += ['};', f'const int rt_layout_count = {len(layout)};', '']
@@ -328,7 +330,8 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
     except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
-    inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
+    # No generated headers for the library: one of them slipping back into the runtime then fails here, not in CI
+    inc = f'-I {cmd_path(RUNTIME)}' + ('' if make_lib else f' -I {cmd_path(gen)}')
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
@@ -808,33 +811,36 @@ def main():
         if not tool.is_file():
             sys.exit(f'{tool} not found: install ' + ('MSYS2 UCRT64 clang, lld and ninja' if WIN else 'clang, lld and ninja')
                      + ' (docs/building.md)')
-    if not (gen / 'layout.json').is_file():
-        sys.exit(f'{gen / "layout.json"} not found: run the generator first')
-
-    layout = read_layout(gen)
-    names = [n for n, _, _ in layout]
-    wanted = args.modules.split(',') if args.modules else names
-    unknown = [m for m in wanted if m not in names]
-    if unknown:
-        sys.exit(f'unknown modules {unknown}; the layout has {names}')
-    linked = [m for m in names if m in wanted]
-    mods = {m: chunk_files(gen, m) for m in linked}
-
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
-    missing = [n for n in names if n not in hashes]
-    if missing:
-        sys.exit(f'{expected}: no exefs_sha256 for {missing}')
-    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
-    if (paths['romfs'] / 'index.json').is_file():
-        count, size, dt = romfs_index.write(paths['romfs'], out)
-        print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
+    if args.make_runtime_lib:
+        # The library reads nothing of the game (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX stand in for layout.h), so it
+        # builds without generated/ or extracted files: CI builds the release from a bare checkout
+        layout, linked, mods = [], [], {}
     else:
-        romfs_index.write_placeholder(out)
-        print(f'build_game: warning: no {paths["romfs"] / "index.json"}; {EXE} will have no RomFS', file=sys.stderr)
-    copy_romfs_patches(args.version, out)
-    copy_prompts(args.version, out)
+        if not (gen / 'layout.json').is_file():
+            sys.exit(f'{gen / "layout.json"} not found: run the generator first')
+        layout = read_layout(gen)
+        names = [n for n, _, _ in layout]
+        wanted = args.modules.split(',') if args.modules else names
+        unknown = [m for m in wanted if m not in names]
+        if unknown:
+            sys.exit(f'unknown modules {unknown}; the layout has {names}')
+        linked = [m for m in names if m in wanted]
+        mods = {m: chunk_files(gen, m) for m in linked}
+        missing = [n for n in names if n not in hashes]
+        if missing:
+            sys.exit(f'{expected}: no exefs_sha256 for {missing}')
+        write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
+        if (paths['romfs'] / 'index.json').is_file():
+            count, size, dt = romfs_index.write(paths['romfs'], out)
+            print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
+        else:
+            romfs_index.write_placeholder(out)
+            print(f'build_game: warning: no {paths["romfs"] / "index.json"}; {EXE} will have no RomFS', file=sys.stderr)
+        copy_romfs_patches(args.version, out)
+        copy_prompts(args.version, out)
     global RUNTIME
     RUNTIME = (args.runtime or RUNTIME).resolve()
     stale = stale_shaders(RUNTIME)

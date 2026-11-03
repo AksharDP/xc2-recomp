@@ -40,7 +40,6 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
-#include "layout.h"
 #include "platform/platform.h"
 
 #define STEP_SAMPLES 5
@@ -111,7 +110,7 @@ static void xc2_interval_store(int n) {
     if (n == stored) return;
     stored = n;
     // XC2: the interval its boot setter main+0x6a4078 writes, main+0xb75c40 (recomp/patches-v301.txt, set xc2fps)
-    __atomic_store_n((uint32_t *)(uintptr_t)(MOD_MAIN_BASE + (xc2_game ? 0xb75c40 : 0x1d943a0)), (uint32_t)n, __ATOMIC_RELEASE);
+    __atomic_store_n((uint32_t *)(uintptr_t)(RT_MAIN_BASE + (xc2_game ? 0xb75c40 : 0x1d943a0)), (uint32_t)n, __ATOMIC_RELEASE);
     rt_log("frame rate: %s", n == 2 ? "cutscene, 30 fps (2 vsyncs of 1/60 s)" : "limit again");
 }
 
@@ -133,13 +132,13 @@ static int xc2_cutscene(void) {
     if (movie_playing()) return 1;
     if (xc2_game) {   // XC2: a byte at main+0xbd8f40, 1 while a cutscene plays (Xenoblade2DynFPS's 2.1.0 0xbd7f40, + 0x1000)
         uint8_t on = 0;
-        plat_mem_read(MOD_MAIN_BASE + 0xbd8f40, &on, 1);
+        plat_mem_read(RT_MAIN_BASE + 0xbd8f40, &on, 1);
         static uint8_t was;
         if (on != was) rt_log("frame rate: cutscene %s", on ? "starts" : "ends"), was = on;
         return on != 0;
     }
     uint32_t state;
-    if (!plat_mem_read(MOD_MAIN_BASE + 0x1fefaf4, &state, 4)) return 0;
+    if (!plat_mem_read(RT_MAIN_BASE + 0x1fefaf4, &state, 4)) return 0;
     static uint32_t last = 0;
     if (state != last) rt_log("frame rate: event state %u -> %u", last, state), last = state;
     return mode == 2 ? state == 4 : state >= 2;
@@ -267,7 +266,7 @@ static uint64_t read_ptr(uint64_t a) {
 // 1.2.1: [main+0x4728538] (1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the resident actors; the one
 // named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h XCX_GAME_V121/V143).
 static int player_pos(float xyz[3]) {
-    uint64_t module = read_ptr(MOD_MAIN_BASE + (RT_V143 ? 0x3add238 : 0x4728538)), scene = module ? read_ptr(module + 0x1e8) : 0;
+    uint64_t module = read_ptr(RT_MAIN_BASE + (RT_V143 ? 0x3add238 : 0x4728538)), scene = module ? read_ptr(module + 0x1e8) : 0;
     int32_t count = 0;
     if (!scene || !read_guest(scene + 0x50, &count, 4) || count < 14 || count > 256) return 0;
     uint64_t comps = read_ptr(scene + 0x58), resident = comps ? read_ptr(comps + 13 * 8) : 0;
@@ -359,13 +358,13 @@ static void xc2_steps_store(double seconds) {
     // main+0xea538c), and 14 places use every frame. It froze at the boot frame time (0.0235 s with a 120 fps limit)
     // while the camera moved by the measured step, so props drawn with it slid against the terrain and flickered when
     // the camera moved or shook; at 30 fps the two agreed.
-    __atomic_store_n((uint32_t *)(uintptr_t)(MOD_MAIN_BASE + 0xea538c), b, __ATOMIC_RELAXED);
+    __atomic_store_n((uint32_t *)(uintptr_t)(RT_MAIN_BASE + 0xea538c), b, __ATOMIC_RELAXED);
     uint64_t game = 0, ui = 0;
-    if (plat_mem_read(MOD_MAIN_BASE + 0xb900d0, &game, 8) && game && plat_mem_readable(game + 0x78, 8)) {
+    if (plat_mem_read(RT_MAIN_BASE + 0xb900d0, &game, 8) && game && plat_mem_readable(game + 0x78, 8)) {
         __atomic_store_n((uint32_t *)(uintptr_t)(game + 0x78), b, __ATOMIC_RELAXED);
         __atomic_store_n((uint32_t *)(uintptr_t)(game + 0x7c), b, __ATOMIC_RELAXED);
     }
-    if (plat_mem_read(MOD_MAIN_BASE + 0xc232c8, &ui, 8) && ui && plat_mem_readable(ui + 0x80, 4))
+    if (plat_mem_read(RT_MAIN_BASE + 0xc232c8, &ui, 8) && ui && plat_mem_readable(ui + 0x80, 4))
         __atomic_store_n((uint32_t *)(uintptr_t)(ui + 0x80), b, __ATOMIC_RELAXED);
 }
 

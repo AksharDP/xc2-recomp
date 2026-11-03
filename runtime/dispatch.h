@@ -21,6 +21,12 @@ typedef struct RtModule {
 // The module glue that tools/build_game.py writes for each build (build/<version>/modules.c), from layout.json and
 // layout.h: every module of the layout, and the modules linked into this executable.
 typedef struct RtLayoutEntry { const char *name; uint64_t base, size; } RtLayoutEntry;
+
+// What recomp/layout.py fixes for every game version: main loads first at FIRST_BASE, and ORDER names at most 12
+// modules (main, subsdk0..9, sdk). The runtime library uses these instead of layout.h, so it builds without the
+// generated C (the release's prebuilt libxc2rt.a); modules.c checks them against the layout at install.
+#define RT_MAIN_BASE 0x7000000000ull
+#define RT_MODULES_MAX 12
 extern const RtLayoutEntry rt_layout[];
 extern const int rt_layout_count;
 int rt_linked_modules(RtModule *out, int max);
