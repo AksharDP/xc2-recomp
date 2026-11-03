@@ -174,25 +174,35 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 // - VK_MEM_PICK where a copy, fill or update reads or writes a span: the mirror if the pool has one, never a new one.
 // - vk_mem_gpu_wrote after recording a GPU write of [sp.offset, sp.offset + size) into sp.buffer: a mirror's bytes go
 //   back to guest memory at the end of the submission. No-op for imported buffers.
-// - vk_mem_mirror_begin at the start of a submission's recording, vk_mem_mirror_end (records the write-backs; returns
-//   the commands recorded) after its last barrier.
-// vk_sync.c records the copies the mirrors' first accesses queued (vk_mem_mirror_pending) into a prologue command
-// buffer with vk_mem_mirror_prologue and submits it right before each part.
+// - vk_mem_mirror_begin at the start of a submission's recording, with the submission's capture, vk_mem_mirror_end
+//   (records the write-backs; returns the commands recorded) after its last barrier.
+// vk_sync.c records the capture and the copies the mirrors' first uses queued (vk_mem_mirror_pending) into a prologue
+// command buffer with vk_mem_mirror_prologue and submits it right before each part.
+// Submit-time captures: the back end (vk_backend.c vk_be_submit) takes them in the game's submit call, in queue order,
+// and hands them to the replay with the submission (vk_exec_captures); vk_exec_record takes its own when it got none.
+// vk_mem_capture copies the pages of the mirrors the CPU wrote since the last capture; vk_usnap_capture the uniform
+// ranges the submission binds. Each is owned by the replay from then on (begin), or freed with *_drop.
+void *vk_mem_capture(void);
+void vk_mem_capture_drop(void *cap);
+void *vk_usnap_capture(const uint64_t *handles, int n);
+void vk_usnap_capture_drop(void *cap);
+void vk_exec_captures(void *mem, void *ubo);   // this thread's next vk_exec_record of handles uses these
 extern int vk_mirror_on;
 void vk_mem_use(VkMemSpan *sp);
 void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
-// Uniform blocks as of the submit call (vk_usnap.c): vk_exec_record copies the uniform ranges a submission binds before
-// it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
-void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
+// Uniform blocks as of the submit call (vk_usnap.c): the capture copies the uniform ranges a submission binds, ubo
+// bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
+void vk_usnap_begin(void *cap, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
-void vk_mem_mirror_begin(void);
+void vk_mem_mirror_begin(void *cap);
+int vk_mem_snapshots(void);   // the mirrors with staged captures are on: every buffer read can be a submit-time copy
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence);
@@ -373,7 +383,7 @@ void rdoc_init(void);                     // runtime/rdoc.c: XC2_RDOC debug capt
 int rdoc_active(void);
 void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue
-int vk_replay_async(void);                 // XC2_REPLAY_ASYNC (default 0): submissions replay on the replay thread
+int vk_replay_async(void);                 // XC2_REPLAY_ASYNC (default: vk_mem_snapshots): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
 void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem_shutdown, vk_shutdown in that order
 

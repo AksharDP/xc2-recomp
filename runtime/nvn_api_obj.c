@@ -709,8 +709,8 @@ NVN_API(nvnWindowAcquireTexture) {
     // props slid against the ground and flickered when the camera moved or shook. Waiting at every submit
     // (XC2_SUBMIT_WAIT) cost 20-25 % on Iris Xe; this wait keeps the overlap of the GPU with the rest of the frame.
     // XC2_FRAME_GUARD: auto (default) waits only while the GPU can read live pool memory, i.e. unless the VRAM mirrors
-    // take the CPU's bytes at submit time (vk_memory.c "Staged uploads", nvn_reads_snapshot): then the GPU may run up
-    // to a frame behind, as it does on the Switch. 1 always waits, 0 never.
+    // take the CPU's bytes in the submit call (vk_memory.c vk_mem_capture, nvn_reads_snapshot): then the replay and the
+    // GPU may run up to a frame behind, as the GPU does on the Switch. 1 always waits, 0 never.
     {
         static int mode = -1;   // 0 off, 1 on, 2 auto
         if (mode < 0) {
