@@ -55,10 +55,9 @@ typedef struct PoolRec {
     uint8_t mhost;                     // MS_ON: the mirror is in host memory (it did not fit the VRAM budget)
     VkBuffer mbuf;                     // MS_ON: copy of [import_lo, import_hi), same offsets as buf
     VmaAllocation malloc_;
-    uint32_t acc_sub;                  // replay: the last submission that synced the mirror (mirror_sync)
     uint32_t wb_sub;                   // replay: the last submission that wrote mirror bytes back to guest memory
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
-                                       // (or in a copy queued before its next use)
+                                       // or in a capture queued for it (vk_mem_capture)
     uint64_t fl_lo, fl_hi;             // flush_lock: nvnMemoryPoolFlushMappedRange bytes not copied yet (fl_hi 0: none)
     // Shadow storage (POOL_IMPORT in shadow mode, "shadow storage" below): buf is a host-visible copy of the guest pages.
     VmaAllocation salloc;
@@ -689,19 +688,21 @@ static uint8_t snap_untracked[SNAP_REGIONS];
 static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
 
 // gen_lock held exclusively. Queries the regions r0..r1 that were not snapped in epoch, one query per run of them;
-// returns the number of queries.
+// returns the number of queries. Epoch 0 (the submit-time capture, vk_mem_capture) queries every region that is not
+// frozen and leaves the epochs alone: the capture runs on the submitting thread, the epochs are the replay's.
 static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
     uint32_t g = 0;
     uint64_t calls = 0;
     for (uint64_t r = r0; r <= r1;) {
-        if (snap_at[r] == epoch) { r++; continue; }
+        if (epoch && snap_at[r] == epoch) { r++; continue; }
         if (mem_frozen(r << SNAP_SHIFT)) {   // nothing in it changed since its freeze
-            snap_at[r] = epoch, snap_untracked[r] = 0;
+            if (epoch) snap_at[r] = epoch;
+            snap_untracked[r] = 0;
             r++;
             continue;
         }
         uint64_t k = r;   // one query over a run of regions not seen in this epoch
-        while (k + 1 <= r1 && snap_at[k + 1] != epoch && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
+        while (k + 1 <= r1 && (!epoch || snap_at[k + 1] != epoch) && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
         uint64_t a = r << SNAP_SHIFT, b = (k + 1) << SNAP_SHIFT;
         int tracked = 1;
         if (!g) g = ++gen_now;
@@ -713,7 +714,8 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         }
         calls++;
         for (uint64_t j = r; j <= k; j++) {
-            snap_at[j] = epoch, snap_untracked[j] = (uint8_t)!tracked;
+            if (epoch) snap_at[j] = epoch;
+            snap_untracked[j] = (uint8_t)!tracked;
             if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
                 ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
                 reg_tried[j] = ww_ep;
@@ -1126,12 +1128,20 @@ static void dirty_frame(uint64_t frame) {
 // index, uniform, storage or indirect buffer (vk_mem_use). From then on those bindings, and the buffer copies, fills
 // and uniform updates that touch the pool (vk_mem_pick), use the mirror at the same offsets. Guest memory stays what
 // the CPU reads and writes; textures and every host path that reads or writes pool bytes keep using it.
-// - CPU -> mirror: the first access of a submission to a mirror syncs it (mirror_sync): the 2 MiB write-watch
-//   snapshots of its regions for this epoch (snap_regions, shared with the texture checks: the OS bits keep one
-//   consumer, the shared page generations) and every page stamped after the mirror's mgen goes into a copy; so do the
-//   nvnMemoryPoolFlushMappedRange ranges. The first use copies the whole range. The copies run in a prologue command
-//   buffer that vk_sync.c submits right before the part that accessed the mirror first, between full barriers.
-//   vk_mem_mirror_begin snaps the regions of the pools the previous submission accessed in a few merged queries.
+// - CPU -> mirror, at submit time (vk_mem_capture, called by vk_backend.c vk_be_submit inside the game's submit call,
+//   in queue order, before the replay, which may run up to a frame later on its own thread): one write-watch query per
+//   run of the 2 MiB regions of the mirrored pools and of the imported pools not used as buffers yet (snap_regions,
+//   epoch 0; the OS bits keep one consumer, the shared page generations), then every page of a mirror stamped after its
+//   mgen, and the nvnMemoryPoolFlushMappedRange ranges, are copied into a staging arena (the capture). The replay
+//   copies the capture into the mirrors in the first prologue of that submission (vk_mem_mirror_prologue), a command
+//   buffer that vk_sync.c submits right before the part, between full barriers. The game rewrites vertex and storage
+//   data for its next frame with no fence (props sliding above 30 fps), so nothing the GPU reads from a mirror may be
+//   read from guest memory after the submit call.
+// - A pool's first use as a buffer (mirror_create, on the replay thread) queues a copy of its whole range: a CPU copy
+//   into an arena when it is at most STAGE_RANGE, checked afterwards against the page generations and the write-watch
+//   bits for a write since the submission's capture (range_clean), else a GPU copy from guest memory. Either way the
+//   bytes are newer than the submit call when the CPU wrote the pool since; such a submission is a live read
+//   (m_live_fence, nvn_reads_snapshot), and the frame guard covers it.
 // - GPU -> guest: what the replay writes into a mirror (storage buffers its shaders write, buffer copies, fills,
 //   uniform updates, texture-to-buffer copies: vk_mem_gpu_wrote) goes back into the imported buffer at the end of the
 //   submission, exact byte ranges, before the fence signals (vk_mem_mirror_end).
@@ -1142,13 +1152,12 @@ static void dirty_frame(uint64_t frame) {
 // while an imported pool is read live, and the game rewrites vertex and storage data after its submit with no fence, so
 // late draws of the frame read the next frame's half-written data (the whole scene torn apart for a few frames).
 // A pool stays imported when its range is not write-watched, it overlaps another pool or the allocation fails.
-// - Staged uploads (XC2_MIRROR_STAGE, on): the prologue's copies read a CPU copy of the pages taken when it is recorded,
-//   inside the game's submit call, not guest memory when the GPU gets to them. A GPU still running the previous frame
-//   ran them late, after the game had begun rewriting vertex and storage data for its next frame (props sliding above
-//   30 fps); with the copy taken here, the frame guard (nvn_api_obj.c nvnWindowAcquireTexture) can let the GPU overlap
-//   the next frame (vk_mem_reads_snapshot). A range a write-back of a submission still in flight touches is copied by
-//   the GPU as before: guest memory gets those bytes only when that write-back runs. So is a merged range larger than
-//   STAGE_RANGE (a pool's first use) and what does not fit in STAGE_MAX.
+// - Write-backs in flight: guest memory gets a write-back's bytes only when the GPU runs it, so the bytes of a capture
+//   that a write-back of a submission not complete at the capture (fence above MCap.done) touches are stale; the
+//   mirror already holds the GPU's bytes there (the replay records submissions in order), and the prologue leaves those
+//   bytes out (apply_capture). The CPU cannot have written them since without waiting for that fence.
+// - Staged uploads (XC2_MIRROR_STAGE, on): with 0, or past STAGE_MAX bytes of a capture, the capture keeps only the
+//   ranges, and the GPU copies them from guest memory when it runs the prologue (a live read).
 #define VERIFY_BYTES (4u << 20)
 #define VERIFY_SAMPLES 64
 #define VERIFY_LOG 16
@@ -1162,17 +1171,37 @@ static int nm, mcap;
 static uint32_t msub;                  // replay: number of the submission being recorded
 static uint32_t mepoch;                // replay: its write-watch snapshot epoch (vk_texture_epoch)
 typedef struct { PoolRec *r; uint64_t off, size; } MRange;
-static MRange *pend, *wbl;             // replay: copies for the next prologue; GPU writes into mirrors this submission
-static int npend, cpend, nwbl, cwbl;
+static MRange *pend, *wbl;             // replay: first-use copies for the next prologue; GPU writes into mirrors this
+static int npend, cpend, nwbl, cwbl;   // submission
+// A submit-time capture: ranges of mirrors with their bytes at src in st (CAP_LIVE: copied from guest memory by the GPU).
+#define CAP_LIVE UINT64_MAX
+typedef struct { PoolRec *r; uint64_t off, size, src; } CRange;
+typedef struct StageArena StageArena;
+typedef struct MCap {
+    uint32_t gen;                      // every page write stamped up to this generation is in this or an earlier capture
+    uint64_t done;                     // vk_sync_fence_done before the copy: later write-backs are not in its bytes
+    StageArena *st;
+    CRange *c;
+    int n;
+} MCap;
+static MCap *cur;                      // replay: the capture of the submission being recorded, until its prologue
+static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
+static int cur_have;
+static volatile uint64_t m_live_fence; // the newest submission that read guest memory for a mirror after its submit call
+static PlatMutex cap_lock = PLAT_MUTEX_INIT;   // vk_mem_capture's range list
+static MRange *cr;
+static int ncr, ccr;
 static VkBufferCopy *mregions;         // replay: vkCmdCopyBuffer regions
 static int cregions;
 static PlatMutex flush_lock = PLAT_MUTEX_INIT;
 
 typedef struct {
-    uint64_t subs, syncs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges;
-    uint64_t presnap_queries, sync_queries, presnap_t, sync_t, prologues, presnap_bytes;
+    uint64_t subs, upload_bytes, upload_copies, first_n, first_bytes, wb_bytes, wb_copies, wb_ranges, prologues;
+    uint64_t create_queries, live_subs, left_out, live_ranges;   // replay
+    uint64_t captures, cap_pools, cap_queries, cap_qbytes, cap_t;   // submitting thread (vk_mem_capture)
 } MirrorAcc;
 static MirrorAcc mrep;                 // replay: this submission
+static void freeze_pass(void);
 static MirrorAcc macc;                 // mirror_stat_lock: since the last summary
 static PlatMutex mirror_stat_lock = PLAT_MUTEX_INIT;
 static volatile int64_t m_live_n, m_live_bytes, m_refused_n[MR_N], m_refused_bytes[MR_N];
@@ -1184,13 +1213,13 @@ static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mism
 #define STAGE_MAX (64ull << 20)    // bytes of one prologue that go through a CPU copy; the rest is copied by the GPU
 #define STAGE_MIN (1ull << 20)     // smallest arena
 #define STAGE_RANGE (8ull << 20)   // a larger merged range (a pool's first use) is copied by the GPU
-typedef struct StageArena {
+struct StageArena {
     struct StageArena *next;
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
     uint64_t size;
-} StageArena;
+};
 typedef struct { PoolRec *r; uint64_t lo, hi, fence; } WbFlight;
 static int mirror_stage = 1;
 static StageArena *stage_free;         // stage_lock: arenas the GPU is done with
@@ -1242,13 +1271,14 @@ static void stage_done(void *arg) {   // completion thread: the prologue that re
 
 // A write-back of a submission that is not done touches [lo, hi) of r's mirror.
 static int wb_inflight(const PoolRec *r, uint64_t lo, uint64_t hi) {
+    uint64_t done = vk_sync_fence_done();
     for (int i = 0; i < nwbf; i++)
-        if (wbf[i].r == r && wbf[i].lo < hi && lo < wbf[i].hi) return 1;
+        if (wbf[i].r == r && wbf[i].fence > done && wbf[i].lo < hi && lo < wbf[i].hi) return 1;
     return 0;
 }
 
-static void wbf_prune(void) {
-    uint64_t done = vk_sync_fence_done();
+// Drops the write-backs done by done: the oldest capture still to be applied was taken after them.
+static void wbf_prune(uint64_t done) {
     int n = 0;
     for (int i = 0; i < nwbf; i++)
         if (wbf[i].fence > done) wbf[n++] = wbf[i];
@@ -1317,9 +1347,9 @@ static int range_cmp(const void *x, const void *y) {
 // Records the ranges as one vkCmdCopyBuffer per pool, overlapping and adjacent ranges merged; to_mirror: buf -> mbuf,
 // else mbuf -> buf. With st (to_mirror only), a merged range that fits the arena's room past *st_used and no write-back
 // in flight touches is copied into the arena now and from there to mbuf. Returns the commands recorded; adds what they
-// move to *bytes and *copies.
+// move to *bytes and *copies; sets *gpu (when given) if a region is copied from guest memory by the GPU.
 static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies,
-                       StageArena *st, uint64_t *st_used) {
+                       StageArena *st, uint64_t *st_used, int *gpu) {
     qsort(a, (size_t)n, sizeof *a, range_cmp);
     int rec = 0;
     for (int i = 0; i < n;) {
@@ -1362,6 +1392,7 @@ static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint
         }
         if (ks) vkCmdCopyBuffer(cb, st->buf, r->mbuf, (uint32_t)ks, sregions), rec++;
         if (!k) continue;
+        if (gpu) *gpu = 1;
         if (to_mirror) vkCmdCopyBuffer(cb, r->buf, r->mbuf, (uint32_t)k, mregions);
         else vkCmdCopyBuffer(cb, r->mbuf, r->buf, (uint32_t)k, mregions);
         rec++;
@@ -1420,7 +1451,7 @@ static void mirror_create(PoolRec *r) {
         }
     }
     plat_mutex_lock(&gen_lock);
-    mrep.sync_queries += snap_regions(r0, r1, mepoch);
+    mrep.create_queries += snap_regions(r0, r1, mepoch);
     int untracked = 0;
     for (uint64_t k = r0; k <= r1; k++) untracked |= snap_untracked[k];
     r->mgen = gen_now;   // the whole-range copy below holds every write observed so far
@@ -1453,8 +1484,7 @@ static void mirror_create(PoolRec *r) {
     mlist[at] = r;
     nm++;
     plat_mutex_unlock(&pool_lock);
-    r->acc_sub = msub;
-    r->mstate = MS_ON;
+    __atomic_store_n(&r->mstate, MS_ON, __ATOMIC_RELEASE);
     range_add(&pend, &npend, &cpend, r, 0, n);
     mrep.first_n++, mrep.first_bytes += n;
     if (host) {
@@ -1502,36 +1532,29 @@ static void mirror_retire(void *arg) {
     destroy_rec(vk_ctx(), arg);
 }
 
-// Replay thread, the first access of this submission: queues the copies of the pages written since the last sync.
-static void mirror_sync(PoolRec *r) {
-    uint64_t t0 = qpc();
-    r->acc_sub = msub;
+// Submitting thread, gen_lock held exclusively: queues into cr the pages of r's mirror stamped after its mgen and its
+// flushed ranges. Returns 1 when it queued any.
+static int capture_pool(PoolRec *r) {
     uint64_t lo = r->import_lo, hi = r->import_hi;
     uint64_t r0 = lo >> SNAP_SHIFT, r1 = (hi - 1) >> SNAP_SHIFT;
-    int excl = 0;
-    plat_mutex_lock_shared(&gen_lock);
-    for (uint64_t k = r0; k <= r1; k++)
-        if (snap_at[k] != mepoch) { excl = 1; break; }
-    if (excl) {
-        plat_mutex_unlock_shared(&gen_lock);
-        plat_mutex_lock(&gen_lock);
-        mrep.sync_queries += snap_regions(r0, r1, mepoch);
-    }
     uint32_t since = r->mgen;
+    int n0 = ncr;
     for (uint64_t k = r0; k <= r1; k++) {
-        if (reg_max[k] <= since) continue;
         uint64_t a = k << SNAP_SHIFT, b = a + (1ull << SNAP_SHIFT);
         if (a < lo) a = lo;
         if (b > hi) b = hi;
+        if (snap_untracked[k]) {   // mirror_create refuses untracked ranges; a region that became so: all of it
+            range_add(&cr, &ncr, &ccr, r, a - lo, b - a);
+            continue;
+        }
+        if (reg_max[k] <= since) continue;
         const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];   // a 2 MiB region lies in one chunk
         if (!ch) continue;
         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
             if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since)
-                range_add(&pend, &npend, &cpend, r, x - lo, 1ull << GEN_PAGE_SHIFT);
+                range_add(&cr, &ncr, &ccr, r, x - lo, 1ull << GEN_PAGE_SHIFT);
     }
     r->mgen = gen_now;
-    if (excl) plat_mutex_unlock(&gen_lock);
-    else plat_mutex_unlock_shared(&gen_lock);
     if (__atomic_load_n(&r->fl_hi, __ATOMIC_ACQUIRE)) {
         plat_mutex_lock(&flush_lock);
         uint64_t a = r->fl_lo, b = r->fl_hi;
@@ -1539,24 +1562,107 @@ static void mirror_sync(PoolRec *r) {
         plat_mutex_unlock(&flush_lock);
         a = a > lo ? a & ~0xfffull : lo;
         b = b < hi ? (b + 0xfff) & ~0xfffull : hi;
-        if (a < b) range_add(&pend, &npend, &cpend, r, a - lo, b - a);
+        if (a < b) range_add(&cr, &ncr, &ccr, r, a - lo, b - a);
     }
-    mrep.syncs++;
-    mrep.sync_t += qpc() - t0;
+    return ncr > n0;
 }
+
+void *vk_mem_capture(void) {
+    MCap *cap = calloc(1, sizeof *cap);
+    if (!cap) rt_fatal("vk: out of memory (mirror capture)");
+    uint64_t t0 = qpc(), q = 0, qb = 0, pools = 0;
+    plat_mutex_lock(&cap_lock);
+    ncr = 0;
+    plat_mutex_lock_shared(&pool_lock);
+    plat_mutex_lock(&gen_lock);
+    ww_ep++;
+    if (vk_mirror_on) {
+        // One query per run of the regions of the pools the GPU may read as buffers: the mirrored ones, and the imported
+        // ones not used as buffers yet, so that a first use finds the writes before this submit call already stamped.
+        uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
+        int have = 0;
+        for (int i = 0; i < pool_index.n; i++) {
+            const PoolRec *r = pool_index.e[i].buf;
+            if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
+            if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
+            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+            if (b >= SNAP_REGIONS) continue;
+            if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
+                if (b > run1) run1 = b;
+                continue;
+            }
+            if (have) q += snap_regions(run0, run1, 0);
+            run0 = a, run1 = b, have = 1;
+        }
+        if (have) q += snap_regions(run0, run1, 0);
+        qb = ww_bytes - b0;
+        for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
+        cap->gen = gen_now;
+    }
+    if (freeze_idle) freeze_pass();
+    plat_mutex_unlock(&gen_lock);
+    plat_mutex_unlock_shared(&pool_lock);
+    // The records stay: vk_be_pool_fini holds the back end's capture lock while it drains the replay and finalizes.
+    // The bytes are copied after the queries: a page written since keeps its write-watch bit for the next capture.
+    cap->done = vk_sync_fence_done();
+    if (ncr) {
+        qsort(cr, (size_t)ncr, sizeof *cr, range_cmp);
+        int m = 0;   // merged: a flushed range may overlap the pages
+        for (int i = 0; i < ncr; i++) {
+            if (m && cr[m - 1].r == cr[i].r && cr[i].off <= cr[m - 1].off + cr[m - 1].size) {
+                uint64_t end = cr[i].off + cr[i].size;
+                if (end > cr[m - 1].off + cr[m - 1].size) cr[m - 1].size = end - cr[m - 1].off;
+                continue;
+            }
+            cr[m++] = cr[i];
+        }
+        ncr = m;
+        uint64_t need = 0;
+        for (int i = 0; i < ncr; i++) need += (cr[i].size + 15) & ~15ull;
+        if (need > STAGE_MAX) need = STAGE_MAX;
+        cap->st = mirror_stage ? stage_get(need) : NULL;
+        if (!(cap->c = malloc(sizeof *cap->c * (size_t)ncr))) rt_fatal("vk: out of memory (mirror capture)");
+        uint64_t used = 0, staged = 0;
+        for (int i = 0; i < ncr; i++) {
+            CRange c = {cr[i].r, cr[i].off, cr[i].size, CAP_LIVE};
+            if (cap->st && c.size <= cap->st->size - used) {
+                memcpy(cap->st->map + used, (const void *)(uintptr_t)(c.r->import_lo + c.off), c.size);
+                c.src = used;
+                staged += c.size;
+                used += (c.size + 15) & ~15ull;   // keeps the next source offset aligned for the copy engine
+                if (used > cap->st->size) used = cap->st->size;
+            }
+            cap->c[cap->n++] = c;
+        }
+        if (cap->st) vmaFlushAllocation(vk_ctx()->vma, cap->st->alloc, 0, used);   // a no-op on coherent memory
+        plat_add64(&m_stage_bytes, (int64_t)staged);
+    }
+    plat_mutex_unlock(&cap_lock);
+    plat_mutex_lock(&mirror_stat_lock);
+    macc.captures++, macc.cap_pools += pools, macc.cap_queries += q, macc.cap_qbytes += qb, macc.cap_t += qpc() - t0;
+    plat_mutex_unlock(&mirror_stat_lock);
+    return cap;
+}
+
+static void capture_free(MCap *c) {
+    if (!c) return;
+    if (c->st) stage_done(c->st);
+    free(c->c);
+    free(c);
+}
+
+void vk_mem_capture_drop(void *cap) { capture_free(cap); }
 
 void vk_mem_use(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
     if (r->mstate == MS_NONE) mirror_create(r);
     if (r->mstate != MS_ON) return;
-    if (r->acc_sub != msub) mirror_sync(r);
     sp->buffer = r->mbuf;
 }
 
 void vk_mem_pick(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
     if (!r || r->mstate != MS_ON) return;
-    if (r->acc_sub != msub) mirror_sync(r);
     sp->buffer = r->mbuf;
 }
 
@@ -1606,80 +1712,138 @@ static void freeze_pass(void) {
     }
 }
 
-void vk_mem_mirror_begin(void) {
-    if (!vk_mirror_on) {   // import mode: the texture checks' snapshots still skip frozen regions
-        if (!freeze_idle) return;
-        plat_mutex_lock(&gen_lock);
-        ww_ep++;
-        freeze_pass();
-        plat_mutex_unlock(&gen_lock);
-        return;
-    }
-    uint64_t t0 = qpc();
-    uint32_t prev = msub;
+// The replay, at the start of a submission's recording: cap is its capture (vk_mem_capture), taken in its submit call;
+// the first prologue copies it into the mirrors.
+void vk_mem_mirror_begin(void *cap) {
+    if (cur) capture_free(cur);   // a submission recorded without a prologue (none in vk_sync.c)
+    cur = cap;
+    cur_have = cur != NULL;
+    cur_gen = cur ? cur->gen : 0;
+    // The write-backs left are those its bytes may lack (later captures were taken later still).
+    wbf_prune(cur ? cur->done : vk_sync_fence_done());
+    if (cur && !cur->n) capture_free(cur), cur = NULL;
+    if (!vk_mirror_on) return;
     msub = msub + 1 ? msub + 1 : 1;
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
     mepoch = vk_texture_epoch();
-    uint64_t q = 0, run0 = 0, run1 = 0;
-    int have = 0;
-    plat_mutex_lock_shared(&pool_lock);
-    plat_mutex_lock(&gen_lock);
-    ww_ep++;
-    uint64_t b0 = ww_bytes;
-    for (int i = 0; i < nm; i++) {
-        const PoolRec *r = mlist[i];
-        if (r->acc_sub != prev) continue;
-        uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
-        if (have && a <= run1 + 1 + (uint64_t)mirror_gap) {
-            if (b > run1) run1 = b;
-            continue;
-        }
-        if (have) q += snap_regions(run0, run1, mepoch);
-        run0 = a, run1 = b, have = 1;
-    }
-    if (have) q += snap_regions(run0, run1, mepoch);
-    mrep.presnap_bytes += ww_bytes - b0;
-    if (freeze_idle) freeze_pass();
-    plat_mutex_unlock(&gen_lock);
-    plat_mutex_unlock_shared(&pool_lock);
     mrep.subs++;
-    mrep.presnap_queries += q;
-    mrep.presnap_t += qpc() - t0;
 }
 
-int vk_mem_mirror_pending(void) { return npend; }
+int vk_mem_mirror_pending(void) { return npend || cur; }
+
+// The GPU reads every buffer of the mirrors as of the submit call: no pool stays imported, the captures are staged,
+// and no submission that read guest memory later (a first use, a capture past STAGE_MAX) may still run.
+int vk_mem_snapshots(void) { return vk_mirror_on && mirror_stage && !shadow_on; }
 
 int nvn_reads_snapshot(void) {
-    if (!vk_mirror_on || !mirror_stage || shadow_on) return 0;
+    if (!vk_mem_snapshots()) return 0;
     for (int i = 0; i < MR_N; i++)
         if (__atomic_load_n(&m_refused_n[i], __ATOMIC_RELAXED)) return 0;
-    return 1;
+    uint64_t live = __atomic_load_n(&m_live_fence, __ATOMIC_ACQUIRE);
+    return !live || vk_sync_fence_done() >= live;
+}
+
+static void live_read(uint64_t fence) {
+    uint64_t prev = __atomic_load_n(&m_live_fence, __ATOMIC_RELAXED);
+    while (fence > prev && !__atomic_compare_exchange_n(&m_live_fence, &prev, fence, 1, __ATOMIC_RELEASE,
+                                                         __ATOMIC_RELAXED)) {}
+}
+
+// The CPU wrote none of [off, off + size) of r since the capture of generation since: no page stamped later, no
+// write-watch bit set.
+static int range_clean(const PoolRec *r, uint64_t off, uint64_t size, uint32_t since) {
+    uint64_t lo = r->import_lo + off, hi = lo + size;
+    int dirty = 0;
+    plat_mutex_lock_shared(&gen_lock);
+    for (uint64_t k = lo >> REG_SHIFT; !dirty && k <= (hi - 1) >> REG_SHIFT; k++) {
+        if (reg_max[k] <= since) continue;
+        uint64_t a = k << REG_SHIFT > lo ? k << REG_SHIFT : lo, b = (k + 1) << REG_SHIFT < hi ? (k + 1) << REG_SHIFT : hi;
+        const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];
+        for (uint64_t x = a; ch && x < b && !dirty; x += 1ull << GEN_PAGE_SHIFT)
+            dirty = ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since;
+    }
+    uint64_t p[1];   // under the lock, as page_dirty; UINT64_MAX (not watched) counts as written
+    if (!dirty) dirty = mem_written_peek(lo, hi - lo, p, 1) != 0;
+    plat_mutex_unlock_shared(&gen_lock);
+    return !dirty;
+}
+
+// Records the copy of [lo, hi) of r's mirror from the arena at src, leaving out what write-backs from wbf index i on
+// touch.
+static void put_staged(PoolRec *r, uint64_t lo, uint64_t hi, uint64_t src, int i, int *k) {
+    for (; i < nwbf; i++)
+        if (wbf[i].r == r && wbf[i].lo < hi && wbf[i].hi > lo) {
+            if (wbf[i].lo > lo) put_staged(r, lo, wbf[i].lo, src, i + 1, k);
+            if (wbf[i].hi < hi) put_staged(r, wbf[i].hi, hi, src + (wbf[i].hi - lo), i + 1, k);
+            mrep.left_out += (wbf[i].hi < hi ? wbf[i].hi : hi) - (wbf[i].lo > lo ? wbf[i].lo : lo);
+            return;
+        }
+    if (*k == csregions) grow((void **)&sregions, &csregions, sizeof *sregions);
+    sregions[(*k)++] = (VkBufferCopy){src, lo, hi - lo};
+}
+
+// Records the capture's copies into the mirrors: staged ranges from the arena, without the bytes of write-backs not
+// done when it was taken; unstaged ones from guest memory (after those write-backs in queue order).
+static void apply_capture(VkCommandBuffer cb, MCap *c, uint64_t fence) {
+    int live = 0;   // wbf holds the write-backs not done at c->done (vk_mem_mirror_begin)
+    for (int i = 0; i < c->n;) {
+        PoolRec *r = c->c[i].r;
+        int ks = 0, kd = 0;
+        for (; i < c->n && c->c[i].r == r; i++) {
+            const CRange *x = &c->c[i];
+            mrep.upload_bytes += x->size;
+            if (x->src != CAP_LIVE) {
+                put_staged(r, x->off, x->off + x->size, x->src, 0, &ks);
+                continue;
+            }
+            if (kd == cregions) grow((void **)&mregions, &cregions, sizeof *mregions);
+            mregions[kd++] = (VkBufferCopy){x->off, x->off, x->size};
+        }
+        if (ks) vkCmdCopyBuffer(cb, c->st->buf, r->mbuf, (uint32_t)ks, sregions);
+        if (kd) vkCmdCopyBuffer(cb, r->buf, r->mbuf, (uint32_t)kd, mregions), live = 1;
+        mrep.upload_copies += (uint64_t)(ks + kd);
+        mrep.live_ranges += (uint64_t)kd;
+        plat_add64(&m_stage_direct, kd);
+    }
+    if (live) live_read(fence), mrep.live_subs++;
+    if (c->st) vk_completion_add(fence, stage_done, c->st), c->st = NULL;
 }
 
 void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
-    if (!npend) return;
-    StageArena *st = NULL;
-    uint64_t used = 0;
-    if (mirror_stage) {
-        // An upper bound (ranges may overlap). A first use queues its whole pool, often more than STAGE_MAX: such a
-        // range is copied by the GPU anyway and does not size the arena, or arenas of STAGE_MAX pile up in the free list.
-        uint64_t need = 0;
-        for (int i = 0; i < npend && need < STAGE_MAX; i++)
-            if (pend[i].size <= STAGE_RANGE) need += (pend[i].size + 15) & ~15ull;
-        wbf_prune();
-        st = need ? stage_get(need < STAGE_MAX ? need : STAGE_MAX) : NULL;
-    }
+    if (!npend && !cur) return;
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies, st, &used);
-    if (st) {
-        vmaFlushAllocation(vk_ctx()->vma, st->alloc, 0, used);   // a no-op on coherent memory
-        plat_add64(&m_stage_bytes, (int64_t)used);
-        vk_completion_add(fence, stage_done, st);
+    if (npend) {   // first uses
+        StageArena *st = NULL;
+        uint64_t used = 0;
+        if (mirror_stage) {
+            // An upper bound (ranges may overlap). A first use queues its whole pool, often more than STAGE_MAX: such a
+            // range is copied by the GPU anyway and does not size the arena, or arenas of STAGE_MAX pile up in the free
+            // list.
+            uint64_t need = 0;
+            for (int i = 0; i < npend && need < STAGE_MAX; i++)
+                if (pend[i].size <= STAGE_RANGE) need += (pend[i].size + 15) & ~15ull;
+            st = need ? stage_get(need < STAGE_MAX ? need : STAGE_MAX) : NULL;
+        }
+        int gpu = 0;
+        copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies, st, &used, &gpu);
+        if (st) {
+            vmaFlushAllocation(vk_ctx()->vma, st->alloc, 0, used);   // a no-op on coherent memory
+            plat_add64(&m_stage_bytes, (int64_t)used);
+            vk_completion_add(fence, stage_done, st);
+        }
+        // Copied after the submit call: as of it only if the CPU wrote nothing there since the capture.
+        int clean = !gpu && cur_have;
+        for (int i = 0; clean && i < npend; i++) clean = range_clean(pend[i].r, pend[i].off, pend[i].size, cur_gen);
+        if (!clean) live_read(fence), mrep.live_subs++;
+        npend = 0;
+        if (cur)   // the capture's copies may cover the same bytes: they go after
+            mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
+    if (cur) apply_capture(cb, cur, fence), capture_free(cur), cur = NULL;
     mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-    npend = 0;
     mrep.prologues++;
 }
 
@@ -1689,12 +1853,16 @@ typedef struct { uint32_t sub; int n; VkBuffer buf; VmaAllocation alloc; const u
 static int ver_i;
 static uint64_t ver_off;
 
-// The CPU wrote the page since the mirror's sync that mgen records: stamped later, or its write-watch bit is set.
+// The CPU wrote the page since the mirror's sync that mgen records: stamped later, or its write-watch bit is set. Under
+// gen_lock: a query (on any thread) resets the bits before it stamps the pages it found.
 static int page_dirty(uint64_t a, uint32_t mgen) {
+    plat_mutex_lock_shared(&gen_lock);
     uint32_t *s = gen_slot(a, 0);
-    if (s && __atomic_load_n(s, __ATOMIC_RELAXED) > mgen) return 1;
     uint64_t p[1];
-    return mem_written_peek(a, 1ull << GEN_PAGE_SHIFT, p, 1) != 0;   // UINT64_MAX (not watched) counts as written
+    // UINT64_MAX (not watched) counts as written
+    int dirty = (s && *s > mgen) || mem_written_peek(a, 1ull << GEN_PAGE_SHIFT, p, 1) != 0;
+    plat_mutex_unlock_shared(&gen_lock);
+    return dirty;
 }
 
 static void verify_cb(void *arg) {   // completion thread
@@ -1746,7 +1914,9 @@ static int verify_record(VkCommandBuffer cb, uint64_t fence) {
         uint64_t size = r->import_hi - r->import_lo;
         if (ver_off >= size) { ver_i++, ver_off = 0; continue; }
         uint64_t len = size - ver_off < left ? size - ver_off : left;
-        j->s[j->n++] = (VSample){r, ver_off, len, dst, r->mgen};
+        // The mirror holds every page stamped up to the capture of this submission (a pool created since may hold
+        // newer bytes; its pages written after the capture are stamped later or keep their write-watch bit).
+        j->s[j->n++] = (VSample){r, ver_off, len, dst, cur_have ? cur_gen : __atomic_load_n(&r->mgen, __ATOMIC_RELAXED)};
         dst += len, left -= len, ver_off += len;
         if (ver_off >= size) ver_i++, ver_off = 0;
     }
@@ -1785,7 +1955,7 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
             wbf[nwbf++] = (WbFlight){wbl[i].r, wbl[i].off, wbl[i].off + wbl[i].size, fence};
         }
         mrep.wb_ranges += (uint64_t)nwbl;
-        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, NULL, NULL) + 2;
+        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, NULL, NULL, NULL) + 2;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
@@ -1835,17 +2005,19 @@ static void mirror_log(uint64_t frame) {
     double sb = (double)plat_xchg64(&m_stage_bytes, 0), sd = (double)plat_xchg64(&m_stage_direct, 0);
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; in host memory %lld (%.1f MiB); stay imported: "
            "budget %lld (%.1f MiB), untracked "
-           "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges "
-           "(staged %.3f MiB, %.1f ranges read on the GPU; staging arenas %lld, %.1f MiB), "
-           "first use %.2f pools %.3f MiB, write-back %.3f MiB in %.1f ranges, flush calls %.1f (%.3f MiB), queries "
-           "%.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu %.3f ms (pre-snap %.3f, syncs %.3f)%s",
+           "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, captures %.2f of %.1f pools, upload %.3f MiB "
+           "in %.1f ranges (staged %.3f MiB, %.1f ranges read on the GPU, %.3f MiB left out for write-backs in flight; "
+           "staging arenas %lld, %.1f MiB), first use %.2f pools %.3f MiB, prologues with a live read %.2f, write-back %.3f MiB in %.1f "
+           "ranges, flush calls %.1f (%.3f MiB), queries %.1f at capture (%.1f MiB) + %.1f at first use, prologues "
+           "%.2f, capture cpu %.3f ms%s",
            (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_host_n, m_host_bytes / M,
            (long long)m_refused_n[MR_BUDGET],
            m_refused_bytes[MR_BUDGET] / M, (long long)m_refused_n[MR_UNTRACKED], (long long)m_refused_n[MR_OVERLAP],
-           (long long)m_refused_n[MR_ALLOC], a.subs / f, a.syncs / f, a.upload_bytes / f / M, a.upload_copies / f,
-           sb / f / M, sd / f, (long long)m_stage_arena_n, m_stage_arena_bytes / M, a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M,
-           a.presnap_queries / f, a.presnap_bytes / f / M, a.sync_queries / f, a.prologues / f, qpc_ms(a.presnap_t + a.sync_t) / f,
-           qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, ver);
+           (long long)m_refused_n[MR_ALLOC], a.subs / f, a.captures / f, a.cap_pools / f, a.upload_bytes / f / M,
+           a.upload_copies / f, sb / f / M, sd / f, a.left_out / f / M, (long long)m_stage_arena_n,
+           m_stage_arena_bytes / M, a.first_n / f, a.first_bytes / f / M, a.live_subs / f,
+           a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M, a.cap_queries / f, a.cap_qbytes / f / M,
+           a.create_queries / f, a.prologues / f, qpc_ms(a.cap_t) / f, ver);
 }
 
 // With XC2_TRACE=perf every 600 frames: what holds device-local memory, to see what grows over a long session.

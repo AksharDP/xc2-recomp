@@ -599,14 +599,15 @@ int plat_mem_read(uint64_t addr, void *out, size_t n) {
     return ReadProcessMemory(GetCurrentProcess(), (const void *)(uintptr_t)addr, out, n, &got) && got == n;
 }
 
+// One byte of each page is read, as on Linux. Not VirtualQuery: it works out RegionSize by walking the page table to the
+// end of the region, and in the guest heap (one committed region of about 3 GiB) a call took about 0.7 ms. Two calls
+// per present (frame_rate.c xc2_steps_store) and two per texture upload (vk_texture.c upload) cost up to 13 % of the
+// render thread in Goldmouth. A read fails on uncommitted and no-access pages; guest memory has no guard pages.
 int plat_mem_readable(uint64_t addr, uint64_t n) {
-    for (uint64_t a = addr, end = addr + n; a < end || a == addr;) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery((void *)(uintptr_t)a, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return 0;
-        if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return 0;
-        a = (uint64_t)(uintptr_t)mbi.BaseAddress + mbi.RegionSize;
-        if (a >= end) return 1;
-    }
+    uint8_t b;
+    uint64_t end = addr + (n ? n : 1);
+    for (uint64_t a = addr; a < end; a = (a | 4095) + 1)
+        if (!plat_mem_read(a, &b, 1)) return 0;
     return 1;
 }
 

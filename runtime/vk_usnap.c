@@ -7,15 +7,17 @@
 // and the uniform bindings of the replay use the copy.
 // - Only ranges of imported pools (memory the CPU writes) are copied, aligned out to 256 bytes (the largest
 //   minUniformBufferOffsetAlignment) and at most 64 KiB from the bound address, overlapping ones merged.
-// - A range the GPU wrote in a submission that has not completed is left out: its bytes reach guest memory only with
-//   that submission's write-back, the mirror holds them until then.
+// - A range the GPU wrote in a submission that had not completed when the copy was taken is left out (marked dropped
+//   when the replay starts the submission): its bytes reach guest memory only with that submission's write-back, the
+//   mirror holds them until then.
 // - A GPU write within the submission (UpdateUniformBuffer, a storage buffer a shader writes, a buffer copy or fill,
 //   an image-to-buffer copy: vk_usnap_drop) drops the copies it touches from then on, so later draws read the result.
 // - The arena goes back to a free list once the submission's fence is done (completion thread).
 // The design follows MacNativeGames' XCX_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
-// The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
-// with XC2_REPLAY_ASYNC. XC2_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (XC2_AB).
+// The copy is taken in the submit call (vk_usnap_capture from vk_backend.c vk_be_submit), also with XC2_REPLAY_ASYNC,
+// where the replay runs up to a frame later on its own thread. XC2_UBO_SNAPSHOT=0 binds live memory as before; =ab
+// alternates (XC2_AB).
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,20 +43,42 @@ typedef struct { uint64_t lo, hi; } Rng;
 typedef struct { uint64_t lo, hi, off; int dropped; } Reg;
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
+// A capture: the merged ranges and the arena holding their bytes as of the submit call.
+typedef struct {
+    Arena *arena;
+    Reg *reg;
+    int nreg;
+    uint64_t done;              // vk_sync_fence_done before the copy
+} UCap;
+
+// The replay's state (the submission being recorded).
 static struct {
-    int mode;                   // rt_knob: 0 off, 1 on, 2 ab
     int on;                     // this submission has a snapshot
     uint64_t fence, gen;
     Arena *arena;
-    Rng *col;                   // collected ranges
-    int ncol, ccol;
     Reg *reg;                   // merged, sorted by lo, disjoint
-    int nreg, creg;
+    int nreg;
     Wrote *wr;                  // GPU writes of submissions not known to be complete
     int nwr, cwr;
     // since the last summary
-    uint64_t subs, regions, bytes, copy_ns, hits, drops, inflight, refused, off_subs;
+    uint64_t subs, hits, drops, inflight;
 } U;
+
+// The capture's state (submitting thread, cap_lock).
+static PlatMutex cap_lock = PLAT_MUTEX_INIT;
+static struct {
+    Rng *col;                   // collected ranges
+    int ncol, ccol;
+    // since the last summary
+    uint64_t subs, regions, bytes, copy_ns, refused, off_subs;
+} C;
+static volatile int umode;      // rt_knob + 1 (0: not read yet): 1 off, 2 on, 3 ab
+
+static int mode(void) {
+    int m = __atomic_load_n(&umode, __ATOMIC_RELAXED);
+    if (!m) __atomic_store_n(&umode, m = rt_knob("UBO_SNAPSHOT", "1") + 1, __ATOMIC_RELAXED);
+    return m - 1;
+}
 
 static Arena *free_arenas;
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
@@ -120,9 +144,9 @@ static void collect(const op_hdr *h, int depth) {
         if (h->op == OP_BIND_UBO) {
             const p_bind_buf *b = a;
             if (b->addr && b->size) {
-                if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
+                if (C.ncol == C.ccol) C.col = grow(C.col, &C.ccol, sizeof *C.col);
                 uint64_t n = b->size < MAX_RANGE ? b->size : MAX_RANGE;
-                U.col[U.ncol++] = (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n};
+                C.col[C.ncol++] = (Rng){b->addr & ~(uint64_t)(ALIGN - 1), b->addr + n};
             }
         }
         h = nvn_op_next(h);
@@ -145,23 +169,23 @@ static int wr_by_lo(const void *a, const void *b) {
 static void sort_col(void) {
     static Rng *tmp;
     static int ctmp;
-    int n = U.ncol;
+    int n = C.ncol;
     if (n < 2) return;
     uint64_t lo = UINT64_MAX, hi = 0;
     for (int i = 0; i < n; i++) {
-        if (U.col[i].lo < lo) lo = U.col[i].lo;
-        if (U.col[i].lo > hi) hi = U.col[i].lo;
+        if (C.col[i].lo < lo) lo = C.col[i].lo;
+        if (C.col[i].lo > hi) hi = C.col[i].lo;
     }
     if ((hi - lo) / ALIGN >> (3 * RADIX_BITS)) {
-        qsort(U.col, (size_t)n, sizeof *U.col, by_lo);
+        qsort(C.col, (size_t)n, sizeof *C.col, by_lo);
         return;
     }
     if (ctmp < n) {
         free(tmp);
-        ctmp = U.ccol;
+        ctmp = C.ccol;
         if (!(tmp = malloc((size_t)ctmp * sizeof *tmp))) rt_fatal("vk_usnap: out of memory");
     }
-    Rng *src = U.col, *dst = tmp;
+    Rng *src = C.col, *dst = tmp;
     for (int pass = 0; pass < 3; pass++) {
         int shift = pass * RADIX_BITS, count[1 << RADIX_BITS] = {0};
         for (int i = 0; i < n; i++) count[(src[i].lo - lo) / ALIGN >> shift & ((1 << RADIX_BITS) - 1)]++;
@@ -173,13 +197,12 @@ static void sort_col(void) {
         Rng *t = src;
         src = dst, dst = t;
     }
-    if (src != U.col) memcpy(U.col, src, (size_t)n * sizeof *src);   // three passes end in tmp
+    if (src != C.col) memcpy(C.col, src, (size_t)n * sizeof *src);   // three passes end in tmp
 }
 
-// Keeps the GPU writes of submissions that are not done, merged into disjoint ranges sorted by lo (the terrain rewrites
+// Keeps the GPU writes of submissions not done by done, merged into disjoint ranges sorted by lo (the terrain rewrites
 // one block before every draw: hundreds of equal entries), each with the newest fence among its parts.
-static void wr_prune(void) {
-    uint64_t done = vk_sync_fence_done();
+static void wr_prune(uint64_t done) {
     int n = 0;
     for (int i = 0; i < U.nwr; i++)
         if (U.wr[i].fence > done) U.wr[n++] = U.wr[i];
@@ -206,65 +229,98 @@ static int wr_hits(uint64_t lo, uint64_t hi) {   // wr_prune ran: disjoint, sort
 }
 
 static void summary(void) {
-    if (U.subs + U.off_subs < 3600) return;
-    double s = U.subs ? (double)U.subs : 1.0;
+    plat_mutex_lock(&cap_lock);
+    if (C.subs + C.off_subs < 3600) {
+        plat_mutex_unlock(&cap_lock);
+        return;
+    }
+    double s = C.subs ? (double)C.subs : 1.0, r = U.subs ? (double)U.subs : 1.0;
     rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied in "
            "%.3f ms, %.0f uniform bindings from the copy, %.1f dropped by GPU writes, %.1f left out (GPU writes in "
            "flight), %.1f refused (not an imported pool)",
-           (unsigned long long)U.subs, (unsigned long long)U.off_subs, U.regions / s, U.bytes / s / 1024.0,
-           U.copy_ns / s / 1e6, U.hits / s, U.drops / s, U.inflight / s, U.refused / s);
-    U.subs = U.off_subs = U.regions = U.bytes = U.copy_ns = U.hits = U.drops = U.inflight = U.refused = 0;
+           (unsigned long long)C.subs, (unsigned long long)C.off_subs, C.regions / s, C.bytes / s / 1024.0,
+           C.copy_ns / s / 1e6, U.hits / r, U.drops / r, U.inflight / r, C.refused / s);
+    C.subs = C.off_subs = C.regions = C.bytes = C.copy_ns = C.refused = 0;
+    plat_mutex_unlock(&cap_lock);
+    U.subs = U.hits = U.drops = U.inflight = 0;
 }
 
-void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
-    if (!U.mode) U.mode = rt_knob("UBO_SNAPSHOT", "1") + 1;   // stored +1: 0 is "not read yet"
-    U.on = 0, U.fence = fence, U.gen++;
-    summary();
-    if (!RT_KNOB_ON(U.mode - 1)) {
-        U.off_subs++;
-        return;
+// The submit call: the uniform ranges the submission binds, merged, those that lie wholly in one imported pool copied.
+// NULL when the snapshot is off for this submission.
+void *vk_usnap_capture(const uint64_t *handles, int n) {
+    if (!RT_KNOB_ON(mode())) {
+        plat_mutex_lock(&cap_lock);
+        C.off_subs++;
+        plat_mutex_unlock(&cap_lock);
+        return NULL;
     }
+    UCap *cap = calloc(1, sizeof *cap);
+    if (!cap) rt_fatal("vk_usnap: out of memory");
     uint64_t t0 = kern_now_ns();
-    U.ncol = 0;
+    plat_mutex_lock(&cap_lock);
+    C.ncol = 0;
     for (int i = 0; i < n; i++)
         if (handles[i]) collect(nvn_op_first(handles[i]), 0);
     sort_col();
-    wr_prune();
-    // merge, keeping only what lies wholly in one imported pool and no GPU write in flight touches
-    U.nreg = 0;
+    int creg = 0;
     uint64_t total = 0;
-    for (int i = 0; i < U.ncol;) {
-        uint64_t lo = U.col[i].lo, hi = U.col[i].hi;
-        for (i++; i < U.ncol && U.col[i].lo <= hi; i++)
-            if (U.col[i].hi > hi) hi = U.col[i].hi;
+    for (int i = 0; i < C.ncol;) {
+        uint64_t lo = C.col[i].lo, hi = C.col[i].hi;
+        for (i++; i < C.ncol && C.col[i].lo <= hi; i++)
+            if (C.col[i].hi > hi) hi = C.col[i].hi;
         VkMemSpan sp;
         if (!vk_mem_resolve(lo, hi - lo, &sp) || sp.alloc || !sp.pool || sp.avail < hi - lo ||
             (sp.cls != VK_MCLS_HOST_CACHED && sp.cls != VK_MCLS_HOST_UNC)) {
-            U.refused++;
+            C.refused++;
             continue;
         }
-        if (wr_hits(lo, hi)) {
-            U.inflight++;
-            continue;
-        }
-        if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
-        U.reg[U.nreg++] = (Reg){lo, hi, total, 0};
+        if (cap->nreg == creg) cap->reg = grow(cap->reg, &creg, sizeof *cap->reg);
+        cap->reg[cap->nreg++] = (Reg){lo, hi, total, 0};
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
-    if (!U.nreg) return;
-    if (!(U.arena = arena_get(total))) return;
+    cap->done = vk_sync_fence_done();   // before the copy: a write-back done later is not in its bytes
+    if (cap->nreg && (cap->arena = arena_get(total))) {
+        for (int i = 0; i < cap->nreg; i++)
+            memcpy(cap->arena->map + cap->reg[i].off, (const void *)(uintptr_t)cap->reg[i].lo,
+                   cap->reg[i].hi - cap->reg[i].lo);
+        vmaFlushAllocation(vk_ctx()->vma, cap->arena->alloc, 0, total);   // a no-op on coherent memory
+        C.subs++, C.regions += (uint64_t)cap->nreg, C.bytes += total, C.copy_ns += kern_now_ns() - t0;
+    }
+    plat_mutex_unlock(&cap_lock);
+    return cap;
+}
+
+void vk_usnap_capture_drop(void *p) {
+    UCap *cap = p;
+    if (!cap) return;
+    if (cap->arena) arena_done(cap->arena);
+    free(cap->reg);
+    free(cap);
+}
+
+// The replay, at the start of a submission's recording: the capture's copies serve its uniform bindings, but for the
+// ranges a GPU write of a submission that was not done at the capture touches (the copy lacks its bytes).
+void vk_usnap_begin(void *p, uint64_t fence) {
+    UCap *cap = p;
+    U.on = 0, U.fence = fence, U.gen++;
+    summary();
+    free(U.reg);
+    U.reg = NULL, U.nreg = 0;
+    wr_prune(cap ? cap->done : vk_sync_fence_done());
+    if (!cap) return;
+    U.reg = cap->reg, U.nreg = cap->nreg, U.arena = cap->arena;
+    free(cap);
+    if (!U.arena) return;
     for (int i = 0; i < U.nreg; i++)
-        memcpy(U.arena->map + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
-    vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
+        if (wr_hits(U.reg[i].lo, U.reg[i].hi)) U.reg[i].dropped = 1, U.inflight++;
     U.on = 1;
-    U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0;
+    U.subs++;
 }
 
 void vk_usnap_end(uint64_t fence) {
     if (U.arena) vk_completion_add(fence, arena_done, U.arena), U.arena = NULL;
     U.on = 0, U.gen++;
 }
-
 // First region whose end is above a.
 static int first_above(uint64_t a) {
     int lo = 0, hi = U.nreg;
@@ -290,7 +346,7 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
 }
 
 void vk_usnap_drop(uint64_t addr, uint64_t n) {
-    if (!U.mode || !n) return;
+    if (!__atomic_load_n(&umode, __ATOMIC_RELAXED) || !n) return;
     if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
     U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
     if (!U.on) return;

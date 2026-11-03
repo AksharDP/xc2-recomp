@@ -11,8 +11,9 @@
 // the frame's display time from the pacer (nvn_api_obj.c), so present-to-present intervals stay even whatever the
 // replay took. The blit is already on the queue, so the wait blocks no submission.
 //
-// Asynchronous replay (XC2_REPLAY_ASYNC, default 0; 1 turns it on): nvnQueueSubmitCommands
-// and nvnQueuePresentTexture only queue. Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
+// Asynchronous replay (XC2_REPLAY_ASYNC; by default on where the VRAM mirrors take submit-time copies, vk_replay_async):
+// nvnQueueSubmitCommands and nvnQueuePresentTexture only queue; what the GPU reads from guest memory is copied in the
+// submit call first (vk_be_submit). Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
 // order; the replay thread runs the synchronous submit and present bodies in that order, so every value is signalled
 // by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the
 // replay thread handled present N-1. Calls that read or free GPU state that queued work may use drain the queue first
@@ -140,6 +141,7 @@ typedef struct {
     int kind, n, has_crop, crop[4];
     uint64_t value, submit_no, at, queued;
     uint64_t *h;
+    void *mcap, *ucap;  // RI_SUBMIT: the submit-time captures (vk_mem_capture, vk_usnap_capture)
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
@@ -160,12 +162,19 @@ static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr
 // although no submission recorded a write to the texture in between, differing with the queue idle at the first read.
 static uint64_t ck_reads, ck_diff, ck_diff_unexplained, ck_diff_idle;
 
+// On by default where every buffer the GPU reads is a submit-time copy (vk_mem_snapshots: the VRAM mirrors with staged
+// captures): Goldmouth on an RTX 4070 Laptop, 75 fps on the submitting thread, 99 on the replay thread. Elsewhere the
+// frame guard waits for the GPU each frame, and the replay thread only adds latency (63 fps there with the guard), so
+// it stays off unless XC2_REPLAY_ASYNC is set.
 int vk_replay_async(void) {
     static int on = -1;
     if (on < 0) {
-        on = cfg_bool("XC2_REPLAY_ASYNC");   // off by default: no measured gain yet, one more frame of latency
-        rt_log("vk: replay %s (XC2_REPLAY_ASYNC=%d)",
-               on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on);
+        vk_sync_start();   // the memory mode is chosen with the device
+        int set = cfg_is_set("XC2_REPLAY_ASYNC"), snap = vk_mem_snapshots();
+        on = set ? cfg_bool("XC2_REPLAY_ASYNC") : snap;
+        rt_log("vk: replay %s (XC2_REPLAY_ASYNC=%d%s)",
+               on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on,
+               set ? "" : snap ? ", auto: submit-time copies" : ", auto: the GPU reads guest memory live");
     }
     return on;
 }
@@ -202,6 +211,7 @@ static void replay_main(void *arg) {
         plat_cond_broadcast(&rcv);
         plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
+            if (it.n) vk_exec_captures(it.mcap, it.ucap);
             uint64_t f = submit_sync(it.h, it.n);
             if (f != it.value)
                 rt_fatal("vk: replayed submission signalled %llu, queued as %llu", (unsigned long long)f,
@@ -348,7 +358,18 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 WEAK void vk_program_release(const prog_t *p) { (void)p; }
 
 static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
-static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
+// Submit-time captures (vk_be_submit) name the mirrored pools' records: a pool is finalized with the capture lock held,
+// after the queued submissions have used their captures, so none is taken or queued with a record that goes.
+static PlatMutex cap_lock = PLAT_MUTEX_INIT;
+
+static void vk_be_pool_fini(pool_t *p) {
+    vk_sync_start();
+    plat_mutex_lock(&cap_lock);
+    replay_drain(DR_POOL_FINI);
+    vk_present_drain();
+    vk_pool_fini(p);
+    plat_mutex_unlock(&cap_lock);
+}
 static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
     vk_sync_start();
     replay_drain(DR_MAP_VIRTUAL);
@@ -378,18 +399,31 @@ static void vk_be_texture_release(const tex_t *t) {
     replay_enqueue(&it);
 }
 static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
-// Asynchronous: the handles (nvn_submit_prepare_async ran under the front end's submit lock) are copied and queued;
-// the value returned is the one the replay will signal.
+// Everything the GPU reads from guest memory for a submission is copied here, in the game's submit call (the mirrors'
+// written pages, the uniform ranges it binds: vk_mem_capture, vk_usnap_capture), under the capture lock so captures
+// follow queue order, and handed to the replay with it: the game rewrites vertex, storage and uniform data for its next
+// frame with no fence, while the replay may record this one up to a frame later. Asynchronous: the handles
+// (nvn_submit_prepare_async ran under the front end's submit lock) are copied and queued; the value returned is the one
+// the replay will signal.
 static uint64_t vk_be_submit(const uint64_t *handles, int n) {
-    if (!gfx_replay_async()) return submit_sync(handles, n);
     vk_sync_start();
-    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count()};
+    plat_mutex_lock(&cap_lock);
+    void *mcap = n ? vk_mem_capture() : NULL, *ucap = n ? vk_usnap_capture(handles, n) : NULL;
+    if (!gfx_replay_async()) {
+        if (n) vk_exec_captures(mcap, ucap);
+        uint64_t f = submit_sync(handles, n);
+        plat_mutex_unlock(&cap_lock);
+        return f;
+    }
+    ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .mcap = mcap, .ucap = ucap};
     if (n > 0) {
         it.h = malloc(sizeof *it.h * (size_t)n);
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
         memcpy(it.h, handles, sizeof *it.h * (size_t)n);
     }
-    return replay_enqueue(&it);
+    uint64_t v = replay_enqueue(&it);
+    plat_mutex_unlock(&cap_lock);
+    return v;
 }
 static void vk_be_finish(void) { vk_sync_start(); replay_drain(DR_FINISH); vk_present_drain(); vk_sync_finish(); }
 static int replay_check(void) {

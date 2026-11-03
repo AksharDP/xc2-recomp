@@ -895,8 +895,22 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
     }
 }
 
+// The submit-time captures of the next submission this thread records (vk_backend.c, the replay thread or the
+// submitting one).
+static _Thread_local void *next_mem, *next_ubo;
+static _Thread_local int next_set;
+
+void vk_exec_captures(void *mem, void *ubo) {
+    next_mem = mem, next_ubo = ubo, next_set = 1;
+}
+
 int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t fence) {
     VkExec *ex = &X;
+    void *mcap = next_mem, *ucap = next_ubo;
+    int given = next_set;
+    next_mem = next_ubo = NULL, next_set = 0;
+    if (!n && given) vk_mem_capture_drop(mcap), vk_usnap_capture_drop(ucap);
+    if (n && !given) mcap = vk_mem_capture(), ucap = vk_usnap_capture(handles, n);   // the probes' own submissions
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
     ex->cb = cb;
     ex->fence = fence;
@@ -911,7 +925,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();
     x_here = 1;
-    if (n) vk_mem_mirror_begin(), vk_usnap_begin(handles, n, fence);
+    if (n) vk_mem_mirror_begin(mcap), vk_usnap_begin(ucap, fence);
     for (int i = 0; i < n; i++) {
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
         if (vk_dump_armed) vk_dump_note("replay handle %d/%d %#llx", i, n, (unsigned long long)handles[i]);
