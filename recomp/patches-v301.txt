@@ -20,6 +20,16 @@ site xc2fps main 6ab168 sha:b868457ac02f8584 @page:x8 bd404900
 # The grass and wind sway step (main+0x748658: s6 = 1/30, the step it moves per frame): the page's +0x50, the step the
 # game takes this frame (frame_rate.c xc2_steps_store). x8 is the constant's page here and unused after.
 site xc2fps main 74865c sha:c9e5af2144c75b72 @page:x8 bd405106
+# The cloud layers' drift (main+0x716074, for each layer from main+0x70d240): each frame adds the wind velocity
+# (main+0x70d160) times 0.05 (main+0x9b51bc) times the layer's speed to the layer's offsets (+0x10 on), so above 30 fps
+# the layers drifted faster. The 0.05 is scaled by the page's +0x54, the step this frame in 30 fps frames. x8 is free
+# after the load (rewritten at main+0x716108), s2 is loaded at main+0x7160a0.
+site xc2fps main 716094 sha:3057d9aa08443c8a bd41bd01 @page:x8 bd405502 1e220821
+# The cloud sea's own scroll (main+0x70f300, from main+0x70e700): it adds 0.1 (main+0x9b5134) times the product of
+# +0x60 and +0x64 of the graphics settings ([main+0xb8daa0], both 1 in play) times the layer's speed to the scroll
+# vectors at +0x170 to +0x1f0 of the cloud object (the shaders' [10] to [14], main+0x7109b0) every frame. The product is
+# scaled by the page's +0x54. x10 and s1 are free here (s1 is loaded again at main+0x70f470); x8 is not.
+site xc2fps main 70f38c sha:ba333c86651ffca4 1e210800 @page:x10 bd405541 1e210800
 # Right-stick camera turn: the player camera's update (around main+0x1d1240) adds the stick, after its smoothing, times
 # the yaw speed (+0x52dc) and the pitch speed (+0x52e0) of its speed table (camera.param's YawRotSpeed and
 # PitchRotSpeed per camera speed option, filled at main+0x1cdda8) to the yaw (+0xb8) and the pitch (+0xc0) each frame,
