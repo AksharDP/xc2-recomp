@@ -457,6 +457,28 @@ def check_folder(out):
     print(f'check_content: {sum(1 for p in out.rglob("*") if p.is_file())} files, no hit')
 
 
+# The host check's verdicts on the GPU, which come after the bundled clang built and ran the host probe. CI runners
+# have no GPU, so there the installer stops at one of these instead of at the missing game files.
+NO_GPU_ERRORS = ('check.vulkan_missing', 'check.vulkan_no_device', 'check.vulkan_too_old')
+
+
+def bundle_verdict(r, out):
+    """Reads the installer's events from a bundle check run; exits unless it stopped where a bare folder should."""
+    events = [json.loads(line) for line in r.stdout.splitlines() if line.startswith('{')]
+    errors = [e['id'] for e in events if e['type'] == 'error']
+    started = any(e['type'] == 'start' and e.get('release') == (out / 'VERSION').read_text().strip() for e in events)
+    steps = [e['phase'] for e in events if e['type'] == 'progress']
+    if started and errors == ['check.inputs_needed'] and 'inputs' in steps:
+        print(f'bundle check: the installer ran the host check from the folder and stopped at the game files '
+              f'(exit {r.returncode})')
+    elif started and len(errors) == 1 and errors[0] in NO_GPU_ERRORS and 'host' in steps:
+        print(f'bundle check: the installer built and ran the host probe from the folder and stopped at '
+              f'{errors[0]}: this machine has no usable GPU, so the game file check did not run (exit {r.returncode})')
+    else:
+        sys.exit(f'bundle check: exit {r.returncode}, errors {errors}, release read {started}\n{r.stdout[-2000:]}\n'
+                 f'{r.stderr[-2000:]}')
+
+
 def check_bundle(out):
     """The folder's own python runs the installer without game files and the window's selftest."""
     chk = MAIN_ROOT / 'build' / 'release-check' / 'bundle'
@@ -465,13 +487,7 @@ def check_bundle(out):
     py = out / 'python' / 'python.exe'
     r = subprocess.run([py, '-m', 'installer', '--lang', 'en-US', '--dest', chk / 'install', '--temp', chk / 'temp'],
                        cwd=out, env=env, capture_output=True, text=True, timeout=600)
-    events = [json.loads(line) for line in r.stdout.splitlines() if line.startswith('{')]
-    errors = [e['id'] for e in events if e['type'] == 'error']
-    started = any(e['type'] == 'start' and e.get('release') == (out / 'VERSION').read_text().strip() for e in events)
-    steps = [e['phase'] for e in events if e['type'] == 'progress']
-    if errors != ['check.inputs_needed'] or not started or 'inputs' not in steps:
-        sys.exit(f'bundle check: exit {r.returncode}, errors {errors}, release read {started}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
-    print(f'bundle check: the installer ran the host check from the folder and stopped at the game files (exit {r.returncode})')
+    bundle_verdict(r, out)
     r = subprocess.run([py, '-m', 'installer.gui', '--selftest'], cwd=out, env=env, capture_output=True, text=True, timeout=300)
     if r.returncode:
         sys.exit(f'bundle check: window selftest exit {r.returncode}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')

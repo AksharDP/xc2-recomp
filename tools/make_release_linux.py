@@ -474,7 +474,6 @@ def check_glibc(out):
 
 def check_bundle(out):
     """The folder's own python runs the installer without game files and the window's selftest."""
-    import json
     chk = CHECK / 'bundle'
     shutil.rmtree(chk, ignore_errors=True)
     py = out / 'python' / 'bin' / 'python3'
@@ -482,15 +481,7 @@ def check_bundle(out):
     r = subprocess.run([str(py), '-m', 'installer', '--lang', 'en-US', '--dest', str(chk / 'install'), '--temp',
                         str(chk / 'temp'), '--root', str(out)], cwd='/', env=env, capture_output=True, text=True,
                        timeout=600)
-    events = [json.loads(line) for line in r.stdout.splitlines() if line.startswith('{')]
-    errors = [e['id'] for e in events if e['type'] == 'error']
-    started = any(e['type'] == 'start' and e.get('release') == (out / 'VERSION').read_text().strip() for e in events)
-    steps = [e['phase'] for e in events if e['type'] == 'progress']
-    if errors != ['check.inputs_needed'] or not started or 'inputs' not in steps:
-        sys.exit(f'bundle check: exit {r.returncode}, errors {errors}, release read {started}\n{r.stdout[-2000:]}\n'
-                 f'{r.stderr[-2000:]}')
-    print(f'bundle check: the installer ran the host check from the folder and stopped at the game files '
-          f'(exit {r.returncode})')
+    mr.bundle_verdict(r, out)
     run([py, '-c', 'import tkinter as tk; from tkinter import font; '
          'root = tk.Tk(); root.withdraw(); '
          'fonts = [font.nametofont("TkDefaultFont"), font.Font(family="DejaVu Sans"), '
