@@ -10,42 +10,42 @@
 set xc2fps XC2_FPS60 1
 # The boot setter's interval (main+0x6e3f44 calls main+0x6a4078 with 2): 1 vsync per frame; frame_rate.c sets 2 again
 # in cutscenes.
-site xc2fps main 6e3f44 321f03e0 320003e0
+site xc2fps main 6e3f44 sha:0265c163ec564f1e 320003e0
 # The vsync period: the patch page's +0x40 (1 / limit, or the measured frame time in play), so interval * period, the
 # game's step, follows the frames.
-site xc2fps main 6bdc54 bd459500 @page:x8 bd404100
+site xc2fps main 6bdc54 sha:8bcf2e461b241ca6 @page:x8 bd404100
 # The limiter's wait, interval * period * 0.997 against the time since the frame started: the page's +0x48, the frame
 # time of the limit. x8 is dead here: the loop calls main+0x6e26f8 next, or returns.
-site xc2fps main 6ab168 1e2a0800 @page:x8 bd404900
+site xc2fps main 6ab168 sha:b868457ac02f8584 @page:x8 bd404900
 # The grass and wind sway step (main+0x748658: s6 = 1/30, the step it moves per frame): the page's +0x50, the step the
 # game takes this frame (frame_rate.c xc2_steps_store). x8 is the constant's page here and unused after.
-site xc2fps main 74865c bd414906 @page:x8 bd405106
+site xc2fps main 74865c sha:c9e5af2144c75b72 @page:x8 bd405106
 # Right-stick camera turn: the player camera's update (around main+0x1d1240) adds the stick, after its smoothing, times
 # the yaw speed (+0x52dc) and the pitch speed (+0x52e0) of its speed table (camera.param's YawRotSpeed and
 # PitchRotSpeed per camera speed option, filled at main+0x1cdda8) to the yaw (+0xb8) and the pitch (+0xc0) each frame,
 # with no frame time, so above 30 fps the camera turned faster. Both speeds are scaled where they are loaded by the
 # page's +0x54, the step this frame times 30 (frame_rate.c xc2_steps_store), as XCX's turn (patches-upd.txt, xc260).
 # x8 is rewritten before it is read again at both (a call, then an adrp); s1 is free at both.
-site xc2fps main 1d12c8 bc696900 bc696900 @page:x8 bd405501 1e210800
-site xc2fps main 1d1314 bc696900 bc696900 @page:x8 bd405501 1e210800
+site xc2fps main 1d12c8 sha:6474ca7bd27d8677 bc696900 @page:x8 bd405501 1e210800
+site xc2fps main 1d1314 sha:899ffde6a5eca884 bc696900 @page:x8 bd405501 1e210800
 
 # xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
 # handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
 # setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70
 # (width) and +0x74 (height) instead.
 set xc2res XC2_OUTPUT_RES 0
-site xc2res main 6e3fc8 5280a000 @page:x0 b9407000
-site xc2res main 6e3fd0 52805a00 @page:x0 b9407400
-site xc2res main 700640 5280a015 @page:x21 b94072b5
-site xc2res main 700644 52805a16 @page:x22 b94076d6
+site xc2res main 6e3fc8 sha:ffd5886200ad5493 @page:x0 b9407000
+site xc2res main 6e3fd0 sha:4cdbf2bbc589638e @page:x0 b9407400
+site xc2res main 700640 sha:1310f8325755a90c @page:x21 b94072b5
+site xc2res main 700644 sha:71f543de2911de5f @page:x22 b94076d6
 # The graphics heaps (main+0x6f4ee4 fills their sizes, main+0x705c20 carves GLIBCNT, GLIBPXL, GLIBVTX, ... from one
 # block of their sum): the render targets come from GLIBPXL, 0x16a00000 bytes (362 MiB), the high half of x9 here;
 # above 1280x720 the game aborts in its allocator (main+0x6e927c). The size is the page's +0x78 instead
 # (resolution.c xc2_res_init); the movk that follows sets the low half, GLIBCNT, as before.
-site xc2res main 6f4f74 d2e2d409 @page:x9 b9407929 d3607d29
+site xc2res main 6f4f74 sha:b56a63a9639ad888 @page:x9 b9407929 d3607d29
 # The game's memory layout (main+0x6421b4, handed to main+0x6e3f34): the main heap, then a 512 MiB graphics block
 # (orr w8, wzr, #0x20000000) that GLIB's heaps are carved from. Its size is the page's +0x7c instead (the same growth).
-site xc2res main 6421c4 320303e8 @page:x8 b9407d08
+site xc2res main 6421c4 sha:a95ccb820bea65ad @page:x8 b9407d08
 
 # Markers on the 3D scene (target cursor, damage numbers, talk and quest icons) are placed in the interface's
 # 1280x720 space with the camera's viewport (+0x1e0, +0x1e4), which the world-to-screen (main+0x6c3aa0), the
@@ -62,81 +62,81 @@ site xc2res main 6421c4 320303e8 @page:x8 b9407d08
 # the position the turn is added to is in the interface's 1280x720 units: the pivot came out 1.5 times too far and a
 # half turn moved the arrow by half its size, down and right. The pivot (sp+8) is scaled by the page's +0x88 (720 /
 # frame height) where it is loaded. x8 is free after the origin function's blr x8; s3 is written next.
-site xc2res main 833090 2d410be0 2d410be0 @page:x8 bd408903 1e230800 1e230842
-site xc2res main 6c2bd8 b9400be9 @page:x9 b9408129
-site xc2res main 6c2be8 b9400fea @page:x10 b940854a
-site xc2res main 6c2bf8 b9400fea @page:x10 b940854a
-site xc2res main b7e08 9417ac35 5280a000
-site xc2res main b7e14 9417ac3a 52805a00
-site xc2res main b7e84 9417ac16 5280a000
-site xc2res main b7e90 9417ac1b 52805a00
-site xc2res main b7f1c 9417abf8 52805a00
-site xc2res main b7f24 9417abee 5280a000
-site xc2res main b7f30 9417abf3 52805a00
-site xc2res main b7f90 9417abd3 5280a000
-site xc2res main b7f98 9417abd1 5280a000
-site xc2res main b7fa0 9417abd7 52805a00
-site xc2res main b7fe4 9417abc6 52805a00
-site xc2res main b8000 9417abb7 5280a000
-site xc2res main b800c 9417abbc 52805a00
-site xc2res main b8074 9417aba2 52805a00
-site xc2res main b808c 9417ab94 5280a000
-site xc2res main b8098 9417ab99 52805a00
-site xc2res main b80f8 9417ab79 5280a000
-site xc2res main b810c 9417ab74 5280a000
-site xc2res main b8120 9417ab77 52805a00
-site xc2res main b8170 9417ab5b 5280a000
-site xc2res main b8188 9417ab55 5280a000
-site xc2res main b81a0 9417ab57 52805a00
-site xc2res main c61a8 94177355 52805a00
-site xc2res main c61b4 9417734a 5280a000
-site xc2res main c6208 94177335 5280a000
-site xc2res main c8304 94176af6 5280a000
-site xc2res main d0830 941749ab 5280a000
-site xc2res main d0a84 94174916 5280a000
-site xc2res main ef56c 9416ce5c 5280a000
-site xc2res main ef578 9416ce61 52805a00
-site xc2res main f8014 9416abb2 5280a000
-site xc2res main f9c78 9416a499 5280a000
-site xc2res main fde98 94169411 5280a000
-site xc2res main fdeb0 9416940b 5280a000
-site xc2res main fec78 94169099 5280a000
-site xc2res main fefa0 94168fcf 5280a000
-site xc2res main 1065ec 94167244 52805a00
-site xc2res main 1065f8 94167239 5280a000
-site xc2res main 1069b0 94167153 52805a00
-site xc2res main 1069bc 94167148 5280a000
-site xc2res main 10728c 94166f1c 52805a00
-site xc2res main 10d508 94165675 5280a000
-site xc2res main 111634 9416462a 5280a000
-site xc2res main 111640 9416462f 52805a00
-site xc2res main 114e40 94163827 5280a000
-site xc2res main 114e4c 9416382c 52805a00
-site xc2res main 11663c 94163230 52805a00
-site xc2res main 116648 94163225 5280a000
-site xc2res main 116694 94163212 5280a000
-site xc2res main 117038 94162fb1 52805a00
-site xc2res main 117044 94162fa6 5280a000
-site xc2res main 117098 94162f91 5280a000
-site xc2res main 119b0c 941624f4 5280a000
-site xc2res main 11cc6c 9416189c 5280a000
-site xc2res main 1232d0 9415ff03 5280a000
-site xc2res main 127754 9415ede2 5280a000
-site xc2res main 1333b4 9415bed2 52805a00
-site xc2res main 1333c0 9415bec7 5280a000
-site xc2res main 1334a4 9415be8e 5280a000
-site xc2res main 1424e4 9415827e 5280a000
-site xc2res main 1425bc 94158250 52805a00
-site xc2res main 1cdc58 941354a1 5280a000
-site xc2res main 1cdc60 941354a7 52805a00
-site xc2res main 1cf4b4 94134e8a 5280a000
-site xc2res main 1cf4c0 94134e8f 52805a00
-site xc2res main 1d4324 94133aee 5280a000
-site xc2res main 1d432c 94133af4 52805a00
-site xc2res main 328d88 940de855 5280a000
-site xc2res main 328d98 940de859 52805a00
-site xc2res main 329110 940de773 5280a000
-site xc2res main 329120 940de777 52805a00
+site xc2res main 833090 sha:09434673fdbacb66 2d410be0 @page:x8 bd408903 1e230800 1e230842
+site xc2res main 6c2bd8 sha:2b4fceb6018b7f4f @page:x9 b9408129
+site xc2res main 6c2be8 sha:673c02dc4db9f003 @page:x10 b940854a
+site xc2res main 6c2bf8 sha:720baacc72f3a511 @page:x10 b940854a
+site xc2res main b7e08 sha:ad01bf20c6717a40 5280a000
+site xc2res main b7e14 sha:56fd869a52eb0312 52805a00
+site xc2res main b7e84 sha:d4af565b0d6e398c 5280a000
+site xc2res main b7e90 sha:d8db2f8dba04a734 52805a00
+site xc2res main b7f1c sha:8c63a210fa0c0b49 52805a00
+site xc2res main b7f24 sha:5b6d8cd4efe9cd90 5280a000
+site xc2res main b7f30 sha:9ad6faffc525e6c7 52805a00
+site xc2res main b7f90 sha:55562a03d778ef34 5280a000
+site xc2res main b7f98 sha:53e32e49e90e5306 5280a000
+site xc2res main b7fa0 sha:792cae1b2eb6bf29 52805a00
+site xc2res main b7fe4 sha:a56e21a1b1d3da8a 52805a00
+site xc2res main b8000 sha:465e31d896ab85a1 5280a000
+site xc2res main b800c sha:38e13e204bbf156d 52805a00
+site xc2res main b8074 sha:7c9952da98d7596a 52805a00
+site xc2res main b808c sha:d634d0d2b6fb9118 5280a000
+site xc2res main b8098 sha:4992f745ee98317c 52805a00
+site xc2res main b80f8 sha:d5607c56d10db16d 5280a000
+site xc2res main b810c sha:b8b4df51016001a1 5280a000
+site xc2res main b8120 sha:9dec0a16e3789c35 52805a00
+site xc2res main b8170 sha:e2e9452c82fb190c 5280a000
+site xc2res main b8188 sha:562c1e5b6bdf0396 5280a000
+site xc2res main b81a0 sha:95a15a869e3435ce 52805a00
+site xc2res main c61a8 sha:10cee20eccc2355e 52805a00
+site xc2res main c61b4 sha:a2879013ce8af566 5280a000
+site xc2res main c6208 sha:21d68d5961a8b9e0 5280a000
+site xc2res main c8304 sha:5a27a40eb1ad8e6f 5280a000
+site xc2res main d0830 sha:2549108468fb186f 5280a000
+site xc2res main d0a84 sha:35cfd1f106665528 5280a000
+site xc2res main ef56c sha:bf43bc546cf9ff54 5280a000
+site xc2res main ef578 sha:9e66a694ab4a8882 52805a00
+site xc2res main f8014 sha:55cc746e5923c321 5280a000
+site xc2res main f9c78 sha:95d34c10321e86fc 5280a000
+site xc2res main fde98 sha:65ff484f0677409c 5280a000
+site xc2res main fdeb0 sha:5640bfacda92db8c 5280a000
+site xc2res main fec78 sha:d77a1e8fc1cfa183 5280a000
+site xc2res main fefa0 sha:95c1730389f48dd7 5280a000
+site xc2res main 1065ec sha:fd93f4a3db1a042e 52805a00
+site xc2res main 1065f8 sha:4fd70ae3b7e06861 5280a000
+site xc2res main 1069b0 sha:23c954c477bc52a8 52805a00
+site xc2res main 1069bc sha:d200439852571ac8 5280a000
+site xc2res main 10728c sha:c669b67abdbd979d 52805a00
+site xc2res main 10d508 sha:0631458bb34acb90 5280a000
+site xc2res main 111634 sha:292e38eccca31b78 5280a000
+site xc2res main 111640 sha:0bdac77fc82d888e 52805a00
+site xc2res main 114e40 sha:cb87e2dff1886eb0 5280a000
+site xc2res main 114e4c sha:ab00ed3b097509be 52805a00
+site xc2res main 11663c sha:2c2f586578366f2f 52805a00
+site xc2res main 116648 sha:45d27c33643a73c0 5280a000
+site xc2res main 116694 sha:d1f8cba06dc7fcd5 5280a000
+site xc2res main 117038 sha:0888aef6e5283ad7 52805a00
+site xc2res main 117044 sha:325987bd2ee64eb0 5280a000
+site xc2res main 117098 sha:04daeb45b85615d2 5280a000
+site xc2res main 119b0c sha:0d5d09f6846992f7 5280a000
+site xc2res main 11cc6c sha:ea9f31a32a8e741e 5280a000
+site xc2res main 1232d0 sha:1fd2444745d356b4 5280a000
+site xc2res main 127754 sha:0dcfc8b3b7f3be7e 5280a000
+site xc2res main 1333b4 sha:8445caa56724bf99 52805a00
+site xc2res main 1333c0 sha:9bcdddac9f7d8208 5280a000
+site xc2res main 1334a4 sha:4389499b9c7a1985 5280a000
+site xc2res main 1424e4 sha:ed57861566114133 5280a000
+site xc2res main 1425bc sha:fede614bca009550 52805a00
+site xc2res main 1cdc58 sha:1c1b954337395cf9 5280a000
+site xc2res main 1cdc60 sha:cf74bdeb04283cb1 52805a00
+site xc2res main 1cf4b4 sha:187af2d9261a6b28 5280a000
+site xc2res main 1cf4c0 sha:21ff2bd3eeda4ac0 52805a00
+site xc2res main 1d4324 sha:61fdfb30291ddfae 5280a000
+site xc2res main 1d432c sha:d2f97d579b7ad91f 52805a00
+site xc2res main 328d88 sha:52c6f9deb191e017 5280a000
+site xc2res main 328d98 sha:7a9b8cb2e9b8523b 52805a00
+site xc2res main 329110 sha:447542af428abcce 5280a000
+site xc2res main 329120 sha:89126e7f267c2d70 52805a00
 
 # xc2scale (XC2_RENDER_SCALE, resolution.c): the share of the frame the 3D scene draws in. XC2 takes it from
 # /monolib/shader/lib_nx.ini, parsed by main+0x716e68: red_sclX/Y (1.0, +0x1928/+0x192c of the shader settings) and
@@ -145,11 +145,11 @@ site xc2res main 329120 940de777 52805a00
 # and +0x10/+0x14). Each value is replaced by the patch page's +0x58 (the scale, 0.25 to 1.0) as it is stored, so the
 # share is fixed whichever mode runs. x10 is rewritten before it is read after every case (main+0x719214).
 set xc2scale XC2_RENDER_SCALE 0
-site xc2scale main 717cd4 bd192b00 @page:x10 bd405940 bd192b00
-site xc2scale main 717d00 bd192f00 @page:x10 bd405940 bd192f00
-site xc2scale main 717d2c bd193f00 @page:x10 bd405940 bd193f00
-site xc2scale main 717d58 bd194300 @page:x10 bd405940 bd194300
-site xc2scale main 717db8 bd001120 @page:x10 bd405940 bd001120
-site xc2scale main 717dec bd001520 @page:x10 bd405940 bd001520
-site xc2scale main 717e20 bd001920 @page:x10 bd405940 bd001920
-site xc2scale main 717e54 bd001d20 @page:x10 bd405940 bd001d20
+site xc2scale main 717cd4 sha:99327e39d8fa7884 @page:x10 bd405940 bd192b00
+site xc2scale main 717d00 sha:cbaf5730df447e16 @page:x10 bd405940 bd192f00
+site xc2scale main 717d2c sha:f538b11b85408599 @page:x10 bd405940 bd193f00
+site xc2scale main 717d58 sha:592be8390f2134a4 @page:x10 bd405940 bd194300
+site xc2scale main 717db8 sha:d4baac18230cfd88 @page:x10 bd405940 bd001120
+site xc2scale main 717dec sha:b293a4ecc0f3cfdd @page:x10 bd405940 bd001520
+site xc2scale main 717e20 sha:6c937ded467437b5 @page:x10 bd405940 bd001920
+site xc2scale main 717e54 sha:e85fdb91c376cc74 @page:x10 bd405940 bd001d20

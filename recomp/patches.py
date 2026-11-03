@@ -4,14 +4,16 @@ Lifted code cannot be byte-patched when the game runs, so a patch is applied whe
 (gen.py --patches) has two kinds of lines; `#` starts a comment, fields are separated by whitespace:
 
   set  <name> <env> <default>               a patch set: a run-time switch <env>=0/1, <default> when it is unset
-  site <set> <module> <address> <original> <replacement> [<replacement> ...]
+  site <set> <module> <address> <check> <replacement> [<replacement> ...]
 
   spin <module> <head> <back-edge> [<back-edge> ...]
 
-<address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
-the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
-encoded for the site's address. The patch page is the first 4 KiB page after main's image (layout.py leaves the rest
-of the 2 MiB-aligned module slot free); the runtime commits it and owns its contents.
+<address> is a module offset (hex). <check> is what the module must hold there, and a mismatch stops the generator:
+`sha:` and 16 hex digits, the first 8 bytes of the SHA-256 of the 32 bytes from <address> on (site_check writes it), or a
+bare instruction word (8 hex digits), which the XCX-era patch files still use. Each <replacement> is an instruction word
+(hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>` encoded for the site's address; a sha check covers at most
+32 bytes of replacement. The patch page is the first 4 KiB page after main's image (layout.py leaves the rest of the
+2 MiB-aligned module slot free); the runtime commits it and owns its contents.
 
 The replacement words are lifted at the site's address in place of the original instruction, and the generated C reads
 `if (rt_patch_on[<set>]) { replacement } else { original }`: one byte load and a branch per executed site. Several
@@ -28,13 +30,40 @@ and the direct branches back to it (module offsets). Each back-edge (checked: a 
 <head>) is lifted as `rt_spin_gate(c, <head>); goto <head>`, which keeps every register and only adds time
 (runtime/kernel.c kern_spin_gate).
 """
+import hashlib
 from pathlib import Path
 
 PAGE = 0x1000
+CHECK_BYTES = 32   # a sha check covers this many bytes from the site's address
 
 
 class PatchError(ValueError):
     pass
+
+
+def site_check(image, off):
+    """The sha check of the site at module offset off: `sha:` and the first 8 bytes of the SHA-256 of the 32 bytes there."""
+    window = bytes(image[off:off + CHECK_BYTES])
+    if len(window) != CHECK_BYTES:
+        raise PatchError(f'{off:#x}: the module ends inside the check window')
+    return 'sha:' + hashlib.sha256(window).digest()[:8].hex()
+
+
+def parse_check(tok, where):
+    """A site's check: ('sha', 8 bytes) for `sha:` and 16 hex digits, else the instruction word as an int."""
+    if tok.startswith('sha:'):
+        try:
+            digest = bytes.fromhex(tok[4:])
+        except ValueError:
+            digest = b''
+        if len(digest) != 8:
+            raise PatchError(f'{where}: a sha check is sha: and 16 hex digits, not {tok!r}')
+        return ('sha', digest)
+    return int(tok, 16)
+
+
+def show_check(c):
+    return f'sha:{c[1].hex()}' if isinstance(c, tuple) else f'{c:08x}'
 
 
 def adrp(pc, target, rd):
@@ -88,19 +117,22 @@ def load(path, mods):
                 raise PatchError(f'{where}: unknown set {f[1]}')
             if f[2] not in bases:
                 raise PatchError(f'{where}: module {f[2]} not in the layout')
-            off, orig = int(f[3], 16), int(f[4], 16)
+            off, want = int(f[3], 16), parse_check(f[4], where)
             repl = []
             for w in f[5:]:
                 if w.startswith('@page:x'):
                     repl.append(('page', int(w[7:])))
                 else:
                     repl.append(int(w, 16))
+            if isinstance(want, tuple) and 4 * len(repl) > CHECK_BYTES:
+                raise PatchError(f'{where}: {len(repl)} replacement words are more than the {CHECK_BYTES}-byte sha check')
             alts = sites.setdefault(f[2], {}).setdefault(off, [])
             if any(k == index[f[1]] for k, _, _ in alts):
                 raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice by set {f[1]}')
-            if alts and alts[0][2] != orig:
-                raise PatchError(f'{where}: {f[2]}+{off:#x} expects {orig:08x}, an earlier line {alts[0][2]:08x}')
-            alts.append((index[f[1]], repl, orig))
+            if alts and alts[0][2] != want:
+                raise PatchError(f'{where}: {f[2]}+{off:#x} is checked by {show_check(want)}, '
+                                 f'an earlier line by {show_check(alts[0][2])}')
+            alts.append((index[f[1]], repl, want))
         elif f[0] == 'spin' and len(f) >= 4:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')
@@ -121,14 +153,21 @@ def load(path, mods):
 
 
 def check(table, mod, name):
-    """Stops on a site whose original word differs from the module's."""
+    """Stops on a site whose check differs from the module's: its instruction word, or the sha of the bytes there."""
     for off, [(_, _, want), *_] in table.sites.get(name, {}).items():
         a = mod.base + off
         if not mod.in_text(a):
             raise PatchError(f'{name}+{off:#x}: patch site outside .text')
-        have = mod.word(a)
-        if have != want:
-            raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
+        if isinstance(want, tuple):
+            if not mod.in_text(a + CHECK_BYTES - 4):
+                raise PatchError(f'{name}+{off:#x}: the sha check window runs past .text')
+            have = site_check(mod.image, off)
+            if have != show_check(want):
+                raise PatchError(f'{name}+{off:#x}: the module has {have}, the patch expects {show_check(want)}')
+        else:
+            have = mod.word(a)
+            if have != want:
+                raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
     for b, head in table.spins.get(name, {}).items():
         a = mod.base + b
         if not mod.in_text(a) or branch_target(mod.word(a), a) != mod.base + head:
