@@ -92,8 +92,9 @@ uint64_t input_map_buttons(const uint8_t down[KEY_COUNT]);
 // unit circle.
 void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]);
 // Mouse motion in raw counts over dt_s seconds to right-stick deflection: full deflection at 3000 / sens counts/s.
-// Clamped to the unit circle, up (negative dy) is +y.
-void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]);
+// Clamped to the unit circle, up (negative dy) is +y. Returns the deflection asked for before the clamp, 1 = full: above
+// 1 the mouse moved faster than the stick can say, which the camera turn makes up for (input_camera_boost).
+double input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]);
 // A gamepad stick (x, y in -32768..32767, up is +y) through a round dead zone of `dead` (fraction of full deflection,
 // 0..0.5): inside the circle the stick reads 0, and the rest of the travel is scaled to start at 0 at the edge, so a
 // drifting stick rests at 0 and full deflection still reaches full. The result stays inside the unit square.
