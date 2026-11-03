@@ -108,3 +108,7 @@ void nvn_pool_invalidate(const pool_t *p, uint64_t off, uint64_t size);
 // MemoryPoolFlushMappedRange: the CPU wrote [mem + off, mem + off + size). Weak no-op in nvn_ext.c; a back end that keeps
 // device-side copies of pool memory (vk_memory.c's VRAM mirror) defines it and copies the range again.
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size);
+// 1 when every buffer the GPU reads from CPU-written pools is a copy taken at submit time (vk_memory.c: mirror mode with
+// staged uploads, no pool left imported), so the frame guard (nvnWindowAcquireTexture) is not needed; 0 otherwise and
+// in back ends without such copies.
+int nvn_reads_snapshot(void);

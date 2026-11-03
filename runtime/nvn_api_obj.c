@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -707,10 +708,18 @@ NVN_API(nvnWindowAcquireTexture) {
     // 30 fps, when its limiter no longer idles the rest of a 1/30 s frame, late draws read the next frame's data:
     // props slid against the ground and flickered when the camera moved or shook. Waiting at every submit
     // (XC2_SUBMIT_WAIT) cost 20-25 % on Iris Xe; this wait keeps the overlap of the GPU with the rest of the frame.
-    // XC2_FRAME_GUARD=0 turns it off.
+    // XC2_FRAME_GUARD: auto (default) waits only while the GPU can read live pool memory, i.e. unless the VRAM mirrors
+    // take the CPU's bytes at submit time (vk_memory.c "Staged uploads", nvn_reads_snapshot): then the GPU may run up
+    // to a frame behind, as it does on the Switch. 1 always waits, 0 never.
     {
-        static int on = -1;
-        if (on < 0) on = RT_KNOB_ON(rt_knob("FRAME_GUARD", "1"));
+        static int mode = -1;   // 0 off, 1 on, 2 auto
+        if (mode < 0) {
+            const char *e = cfg_value("XC2_FRAME_GUARD");
+            mode = !strcmp(e, "auto") ? 2 : strcmp(e, "0") != 0;
+            rt_log("nvn: frame guard %s", mode == 2 ? "auto (off while every buffer read is a submit-time copy)"
+                                         : mode ? "on" : "off");
+        }
+        int on = mode == 2 ? !nvn_reads_snapshot() : mode;
         uint64_t f = __atomic_load_n(&frame_fence, __ATOMIC_ACQUIRE);
         if (on && f && gfx_backend()->fence_done() < f) {
             uint64_t p0 = perf_begin();

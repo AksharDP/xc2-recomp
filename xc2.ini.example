@@ -50,9 +50,10 @@
 # ASTC texture decoding: native (the GPU's own ASTC support), gpu (a compute shader), cpu, or auto (native when the GPU
 # has it, gpu otherwise).
 # astc = auto
-# Game memory shared with the GPU: auto (mirror on a discrete GPU, import on an integrated one), import (host memory
-# imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
-# every copy; slow).
+# Game memory shared with the GPU: auto (mirror; import on an integrated GPU with less than 12 GB of system memory,
+# and on Linux, which uses shadow storage), import (host memory imported into Vulkan: about 1.3 GiB less memory,
+# but the frame guard stays on, about 25 % slower on an integrated GPU), mirror (pools used as buffers get a copy the
+# GPU reads, filled at submit time) or verify (mirror plus a check of every copy; slow).
 # memory = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
@@ -66,8 +67,10 @@
 # wrong place and a flat far field for a frame.
 # lod_guard = 1
 # Start each frame only once the GPU has drawn the one before it: stops props sliding and flickering above 30 fps.
-# Costs about 20 % on integrated GPUs.
-# frame_guard = 1
+# auto waits only where the GPU reads live game memory (memory = import, or a pool too large for the memory budget);
+# otherwise the buffers it reads are copied at submit time and the GPU may run a frame behind. 1 always waits (about
+# 25 % slower), 0 never.
+# frame_guard = auto
 # Fill the driver-reserved constant bank c0 (storage sizes, dispatch size, point size, base instance) instead of zeros.
 # fix_c0 = 1
 # New GPU memory pools start zero-filled, as Switch memory does.

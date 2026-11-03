@@ -1142,6 +1142,13 @@ static void dirty_frame(uint64_t frame) {
 // while an imported pool is read live, and the game rewrites vertex and storage data after its submit with no fence, so
 // late draws of the frame read the next frame's half-written data (the whole scene torn apart for a few frames).
 // A pool stays imported when its range is not write-watched, it overlaps another pool or the allocation fails.
+// - Staged uploads (XC2_MIRROR_STAGE, on): the prologue's copies read a CPU copy of the pages taken when it is recorded,
+//   inside the game's submit call, not guest memory when the GPU gets to them. A GPU still running the previous frame
+//   ran them late, after the game had begun rewriting vertex and storage data for its next frame (props sliding above
+//   30 fps); with the copy taken here, the frame guard (nvn_api_obj.c nvnWindowAcquireTexture) can let the GPU overlap
+//   the next frame (vk_mem_reads_snapshot). A range a write-back of a submission still in flight touches is copied by
+//   the GPU as before: guest memory gets those bytes only when that write-back runs. So is a merged range larger than
+//   STAGE_RANGE (a pool's first use) and what does not fit in STAGE_MAX.
 #define VERIFY_BYTES (4u << 20)
 #define VERIFY_SAMPLES 64
 #define VERIFY_LOG 16
@@ -1173,10 +1180,102 @@ static volatile int64_t m_host_n, m_host_bytes;   // mirrors in host memory (cou
 static volatile int64_t m_host_logged;            // all of them ever made: caps the log line in mirror_create
 static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mismatch;
 
+// ---- staged uploads
+#define STAGE_MAX (64ull << 20)    // bytes of one prologue that go through a CPU copy; the rest is copied by the GPU
+#define STAGE_MIN (1ull << 20)     // smallest arena
+#define STAGE_RANGE (8ull << 20)   // a larger merged range (a pool's first use) is copied by the GPU
+typedef struct StageArena {
+    struct StageArena *next;
+    VkBuffer buf;
+    VmaAllocation alloc;
+    uint8_t *map;
+    uint64_t size;
+} StageArena;
+typedef struct { PoolRec *r; uint64_t lo, hi, fence; } WbFlight;
+static int mirror_stage = 1;
+static StageArena *stage_free;         // stage_lock: arenas the GPU is done with
+static PlatMutex stage_lock = PLAT_MUTEX_INIT;
+static WbFlight *wbf;                  // replay: write-backs of submissions not known to be complete
+static int nwbf, cwbf;
+static VkBufferCopy *sregions;         // replay: regions copied from the arena
+static int csregions;
+static volatile int64_t m_stage_bytes, m_stage_direct;   // since the last summary: staged bytes, ranges left to the GPU
+static volatile int64_t m_stage_arena_n, m_stage_arena_bytes;   // arenas made so far
+
+static StageArena *stage_get(uint64_t need) {
+    plat_mutex_lock(&stage_lock);
+    StageArena **pp = &stage_free, *a = NULL;
+    for (; *pp; pp = &(*pp)->next)
+        if ((*pp)->size >= need) {
+            a = *pp, *pp = a->next;
+            break;
+        }
+    plat_mutex_unlock(&stage_lock);
+    if (a) return a;
+    if (!(a = calloc(1, sizeof *a))) return NULL;
+    a->size = need < STAGE_MIN ? STAGE_MIN : (need + STAGE_MIN - 1) & ~(STAGE_MIN - 1);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = a->size,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                           VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &a->buf, &a->alloc, &info) != VK_SUCCESS) {
+        static int warned;
+        if (!warned++) rt_log("mem: staging arena of %.1f MiB failed: mirror copies read guest memory on the GPU",
+                              a->size / 1048576.0);
+        free(a);
+        return NULL;
+    }
+    a->map = info.pMappedData;
+    plat_inc64(&m_stage_arena_n);
+    plat_add64(&m_stage_arena_bytes, (int64_t)a->size);
+    return a;
+}
+
+static void stage_done(void *arg) {   // completion thread: the prologue that read it has run
+    StageArena *a = arg;
+    plat_mutex_lock(&stage_lock);
+    a->next = stage_free, stage_free = a;
+    plat_mutex_unlock(&stage_lock);
+}
+
+// A write-back of a submission that is not done touches [lo, hi) of r's mirror.
+static int wb_inflight(const PoolRec *r, uint64_t lo, uint64_t hi) {
+    for (int i = 0; i < nwbf; i++)
+        if (wbf[i].r == r && wbf[i].lo < hi && lo < wbf[i].hi) return 1;
+    return 0;
+}
+
+static void wbf_prune(void) {
+    uint64_t done = vk_sync_fence_done();
+    int n = 0;
+    for (int i = 0; i < nwbf; i++)
+        if (wbf[i].fence > done) wbf[n++] = wbf[i];
+    nwbf = n;
+}
+
 static void mirror_mode(int discrete) {
     const char *e = cfg_value("XC2_MEMORY");
-    int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
-    const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
+    const char *sh = cfg_get("XC2_SHADOW");
+#ifdef _WIN32
+    shadow_on = sh && *sh && strcmp(sh, "0");
+#else
+    shadow_on = !sh || !*sh || strcmp(sh, "0");
+#endif
+    // 0 import, 1 mirror, 2 verify. Mirror on integrated GPUs too: there the point is not bandwidth but the staged
+    // uploads, which let the frame guard go (Iris Xe, first battle: 45 fps with import, 59 with mirror, for 1.3 GiB more
+    // system memory). Not with shadow storage (the default off Windows): the guard stays on there (nvn_reads_snapshot),
+    // so the mirror would only cost memory. Nor below UMA_MIRROR_MB of system memory: the game alone holds about 5.6 GiB
+    // and the device budget, which is that same memory, let all 1.3 GiB of mirrors in with 2 GiB left (XC2_VRAM_LIMIT on
+    // the Iris Xe), so an 8 GB machine would page instead of losing a quarter of its frame rate.
+#define UMA_MIRROR_MB 11000.0f   // a "12 GB" machine reports a little less
+    float ram_used, ram_total = 0, ram_proc;
+    if (!discrete) plat_mem_info(&ram_used, &ram_total, &ram_proc);
+    int mode = discrete || (!shadow_on && ram_total >= UMA_MIRROR_MB);
+    char uma_why[96];
+    snprintf(uma_why, sizeof uma_why, "auto, uma with %.1f GiB of system memory", ram_total / 1024.0f);
+    const char *why = discrete ? "auto, discrete gpu" : shadow_on ? "auto, uma with shadow storage" : uma_why;
     if (strcmp(e, "auto")) {
         if (!strcmp(e, "import")) mode = 0, why = "XC2_MEMORY=import";
         else if (!strcmp(e, "mirror")) mode = 1, why = "XC2_MEMORY=mirror";
@@ -1188,17 +1287,12 @@ static void mirror_mode(int discrete) {
     const char *g = cfg_get("XC2_MIRROR_GAP");
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
+    mirror_stage = rt_knob("MIRROR_STAGE", "1") == 1;
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
     const char *fi = cfg_get("XC2_FREEZE_IDLE");
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
-    const char *sh = cfg_get("XC2_SHADOW");
-#ifdef _WIN32
-    shadow_on = sh && *sh && strcmp(sh, "0");
-#else
-    shadow_on = !sh || !*sh || strcmp(sh, "0");
-#endif
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (XC2_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
@@ -1221,8 +1315,11 @@ static int range_cmp(const void *x, const void *y) {
 }
 
 // Records the ranges as one vkCmdCopyBuffer per pool, overlapping and adjacent ranges merged; to_mirror: buf -> mbuf,
-// else mbuf -> buf. Returns the commands recorded; adds what they move to *bytes and *copies.
-static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies) {
+// else mbuf -> buf. With st (to_mirror only), a merged range that fits the arena's room past *st_used and no write-back
+// in flight touches is copied into the arena now and from there to mbuf. Returns the commands recorded; adds what they
+// move to *bytes and *copies.
+static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies,
+                       StageArena *st, uint64_t *st_used) {
     qsort(a, (size_t)n, sizeof *a, range_cmp);
     int rec = 0;
     for (int i = 0; i < n;) {
@@ -1242,11 +1339,32 @@ static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint
             mregions[k++] = (VkBufferCopy){lo, lo, hi - lo};
         }
         if (!k) continue;
+        for (int j = 0; j < k; j++) *bytes += mregions[j].size;
+        *copies += (uint64_t)k;
+        int ks = 0;
+        if (st) {   // the staged regions leave mregions; what stays is copied from guest memory by the GPU
+            int kd = 0;
+            for (int j = 0; j < k; j++) {
+                VkBufferCopy m = mregions[j];
+                if (m.size > STAGE_RANGE || m.size > st->size - *st_used ||
+                    wb_inflight(r, m.srcOffset, m.srcOffset + m.size)) {
+                    mregions[kd++] = m;
+                    continue;
+                }
+                memcpy(st->map + *st_used, (const void *)(uintptr_t)(r->import_lo + m.srcOffset), m.size);
+                if (ks == csregions) grow((void **)&sregions, &csregions, sizeof *sregions);
+                sregions[ks++] = (VkBufferCopy){*st_used, m.dstOffset, m.size};
+                *st_used += (m.size + 15) & ~15ull;   // keeps the next source offset aligned for the copy engine
+                if (*st_used > st->size) *st_used = st->size;
+            }
+            k = kd;
+            plat_add64(&m_stage_direct, k);
+        }
+        if (ks) vkCmdCopyBuffer(cb, st->buf, r->mbuf, (uint32_t)ks, sregions), rec++;
+        if (!k) continue;
         if (to_mirror) vkCmdCopyBuffer(cb, r->buf, r->mbuf, (uint32_t)k, mregions);
         else vkCmdCopyBuffer(cb, r->mbuf, r->buf, (uint32_t)k, mregions);
         rec++;
-        for (int j = 0; j < k; j++) *bytes += mregions[j].size;
-        *copies += (uint64_t)k;
     }
     return rec;
 }
@@ -1531,11 +1649,34 @@ void vk_mem_mirror_begin(void) {
 
 int vk_mem_mirror_pending(void) { return npend; }
 
-void vk_mem_mirror_prologue(VkCommandBuffer cb) {
+int nvn_reads_snapshot(void) {
+    if (!vk_mirror_on || !mirror_stage || shadow_on) return 0;
+    for (int i = 0; i < MR_N; i++)
+        if (__atomic_load_n(&m_refused_n[i], __ATOMIC_RELAXED)) return 0;
+    return 1;
+}
+
+void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
     if (!npend) return;
+    StageArena *st = NULL;
+    uint64_t used = 0;
+    if (mirror_stage) {
+        // An upper bound (ranges may overlap). A first use queues its whole pool, often more than STAGE_MAX: such a
+        // range is copied by the GPU anyway and does not size the arena, or arenas of STAGE_MAX pile up in the free list.
+        uint64_t need = 0;
+        for (int i = 0; i < npend && need < STAGE_MAX; i++)
+            if (pend[i].size <= STAGE_RANGE) need += (pend[i].size + 15) & ~15ull;
+        wbf_prune();
+        st = need ? stage_get(need < STAGE_MAX ? need : STAGE_MAX) : NULL;
+    }
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies);
+    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies, st, &used);
+    if (st) {
+        vmaFlushAllocation(vk_ctx()->vma, st->alloc, 0, used);   // a no-op on coherent memory
+        plat_add64(&m_stage_bytes, (int64_t)used);
+        vk_completion_add(fence, stage_done, st);
+    }
     mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     npend = 0;
@@ -1637,9 +1778,14 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
     if (nwbl) {
         mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT);
-        for (int i = 0; i < nwbl; i++) wbl[i].r->wb_sub = msub;
+        for (int i = 0; i < nwbl; i++) {
+            wbl[i].r->wb_sub = msub;
+            if (!mirror_stage) continue;
+            if (nwbf == cwbf) grow((void **)&wbf, &cwbf, sizeof *wbf);
+            wbf[nwbf++] = (WbFlight){wbl[i].r, wbl[i].off, wbl[i].off + wbl[i].size, fence};
+        }
         mrep.wb_ranges += (uint64_t)nwbl;
-        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies) + 2;
+        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, NULL, NULL) + 2;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
@@ -1686,16 +1832,18 @@ static void mirror_log(uint64_t frame) {
         snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
                  (long long)plat_xchg64(&v_mismatch, 0));
+    double sb = (double)plat_xchg64(&m_stage_bytes, 0), sd = (double)plat_xchg64(&m_stage_direct, 0);
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; in host memory %lld (%.1f MiB); stay imported: "
            "budget %lld (%.1f MiB), untracked "
-           "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges, "
+           "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, syncs %.1f, upload %.3f MiB in %.1f ranges "
+           "(staged %.3f MiB, %.1f ranges read on the GPU; staging arenas %lld, %.1f MiB), "
            "first use %.2f pools %.3f MiB, write-back %.3f MiB in %.1f ranges, flush calls %.1f (%.3f MiB), queries "
            "%.1f pre-snap (%.1f MiB) + %.1f sync, prologues %.2f, tracking cpu %.3f ms (pre-snap %.3f, syncs %.3f)%s",
            (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_host_n, m_host_bytes / M,
            (long long)m_refused_n[MR_BUDGET],
            m_refused_bytes[MR_BUDGET] / M, (long long)m_refused_n[MR_UNTRACKED], (long long)m_refused_n[MR_OVERLAP],
            (long long)m_refused_n[MR_ALLOC], a.subs / f, a.syncs / f, a.upload_bytes / f / M, a.upload_copies / f,
-           a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M,
+           sb / f / M, sd / f, (long long)m_stage_arena_n, m_stage_arena_bytes / M, a.first_n / f, a.first_bytes / f / M, a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M,
            a.presnap_queries / f, a.presnap_bytes / f / M, a.sync_queries / f, a.prologues / f, qpc_ms(a.presnap_t + a.sync_t) / f,
            qpc_ms(a.presnap_t) / f, qpc_ms(a.sync_t) / f, ver);
 }
@@ -2041,6 +2189,11 @@ void vk_mem_shutdown(void) {
     stg_pool = NULL;
     stg_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
+    plat_mutex_lock(&stage_lock);   // the free arenas; one whose completion has not run yet stays to process exit
+    for (StageArena *a = stage_free, *next; a; a = next) next = a->next, vmaDestroyBuffer(c->vma, a->buf, a->alloc), free(a);
+    stage_free = NULL;
+    plat_mutex_unlock(&stage_lock);
+    nwbf = 0;
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);
     pool_index.n = 0;

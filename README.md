@@ -37,8 +37,10 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Above 1280x720 at a shape other than 16:9 (ultrawide), the interface is still laid out for 16:9.
 - The far cloud sea's texture jumps from frame to frame when the camera moves, at any frame rate and resolution.
-- Every frame waits for the GPU to finish the one before it, so props do not slide or flicker above 30 fps (about
-  20 % slower on integrated GPUs; `frame_guard = 0` in `xc2.ini` turns it off).
+- The data the GPU reads is copied when each frame is submitted, so props do not slide or flicker above 30 fps. This
+  takes about 1.3 GiB of extra memory; `memory = import` in `xc2.ini` saves it but makes every frame wait for the GPU
+  to finish the one before it (about 25 % slower). Integrated GPUs on machines with less than 12 GB of memory, and
+  Linux, use import by default.
 
 ## Installing
 
