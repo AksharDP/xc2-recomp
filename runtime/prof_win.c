@@ -360,10 +360,16 @@ int prof_sampler_start(void) {
 }
 
 // perf_present, every present: the frame the sampler's XC2_PROFILE_FRAMES window counts, and a XC2_PROFILE_SLOW
-// dump of a present at least slow_ns after the previous one (d 0 on the first present).
+// dump of a present at least slow_ns after the previous one (d 0 on the first present). Not outside the window: the
+// ring holds no samples there, and the slow frames of loading would use up the dumps before it.
 void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
     cur_frame = frame;
-    if (slow_ns && d >= slow_ns && !dump_hi) {
+    int in_window = !(frame_hi && (frame < frame_lo || frame >= frame_hi));
+    if (in_window && world_hi) {
+        int64_t w = frame_step_world_us();
+        in_window = w >= world_lo && w < world_hi;
+    }
+    if (slow_ns && d >= slow_ns && !dump_hi && in_window) {
         dump_lo = (LONG64)(now - d - 20000000ull);
         dump_frame = (LONG64)frame;
         InterlockedExchange64(&dump_hi, (LONG64)now);
