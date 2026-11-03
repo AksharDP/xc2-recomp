@@ -43,12 +43,15 @@ typedef struct { uint64_t lo, hi; } Rng;
 typedef struct { uint64_t lo, hi, off; int dropped; } Reg;
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
-// A capture: the merged ranges and the arena holding their bytes as of the submit call.
+// A capture: the merged ranges and the arena holding their bytes as of the submit call, and the programs the
+// submission's replay may read (vk_usnap_programs).
 typedef struct {
     Arena *arena;
     Reg *reg;
     int nreg;
     uint64_t done;              // vk_sync_fence_done before the copy
+    const void **progs;         // sorted, distinct
+    int nprogs, progs_known;
 } UCap;
 
 // The replay's state (the submission being recorded).
@@ -69,9 +72,15 @@ static PlatMutex cap_lock = PLAT_MUTEX_INIT;
 static struct {
     Rng *col;                   // collected ranges
     int ncol, ccol;
+    const void **bp;            // programs bound (OP_BIND_PROGRAM), in walk order
+    int nbp, cbp, bp_over;      // bp_over: a call nested deeper than CALL_DEPTH was not walked
     // since the last summary
     uint64_t subs, regions, bytes, copy_ns, refused, off_subs;
 } C;
+// The program bound when the next submission starts: the replay's bound state carries over from one submission to the
+// next (vk_exec.c state_reset runs once). Unknown after a submission whose walk was cut or skipped.
+static const void *carry;
+static int carry_known = 1;
 static volatile int umode;      // rt_knob + 1 (0: not read yet): 1 off, 2 on, 3 ab
 
 static int mode(void) {
@@ -140,7 +149,14 @@ static void collect(const op_hdr *h, int depth) {
             h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target;
             continue;
         }
-        if (h->op == OP_CALL && depth < CALL_DEPTH) collect(nvn_op_first(((const p_jump *)a)->target), depth + 1);
+        if (h->op == OP_CALL) {
+            if (depth < CALL_DEPTH) collect(nvn_op_first(((const p_jump *)a)->target), depth + 1);
+            else C.bp_over = 1;
+        }
+        if (h->op == OP_BIND_PROGRAM) {
+            if (C.nbp == C.cbp) C.bp = grow(C.bp, &C.cbp, sizeof *C.bp);
+            C.bp[C.nbp++] = ((const p_bind_program *)a)->prog;
+        }
         if (h->op == OP_BIND_UBO) {
             const p_bind_buf *b = a;
             if (b->addr && b->size) {
@@ -247,10 +263,44 @@ static void summary(void) {
 
 // The submit call: the uniform ranges the submission binds, merged, those that lie wholly in one imported pool copied.
 // NULL when the snapshot is off for this submission.
+static int by_ptr(const void *a, const void *b) {
+    uintptr_t x = (uintptr_t)*(const void *const *)a, y = (uintptr_t)*(const void *const *)b;
+    return x < y ? -1 : x > y;
+}
+
+// The programs of cap's submission (cap_lock, after collect): the one carried in and those it binds, sorted and
+// distinct; unknown when the carried one is or the walk was cut. Leaves the one bound at its end as the next carry.
+static void take_programs(UCap *cap) {
+    cap->progs_known = carry_known && !C.bp_over;
+    if (cap->progs_known) {
+        int n = C.nbp + 1;
+        if (!(cap->progs = malloc(sizeof *cap->progs * (size_t)n))) rt_fatal("vk_usnap: out of memory");
+        int k = 0;
+        if (carry) cap->progs[k++] = carry;
+        memcpy(cap->progs + k, C.bp, sizeof *C.bp * (size_t)C.nbp);
+        k += C.nbp;
+        qsort(cap->progs, (size_t)k, sizeof *cap->progs, by_ptr);
+        int m = 0;
+        for (int i = 0; i < k; i++)
+            if (!m || cap->progs[m - 1] != cap->progs[i]) cap->progs[m++] = cap->progs[i];
+        cap->nprogs = m;
+    }
+    if (C.bp_over) carry_known = 0;
+    else if (C.nbp) carry = C.bp[C.nbp - 1], carry_known = 1;
+}
+
+int vk_usnap_programs(const void *p, const void *const **out) {
+    const UCap *cap = p;
+    if (!cap || !cap->progs_known) return -1;
+    *out = cap->progs;
+    return cap->nprogs;
+}
+
 void *vk_usnap_capture(const uint64_t *handles, int n) {
     if (!RT_KNOB_ON(mode())) {
         plat_mutex_lock(&cap_lock);
         C.off_subs++;
+        carry_known = 0;   // no walk: the programs it binds are not known
         plat_mutex_unlock(&cap_lock);
         return NULL;
     }
@@ -258,9 +308,10 @@ void *vk_usnap_capture(const uint64_t *handles, int n) {
     if (!cap) rt_fatal("vk_usnap: out of memory");
     uint64_t t0 = kern_now_ns();
     plat_mutex_lock(&cap_lock);
-    C.ncol = 0;
+    C.ncol = 0, C.nbp = 0, C.bp_over = 0;
     for (int i = 0; i < n; i++)
         if (handles[i]) collect(nvn_op_first(handles[i]), 0);
+    take_programs(cap);
     sort_col();
     int creg = 0;
     uint64_t total = 0;
@@ -295,6 +346,7 @@ void vk_usnap_capture_drop(void *p) {
     if (!cap) return;
     if (cap->arena) arena_done(cap->arena);
     free(cap->reg);
+    free(cap->progs);
     free(cap);
 }
 
