@@ -1,6 +1,6 @@
 # XC2 Recomp
 
-**XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh. Most of the documentation still describes XCX; XC2's own state is in [NOTES.md](NOTES.md).
+**XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh. Most of the documentation still describes XCX.
 
 > [!IMPORTANT]
 > **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles 2*, dumped from your own console: the base game and the 3.0.1 update (the add-on content is optional). Instructions for obtaining those files will not be provided.
@@ -9,8 +9,9 @@
 
 ## Status
 
-Early development. The game boots to the title screen and runs New Game into the opening battle with sound, text and
-input, at its native 30 fps. Known issues are listed in [NOTES.md](NOTES.md).
+Early development. The game boots to the title screen and runs New Game into the opening battle and Goldmouth with
+sound, text and input, at 60 fps by default (30 to 360 with the frame rate limit), at game resolutions from 1280x720
+up and with a fixed or the game's own dynamic 3D render scale. See [Known issues](#known-issues).
 
 Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -21,13 +22,21 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Built from your own NSP files and `prod.keys` by the XC2-Setup installer
 - In-game settings menu (F1) and performance overlay (F10)
 - Keyboard, mouse and gamepad
+- AMD FSR 1 scaling when the window is bigger than the game picture; bilinear is the other option
+- Mods for Switch emulators and Atmosphere, in a `mods` folder next to `xc2.exe` ([docs/mods.md](docs/mods.md))
 
 ## Planned
 
 - Linux and the Steam Deck
-- Mods made for emulators: unpack a mod into a `mods` folder
 - Custom aspect ratios, including ultrawide
 - VRR
+
+## Known issues
+
+- Above 1280x720 at a shape other than 16:9 (ultrawide), the interface is still laid out for 16:9.
+- The far cloud sea's texture jumps from frame to frame when the camera moves, at any frame rate and resolution.
+- Every frame waits for the GPU to finish the one before it, so props do not slide or flicker above 30 fps (about
+  20 % slower on integrated GPUs; `frame_guard = 0` in `xc2.ini` turns it off).
 
 ## Installing
 
@@ -38,7 +47,7 @@ Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
 4. Play `xc2.exe` from the install folder.
 
-To update, run a newer `XC2-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) lists every key). Controls: [docs/controls.md](docs/controls.md).
+To update, run a newer `XC2-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) describes most of them). Controls: [docs/controls.md](docs/controls.md).
 
 ## Credits
 
@@ -61,7 +70,7 @@ XC2 Recomp builds on the projects below. What was taken from each, with its lice
 
 The project's own code is under the [MIT License](LICENSE); third-party code keeps its own license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The license grants nothing for Nintendo's game.
 
-XC2 Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Xenoblade Chronicles X* and *Nintendo Switch* are trademarks of Nintendo; Xenoblade Chronicles X is developed by Monolith Soft.
+XC2 Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Xenoblade Chronicles 2* and *Nintendo Switch* are trademarks of Nintendo; Xenoblade Chronicles 2 was developed by Monolith Soft.
 
 ## Building from source
 
