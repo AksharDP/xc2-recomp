@@ -7,11 +7,11 @@ with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), aoc/<index>/ (the add-on content's RomFS), profile/, xc2.exe
 and its DLLs, romfs-index.bin, xc2_xlate.exe, xc2.ini, xc2-install.json, mods/ (the player's, never written) and
-build-cache/ (cheats.status and exefs.status: what of the mods' code the build has, runtime/cheats.c and mods.c).
+build-cache/ (cheats.status and exefs.status: what of the mods' code the build has, runtime/cheats.c and mods.c;
+objects/: the generated objects the next build reuses, tools/build_game.py ObjectCache).
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), gen/ (C), build/ (objects),
 logs/ (kept by the cleanup).
 """
-import contextlib
 import hashlib
 import json
 import os
@@ -30,13 +30,13 @@ from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
-import xc2_extract  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory)  # noqa: E402
 from package_select import program_nca  # noqa: E402
 
 GiB = 1 << 30
 DEST_EXTRA = 4 * GiB      # beside the RomFS: shader and pipeline caches (about 2 GB), exefs, xc2.exe
 TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
+OBJECT_CACHE = 2 * GiB    # build-cache/objects in the install folder: the generated objects kept for the next build
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
 # recomp/patches-<version tag>.txt: the code patch sets of the update (recomp/patches.py): XC2's frame rate and game
@@ -388,9 +388,10 @@ class Check(Step):
         # folder needs the largest of the peaks below, not their sum:
         #   extract  the merged RomFS, written once from the game files read in place (tools/extract.py
         #            merge_update_romfs, which checks merge_need itself)
-        #   dlc      the RomFS, the packs already unpacked and, for a moment, the largest pack's image beside its files
-        #            (tools/xc2_extract.py dlc_romfs deletes the image once unpacked)
-        #   after    the RomFS, every pack and the caches the game writes beside them (DEST_EXTRA)
+        #   dlc      the RomFS, the packs already unpacked and, for a moment, the images of the DLC_JOBS packs being
+        #            extracted beside their files (tools/xc2_extract.py dlc_romfs deletes the image once unpacked)
+        #   after    the RomFS, every pack, the object cache of the first build (OBJECT_CACHE) and the caches the game
+        #            writes beside them (DEST_EXTRA)
         romfs_size = kept = 0
         if ctx.will_run('extract'):
             # the update is identified after this estimate: the larger RomFS of the supported ones
@@ -401,8 +402,9 @@ class Check(Step):
         extract_peak = extract.merge_need(romfs_size) - kept if ctx.will_run('extract') else 0
         packs = [p.stat().st_size for p in dlc_inputs(ctx) if p.is_file()] if ctx.will_run('dlc') else []
         settled = romfs_size - kept + sum(packs)
-        dlc_peak = settled + max(packs, default=0)
-        after = settled + (DEST_EXTRA if ctx.will_run('prepare') or ctx.will_run('extract') else 0)
+        dlc_peak = settled + sum(sorted(packs)[-DLC_JOBS:])   # DLC_JOBS images at once beside the unpacked files
+        cache = OBJECT_CACHE if ctx.will_run('compile') and not object_cache(ctx).is_dir() else 0
+        after = settled + cache + (DEST_EXTRA if ctx.will_run('prepare') or ctx.will_run('extract') else 0)
         dest_need = max(extract_peak, dlc_peak, after, 0)
         temp_need = TEMP_NEED if ctx.will_run('lift') or ctx.will_run('compile') else 0
         dest_free, dest_dev = free_bytes(ctx.dest)
@@ -477,6 +479,12 @@ class Extract(Step):
         return st.st_size == record.get('romfs_size') and st.st_mtime_ns == record.get('romfs_mtime_ns')
 
     def verify(self, ctx, record):
+        # Called for another release's record. current() has already found romfs.bin with the size and modification
+        # time recorded when the merge finished, and the merge hashed every byte it wrote against the expected hash.
+        # Reading the 14 GB again would make every update wait minutes for nothing, so that happens only with
+        # --verify (a disk suspected of damaging files).
+        if not ctx.verify:
+            return True
         image = ctx.dest / 'romfs' / 'romfs.bin'
         rep = ctx.reporter
         digest = file_sha256(image, lambda d, t: rep.progress('check', 'verify_romfs', d, t, 'bytes'))
@@ -561,6 +569,9 @@ class Extract(Step):
 
 AOC_BASE = APP_ID + 0x1000
 AOC_DATA = 5   # NCA content type of add-on content (PublicData)
+# Add-on packs extracted at once. Each takes a core and, while it runs, room for its RomFS image beside the unpacked
+# files (Check.space counts the DLC_JOBS largest).
+DLC_JOBS = max(1, min(3, (os.cpu_count() or 2) // 2))
 
 
 def aoc_index(title_id):
@@ -616,33 +627,62 @@ class Dlc(Step):
         keys = load_keys(keys_path)
         logs = ctx.temp / 'logs'
         logs.mkdir(parents=True, exist_ok=True)
-        indices = []
-        for n, path in enumerate(files):
-            rep.progress('dlc', 'extract', n, len(files), 'files')
+        todo = []
+        for path in files:
             with path.open('rb') as f:
                 title_id, _ = dlc_record(f, path, keys)
             index = aoc_index(title_id)
-            out, log = dest / 'aoc' / str(index), logs / f'dlc-{index}.log'
             # unpacked under a name the game does not mount, then renamed: a cancelled or killed run leaves no
             # half-filled aoc/<index> that runtime/fs_host.c aoc_present would take for an installed pack
             part = dest / 'aoc' / f'.{index}.part'
             remove(part)
             part.parent.mkdir(parents=True, exist_ok=True)
-            # XC2's add-on content is encrypted with the title key of the package's ticket, which hactool is not given:
-            # tools/xc2_extract.py dlc_romfs reads the ticket, verifies every IVFC level and unpacks the files loose
-            # into aoc/<index>/ as the runtime mounts them. Its output goes to the log, not to the CLI's event stream.
-            with open(log, 'w', encoding='utf-8', newline='\n') as f, contextlib.redirect_stdout(f):
-                try:
-                    xc2_extract.dlc_romfs(path, keys_path, part)
-                except (ValueError, OSError) as e:
-                    print(f'dlc_romfs failed: {e}')
-                    raise_if_damaged(e, 'dlc', path)
-                    remove(part)
-                    raise InstallError('dlc.extract_failed', path=str(path), log=str(log)) from None
-            remove(out)
-            os.replace(part, out)
-            rep.log(f'dlc: {path.name} is add-on content {index} ({title_id})')
-            indices.append(index)
+            todo = [t for t in todo if t[2] != index]   # the same pack chosen twice: one process for it
+            todo.append((path, title_id, index, part, logs / f'dlc-{index}.log'))
+        del keys
+        # XC2's add-on content is encrypted with the title key of the package's ticket, which hactool is not given:
+        # tools/xc2_extract.py dlc_romfs reads the ticket, verifies every IVFC level and unpacks the files loose into
+        # aoc/<index>/ as the runtime mounts them. Each pack runs in a process of its own (the verification is
+        # Python-bound), DLC_JOBS at a time, with its output in its log.
+        running, indices, waiting = [], [], list(todo)
+        rep.progress('dlc', 'extract', 0, len(files), 'files')
+        try:
+            while waiting or running:
+                while waiting and len(running) < DLC_JOBS:
+                    path, title_id, index, part, log = item = waiting.pop(0)
+                    out = open(log, 'w', encoding='utf-8', newline='\n')
+                    command = [str(ctx.layout.python), '-c', extract.RUN_SCRIPT,
+                               str(ctx.layout.tools / 'xc2_extract.py'), 'dlc-romfs', str(path), '--keys', str(keys_path), '--output', str(part)]
+                    rep.log('run ' + ' '.join(command[3:]))
+                    proc = subprocess.Popen(command, stdout=out, stderr=subprocess.STDOUT, cwd=ctx.layout.root,
+                                            env=dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8'),
+                                            start_new_session=os.name != 'nt')
+                    running.append((proc, out, item))
+                time.sleep(0.2)
+                for entry in [e for e in running if e[0].poll() is not None]:
+                    running.remove(entry)
+                    proc, out, (path, title_id, index, part, log) = entry
+                    out.close()
+                    if proc.returncode:
+                        remove(part)
+                        damage = extract.DAMAGE.search(log.read_text(encoding='utf-8', errors='replace'))
+                        if damage:
+                            raise InstallError('check.input_damaged', input='dlc', path=str(path),
+                                               detail=damage.group(1).strip())
+                        raise InstallError('dlc.extract_failed', path=str(path), log=str(log))
+                    out_dir = dest / 'aoc' / str(index)
+                    remove(out_dir)
+                    os.replace(part, out_dir)
+                    rep.log(f'dlc: {path.name} is add-on content {index} ({title_id})')
+                    indices.append(index)
+                    rep.progress('dlc', 'extract', len(indices), len(files), 'files')
+        except BaseException:
+            for proc, out, (_, _, _, part, _) in running:
+                kill_tree(proc)
+                proc.wait()
+                out.close()
+                remove(part)
+            raise
         rep.progress('dlc', 'extract', len(files), len(files), 'files')
         return {'indices': sorted(set(before) | set(indices))}
 
@@ -767,6 +807,13 @@ class Lift(Step):
 NINJA_LINE = re.compile(r'^\[(\d+)/(\d+)\] ')
 
 
+def object_cache(ctx):
+    """build-cache/objects: the generated objects tools/build_game.py keeps between builds (ObjectCache). It lives in
+    the install folder because each release has a temp folder of its own: an update then compiles only the chunks
+    whose C or headers changed."""
+    return ctx.dest / 'build-cache' / 'objects'
+
+
 class Compile(Step):
     id = 'compile'
 
@@ -807,7 +854,7 @@ class Compile(Step):
             '--runtime', layout.runtime, '--runtime-lib', layout.runtime_lib, '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
-            '--profile', dest / 'profile'], parse)
+            '--profile', dest / 'profile', '--object-cache', object_cache(ctx)], parse)
         exe = build / ('xc2' + EXE)
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))

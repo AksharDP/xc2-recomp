@@ -8,8 +8,9 @@ when the next step runs. `always` steps (check, cleanup) run every time.
 
 Update mode is the same rule with a newer release: the extraction's key depends only on the expected hashes, so a
 release that changes the lifter or the runtime keeps romfs/ and exefs/ and rebuilds from lift on. Before keeping the
-output of a step recorded by another release (or with --verify), the check step calls Step.verify (expensive: the full
-RomFS hash); a mismatch makes the step run again.
+output of a step recorded by another release (or with --verify), the check step calls Step.verify; a mismatch makes
+the step run again. Extract.verify reads the whole RomFS only with --verify and otherwise trusts the size and time
+that current() already compared.
 
 A failed or cancelled run leaves the finished steps recorded; the next run starts at the first step that is not.
 """
