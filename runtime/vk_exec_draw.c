@@ -1841,6 +1841,7 @@ static int pipe_memo_on(void) {
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
+    if (ex->fsr3_armed == VK_FSR3_UPSCALE) vk_exec_pass_end(ex);
     if (ex->render_disabled) {
         if (vk_dump_armed)
             vk_dump_note("draw skipped (render disabled): program %llu prim %d count %d",
@@ -1987,6 +1988,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
+    vk_fsr3_note(ex);
     return 1;
 }
 

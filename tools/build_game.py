@@ -511,6 +511,14 @@ def copy_translator(exe_dir):
     print(f'build_game: translator from {src_dir}')
 
 
+def copy_fsr3(exe_dir):
+    """Put AMD's signed FSR 3.1 library next to xc2.exe, where runtime/vk_fsr3.c looks for it. It comes from the
+    FidelityFX SDK 1.1.4 release, unpacked under build/ffx-sdk-1.1.4; without it the XC2_FSR3 setting stays off."""
+    dll = ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL' / 'amd_fidelityfx_vk.dll'
+    if WIN and dll.is_file():
+        shutil.copy2(dll, exe_dir / dll.name)
+
+
 def unlink_shared(out, mods):
     """Drop generated objects still hardlinked to another build, so the next compile writes a new file."""
     for mod, files in mods.items():
@@ -905,6 +913,7 @@ def main():
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xc2.exe
         shutil.copy2(dll, exe.parent / dll.name)
     copy_translator(exe.parent)
+    copy_fsr3(exe.parent)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

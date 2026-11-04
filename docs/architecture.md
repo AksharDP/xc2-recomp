@@ -93,7 +93,9 @@ Every guest thread is a host thread. XCX assumes Horizon's scheduler: three appl
 - Resolution. Patch sets make the game read its output, swapchain and scene sizes from the patch page
   (MacNativeGames' sites); `resolution.c` sets them from `output_res` and `render_scale` and grows the texture heap
   and the application pool to match. When the window is larger than the output, `vk_fsr.c` runs AMD FSR 1 (EASU,
-  RCAS) on the present.
+  RCAS) on the present. With `XC2_FSR3`, `vk_fsr3.c` runs AMD FSR 3.1 on the game's own jitter, depth and motion:
+  the raw scene goes through bloom and the tone map at the render scale, and FSR takes the tone-mapped picture to the
+  output size in place of the stretch at the start of the HUD pass.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `XC2_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

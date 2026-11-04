@@ -1,0 +1,32 @@
+// The depth and motion of AMD FSR 3.1 (runtime/vk_fsr3.c): copies the depth of XC2's temporal resolve and decodes its
+// motion target into images the upscaler owns. Copying keeps the upscaler's layout changes off the game's images, gives
+// it a plain float depth in place of the combined depth-stencil image, and keeps both for its dispatch at the end of the
+// frame, after the game has reused those targets.
+//
+// The motion target (rgb10a2) holds each axis as a square root and the signs in the 2-bit alpha: bit 0 for x, bit 1 for
+// y, set for positive. The game's resolve reads the previous frame at (u - x, v + y). FSR adds its vector to the position
+// to reach the previous frame, so the vector is (-x, y), written here in pixels.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth_in;
+layout(set = 0, binding = 1) uniform sampler2D motion_in;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D depth_out;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D motion_out;
+
+layout(push_constant) uniform Params {
+    ivec2 size;      // the rendered rectangle, from the top left corner
+    vec2 to_pixels;  // the game's factor from motion units to pixels
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    vec4 m = texelFetch(motion_in, p, 0);
+    int signs = int(m.a * 3.01);
+    float x = ((signs & 1) != 0 ? 1.0 : -1.0) * m.r * m.r;
+    float y = ((signs & 2) != 0 ? 1.0 : -1.0) * m.g * m.g;
+    imageStore(depth_out, p, vec4(texelFetch(depth_in, p, 0).r, 0.0, 0.0, 0.0));
+    imageStore(motion_out, p, vec4(vec2(-x, y) * pc.to_pixels, 0.0, 0.0));
+}

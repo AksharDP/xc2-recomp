@@ -631,6 +631,7 @@ void vk_exec_pass_end(VkExec *ex) {
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
+    if (ex->fsr3_armed) vk_fsr3_resolve(ex);
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
