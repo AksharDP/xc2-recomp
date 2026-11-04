@@ -1,0 +1,55 @@
+name: Test build
+
+# A test tag (test-*) or a manual run builds the Windows setup the way release.yml's windows job does and keeps it as
+# a workflow artifact, for one person to install and try. It never publishes a release: release.yml does that, from a
+# v* tag that matches VERSION. The steps below are that job's, so change the two together.
+
+on:
+  push:
+    tags: ["test-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      # The tag, or the branch of a manual run, names the zip and the artifact (a branch has slashes).
+      - name: Name the build
+        id: name
+        shell: bash
+        run: echo "name=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"   # make_release.py: tarfile reads the MSYS2 .zst packages
+      - uses: astral-sh/setup-uv@v6   # make_release.py installs the bundled Python's packages with uv
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"   # the shader translator (NativeAOT; MSVC and vswhere come with the image)
+      - name: Cache pinned downloads
+        uses: actions/cache@v4
+        with:
+          path: toolchain/release-dl
+          key: release-dl-windows-${{ hashFiles('tools/make_release.py') }}
+          restore-keys: release-dl-windows-
+      - name: Check content
+        run: python tools/check_content.py
+      - name: Build the shader translator
+        run: python tools/build_xlate.py
+      - name: Build the release folder and zip
+        env:
+          ZIP: build/release/XC2-Setup-${{ steps.name.outputs.name }}-windows.zip
+        run: python tools/make_release.py --out build/release/XC2-Setup --zip $env:ZIP
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XC2-Setup-${{ steps.name.outputs.name }}
+          path: build/release/XC2-Setup-${{ steps.name.outputs.name }}-windows.zip
+          if-no-files-found: error
+          compression-level: 0   # already a zip
