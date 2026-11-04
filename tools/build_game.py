@@ -511,20 +511,22 @@ def translator_id(d):
 
 
 def check_translator(exe_dir, allow_stale):
-    """Stops the build when build/xlate was built from other sources than this checkout's, unless exe_dir already holds a
-    matching one (a task build's own translator). A stale translator fails nothing: the runtime asks it for what the
-    current sources implement and it silently leaves that out. One from before transform feedback left the feedback
+    """Stops the build when the translator it will use was built from other sources than this checkout's: build/xlate's,
+    or without one exe_dir's, unless exe_dir already holds a matching one (a task build's own translator). A stale
+    translator fails nothing: the runtime asks it for what the current sources implement and it silently leaves that
+    out. One from before transform feedback left the feedback
     outputs out of the shaders, so nothing wrote the animated vertices of the hanging foliage in Uraya: those draws read
     the bone matrices sharing that scratch memory as positions and came out as long black spikes. Checkouts without the
     translator's sources (an unpacked release) have nothing to compare with."""
     src = ROOT / 'build' / 'xlate'
-    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not translator_id(src):
+    used = src if translator_id(src) else exe_dir
+    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not translator_id(used):
         return
     from build_xlate import identity
     want = identity()
     if want in (translator_id(src), translator_id(exe_dir)):
         return
-    what = f'{below_root(src)} is {translator_id(src)[:16]}, these sources are {want[:16]}'
+    what = f'{below_root(used)} is {translator_id(used)[:16]}, these sources are {want[:16]}'
     if allow_stale:
         print(f'build_game: warning: stale shader translator: {what}', file=sys.stderr)
         return

@@ -75,7 +75,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
     [UI_MENU_FSR3] = "AMD FSR",
     [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
-                          "3D render scale to the game resolution. Needs amd_fidelityfx_loader_vk.dll next to the game.",
+                          "3D render scale to the game resolution. Needs amd_fidelityfx_loader_vk.dll and "
+                          "amd_fidelityfx_upscaler_vk.dll next to the game, or the older amd_fidelityfx_vk.dll.",
     [UI_MENU_FSR_VERSION] = "FSR version",
     [UI_MENU_FSR_VERSION_DESC] = "Which upscaler to ask AMD's library for. Auto takes the newest the GPU and driver "
                                   "support: FSR Upscaling 4.1 on Radeon RX 6000 and newer with a recent driver, FSR 3.1 "
@@ -387,7 +388,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
     [UI_MENU_FSR3] = "AMD FSR",
     [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR, который поднимает "
-                          "пониженный масштаб 3D до разрешения игры. Нужен файл amd_fidelityfx_loader_vk.dll рядом с игрой.",
+                          "пониженный масштаб 3D до разрешения игры. Нужны файлы amd_fidelityfx_loader_vk.dll и "
+                          "amd_fidelityfx_upscaler_vk.dll рядом с игрой либо более старый amd_fidelityfx_vk.dll.",
     [UI_MENU_FSR_VERSION] = "Версия FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Какой апскейлер запросить у библиотеки AMD. «Авто» берёт самый новый, который "
                                   "поддерживают видеокарта и драйвер: FSR Upscaling 4.1 на Radeon RX 6000 и новее со "

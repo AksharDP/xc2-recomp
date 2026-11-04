@@ -148,21 +148,25 @@ int vk_fg_wanted(void) {
 
 int vk_fg_active(void) { return G.on; }
 
+// Where the sample of vk_fg_shown_fps started; 0 starts a new one. The library counts presents per swapchain, so a rebuild
+// and a shutdown clear it.
+static uint64_t g_shown_t0;
+
 // Frames a second reaching the screen over the last half second, drawn and generated together, from the library's
 // present count. Negative while frame generation is off. On the present thread, once a frame, like vk_fg_frame and
 // vk_fg_shutdown.
 float vk_fg_shown_fps(uint64_t now_ns) {
-    static uint64_t t0, shown0;
+    static uint64_t shown0;
     static float rate;
     if (!G.on || !G.sc_count || !G.swapchain) {
-        t0 = 0;
+        g_shown_t0 = 0;
         rate = 0;
         return -1;
     }
-    if (t0 && now_ns - t0 < 500000000ull) return rate;
+    if (g_shown_t0 && now_ns - g_shown_t0 < 500000000ull) return rate;
     uint64_t shown = G.sc_count(G.swapchain);
-    if (t0 && shown >= shown0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - t0));   // a rebuild may restart it
-    t0 = now_ns, shown0 = shown;
+    if (g_shown_t0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - g_shown_t0));
+    g_shown_t0 = now_ns, shown0 = shown;
     return rate;
 }
 
@@ -223,7 +227,7 @@ static int make_fg_context(VkCtx *c, uint32_t w, uint32_t h, VkFormat fmt) {
 // The library requires four distinct queues (FrameInterpolationSwapchainVK::init refuses anything else): the game's queue,
 // one for presenting, one for its async compute and one for image acquisition. They come from the graphics family's spare
 // queues, then a compute-only family's and a transfer-only one; without four distinct ones frame generation stays off.
-static int pick_queues(VkCtx *c, VkQueue q[4], uint32_t fam[4]) {
+static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fam[4]) {
     VkQueue pool[8];   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
     uint32_t fpool[8];
     int n = 0;
@@ -241,8 +245,32 @@ static int pick_queues(VkCtx *c, VkQueue q[4], uint32_t fam[4]) {
         rt_log("vk: frame generation off: this device offers %d distinct queues, its swapchain needs 4", n);
         return 0;
     }
+    // the second queue presents: the first spare one of a family that can show this surface
+    int present = 0;
+    for (int i = 1; i < n && !present; i++) {
+        VkBool32 ok = VK_FALSE;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(c->phys, fpool[i], surface, &ok) == VK_SUCCESS && ok) present = i;
+    }
+    if (!present) {
+        rt_log("vk: frame generation off: no spare queue of this device can present to the window");
+        return 0;
+    }
+    VkQueue swap_q = pool[1];
+    uint32_t swap_f = fpool[1];
+    pool[1] = pool[present], fpool[1] = fpool[present];
+    pool[present] = swap_q, fpool[present] = swap_f;
     for (int i = 0; i < 4; i++) q[i] = pool[i], fam[i] = fpool[i];
     return 1;
+}
+
+// Setup failed after the library replaced *sc: the context goes first, then its swapchain, which would otherwise keep the
+// surface and stop the plain swapchain the caller makes next. destroy is NULL when the library did not offer it.
+static void abandon_swapchain(VkCtx *c, VkSwapchainKHR *sc, PFN_vkDestroySwapchainFFXAPI destroy) {
+    G.destroy(&G.sc, NULL);
+    G.sc = NULL;
+    if (destroy && *sc) destroy(c->device, *sc, NULL, *sc);
+    *sc = VK_NULL_HANDLE;
+    G.failed = 1;
 }
 
 // Installs the frame generation swapchain over *sc (which the library destroys and replaces) and creates or keeps the
@@ -254,7 +282,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
     G.h = ci->imageExtent.height;
     VkQueue q[4];
     uint32_t fam[4];
-    if (!G.sc && !pick_queues(c, q, fam)) {
+    if (!G.sc && !pick_queues(c, ci->surface, q, fam)) {
         G.failed = 1;
         return 0;
     }
@@ -287,9 +315,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         if (G.query(&G.sc, &q.header) != FFX_API_RETURN_OK || !q.pOutCreateSwapchainFFXAPI || !q.pOutDestroySwapchainFFXAPI ||
             !q.pOutGetSwapchainImagesKHR || !q.pOutAcquireNextImageKHR || !q.pOutQueuePresentKHR) {
             rt_log("vk: frame generation off: the swapchain context has no replacement functions");
-            G.destroy(&G.sc, NULL);
-            G.sc = NULL;
-            G.failed = 1;
+            abandon_swapchain(c, sc, q.pOutDestroySwapchainFFXAPI);
             return -1;
         }
         G.sc_create = q.pOutCreateSwapchainFFXAPI;
@@ -301,9 +327,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         if (!make_fg_context(c, G.w, G.h, G.fmt) || !make_hudless(c)) {
             if (G.fg) G.destroy(&G.fg, NULL);
             G.fg = NULL;
-            G.destroy(&G.sc, NULL);
-            G.sc = NULL;
-            G.failed = 1;
+            abandon_swapchain(c, sc, G.sc_destroy);
             return -1;
         }
         G.swapchain = *sc;
@@ -313,9 +337,8 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         return 1;
     }
     // A new swapchain for a resize, a present-mode change or a fullscreen switch: the library rebuilds it in place. Its
-    // context argument is the frame generation swapchain, not the swapchain context: the handle is that object. It
-    // destroys its real swapchain first and hands the create info to the driver, which must not get our handle as the old
-    // swapchain: that handle is the library's object, not a Vulkan swapchain.
+    // context argument is the frame generation swapchain, not the swapchain context. That handle is no Vulkan swapchain,
+    // so the old swapchain in the create info stays empty: the driver fails on it.
     VkSwapchainCreateInfoKHR next = *ci;
     next.oldSwapchain = VK_NULL_HANDLE;
     VkResult r = G.sc_create(c->device, &next, NULL, sc, G.swapchain);
@@ -326,6 +349,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         return -1;
     }
     G.swapchain = *sc;
+    g_shown_t0 = 0;
     G.w = ci->imageExtent.width;
     G.h = ci->imageExtent.height;
     G.fmt = ci->imageFormat;
@@ -391,6 +415,7 @@ void vk_fg_shutdown(VkCtx *c) {
     G.destroy(&G.sc, NULL);
     G.sc = NULL;
     G.on = 0;
+    g_shown_t0 = 0;
     if (G.swapchain) G.sc_destroy(c->device, G.swapchain, NULL, G.swapchain);
     G.swapchain = VK_NULL_HANDLE;
     free_hudless(c);

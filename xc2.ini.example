@@ -145,8 +145,8 @@
 # 6000 and newer with a recent driver, FSR 3.1 elsewhere), 4 or 3 to pin one. Changes take effect at once.
 # fsr_version = auto
 # AMD FSR Frame Generation: an interpolated frame between two drawn ones, so the display runs at about twice the frame
-# rate. Needs fsr3 = 1 and amd_fidelityfx_framegeneration_vk.dll next to the game; sensible only with fps_limit at about
-# half the display rate. Off by default. Changes take effect at once.
+# rate. Needs fsr3 = 1, amd_fidelityfx_loader_vk.dll and amd_fidelityfx_framegeneration_vk.dll next to the game;
+# sensible only with fps_limit at about half the display rate. Off by default. Changes take effect at once.
 # frame_gen = 0
 # Picture shape when the window's differs from the game resolution's (a 16:9 game on a 16:10 screen): keep (its
 # proportions, with black bars) or stretch (over the whole window). Changes take effect at once.
