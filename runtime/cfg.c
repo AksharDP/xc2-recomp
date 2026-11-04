@@ -120,7 +120,7 @@ static const CfgMeta metas[] = {
     {"MENU_LANG", "", "en|ru", LIVE},
     // Advanced: scheduling
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART},
-    {"FREE_CORES", "0", "0|1", RESTART}, {"CORE_FLOAT", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
+    {"FREE_CORES", "0", "0|1", RESTART}, {"CORE_FLOAT", "1", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
     {"LIB_PREBUILD", "1", "0|1", RESTART}, {"LIB_PREBUILD_THREADS", "", "1..64", RESTART},

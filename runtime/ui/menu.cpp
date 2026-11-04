@@ -701,7 +701,7 @@ static void tab_advanced(float scale) {
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
     opt_choice("XC2_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
     opt_toggle("XC2_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
-    opt_toggle("XC2_FREE_CORES", UI_MENU_FREE_CORES, UI_MENU_FREE_CORES_DESC);
+    opt_toggle("XC2_FREE_CORES", UI_MENU_FREE_CORES, UI_MENU_FREE_CORES_DESC, true);   // the row names the gate, the key lifts it
     opt_toggle("XC2_CORE_FLOAT", UI_MENU_CORE_FLOAT, UI_MENU_CORE_FLOAT_DESC);
     opt_toggle("XC2_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
