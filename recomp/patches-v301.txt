@@ -34,10 +34,11 @@ site xc2fps main 70f38c sha:ba333c86651ffca4 1e210800 @page:x10 bd405541 1e21080
 # the yaw speed (+0x52dc) and the pitch speed (+0x52e0) of its speed table (camera.param's YawRotSpeed and
 # PitchRotSpeed per camera speed option, filled at main+0x1cdda8) to the yaw (+0xb8) and the pitch (+0xc0) each frame,
 # with no frame time, so above 30 fps the camera turned faster. Both speeds are scaled where they are loaded by the
-# page's +0x54, the step this frame times 30 (frame_rate.c xc2_steps_store), as XCX's turn (patches-upd.txt, xc260).
-# x8 is rewritten before it is read again at both (a call, then an adrp); s1 is free at both.
-site xc2fps main 1d12c8 sha:6474ca7bd27d8677 bc696900 @page:x8 bd405501 1e210800
-site xc2fps main 1d1314 sha:899ffde6a5eca884 bc696900 @page:x8 bd405501 1e210800
+# page's +0x5c, the step this frame times 30 times the mouse's turn beyond a full stick (frame_rate.c xc2_steps_store,
+# input.c input_camera_boost), as XCX's turn (patches-upd.txt, xc260). x8 is rewritten before it is read again at both
+# (a call, then an adrp); s1 is free at both.
+site xc2fps main 1d12c8 sha:6474ca7bd27d8677 bc696900 @page:x8 bd405d01 1e210800
+site xc2fps main 1d1314 sha:899ffde6a5eca884 bc696900 @page:x8 bd405d01 1e210800
 
 # xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
 # handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window

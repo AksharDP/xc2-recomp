@@ -6,6 +6,7 @@
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
 // thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -281,15 +282,26 @@ static void walk_get(void) {
     }
 }
 
+// How much faster than a fully deflected stick the mouse turns the camera this frame (1 = no faster). A stick sample
+// stops at full deflection, which the mouse reaches at 3000 / sensitivity counts a second: an ordinary mouse movement
+// got there at any sensitivity, so the slider seemed to do nothing. The patch set xc2fps scales the camera's yaw and
+// pitch speeds by the patch page's +0x5c, which frame_rate.c writes as the frame step times this.
+#define MOUSE_BOOST_MAX 8.0f
+static _Atomic float mouse_boost = 1.0f;
+
+float input_camera_boost(void) { return atomic_load_explicit(&mouse_boost, memory_order_relaxed); }
+
 // The mouse camera as a right-stick sample, held for the whole presented frame. Under `lock`.
 static void mouse_camera(int32_t out[2]) {
     static uint64_t frame = ~0ull, t0;
     static int32_t held[2];
+    static float boost = 1.0f;
     uint64_t now = plat_now_ns();
     int32_t dx, dy;
     if (!ikb_captured()) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
+        boost = 1.0f;
         frame = ~0ull;
     } else {
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -297,13 +309,16 @@ static void mouse_camera(int32_t out[2]) {
         if (fr != frame) {
             double dt = age < 0.004 ? 0.004 : age > 0.1 ? 0.1 : age;
             ikb_mouse_take(&dx, &dy);
-            input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
+            double over = input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
+            boost = over > 1 ? (over < MOUSE_BOOST_MAX ? (float)over : MOUSE_BOOST_MAX) : 1.0f;
             frame = fr;
             t0 = now;
         } else if (age > 0.1) {
             held[0] = held[1] = 0;   // frames stopped: do not hold a deflection
+            boost = 1.0f;
         }
     }
+    atomic_store_explicit(&mouse_boost, boost, memory_order_relaxed);
     out[0] = held[0];
     out[1] = held[1];
 }

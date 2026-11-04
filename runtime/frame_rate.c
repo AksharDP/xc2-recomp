@@ -40,6 +40,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "input.h"
 #include "platform/platform.h"
 
 #define STEP_SAMPLES 5
@@ -346,7 +347,8 @@ static void world_clock(double dt, double step) {
 // scanning main's data for them in play (each sits 0x1000 above its 2.1.0 address): the game's two step floats at
 // +0x78 and +0x7c of the object at [main+0xb900d0], the UI's animation step at +0x80 of the object at [main+0xc232c8],
 // and the grass and wind step, which the patch set xc2fps reads from the patch page's +0x50. Each gets the step the
-// game takes this frame. The camera's per-frame turn (xc2fps) is scaled by +0x54, the step in 30 fps frames.
+// game takes this frame. The cloud drift (xc2fps) is scaled by +0x54, the step in 30 fps frames; the camera's per-frame
+// turn by +0x5c, the same times the mouse's turn beyond a full stick.
 static void xc2_steps_store(double seconds) {
     float s = (float)seconds, frames = (float)(seconds * 30.0);
     uint32_t b, f;
@@ -354,6 +356,12 @@ static void xc2_steps_store(double seconds) {
     memcpy(&f, &frames, 4);
     atomic_store_explicit(&xc2_words[4], b, memory_order_release);   // +0x50
     atomic_store_explicit(&xc2_words[5], f, memory_order_release);   // +0x54
+    // +0x5c: the camera's yaw and pitch speeds, the same step times how far past a full stick the mouse turns it
+    // (input_camera_boost; the stick sample itself stops at full deflection).
+    float turn = frames * input_camera_boost();
+    uint32_t tw;
+    memcpy(&tw, &turn, 4);
+    atomic_store_explicit(&xc2_words[7], tw, memory_order_release);   // +0x5c
     // A frame step the game reads once, at boot (main+0x328fb8 stores the frame-time getter main+0x6a36bc into
     // main+0xea538c), and 14 places use every frame. It froze at the boot frame time (0.0235 s with a 120 fps limit)
     // while the camera moved by the measured step, so props drawn with it slid against the terrain and flickered when
