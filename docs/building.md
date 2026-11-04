@@ -117,7 +117,7 @@ your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pa
 `romfs\` next to the exe or point `XC2_ROMFS` at its folder. Run `xc2.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
-## Linux (in progress)
+## Linux
 
 The runtime builds and runs on x86-64 Linux with a window, input and menu on SDL3 (`*_sdl.c`) in place of the Win32
 files (`*_win.c`); `runtime/platform/linux.c` implements `platform.h`. Status: the selftest and the probes pass; 1.2.1
@@ -173,7 +173,7 @@ change passes these, all run with `.venv`:
 | `tests\diff\atomic.py` | exclusive load/store sequences and ARMv8.1 atomics | no |
 | `tests\diff\func.py` | whole functions as the generator emits them, loops, jump tables and calls included (calls go to a stub that checks the registers at the call) | yes |
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
-| `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
+| `tests\excl_mt.py` | the exclusive monitor helpers under contention, on several threads; the ABA cases print "known", as the compare-and-swap monitor misses them | no |
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 

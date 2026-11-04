@@ -118,8 +118,8 @@ xc2.ini.example, VERSION  the default ini; the release string (the repository's 
 
 ## Linux release
 
-Not tested with XC2 yet: `tools/make_release_linux.py` uses XC2's names and proves the build on `generated/v301`, but no
-Linux release of XC2 has been built.
+Every tagged release carries the AppImage next to the Windows zip (`.github/workflows/release.yml`, job `linux`).
+`--prove` builds the game from `generated/v301` with the folder's tools only.
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `XC2-Setup-<version>-linux.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
