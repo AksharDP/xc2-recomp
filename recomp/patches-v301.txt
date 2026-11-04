@@ -48,6 +48,14 @@ site xc2fps main 1d1314 sha:899ffde6a5eca884 bc696900 @page:x8 bd405d01 1e210800
 set xc2sea XC2_SEA_TOP 1
 site xc2sea main 710260 sha:1e74171f216634b1 1e20594a 1e203950
 
+# The job wait (main+0x6df19c), which the frame limiter (main+0x6aafd8, through main+0x6e0598) enters every frame, polls
+# whether the jobs it waits for are done and sleeps 1 ms between polls in its mode 1 (main+0x6df47c: the sleep's length in
+# w0, 1,000,000 ns). At 30 fps that is 3 % of a frame; at 100 fps and above it is a tenth of one on the main thread, spent
+# after the jobs have mostly finished. 200 us (0x30d40) polls more often; the wait stays a poll, so nothing else changes.
+# Goldmouth walk, RTX 4070 Laptop: about 92 to 104 fps at a 144 limit; 50 us gained no more.
+set xc2poll XC2_JOB_POLL 1
+site xc2poll main 6df47c sha:c707c9cce27c1f37 52a00060 7281a800
+
 # xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
 # handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
 # setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70
