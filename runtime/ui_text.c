@@ -190,6 +190,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_REPLAY_ASYNC_DESC] = "Prepares frames for the GPU on a separate thread instead of the game thread. Adds up to one frame of latency. Unless you set it, on only where the GPU's buffers are copied at submit time.",
     [UI_MENU_FREE_CORES] = "Virtual core gate",
     [UI_MENU_FREE_CORES_DESC] = "Lets only one thread run per virtual core, as on the console.",
+    [UI_MENU_CORE_FLOAT] = "Spread core-1 job threads",
+    [UI_MENU_CORE_FLOAT_DESC] = "Lets the job threads the game pins to virtual core 1 run on any free virtual core. Smooths "
+                                "the slowdown while an area loads in, such as leaving or entering a town. Experimental.",
     [UI_MENU_TIMER_1MS] = "1 ms Windows timer",
     [UI_MENU_TIMER_1MS_DESC] = "Raises the system timer resolution to 1 ms for steadier frame pacing.",
     [UI_MENU_PIPE_WAIT] = "Waiting draw handling",
@@ -489,6 +492,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_REPLAY_ASYNC_DESC] = "Кадр для GPU готовится в отдельном потоке, а не в потоке игры. Добавляет до одного кадра задержки. Если не задано, включено только там, где буферы GPU копируются при отправке.",
     [UI_MENU_FREE_CORES] = "Ограничение виртуальных ядер",
     [UI_MENU_FREE_CORES_DESC] = "На каждом виртуальном ядре работает один поток, как на консоли.",
+    [UI_MENU_CORE_FLOAT] = "Распределять потоки ядра 1",
+    [UI_MENU_CORE_FLOAT_DESC] = "Рабочие потоки, которые игра закрепляет за виртуальным ядром 1, могут работать на любом "
+                                "свободном виртуальном ядре. Сглаживает замедление при загрузке области, например при "
+                                "входе в город или выходе из него. Экспериментально.",
     [UI_MENU_TIMER_1MS] = "Таймер Windows 1 мс",
     [UI_MENU_TIMER_1MS_DESC] = "Повышает точность системного таймера до 1 мс для ровного темпа кадров.",
     [UI_MENU_PIPE_WAIT] = "Обработка ожидающих отрисовок",

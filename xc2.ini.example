@@ -27,6 +27,10 @@
 # replay_async = 1
 # 1 lifts the virtual core gate: guest threads run without the console's limit of one thread per core.
 # free_cores = 0
+# 1 lets the threads the game pins to virtual core 1 run on any of the three: still one thread per core. XC2 pins its
+# job workers there, and they queue while the game streams an area in (leaving or entering a town). 1 cuts the slowdown
+# when leaving Goldmouth's covered market from about 65 to 95 fps on an RTX 4070 Laptop. Takes effect after a restart.
+# core_float = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
 
