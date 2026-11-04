@@ -5,6 +5,8 @@
 #pragma once
 #include <stdint.h>
 
+#include "ui_text.h"   // UiTextId: the built-in cheats' labels live in the menu's text catalog
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,6 +43,19 @@ const char *cheats_file(void);             // "<build id>.txt", the name the fil
 void cheats_frame(uint64_t frame);
 // The button names of a mask ("ZL + Right stick left"), into buf.
 const char *cheats_buttons(uint32_t mask, char *buf, int n);
+
+// The port's own cheats (cheats.c), beyond the mods' files: patch sets of the generator's patch file
+// (recomp/patches.py), each with the setting XC2_CHEAT_<name> under [cheats] in xc2.ini, off unless the player
+// switched it on. A build whose patch file has none of them (another game version's) lists none.
+typedef struct {
+    UiTextId name, desc;   // the Cheats tab row's label and description
+    const char *key;       // the setting, XC2_CHEAT_<name>
+} CheatBuiltin;
+
+int cheats_builtin_count(void);
+const CheatBuiltin *cheats_builtin(int i);
+int cheats_builtin_on(int i);              // the set's switch, which follows the setting
+void cheats_builtin_set(int i, int on);    // switches at once and writes the setting (the menu saves xc2.ini)
 
 #ifdef __cplusplus
 }

@@ -182,3 +182,34 @@ site xc2scale main 717db8 sha:d4baac18230cfd88 @page:x10 bd405940 bd001120
 site xc2scale main 717dec sha:b293a4ecc0f3cfdd @page:x10 bd405940 bd001520
 site xc2scale main 717e20 sha:6c937ded467437b5 @page:x10 bd405940 bd001920
 site xc2scale main 717e54 sha:e85fdb91c376cc74 @page:x10 bd405940 bd001d20
+
+# The port's own cheats (runtime/cheats.c, the Cheats tab's built-in rows). XC2's battle units live in one array
+# (main+0x7b5ac: unit = manager + index * 0x11d0 + 0x20, 0x59 slots); the game's own debug menu (main+0xf714, the
+# ReduceEnemyHP / ReducePCHP items) scans indices 0x14..0x59 for enemies and 0..0x13 for the party, so the party is
+# the low half of the array. A unit's flag word at +0xefe carries the side in bit 15: set for the party, clear for
+# enemies (main+0x564cc only processes hits on units with the bit clear; main+0x41728 treats bit 15 set with bit 16
+# clear as its own class). Both cheats read that bit of the attacking unit and rewrite its damage:
+#
+# xc2god (XC2_CHEAT_GOD_MODE, off): enemy attacks land for 0. main+0x5b904 is where the hit processor (main+0x5ab00)
+# loads the damage and flags word pair the damage calc (main+0x61e90) wrote, x19 holding the attacking unit; the
+# replacement keeps the load and masks the damage word with the sign of the side bit, so a party attack is unchanged
+# and an enemy attack lands for 0. Misses and blocks carry damage 0 already and stay 0; the damage estimates of
+# main+0x564cc (enemy AI) are read elsewhere and keep their real values, so the AI does not play dumb.
+set xc2god XC2_CHEAT_GOD_MODE 0
+site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 0a1e0129
+#
+# xc2kill (XC2_CHEAT_INSTA_KILL, off): the party's hits land for 9999. The value is fixed, not the game's damage
+# cap, so the cheat one-shots most enemies but not the high-health uniques and bosses, and scripted scenes keep
+# their headroom. The site is the damage calc's single exit store (main+0x62668; the out struct rides in x8 and
+# main+0x61ebc moves it to x19): every path leaves through it, x20 still holds the attacking unit (main+0x61ec4,
+# never reassigned), and a party attack leaves here only after the calc's own dodge and block handling, which
+# lands in the same store with damage 0. The replacement recomputes the damage as
+# side * 9999 + (1 - side) * damage with side = bit 15 of the attacker's flags, ANDed with a test that the damage
+# is positive: sdiv by itself is 0 only for damage 0 (the runtime's sdiv32 gives ARM's divide-by-zero -> 0), and
+# the asr/bic pair clears the bit for a negative value, so whiffs, blocks and any heal-shaped value stay as the
+# calc wrote them. x9 and x30 are free here: the original code re-initialises x9 at main+0x6266c before its next
+# read and restores x30 at main+0x62690. Nothing after the site reads NZCV, so the replacement leaves it alone.
+# The damage estimates of main+0x564cc pass through the same store; their attackers hit the party, so their side
+# bit is clear and they are unchanged.
+set xc2kill XC2_CHEAT_INSTA_KILL 0
+site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b

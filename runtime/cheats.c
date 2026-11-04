@@ -18,6 +18,10 @@
 // data included, as dmnt writes through the debugger), everything else after mem_query says the guest may read or write
 // it. Buttons are input_poll's HidNpadButton bits, the same as the cheat format's key masks; they read 0 while the menu
 // is open.
+//
+// The port's own cheats (god mode, insta kill) are not in a mod's file: they are patch sets of the generator's patch
+// file (recomp/patches-v301.txt), each with its setting under [cheats] in xc2.ini, off unless the player switched it on.
+// They list on the Cheats tab above the mods' (CheatBuiltin); a build whose patch file has none of them lists none.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -448,6 +452,8 @@ static void plain_name(char *s) {
 // it has: the code cheats stay off, a mod with unbuilt ExeFS patches stays off as a whole (mods.c).
 static int g_unbuilt;   // code cheats of enabled mods plus ExeFS patch files the build lacks
 
+static void builtin_init(void);   // defined below, after the file cheats
+
 static void report_unbuilt(void) {
     uint32_t key = 0x811C9DC5u;
     int need = 0;
@@ -459,6 +465,7 @@ static void report_unbuilt(void) {
                "build them in", need, patches);
 }
 void cheats_init(void) {
+    builtin_init();   // the patch sets are independent of the mods' files
     const RtLoaded *m = ldr_count() ? ldr_module(0) : NULL;
     char dir[PLAT_PATH_MAX], bid[17], path[2400];   // path: a mod's cheats folder (ModInfo.cheats) + the file
     if (!m || !exe_dir(dir, sizeof dir) || !build_id(bid)) return;
@@ -601,4 +608,43 @@ const char *cheats_buttons(uint32_t mask, char *buf, int n) {
     for (int b = 0; b < 24; b++)
         if (mask & (1u << b)) k += snprintf(buf + k, (size_t)(n > k ? n - k : 0), "%s%s", k ? " + " : "", names[b]);
     return buf;
+}
+
+// ---- the port's own cheats (cheats.h)
+// Patch sets of the generator's patch file, above the mods' cheats on the Cheats tab. The set default in the patch
+// file is off, and rt_patches_init has already applied the player's setting to the switches, so init only resolves
+// the sets and logs.
+static const struct { const char *set, *key; UiTextId name, desc; } g_builtin[] = {
+    {"xc2god", "XC2_CHEAT_GOD_MODE", UI_MENU_CHEAT_GOD_MODE, UI_MENU_CHEAT_GOD_MODE_DESC},
+    {"xc2kill", "XC2_CHEAT_INSTA_KILL", UI_MENU_CHEAT_INSTA_KILL, UI_MENU_CHEAT_INSTA_KILL_DESC},
+};
+static CheatBuiltin g_builtin_info[sizeof g_builtin / sizeof *g_builtin];
+static int g_builtin_set[sizeof g_builtin / sizeof *g_builtin];   // the patch sets, read with g_builtin_n
+static int g_builtin_n;
+
+static void builtin_init(void) {
+    for (size_t i = 0; i < sizeof g_builtin / sizeof *g_builtin; i++) {
+        int set = rt_patch_set(g_builtin[i].set);
+        if (set < 0) continue;   // this build's patch file has none of them
+        g_builtin_set[g_builtin_n] = set;
+        g_builtin_info[g_builtin_n] = (CheatBuiltin){g_builtin[i].name, g_builtin[i].desc, g_builtin[i].key};
+        g_builtin_n++;
+        rt_log("cheats: built-in %s (%s): %s", g_builtin[i].set, g_builtin[i].key,
+               rt_patch_enabled(set) ? "on" : "off");
+    }
+}
+
+int cheats_builtin_count(void) { return g_builtin_n; }
+
+const CheatBuiltin *cheats_builtin(int i) { return i >= 0 && i < g_builtin_n ? &g_builtin_info[i] : NULL; }
+
+int cheats_builtin_on(int i) {
+    return i >= 0 && i < g_builtin_n && rt_patch_enabled(g_builtin_set[i]);
+}
+
+void cheats_builtin_set(int i, int on) {
+    if (i < 0 || i >= g_builtin_n) return;
+    rt_patch_switch(g_builtin_set[i], on);
+    cfg_set(g_builtin_info[i].key, on ? "1" : "0");
+    rt_log("cheats: built-in %s %s", g_builtin_info[i].key, on ? "on" : "off");
 }
