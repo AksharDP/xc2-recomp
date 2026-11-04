@@ -1531,24 +1531,19 @@ static void lock_acquire_for(RtThread *t, uint64_t addr, uint32_t tag) {
 }
 
 // ---- threads
-// XC2_CORE_FLOAT=<cores> (digits 0-2, e.g. "1"; off by default): a thread the game pins to one of these virtual cores
+// XC2_CORE_FLOAT=1 (off by default, a row of the menu's Performance settings): a thread the game pins to virtual core 1
 // may hold any application core, its own first (t->core). XC2 pins its job workers to core 1; while it streams an area
 // in they queue there while cores 0 and 2 idle, and the main thread waits for their results (XC2_TRACE=sched: 1.5
 // thread-s of core waits per 1.8 s on the walk out of Goldmouth's covered market). Still one thread per virtual core,
 // and GetCurrentProcessorNumber reports the core held, so per-core data the game picks by the current core keeps one
 // user; GetThreadCoreMask reports the game's mask.
 static uint64_t core_float(uint64_t mask) {
-    static int floating = -1;   // bit n: core n's single-core threads float
+    static int floating = -1;
     if (floating < 0) {
-        const char *e = cfg_get("XC2_CORE_FLOAT");
-        floating = 0;
-        for (; e && *e; e++)
-            if (*e >= '0' && *e < '0' + NCORE) floating |= 1 << (*e - '0');
-        if (floating) rt_log("kernel: threads pinned to virtual core(s) %#x may run on any application core (XC2_CORE_FLOAT)", floating);
+        floating = cfg_bool("XC2_CORE_FLOAT") != 0;
+        if (floating) rt_log("kernel: threads pinned to virtual core 1 may run on any application core (XC2_CORE_FLOAT)");
     }
-    for (int c = 0; c < NCORE; c++)
-        if (mask == 1ull << c && (floating >> c & 1)) return (1ull << NCORE) - 1;
-    return mask;
+    return floating && mask == 1ull << 1 ? (1ull << NCORE) - 1 : mask;
 }
 
 static RtThread *thr_new(int prio, int core, uint64_t mask) {
