@@ -679,7 +679,8 @@ uint32_t romfs_mount(const char *name) {
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    char rel[4200];
+    const char *p = romfs_path_relative(mount_name, path, rel, sizeof rel) ? rel : NULL;
     uint64_t i = p ? file_index(p) : UINT64_MAX;
     if (i == UINT64_MAX) {
         fs_trace("rom NOT FOUND", path);
@@ -787,7 +788,8 @@ void romfs_close(uint64_t h) {
 
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
+    char rel[4200];
+    const char *p = romfs_path_relative(mount_name, path, rel, sizeof rel) ? rel : NULL;
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
