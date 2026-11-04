@@ -2,7 +2,7 @@
 
 ## The one hard rule
 
-Nothing that came out of the game goes into the repository: no game files, keys, extracted data, recompiled C, compiled binaries, shaders, shader caches, fonts, audio or movies. Not in commits, not in issues, not in pull requests. Only information about the game goes in: addresses, hashes, patch code we wrote, shader and bind-state identifiers.
+Nothing that came out of the game goes into the repository: no game files, keys, extracted data, recompiled C, compiled binaries, shaders, shader caches, fonts, audio or movies. Not in commits, not in issues, not in pull requests. Only information about the game goes in: addresses, hashes, patch code we wrote, shader and bind-state identifiers. A save file is the player's own data, not game data: attaching it to an issue is fine and wanted, committing it here is not.
 
 Two checks enforce this:
 
@@ -26,7 +26,7 @@ GPL projects (yuzu, suyu, OpenSmash-Ultimate, Unicorn inside the game binary) ca
 
 ## Reporting bugs
 
-Use the issue form. Include the port version and game update from the title line of the settings menu (F1), your GPU and driver (Copy system info in the menu's Advanced tab copies them), the log (`logs\xc2.log` next to `xc2.exe`; after a crash, copy it before you start the game again), and the steps to reproduce. Screenshots are fine; recordings of long gameplay are not needed.
+Use the issue form. Include the port version and game update from the title line of the settings menu (F1), your GPU and driver (Copy system info in the menu's Advanced tab copies them), the log (`logs\xc2.log` next to `xc2.exe`; after a crash, copy it before you start the game again), and the steps to reproduce. A save standing where the problem shows is optional but very much appreciated for speeding things up (`profile\save\<account id>\bf2savefile.sav` in the install folder); texture problems in a specific part of the game get tested on it. Screenshots are fine; recordings of long gameplay are not needed.
 
 ## Pull requests
 
