@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 import worktree  # noqa: E402
 
-IGNORED = '\n'.join('/' + d + '/' for d in worktree.LINK_DIRS) + '\n/' + worktree.LINK_FILES[0] + '\n/.worktrees/\n'
+# No trailing slash, as in the repository's .gitignore: on Linux the links are symlinks, which a pattern ending in a
+# slash does not match, so git status would list them as untracked.
+IGNORED = '\n'.join('/' + n for n in worktree.LINK_DIRS + worktree.LINK_FILES) + '\n/.worktrees/\n'
 
 
 def git(cwd, *a):
@@ -76,7 +78,7 @@ def main():
         assert wt.resolve() == (main_dir / '.worktrees' / 'a').resolve(), wt
         for d in worktree.LINK_DIRS:
             if (main_dir / d).is_dir():
-                assert os.path.isjunction(wt / d), d
+                assert worktree.is_link(wt / d), d
         assert (wt / 'build' / 'deep' / 'marker.txt').read_text() == 'keep'
         assert os.path.samefile(wt / 'config.local.toml', main_dir / 'config.local.toml')
         status = git(wt, 'status', '--porcelain', '--ignored=no')

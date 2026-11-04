@@ -1,10 +1,13 @@
+# The folders tools/worktree.py links into task worktrees have no trailing slash: on Linux the links are symlinks,
+# which git treats as files, and a pattern ending in a slash matches directories only.
+
 # Reference checkouts of upstream projects (cloned locally, never committed)
-/refs/
+/refs
 
 # Downloaded toolchain binaries and Python environments
-/toolchain/
-/.venv/
-/.venv-py314/
+/toolchain
+/.venv
+/.venv-py314
 __pycache__/
 # pip's temporary folders, left behind when an install runs with the repository as its temp directory
 /pip-*/
@@ -14,9 +17,9 @@ __pycache__/
 
 # Game inputs and everything derived from them. Never commit these.
 # tools/check_content.py enforces the same rule in CI and the pre-commit hook.
-/game/
-/build/
-/generated/
+/game
+/build
+/generated
 *.xci
 *.xcz
 *.nsp
@@ -54,11 +57,11 @@ __pycache__/
 
 # Coding-agent setup and working notes (skills, hooks, playbook, backlog, research notes, milestone plans): local to
 # the maintainer's machine. tools/worktree.py links .claude and notes into task worktrees.
-/.claude/
+/.claude
 /.agents/
 /CLAUDE.local.md
 /skills-lock.json
-/notes/
+/notes
 /docs/milestones/
 
 # Editor settings

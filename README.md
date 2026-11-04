@@ -1,6 +1,6 @@
 # XC2 Recomp
 
-**XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native Windows x86-64 application ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh. Most of the documentation still describes XCX.
+**XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh. Most of the documentation still describes XCX.
 
 > [!IMPORTANT]
 > **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles 2*, dumped from your own console: the base game and the 3.0.1 update (the add-on content is optional). Instructions for obtaining those files will not be provided.
@@ -29,7 +29,6 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Planned
 
-- Linux and the Steam Deck
 - Custom aspect ratios, including ultrawide
 - VRR
 
@@ -44,12 +43,15 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Installing
 
-Requirements: Windows 10 or later, an x86-64 CPU with AVX2, a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 25 GiB free during setup (20 GiB after).
+Requirements: Windows 10 or later, or Linux 6.7 or later with glibc 2.34, an x86-64 CPU with AVX2, a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 25 GiB free during setup (20 GiB after).
 
 1. Download `XC2-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
 2. Start `XC2-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.
 3. Pick your game files, the language and an install folder, and press *Start*. The setup builds the game once.
 4. Play `xc2.exe` from the install folder.
+
+On Linux, download `XC2-Setup-<version>-linux.AppImage` instead, make it executable and start it; the steps are the
+same and the game is `xc2` in the install folder ([docs/installer.md](docs/installer.md), "Linux release").
 
 To update, run a newer `XC2-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) describes most of them). Controls: [docs/controls.md](docs/controls.md).
 
