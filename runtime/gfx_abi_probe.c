@@ -95,6 +95,31 @@ static void check_write_watch(void) {
     CHECK(plat_mem_state(a + 0x4000, a + 0x4001, &end) == PLAT_MEM_RESERVED, "a hole got committed");
     printf("write-watch: region with reserved holes frozen and thawed by a write\n");
     CHECK(mem_unmap_physical(a, 0x4000) == 0, "UnmapPhysicalMemory");
+
+    // A whole region refreezes and thaws without a query, until a mapping change makes a hole: the next freeze must see
+    // the hole, and the thaw after it must leave it reserved.
+    uint64_t w = (g->alias.base + 0x600000) & ~0x1fffffull;
+    volatile uint8_t *wp = (volatile uint8_t *)(uintptr_t)w;
+    CHECK(mem_map_physical(w, 0x200000) == 0, "MapPhysicalMemory of a whole region");
+    mem_written_pages(w, 0x200000, pages, 8);
+    CHECK(mem_freeze(w) == 1, "freeze of a whole region");
+    wp[0x1000] = 1;
+    CHECK(!mem_frozen(w) && wp[0x1000] == 1, "a write did not thaw the whole region");
+    CHECK(mem_freeze(w) == 1 && plat_mem_state(w, w + 1, &end) == PLAT_PROT_READ, "refreeze of a whole region");
+    wp[0x2000] = 2;
+    CHECK(!mem_frozen(w) && plat_mem_state(w, w + 1, &end) == PLAT_PROT_RW, "thaw of a refrozen whole region");
+    CHECK(mem_unmap_physical(w + 0x10000, 0x4000) == 0, "UnmapPhysicalMemory inside a whole region");
+    mem_written_pages(w, 0x200000, pages, 8);
+    CHECK(mem_freeze(w) == 1, "freeze after a hole appeared in a whole region");
+    CHECK(plat_mem_state(w + 0x10000, w + 0x10001, &end) == PLAT_MEM_RESERVED, "the freeze committed the hole");
+    CHECK(plat_mem_state(w + 0x20000, w + 0x20001, &end) == PLAT_PROT_READ, "pages past the hole are not read-only");
+    wp[0x3000] = 3;
+    CHECK(!mem_frozen(w) && wp[0x3000] == 3, "a write did not thaw the region with the new hole");
+    CHECK(plat_mem_state(w + 0x10000, w + 0x10001, &end) == PLAT_MEM_RESERVED, "the thaw committed the hole");
+    CHECK(mem_unmap_physical(w, 0x10000) == 0 && mem_unmap_physical(w + 0x14000, 0x200000 - 0x14000) == 0,
+          "UnmapPhysicalMemory of the rest");
+    printf("write-watch: whole region refrozen without a query, and a new hole seen at the next freeze\n");
+
     CHECK(mem_written_pages(RT_KERNEL_BASE, 0x1000, pages, 8) == UINT64_MAX, "kernel region is not write-watched");
     CHECK(mem_set_heap_size(0, &heap) == 0, "SetHeapSize 0");
     printf("write-watch: alias page written once: reported once, then not\n");
