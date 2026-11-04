@@ -861,6 +861,121 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
     return 0;
 }
 
+// Transform feedback (docs/maxwell.md 5.10) with XC2's own shader: shd_post.wishp program 127, vertex stage only, stores
+// two vec3 of 24 bytes. With p = (a0.x * a1.x, a0.y * a1.y, a0.z), output 0 is the rows c3[11..13] times p and output 1
+// the rows c3[14..16] times p. Two draws between one Begin and End continue where the first stopped; the records reach
+// guest memory and a GPU copy after the Barrier; a buffer of two records drops the third; an instanced draw stores its
+// records instance by instance; discard leaves the target alone.
+#define XFB_SHADER "a2f7735bb66a8479"
+static int test_xfb(const GfxBackend *b, uint8_t *guest, int *n_floats) {
+    *n_floats = 0;
+    // The layouts of the five XC2 shaders add up; one that does not counts as none.
+    uint8_t ctl[0x880] = {0}, words[GFX_XFB_WORDS];
+    static const uint8_t comps52[4] = {3, 3, 3, 4};
+    for (int i = 0; i < 4; i++) ctl[0xdc + i] = (uint8_t)(0x20 + i), ctl[0x4dc + i] = comps52[i];
+    uint32_t stride = 52, count = 4;
+    memcpy(ctl + 0x6dc, &stride, 4), memcpy(ctl + 0x6e8, &count, 4);
+    CHECK(gfx_shader_xfb(ctl, words) == 52 && words[0] == 0x20 && words[2] == 0x22 && words[3] == 0x24 && words[9] == 0x2c &&
+          words[12] == 0x2f, "transform feedback layout of 52 bytes");
+    stride = 48;
+    memcpy(ctl + 0x6dc, &stride, 4);
+    CHECK(!gfx_shader_xfb(ctl, words), "a layout that does not add up to its stride was taken");
+    if (!vk_ctx()->has_transform_feedback) return 0;
+
+    char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
+    CHECK(dr_root(root, sizeof root), GFX_CENSUS_DIR "/jobs.json not found");
+    snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/jobs.json", root);
+    long size;
+    char *jobs = dr_read(path, &size);
+    DrawEnt *e = malloc(sizeof *e * 20000);
+    int n = jobs && e ? dr_parse(jobs, e, 20000) : 0, at = -1;
+    for (int i = 0; i < n && at < 0; i++)
+        if (!memcmp(e[i].key, XFB_SHADER, sizeof XFB_SHADER - 1)) at = i;
+    CHECK(at >= 0, "census has no shader " XFB_SHADER);
+    const DrawEnt *one[1] = {&e[at]};
+    prog_t *prog = dr_prog(root, one, 1);
+    CHECK(prog, "census code file of " XFB_SHADER " is missing");
+    uint8_t *pc = (uint8_t *)(uintptr_t)prog->sd[0].control;
+    stride = 24, count = 2;
+    pc[0xdc] = 0x20, pc[0xdd] = 0x21, pc[0x4dc] = pc[0x4dd] = 3;
+    memcpy(pc + 0x6dc, &stride, 4), memcpy(pc + 0x6e8, &count, 4);
+
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0xD00000, .size = 0x100000,
+                   .game_mem = guest + 0xD00000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the transform feedback part");
+    static tex_t color;
+    init_tex(&color, &pool, 0, NVN_FORMAT_RGBA8);
+    CHECK(color.L.size <= 0x80000, "transform feedback target exceeds its pool slot");
+    float *vtx = (float *)(pool.mem + 0x80000), *c3 = (float *)(pool.mem + 0x90000);
+    memset(vtx, 0, 3 * DR_STRIDE);
+    for (int v = 0; v < 3; v++) {
+        float *a0 = vtx + v * DR_ATTRS * 4, *a1 = a0 + 4;
+        a0[0] = 1.0f + (float)v, a0[1] = 2.0f + (float)v, a0[2] = 3.0f + (float)v;
+        a1[0] = 10.0f, a1[1] = 100.0f;
+    }
+    memset(c3, 0, 4096);
+    for (int r = 0; r < 3; r++) c3[(11 + r) * 4 + r] = 1.0f, c3[(14 + r) * 4 + r] = 2.0f;
+    uint8_t *rec = pool.mem + 0xA0000, *copy = pool.mem + 0xA1000, *small = pool.mem + 0xA2000, *inst = pool.mem + 0xA3000;
+    memset(rec, 0xCC, 0x4000);
+    uint64_t rec_a = (uint64_t)(uintptr_t)rec;
+
+    static _Alignas(8) uint8_t stream[8192];
+    uint8_t *q = draw_prefix(stream, prog, &pool, &color);
+    const p_flag on = {1}, off = {0};
+    const p_xfb_bind whole = {rec_a, 3 * 24}, two = {(uint64_t)(uintptr_t)small, 2 * 24},
+                     four = {(uint64_t)(uintptr_t)inst, 4 * 24};
+    const p_draw d0 = {NVN_DRAW_PRIMITIVE_POINTS, 0, 2, 0, 0}, d1 = {NVN_DRAW_PRIMITIVE_POINTS, 2, 1, 0, 0},
+                 all = {NVN_DRAW_PRIMITIVE_POINTS, 0, 3, 0, 0}, twice = {NVN_DRAW_PRIMITIVE_POINTS, 0, 2, 0, 2};
+    const p_copy_b2b cp = {rec_a, (uint64_t)(uintptr_t)copy, 3 * 24};
+    q = put(q, OP_RASTER_DISCARD, &on, sizeof on);
+    q = put(q, OP_XFB_BIND, &whole, sizeof whole);
+    q = put(q, OP_XFB_ACTIVE, &on, sizeof on);
+    q = put(q, OP_DRAW, &d0, sizeof d0);
+    q = put(q, OP_DRAW, &d1, sizeof d1);
+    q = put(q, OP_XFB_ACTIVE, &off, sizeof off);
+    q = put(q, OP_BARRIER, NULL, 0);
+    q = put(q, OP_COPY_B2B, &cp, sizeof cp);
+    q = put(q, OP_XFB_BIND, &two, sizeof two);
+    q = put(q, OP_XFB_ACTIVE, &on, sizeof on);
+    q = put(q, OP_DRAW, &all, sizeof all);
+    q = put(q, OP_XFB_ACTIVE, &off, sizeof off);
+    q = put(q, OP_XFB_BIND, &four, sizeof four);   // instanced, as the game draws: records instance by instance
+    q = put(q, OP_XFB_ACTIVE, &on, sizeof on);
+    q = put(q, OP_DRAW, &twice, sizeof twice);
+    q = put(q, OP_XFB_ACTIVE, &off, sizeof off);
+    q = put(q, OP_RASTER_DISCARD, &off, sizeof off);
+    q = put(q, OP_BARRIER, NULL, 0);
+    q = put(q, OP_END, NULL, 0);
+    CHECK(q <= stream + sizeof stream, "transform feedback op stream overflow");
+    uint64_t handle = (uint64_t)(uintptr_t)stream;
+    CHECK(b->fence_wait(b->submit(&handle, 1), 20000000000ull), "fence_wait of the transform feedback submission timed out");
+
+    const float *got[4] = {(const float *)rec, (const float *)copy, (const float *)small, (const float *)inst};
+    static const int records[4] = {3, 3, 2, 4}, wrap[4] = {3, 3, 3, 2};   // the fourth: vertices 0, 1 of each instance
+    for (int s = 0; s < 4; s++)
+        for (int v = 0; v < records[s]; v++) {
+            const float u = (float)(v % wrap[s]);
+            const float p[3] = {(1.0f + u) * 10.0f, (2.0f + u) * 100.0f, 3.0f + u};
+            for (int k = 0; k < 3; k++) {
+                CHECK(got[s][v * 6 + k] == p[k], "buffer %d record %d output 0 component %d is %g, expected %g", s, v, k, got[s][v * 6 + k], p[k]);
+                CHECK(got[s][v * 6 + 3 + k] == 2.0f * p[k], "buffer %d record %d output 1 component %d is %g, expected %g", s, v, k, got[s][v * 6 + 3 + k], 2.0f * p[k]);
+                *n_floats += 2;
+            }
+        }
+    for (int i = 0; i < 24; i++)
+        CHECK(rec[3 * 24 + i] == 0xCC && small[2 * 24 + i] == 0xCC && inst[4 * 24 + i] == 0xCC, "byte %d past the records was written", i);
+    static uint32_t px[TEX_W * TEX_H];
+    const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
+    b->read_texels(&color, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
+    const uint8_t clear_b[4] = {to_byte(0.2f), to_byte(0.4f), to_byte(0.6f), 255};
+    uint32_t clear_v;
+    memcpy(&clear_v, clear_b, 4);
+    for (int k = 0; k < TEX_W * TEX_H; k++) CHECK(px[k] == clear_v, "texel %d changed under rasterizer discard", k);
+    b->pool_fini(&pool);
+    free(e), free(jobs);
+    return 0;
+}
+
 int probe_vkexec(void) {
     layouts_equal = 0;
     main_tid = plat_thread_id();
@@ -881,6 +996,8 @@ int probe_vkexec(void) {
     int nvnx_bytes = 0, mirror_bytes = 0;
     if (!bad) bad = test_nvnx(b, guest, &nvnx_bytes);
     if (!bad) bad = test_mirror(b, guest, &mirror_bytes);
+    int xfb_floats = 0;
+    if (!bad) bad = test_xfb(b, guest, &xfb_floats);
     b->finish();
     vk_pipeline_shutdown();   // the pipelines and the draw part's stand-ins go before the device
     vk_exec_draw_shutdown();
@@ -925,5 +1042,11 @@ int probe_vkexec(void) {
                "between submissions mirrored, CPU bytes beside a fill kept, %d bytes compared)\n", mirror_bytes);
     else
         printf("probe-vkexec: mirror part skipped (memory mode import)\n");
+    if (xfb_floats)
+        printf("probe-vkexec: transform feedback part passed (XC2's shader " XFB_SHADER ": two draws in one Begin and End, the "
+               "records in guest memory and through a GPU copy, a full buffer dropping the rest, an instanced draw, %d floats compared, target "
+               "unchanged under discard)\n", xfb_floats);
+    else
+        printf("probe-vkexec: transform feedback part skipped (no VK_EXT_transform_feedback)\n");
     return 0;
 }
