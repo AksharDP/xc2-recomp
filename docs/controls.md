@@ -8,7 +8,9 @@ Input comes from the first SDL3 gamepad, the keyboard and the mouse, merged into
 - `xbox`: south A, east B, west X, north Y, as an Xbox pad labels them; on a PlayStation pad cross is A, circle B, square X, triangle Y.
 - `auto` (default): `nintendo` for a pad whose east button SDL reports labelled A (Switch Pro Controller, Nintendo-layout pads), `xbox` for the others.
 
-The log names the layout in effect (`input: gamepad layout ...`); the menu shows it under *Automatic*. The game's button prompts stay Switch letters either way.
+The log names the layout in effect (`input: gamepad layout ...`); the menu shows it under *Automatic*.
+
+`XC2_PROMPTS` (`prompts`, the *Button prompts* row) picks the icons the game's prompts draw: `xbox`, `playstation`, `keyboard` (the default keys, not remapped ones), `switch` (the game's own) or `auto`. A redrawn set also moves the tutorial lines that mean a stick click to the game's click icon, so "press" the right stick shows C and not the mouse; `tools/xc2_prompts.py` writes both, and `switch` leaves the text as it is.
 
 | Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse | Action in the world |
 |---|---|---|---|
@@ -23,7 +25,7 @@ The log names the layout in effect (`input: gamepad layout ...`); the menu shows
 | L | left shoulder | Q | abilities |
 | R | right shoulder | R | throw weapon |
 | Left stick click | left stick click | Left Ctrl | crouch |
-| Right stick click | right stick click | C | first-person view |
+| Right stick click | right stick click | C | camera behind the player |
 | D-pad left, up, right, down | D-pad | 1 2 3 4 | quick-select |
 | Plus | Start | Tab | menu, inventory |
 | Minus | Back | M | map |

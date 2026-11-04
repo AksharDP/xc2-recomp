@@ -174,6 +174,7 @@ change passes these, all run with `.venv`:
 | `tests\diff\func.py` | whole functions as the generator emits them, loops, jump tables and calls included (calls go to a stub that checks the registers at the call) | yes |
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
+| `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
 Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,

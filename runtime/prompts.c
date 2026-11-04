@@ -15,7 +15,8 @@ enum { MAX_FILES = 32 };
 
 static PlatOnce once = PLAT_ONCE_INIT;
 static char dir[1200];               // prompts/<set> of the chosen set, "" for the game's own prompts
-static char *files[MAX_FILES];       // the set's paths from the manifest
+static char text_dir[1200];          // prompts/text, the text every redrawn set shares
+static struct { char *path; const char *dir; } files[MAX_FILES];   // the paths from the manifest and their folder
 static int nfiles;
 
 // The set XC2_PROMPTS and the gamepad pick: a folder of tools/xc2_prompts.py, NULL for the game's own prompts.
@@ -64,20 +65,24 @@ static void init(void *arg) {
     memcpy(text, m, size);
     text[size] = 0;
     free(m);
-    size_t sl = strlen(set);
+    snprintf(dir, sizeof dir, "%sprompts/%s", base, set);
+    snprintf(text_dir, sizeof text_dir, "%sprompts/text", base);
     for (char *line = text, *next; *line && nfiles < MAX_FILES; line = next) {
         next = line + strcspn(line, "\r\n");
         if (*next) *next++ = 0;
         char *tab = strchr(line, '\t');
-        if (!tab || (size_t)(tab - line) != sl || strncmp(line, set, sl)) continue;
+        if (!tab) continue;
+        *tab = 0;
+        const char *from = !strcmp(line, set) ? dir : !strcmp(line, "text") ? text_dir : NULL;
+        if (!from) continue;
         tab[1 + strcspn(tab + 1, "\t")] = 0;
-        files[nfiles] = strdup(tab + 1);
-        if (!files[nfiles]) rt_fatal("prompts manifest");
+        files[nfiles].path = strdup(tab + 1);
+        files[nfiles].dir = from;
+        if (!files[nfiles].path) rt_fatal("prompts manifest");
         nfiles++;
     }
     free(text);
-    snprintf(dir, sizeof dir, "%sprompts/%s", base, set);
-    rt_log("prompts: %s (%s%s), %d layouts in %s", set, why, !strcmp(why, "prompts = ") ? v : "", nfiles, dir);
+    rt_log("prompts: %s (%s%s), %d files in %s", set, why, !strcmp(why, "prompts = ") ? v : "", nfiles, dir);
 }
 
 int prompts_file(const char *rel, char *out, size_t cap) {
@@ -85,8 +90,8 @@ int prompts_file(const char *rel, char *out, size_t cap) {
     if (!rel) return 0;
     while (*rel == '/') rel++;
     for (int i = 0; i < nfiles; i++)
-        if (!strcmp(files[i], rel)) {
-            int n = snprintf(out, cap, "%s/%s", dir, rel);
+        if (!strcmp(files[i].path, rel)) {
+            int n = snprintf(out, cap, "%s/%s", files[i].dir, rel);
             return n > 0 && (size_t)n < cap && plat_fs_kind(out) == PLAT_FS_FILE;
         }
     return 0;

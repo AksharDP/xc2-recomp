@@ -15,8 +15,14 @@ console's colours), a blue rim and a glow. Sets, one folder each:
   keyboard                             the default keys and mouse buttons (runtime/input_map.c DEFAULT_KEYS)
 Only the texture blocks under a replaced cell are re-encoded; every other byte of a layout stays the game's.
 
+The text gets one change too, in the set "text" that every redrawn set shares. Menu/msproj/bf2.msbp names a tag for
+both the stick (L3, R3: the atlas's plain cells, this tool's lstick and rstick) and its click (L3_push, R3_push: this
+tool's L3 and R3), but the game's text only uses the plain ones. On a Switch the two look alike; here the stick is
+W A S D or the mouse and the click is Ctrl or C, so the lines that mean a click move to the click's tag (press_text).
+
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, tools/extract.py). Output: <out>/<set>/menu/image/
-<file>.wilay and <out>/manifest.tsv (set, path, size, SHA-256), by default build/<version>/prompts, which
+<file>.wilay, <out>/text/bdat/<language>/<file>.bdat and <out>/manifest.tsv (set, path, size, SHA-256), by default
+build/<version>/prompts, which
 tools/build_game.py copies next to xc2.exe. Nothing it writes may be committed. --png <dir> also writes every texture
 before and after as PNG; --survey <dir> writes the textures of the image layouts whose names match --match as PNG, to
 look for more button art. Runs on either Python: no third-party modules.
@@ -643,6 +649,86 @@ LAYOUTS = {
 }
 
 
+# ---- the text: BDAT message tables
+#
+# A file is u32 table count, u32 size, then a u32 offset per table. A table is 'BDAT', then at +0x08 u16 row size, +0x0e
+# u16 rows offset, +0x10 u16 row count, +0x16 u16 key, +0x18 u32 strings offset, +0x1c u32 strings length, all from
+# the table's start; its strings end it. A row's string column holds the string's offset from the table's start.
+
+TEXT_SET = 'text'
+TEXT_FILES = ('common_ms', 'menu_tutorial', 'menu_tutorial_chbtl')   # the tables with the L3 and R3 tags
+TABLE_ALIGN = 8   # the tables of a many-table file start on this
+STICK_L, STICK_R = b'icon=L3 ', b'icon=R3 '
+CLICK_L, CLICK_R = b'icon=L3_push ', b'icon=R3_push '
+
+
+def bdat_cipher(data, key, decode):
+    """The strings' scrambling: two running keys, one for the even bytes and one for the odd, each adding the bytes
+    of the scrambled text it has passed."""
+    out, k = bytearray(data), [(~key >> 8) & 255, ~key & 255]
+    for i, b in enumerate(data):
+        c = b if decode else b ^ k[i & 1]
+        out[i] = b ^ k[i & 1]
+        k[i & 1] = (k[i & 1] + c) & 255
+    return bytes(out)
+
+
+def table_press_tags(table):
+    """The table with its click lines on the click's tag; the table itself when it has none, None when it does not
+    have the shape below. Every L3 line is a click. The R3 lines are, in every language, pointing the camera, the click
+    that puts it behind the player, and its height and zoom: the second of three. The new strings go after the old
+    ones, so only their rows change."""
+    row_size, = struct.unpack_from('<H', table, 0x08)
+    rows_at, rows = struct.unpack_from('<HH', table, 0x0e)
+    key, = struct.unpack_from('<H', table, 0x16)
+    at, length = struct.unpack_from('<II', table, 0x18)
+    text = bytearray(bdat_cipher(table[at:at + length], key, True))
+    strings = [(m.start(), m.group()) for m in re.finditer(rb'[^\0]+', bytes(text))]
+    right = [s for s in strings if STICK_R in s[1]]
+    if len(right) not in (0, 3):
+        return None
+    press = [s for s in strings if STICK_L in s[1]] + right[1:2]
+    if not press:
+        return table
+    out = bytearray(table)
+    for pos, s in press:
+        old = struct.pack('<I', at + pos)
+        new = struct.pack('<I', at + len(text))
+        refs = [p for r in range(rows) for p in range(rows_at + r * row_size, rows_at + (r + 1) * row_size - 3)
+                if table[p:p + 4] == old]
+        if not refs:
+            return None
+        for p in refs:
+            out[p:p + 4] = new
+        text += s.replace(STICK_L, CLICK_L).replace(STICK_R, CLICK_R) + b'\0'
+    text += bytes(-(len(text) - length) % TABLE_ALIGN)
+    struct.pack_into('<I', out, 0x1c, len(text))
+    return bytes(out[:at]) + bdat_cipher(text, key, False)
+
+
+def press_text(blob):
+    """The BDAT file with its click lines on the click's tag; None when a table does not have the expected shape or
+    nothing changed."""
+    count, = struct.unpack_from('<I', blob, 0)
+    offsets = list(struct.unpack_from(f'<{count}I', blob, 8))
+    out = bytearray(blob[:offsets[0]])
+    for t, start in enumerate(offsets):
+        table = blob[start:offsets[t + 1] if t + 1 < count else len(blob)]
+        new = table_press_tags(table)
+        if new is None:
+            return None
+        struct.pack_into('<I', out, 8 + 4 * t, len(out))
+        out += new
+    struct.pack_into('<I', out, 4, len(out))
+    return bytes(out) if bytes(out) != blob else None
+
+
+def text_files(arc):
+    """The BDAT paths of TEXT_FILES in every language of the archive."""
+    wanted = {f'{name}.bdat' for name in TEXT_FILES}
+    return [n for n in arc.names() if n.startswith('/bdat/') and n.count('/') == 3 and n.rsplit('/', 1)[1] in wanted]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--version', default='v301')
@@ -694,6 +780,16 @@ def main():
             dst.write_bytes(new)
             lines.append(f'{kit_set}\t{path.lstrip("/")}\t{len(new)}\t{hashlib.sha256(new).hexdigest()}')
         print(f'{path}: {len(painters)} sets')
+    for path in text_files(arc):
+        new = press_text(arc.read(path))
+        if new is None:   # the game's own text stays: the wrong icon on a few lines, not a failed setup
+            print(f'{path}: not the expected lines, left as it is')
+            continue
+        dst = out / TEXT_SET / path.lstrip('/')
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(new)
+        lines.append(f'{TEXT_SET}\t{path.lstrip("/")}\t{len(new)}\t{hashlib.sha256(new).hexdigest()}')
+        print(f'{path}: click prompts')
     (out / 'manifest.tsv').write_text('\n'.join(lines) + '\n')
 
 
