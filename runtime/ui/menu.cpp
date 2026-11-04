@@ -37,7 +37,7 @@ void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
-float vk_fg_generated_fps(uint64_t now_ns);
+float vk_fg_shown_fps(uint64_t now_ns);
 extern const int rt_game_version;
 extern const char rt_game_name[];   // the game version shown, "2.0.0" (tools/build_game.py)
 extern const char rt_port_version[];
@@ -967,7 +967,7 @@ static int g_perf_mode;                  // 0 off, 1 fps, 2 full
 static std::atomic<int> g_perf_save;     // F10 changed the mode: xc2.ini is written on the present thread
 static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
 static int g_perf_frames;
-static float g_perf_gen = -1;   // generated frames a second (vk_fg_generated_fps), negative without frame generation
+static float g_perf_shown = -1;   // frames a second on screen (vk_fg_shown_fps), negative without frame generation
 static char g_perf_text[96];
 
 static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0; }
@@ -1015,7 +1015,7 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         }
         g_perf_mode = m;
     }
-    if (g_perf_mode) g_perf_gen = vk_fg_generated_fps(now);
+    if (g_perf_mode) g_perf_shown = vk_fg_shown_fps(now);
     if (g_perf_mode != 1) return;
     uint64_t d = now - g_perf_last_ns;
     if (!g_perf_last_ns || d > 2000000000ull) {   // first frame, or a stall the window should not average in
@@ -1027,8 +1027,8 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         if (d > g_perf_max_ns) g_perf_max_ns = d;
         if (g_perf_win_ns >= 500000000ull) {
             double fps = g_perf_frames * 1e9 / g_perf_win_ns;
-            if (g_perf_gen < 0) snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), fps);
-            else snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS_FG), fps, (double)g_perf_gen);
+            if (g_perf_shown < 0) snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), fps);
+            else snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS_FG), fps, (double)g_perf_shown);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
@@ -1136,9 +1136,9 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         static const PerfCol c2[] = {{UI_MENU_OV_FMT_TEMP, 188}, {UI_MENU_OV_FMT_GB_OF, 888.8f}, {UI_MENU_OV_MAX_MS, 8888.8f}};
         static const PerfCol c3[] = {{UI_MENU_OV_FMT_POWER, 888}, {UI_MENU_OV_FMT_MHZ, 8888}, {UI_MENU_OV_GAME_PCT, 100},
                                      {UI_MENU_OV_GAME_GB, 888.8f}};
-        char rate[64];   // real and generated frames with frame generation on: the column then fits two rates
+        char rate[64];   // drawn and on-screen frames with frame generation on: the column then fits two rates
         float rate_w = 0;
-        if (g_perf_gen >= 0) {
+        if (g_perf_shown >= 0) {
             snprintf(rate, sizeof rate, menu_text(UI_MENU_OV_FPS_FG), 888.0, 888.0);
             rate_w = ImGui::CalcTextSize(rate).x;
         }
@@ -1163,8 +1163,8 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         perf_cell(UI_MENU_OV_FMT_GB_OF, perf_gb(s.ram_total_mb));
         perf_cell(UI_MENU_OV_GAME_GB, perf_gb(s.ram_game_mb));
         ImGui::TableNextColumn();   // the frame row: no label, the rate in its place
-        if (g_perf_gen < 0) snprintf(rate, sizeof rate, menu_text(UI_MENU_OV_FPS), s.fps);
-        else snprintf(rate, sizeof rate, menu_text(UI_MENU_OV_FPS_FG), s.fps, (double)g_perf_gen);
+        if (g_perf_shown < 0) snprintf(rate, sizeof rate, menu_text(UI_MENU_OV_FPS), s.fps);
+        else snprintf(rate, sizeof rate, menu_text(UI_MENU_OV_FPS_FG), s.fps, (double)g_perf_shown);
         ImGui::TextColored(fps_c, "%s", rate);
         perf_cell(UI_MENU_OV_FRAME_MS, s.frame_ms_avg);
         perf_cell(UI_MENU_OV_MAX_MS, s.frame_ms_max);

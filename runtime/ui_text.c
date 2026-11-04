@@ -49,7 +49,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
-    // the same with frame generation on: the frames the game drew, then the generated ones
+    // the same with frame generation on: the frames the game drew, then all the frames on screen
     [UI_PERF_LINE_FPS_FG] = "%.0f / %.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",

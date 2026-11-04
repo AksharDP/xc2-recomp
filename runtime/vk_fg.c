@@ -148,10 +148,11 @@ int vk_fg_wanted(void) {
 
 int vk_fg_active(void) { return G.on; }
 
-// Generated frames a second over the last half second: what the library presented less what the game drew. Negative
-// while frame generation is off. On the present thread, once a frame, like vk_fg_frame and vk_fg_shutdown.
-float vk_fg_generated_fps(uint64_t now_ns) {
-    static uint64_t t0, shown0, drawn0;
+// Frames a second reaching the screen over the last half second, drawn and generated together, from the library's
+// present count. Negative while frame generation is off. On the present thread, once a frame, like vk_fg_frame and
+// vk_fg_shutdown.
+float vk_fg_shown_fps(uint64_t now_ns) {
+    static uint64_t t0, shown0;
     static float rate;
     if (!G.on || !G.sc_count || !G.swapchain) {
         t0 = 0;
@@ -159,12 +160,9 @@ float vk_fg_generated_fps(uint64_t now_ns) {
         return -1;
     }
     if (t0 && now_ns - t0 < 500000000ull) return rate;
-    uint64_t shown = G.sc_count(G.swapchain), drawn = G.frame_id;
-    if (t0) {
-        uint64_t s = shown - shown0, d = drawn - drawn0;
-        rate = s > d ? (float)((s - d) * 1e9 / (double)(now_ns - t0)) : 0;
-    }
-    t0 = now_ns, shown0 = shown, drawn0 = drawn;
+    uint64_t shown = G.sc_count(G.swapchain);
+    if (t0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - t0));
+    t0 = now_ns, shown0 = shown;
     return rate;
 }
 
