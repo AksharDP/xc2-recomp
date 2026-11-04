@@ -25,12 +25,13 @@
 # Replay NVN submissions on their own thread, at most one frame behind the game (1 = on, 0 = off). Adds up to a frame of
 # latency. Unset: on where the VRAM mirrors copy what the GPU reads at submit time, else off.
 # replay_async = 1
-# 1 lifts the virtual core gate: guest threads run without the console's limit of one thread per core.
+# 1 lifts the virtual core gate: guest threads run without the console's limit of one thread per core, and core_float
+# has no effect. The menu's Virtual core gate row shows the gate itself: On is free_cores = 0.
 # free_cores = 0
 # 1 lets the threads the game pins to virtual core 1 run on any of the three: still one thread per core. XC2 pins its
 # job workers there, and they queue while the game streams an area in (leaving or entering a town). 1 cuts the slowdown
 # when leaving Goldmouth's covered market from about 65 to 95 fps on an RTX 4070 Laptop. Takes effect after a restart.
-# core_float = 0
+# core_float = 1
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
 

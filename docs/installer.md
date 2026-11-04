@@ -10,7 +10,8 @@ XC2's inputs; file names inside the game folder (`xc2.exe`, `xc2.ini`) are XC2 R
 1. Downloads `XC2-Setup-<version>-windows.zip` (none is published), unpacks it anywhere and starts `XC2-Setup.exe`.
 2. Picks:
    - the base game (XCI or NSP), the 3.0.1 update (NSP) and, optionally, the add-on content NSPs (the Expansion Pass
-     packs 1 to 6 and *Torna ~ The Golden Country*, title ids 0100E95004039001..9006 and 0100E95004039063);
+     packs 1 to 6 and *Torna ~ The Golden Country*, title ids 0100E95004039001..9006 and 0100E95004039063), of
+     either release ([Releases](#releases));
    - their `prod.keys`;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
@@ -27,32 +28,69 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   profile/                       saves
   logs/                          xc2.log of the last run, xc2.1.log to xc2.4.log of the runs before it
   shader and pipeline caches     prepared by the setup
+  build-cache/                   what the build has of the player's mods; objects/: the last build's generated objects
   xc2-install.json              what built this folder: release version, input hashes, finished steps
 ```
+
+## Releases
+
+Nintendo published XC2 under two titles (`tools/xc2_titles.py`):
+
+| Release | Base | Update | Add-on content | Expected hashes | Build name |
+|---|---|---|---|---|---|
+| The Americas and Europe | 0100E95004038000 | 0100E95004038800 | 0100E9500403900N, ...9063 | `expected-xc2-<version>.json` | v301 |
+| Japan | 0100F3400332C000 | 0100F3400332C800 | 0100F3400332D00N | `expected-xc2-jp-<version>.json` | v301jp |
+
+A European dump is the American title: the same base game, update and add-ons, checked against the same hashes. The
+Japanese release has its own code and data. The check takes the release from the base game's title id, then wants the
+update and every add-on of that release (`check.region_mismatch`, `check.dlc_other_region`) and stops with
+`check.region_unsupported` while `tools/data` has no expected files for it; `tools/extract.py --region jp --record
+VERSION` writes them from a dump (docs/building.md). The updates a release builds are the ones its expected files
+name (`installer/layout.py` `Layout.versions`), so its numbering may differ from 3.0.1.
+
+Each release installs into its own folder, so both can sit side by side: `xc2-install.json` records the release
+(`region`), the build bakes its title id into `xc2.exe` (`rt_title_id` in `modules.c`: the save data and program id
+the game sees, and the title id folders `runtime/mods.c` looks in), and the code patch table is the release's
+(`recomp/patches-v301jp.txt` for Japan; without one the game runs at the console's 30 fps and 1280x720, since the
+runtime's frame rate and resolution code reads `main`'s data only with those patch sets). Mods may be laid out under
+either title id.
 
 ## Updating the port
 
 The player runs a newer installer on the same folder. It reads `xc2-install.json`, keeps `romfs/`, `exefs/`, `aoc/`,
-`profile/` and `xc2.ini` after checking their hashes, rebuilds `xc2.exe` and re-prepares the shaders. A newer
-release that changes nothing game-derived skips the rebuild. Add-on content can be added later: only the add-on step
-runs again.
+`profile/` and `xc2.ini`, rebuilds `xc2.exe` and re-prepares the shaders. A newer release that changes nothing
+game-derived skips the rebuild. Add-on content can be added later: only the add-on step runs again.
+
+What keeps an update short:
+
+- The RomFS is kept by the size and modification time recorded when the merge finished (the merge hashed every byte it
+  wrote); the ExeFS modules are re-hashed (small). `--verify` reads the whole RomFS again.
+- `build-cache/objects/` in the install folder holds the objects of the last build (`tools/build_game.py`
+  `ObjectCache`, about 2 GB). The compile reuses every object whose generated C, compiler, flags and included headers
+  are unchanged, so a release that changes a few lifted functions or only the runtime library compiles a few chunks
+  or none and relinks. It lives in the install folder because each release folder has its own temp folder. Deleting
+  it only costs a full compile on the next update.
 
 ## Setup steps
 
-1. **Check** before writing anything: the files open with the keys, the base game and the update are 1.0.0 and 3.0.1
-   (by the hashes in `tools/data/expected-xc2-<version>.json`), the keys are new enough for the update, enough space
+1. **Check** before writing anything: the files open with the keys, the base game, the update and the add-ons are one
+   release's ([Releases](#releases)), the base game and the update are 1.0.0 and 3.0.1 (by the hashes in
+   `tools/data/expected-xc2[-jp]-<version>.json`), the keys are new enough for the update, enough space
    is free on the target disk, the CPU has AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one
    clear message.
 2. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
    the update's BKTR patch while reading both game files in place: it writes the 14 GB RomFS once, decrypting on
    several threads and hashing as it writes, so the folder needs room for the RomFS only.
 3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
-   are encrypted with the title key from the NSP's ticket). Its log is `logs/dlc-<index>.log` in the temp folder.
+   are encrypted with the title key from the NSP's ticket), up to three packs at once in processes of their own
+   (`installer/steps.py` `DLC_JOBS`). Each pack's log is `logs/dlc-<index>.log` in the temp folder.
 4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
    `recomp/patches-v301.txt` is passed when it exists (XC2's frame rate and game resolution). `patches-upd.txt` and the `v121`/`v143`
    tables are XCX's and never used.
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
    and RomFS hashes) and link them with the prebuilt runtime library into `xc2.exe` (`build_game.py --runtime-lib`).
+   Generated objects come from `build-cache/objects/` where they are current, and the new ones go into it
+   (`build_game.py --object-cache`).
 6. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
    shaders are translated on first use and cached in `shader-cache/`.
 7. **Clean up** the temp folder (generated C and objects).
@@ -118,8 +156,8 @@ xc2.ini.example, VERSION  the default ini; the release string (the repository's 
 
 ## Linux release
 
-Not tested with XC2 yet: `tools/make_release_linux.py` uses XC2's names and proves the build on `generated/v301`, but no
-Linux release of XC2 has been built.
+Every tagged release carries the AppImage next to the Windows zip (`.github/workflows/release.yml`, job `linux`).
+`--prove` builds the game from `generated/v301` with the folder's tools only.
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `XC2-Setup-<version>-linux.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from

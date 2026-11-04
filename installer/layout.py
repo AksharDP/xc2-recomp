@@ -4,8 +4,8 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
 
     python/python.exe       runs every tool (numpy, lz4, cryptography, compression.zstd); its ._pth puts .., ../tools
                             and ../recomp on sys.path, so `python -m installer` imports from the release folder
-    recomp/, tools/         the lifter and the scripts; tools/data/expected-xcx-<version>.json for the base game and
-                            each supported update (SUPPORTED)
+    recomp/, tools/         the lifter and the scripts; tools/data/expected-xc2[-jp]-<version>.json for the base game
+                            and each supported update (SUPPORTED) of each release (REGIONS)
     llvm/                   llvm-mingw (bin/clang.exe)
     runtime/                libxc2rt.a, the headers, install-side sources (romfs.c, patches.c, ov_zstd.c) and the icon; runtime/deps/ holds
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
@@ -38,9 +38,14 @@ EXE = '.exe' if WIN else ''
 UCRT = Path(r'C:\msys64\ucrt64\bin')
 SUPPORTED = ('3.0.1',)   # updates the installer builds; the check identifies the player's by hash
 BASE = '1.0.0'           # the base game's version, checked by hash too
+# The releases (tools/xc2_titles.py): the Americas and Europe share one title, Japan has its own. The check tells them
+# apart by the base game's title id and builds a release only when tools/data holds its expected files.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
+import xc2_titles  # noqa: E402
+REGIONS, DEFAULT_REGION = xc2_titles.REGIONS, xc2_titles.DEFAULT
 GAME_EXE = 'xc2' + EXE   # the game's name in the install folder (the same name the runtime and build give it)
 LEGACY_EXE = 'xcx' + EXE   # the same name in an install folder made before the rename to XC2 (steps.py removes it)
-APP_ID = 0x0100E95004038000   # Xenoblade Chronicles 2; its add-on content has title ids APP_ID + 0x1000 + index
+APP_ID = DEFAULT_REGION.app_id   # Xenoblade Chronicles 2 in the Americas and Europe; Region.app_id for the others
 
 
 def tools_fallback():
@@ -54,9 +59,9 @@ def tools_fallback():
     return found[-1] if found else Path('XC2_SETUP_TOOLS-not-set')
 
 
-def version_tag(version):
-    """'3.0.1' -> 'v301': the version name of build_game.py (its generated/ and build/ folders)."""
-    return 'v' + version.replace('.', '')
+def version_tag(version, region=DEFAULT_REGION):
+    """'3.0.1' -> 'v301' ('v301jp' for Japan): the version name of build_game.py (its generated/ and build/ folders)."""
+    return region.version_tag(version)
 
 
 @dataclass(frozen=True)
@@ -82,9 +87,23 @@ class Layout:
     def clang(self):
         return self.llvm / 'bin' / ('clang' + EXE)
 
-    def expected(self, version):
-        """The expected hashes of the base game (BASE) or an update."""
-        return self.tools / 'data' / f'expected-xc2-{version}.json'
+    def expected(self, version, region=DEFAULT_REGION):
+        """The expected hashes of the base game (BASE) or an update of a release."""
+        return region.expected(version, self.tools / 'data')
+
+    def versions(self, region=DEFAULT_REGION):
+        """The updates of a release the installer builds: the ones tools/data holds expected files for (SUPPORTED for
+        the Americas and Europe; another release's numbering may differ)."""
+        found = []
+        for path in (self.tools / 'data').glob(region.expected_name('*')):
+            v = path.name[len(region.expected_name('')) - len('.json'):-len('.json')]
+            if v != BASE and v[:1].isdigit() and path.name == region.expected_name(v):
+                found.append(v)
+        return sorted(found, key=lambda v: tuple(int(p) for p in v.split('.') if p.isdigit()))
+
+    def supports(self, region):
+        """1 when the release's base game and an update can be built: tools/data holds their expected files."""
+        return self.expected(BASE, region).is_file() and bool(self.versions(region))
 
     def missing(self):
         """Paths the steps need that do not exist."""

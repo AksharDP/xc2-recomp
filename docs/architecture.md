@@ -74,7 +74,8 @@ Every guest thread is a host thread. XCX assumes Horizon's scheduler: three appl
 - Spin waits. Loops that only another thread can end (857 in 1.4.3, 864 in 1.2.1, found by `tools/spin_waits.py`, the
   nxnative search) send their back-edges through `rt_spin_gate`, which pauses the core once per pass and hands it to a
   waiter after 50 us of polling (`XC2_SPIN`, `XC2_SPIN_HANDOFF_US`).
-- `XC2_FREE_CORES=1` turns the gate off, for experiments.
+- Job workers. XC2 pins its job workers to virtual core 1, where they queue while the game streams an area in and the other two cores idle. `XC2_CORE_FLOAT` (on by default) lets a thread pinned to core 1 hold any of the three cores, still one thread per core; `GetThreadCoreMask` keeps reporting the game's mask.
+- `XC2_FREE_CORES=1` turns the gate off, for experiments. `XC2_CORE_FLOAT` then has no effect, and `GetCurrentProcessorNumber` can report one core to several running threads.
 
 ### 4. Graphics
 

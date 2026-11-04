@@ -70,6 +70,11 @@ static int reserve_at(uint64_t at, uint64_t size, int watch) { return plat_mem_r
 #define FRZ_SIZE (1ull << FRZ_SHIFT)
 #define FRZ_HOLD_MS 5000u
 static volatile uint8_t frz[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
+// frz_lock: the region was one read-write run at its last freeze and no mapping change touched it since, so a thaw or
+// the next freeze can change the whole 2 MiB without asking the OS. That query is the expensive part: VirtualQuery walks
+// the page tables to the end of the run of equal pages, far past the region in a large heap, which took 0.65 ms on
+// average and up to 6 ms per thaw, against 0.06 ms for the protection change alone.
+static uint8_t frz_solid[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
 static uint32_t thaw_ms[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: GetTickCount of the last thaw request, 0 never
 static volatile int32_t nfrz;
 static PlatMutex frz_lock = PLAT_MUTEX_INIT;
@@ -84,14 +89,20 @@ static int watched(uint64_t addr, uint64_t size) {
 // frz_lock held exclusively. why: 1 a write fault, 2 mem_thaw (holds the region thawed), 3 a mapping change here.
 static void thaw_locked(uint64_t r, int why) {
     if (why == 2) thaw_ms[r] = (uint32_t)plat_now_ms() | 1;
+    int solid = frz_solid[r];
+    if (why == 3) frz_solid[r] = 0;
     if (!frz[r]) return;
     // The read-only runs only: freeze_locked left reserved holes (heap pages given back) as they were. Every committed
     // page of a frozen region was read-write at the freeze, and mapping changes thaw before they run, so these are all
     // ours.
     uint64_t a = r << FRZ_SHIFT, end = a + FRZ_SIZE, b;
-    for (; a < end; a = b)
-        if (plat_mem_state(a, end, &b) == PLAT_PROT_READ && !plat_mem_protect(a, b - a, PLAT_PROT_RW))
-            rt_fatal("memory: thawing %#llx+%#llx failed", (unsigned long long)a, (unsigned long long)(b - a));
+    if (solid) {
+        if (!plat_mem_protect(a, FRZ_SIZE, PLAT_PROT_RW)) rt_fatal("memory: thawing %#llx failed", (unsigned long long)a);
+    } else {
+        for (; a < end; a = b)
+            if (plat_mem_state(a, end, &b) == PLAT_PROT_READ && !plat_mem_protect(a, b - a, PLAT_PROT_RW))
+                rt_fatal("memory: thawing %#llx+%#llx failed", (unsigned long long)a, (unsigned long long)(b - a));
+    }
     __atomic_store_n(&frz[r], 0, __ATOMIC_RELEASE);
     plat_dec32(&nfrz);
     plat_inc64(&frz_count[why]);
@@ -115,6 +126,10 @@ void mem_thaw(uint64_t a, uint64_t n) {
 static int freeze_locked(uint64_t r) {
     uint64_t a = r << FRZ_SHIFT, end = a + FRZ_SIZE, run[16][2];
     int n = 0;
+    if (frz_solid[r]) {
+        if (plat_mem_protect(a, FRZ_SIZE, PLAT_PROT_READ)) return 1;
+        frz_solid[r] = 0;
+    }
     for (uint64_t x = a, y; x < end; x = y) {
         int st = plat_mem_state(x, end, &y);
         if (st >= PLAT_PROT_NONE) {
@@ -127,6 +142,7 @@ static int freeze_locked(uint64_t r) {
             while (i--) plat_mem_protect(run[i][0], run[i][1] - run[i][0], PLAT_PROT_RW);
             return 0;
         }
+    frz_solid[r] = n == 1 && run[0][0] == a && run[0][1] == end;
     return n > 0;
 }
 
@@ -150,7 +166,7 @@ int mem_freeze(uint64_t a) {
 int mem_frozen(uint64_t a) { return a < RT_ADDRESS_LIMIT && __atomic_load_n(&frz[a >> FRZ_SHIFT], __ATOMIC_ACQUIRE); }
 
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws) {
-    *frozen = (uint64_t)__atomic_load_n(&nfrz, __ATOMIC_RELAXED);
+    *frozen =(uint64_t)__atomic_load_n(&nfrz, __ATOMIC_RELAXED);
     *freezes = (uint64_t)plat_xchg64(&frz_count[0], 0);
     *fault_thaws = (uint64_t)plat_xchg64(&frz_count[1], 0);
     *other_thaws = (uint64_t)plat_xchg64(&frz_count[2], 0) + (uint64_t)plat_xchg64(&frz_count[3], 0);

@@ -6,8 +6,9 @@ generation of each range of that data. This module walks both tables and writes 
 runtime reads) straight from the two game files: nothing is copied out first, so the only space it takes is the image.
 
 Reading, decrypting and writing are pipelined: worker threads read and decrypt pieces of up to PIECE bytes (AES-CTR in
-cryptography releases the GIL), and one writer puts them in order into the image and hashes them. The caller compares
-the SHA-256 with the expected one (tools/data/expected-xc2-<version>.json), which checks every byte of the result.
+cryptography releases the GIL), and one writer puts them in order into the image while a hasher thread hashes them.
+The caller compares the SHA-256 with the expected one (tools/data/expected-xc2-<version>.json), which checks every
+byte of the result.
 
 Formats follow the public descriptions of the NCA BKTR section (switchbrew "NCA", hactool bktr.h): the bucket trees
 are 0x4000-byte nodes, an L1 node listing the start offset of each entry set, then the entry sets.
@@ -185,7 +186,9 @@ def merge(base_path, update_path, keys_path, output, progress=None):
         return section.read(f, offset, size, generation)
 
     digest, done = hashlib.sha256(), 0
-    with image.open('wb') as out, ThreadPoolExecutor(WORKERS) as pool:
+    # The hash of one piece runs on its own thread while the piece is written (both release the GIL), so the writer
+    # waits for the slower of the two instead of their sum; the pieces still enter the hash in order.
+    with image.open('wb') as out, ThreadPoolExecutor(WORKERS) as pool, ThreadPoolExecutor(1) as hasher:
         out.truncate(total)   # one allocation up front: less fragmentation, and a full disk fails here, not at 90%
         out.seek(0)
         queue, todo = deque(), iter(pieces)
@@ -193,16 +196,21 @@ def merge(base_path, update_path, keys_path, output, progress=None):
             queue.append(pool.submit(work, piece))
             if len(queue) >= 2 * WORKERS:
                 break
+        hashing = None
         while queue:
             data = queue.popleft().result()
             nxt = next(todo, None)
             if nxt is not None:
                 queue.append(pool.submit(work, nxt))
+            if hashing:
+                hashing.result()
+            hashing = hasher.submit(digest.update, data)
             out.write(data)
-            digest.update(data)
             done += len(data)
             if progress:
                 progress(done, total)
+        if hashing:
+            hashing.result()
     files = index_romfs(image)
     report = dict(status='pass', romfs_size=total, romfs_sha256=digest.hexdigest(), files=files,
                   integrity='BKTR merge read in place; the caller checks the SHA-256 against the expected one')

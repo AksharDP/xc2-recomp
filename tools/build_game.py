@@ -37,6 +37,12 @@ objects Ninja just rebuilt (new mtime). A mismatch deletes the object, Ninja rec
 summary line. A fork checks the hardlinked generated objects against build/<version>/obj/objects.sha256 (read-only; a
 bad shared object stops the fork and asks for a main build run, which recompiles it and breaks the shared inode).
 
+Object cache. --object-cache DIR keeps the generated objects in DIR between builds (ObjectCache): before Ninja runs,
+each chunk whose contents, compiler, flags and included headers match an entry gets that object and no compile edge;
+after the build the new objects are added and entries no longer used are deleted. The installer passes the install
+folder's build-cache/objects, so an update with another release, whose temp folder and Ninja state are new, compiles
+only what changed.
+
 Compile jobs share a memory budget (MEM_BUDGET, default the smaller of 50 GiB and 80% of RAM) at JOB_MEM per job, so a
 big machine does not run out of memory on the largest chunks. Each phase reports its wall time and the peak memory
 of its processes (Windows job object accounting: committed private bytes).
@@ -54,6 +60,7 @@ game hashes and version in) and links them with that library. The library holds 
 Standard library only.
 """
 import argparse
+import contextlib
 import ctypes
 import ctypes.wintypes as wt   # the job-object structures below; importing it works on every OS
 import hashlib
@@ -63,11 +70,13 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
+import xc2_titles
 
 WIN = os.name == 'nt'
 if not WIN:
@@ -146,12 +155,14 @@ WINDRES = UCRT / 'windres.exe'   # runtime/xc2.rc: the manifest of xc2.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'v301': '3.0.1'}
+DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'v301': '3.0.1',
+                    'v301jp': '3.0.1'}   # the Japanese release (tools/xc2_titles.py): expected-xc2-jp-3.0.1.json
 # rt_game_version is TotK's 121/143 discriminator (host.h RT_V143 switches 1.4.3-only offsets and ABI details on).
 # XCX 2.0.0 (upd) and XC2 3.0.1 keep 0: those branches must stay off for a different game.
 GAME_VERSIONS = {'v0': 100, 'v112': 112, 'v121': 121, 'v143': 143}
 # The game version the menu shows. A named game prints this instead of rt_game_version.
-GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0', 'v301': 'Xenoblade Chronicles 2 3.0.1'}
+GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0', 'v301': 'Xenoblade Chronicles 2 3.0.1',
+              'v301jp': 'Xenoblade Chronicles 2 3.0.1 (Japan)'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
@@ -285,9 +296,9 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version):
+def module_glue(layout, linked, hashes, paths, version, title_id, name=None):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version and the default game paths (host.h)."""
+    expected ExeFS hashes, the game version, the release's application id and the default game paths (host.h)."""
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -315,7 +326,8 @@ def module_glue(layout, linked, hashes, paths, version):
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
     number = GAME_VERSIONS.get(version, 0)   # 1.4.3 -> 143; XCX 2.0.0 and XC2 3.0.1 -> 0
     out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};',
-            f'const char rt_game_name[] = {c_string(GAME_NAMES.get(version, ""))};', '']
+            f'const char rt_game_name[] = {c_string(name or GAME_NAMES.get(version, ""))};',
+            f'const uint64_t rt_title_id = {title_id:#018x}ull;', '']
     return '\n'.join(out)
 
 
@@ -327,8 +339,9 @@ def port_version():
 
 
 def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
-    """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
-    out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
+    """build.ninja text, and the object lists per module. With prebuilt True the generated objects already exist in
+    out/obj and are link inputs without a compile edge; a set names the objects for which that holds (object cache
+    hits). runtime_lib: a prebuilt library replaces the runtime objects
     except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
     # No generated headers for the library: one of them slipping back into the runtime then fails here, not in CI
     inc = f'-I {cmd_path(RUNTIME)}' + ('' if make_lib else f' -I {cmd_path(gen)}')
@@ -377,7 +390,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         objs[mod] = []
         for f in files:
             o = out / 'obj' / mod / (f.stem + '.o')
-            if not prebuilt:
+            if prebuilt is not True and o not in (prebuilt or ()):
                 lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}')
                 lines.append('  pool = gen')
             objs[mod].append(o)
@@ -554,26 +567,188 @@ def write_manifest(path, man):
     write_if_changed(path, ''.join(f'{sha} {size} {mtime} {rel}\n' for rel, (sha, size, mtime) in sorted(man.items())))
 
 
+def hash_files(paths):
+    """{path: SHA-256 hex} of many files on several threads (hashlib and file reads release the GIL)."""
+    paths = list(paths)
+    if len(paths) < 2:
+        return {p: file_sha256(p) for p in paths}
+    with ThreadPoolExecutor(min(16, os.cpu_count() or 2)) as pool:
+        return dict(zip(paths, pool.map(file_sha256, paths)))
+
+
 def check_objects(out, objects, man, record):
     """Compare objects with the manifest man. An object whose size and mtime match its entry is hashed and must equal
     it; any other object was just (re)built, so with record its hash enters man. Returns (verified, bad, unrecorded):
     the objects with a wrong hash, and with record False the ones without a current entry."""
     verified, bad, unrecorded = 0, [], []
+    stats = {o: o.stat() for o in objects}
+    rels = {o: o.relative_to(out / 'obj').as_posix() for o in objects}
+    known = {o for o in objects
+             if (e := man.get(rels[o])) and e[1] == stats[o].st_size and e[2] == stats[o].st_mtime_ns}
+    digests = hash_files(o for o in objects if o in known or record)
     for o in objects:
-        rel = o.relative_to(out / 'obj').as_posix()
-        st = o.stat()
-        e = man.get(rel)
-        if e and e[1] == st.st_size and e[2] == st.st_mtime_ns:
-            if file_sha256(o) == e[0]:
+        rel, st = rels[o], stats[o]
+        if o in known:
+            if digests[o] == man[rel][0]:
                 verified += 1
             else:
                 bad.append(o)
         elif record:
-            man[rel] = (file_sha256(o), st.st_size, st.st_mtime_ns)
+            man[rel] = (digests[o], st.st_size, st.st_mtime_ns)
             verified += 1
         else:
             unrecorded.append(o)
     return verified, bad, unrecorded
+
+
+class ObjectCache:
+    """Objects of the generated C kept between builds in another directory (--object-cache), so a build in a fresh
+    directory compiles only the chunks that changed. The installer keeps it in the install folder: an update with a
+    newer release builds in that release's own temp folder, where Ninja has no earlier state, and still reuses every
+    object whose inputs are unchanged.
+
+    An entry is <key>.o and <key>.json in <dir>/<key[:2]>/. The key is the SHA-256 of the source's contents, the
+    compiler's version text and the generated-code flags (folders replaced by names, so moving the release or the
+    temp folder keeps the entries). The JSON lists every header the compile read (from Ninja's deps log) with its
+    SHA-256, each named relative to the folder it lives in (generated C, runtime, toolchain, deps, sysroot), and the
+    object's SHA-256. A lookup hits only when every header still hashes the same and the object still matches its
+    hash, so a changed runtime header recompiles the chunks that include it and a damaged entry is never linked.
+    After a build the directory holds exactly that build's objects."""
+
+    FORMAT = 'xc2-object-cache-1'
+
+    def __init__(self, root, gen, sysroot):
+        self.root = root
+        toolchain = TOOLCHAIN_BIN.parent if TOOLCHAIN_BIN else CLANG.resolve().parent.parent
+        named = [('gen', gen), ('rt', RUNTIME), ('tc', toolchain), ('deps', DEPS), ('sys', sysroot)]
+        self.roots = sorted(((t, Path(p).resolve()) for t, p in named if p), key=lambda r: -len(str(r[1])))
+        version = subprocess.run([str(CLANG), '--version'], capture_output=True, text=True).stdout
+        version = '\n'.join(l for l in version.splitlines() if not l.startswith('InstalledDir'))
+        flags = ' '.join(GEN_FLAGS)
+        for t, p in self.roots:
+            for form in (cmd_path(p), flag_path(p), str(p), p.as_posix()):
+                flags = flags.replace(form, f'<{t}>')
+        self.salt = hashlib.sha256(f'{self.FORMAT}\0{version}\0{flags}\0'.encode()).digest()
+        self.header_hashes = {}
+        self.tokens = {}
+
+    def key(self, src_sha):
+        return hashlib.sha256(self.salt + bytes.fromhex(src_sha)).hexdigest()
+
+    def entry(self, key):
+        return self.root / key[:2] / key
+
+    def token(self, name):
+        """A header path from the deps log as '<root name>:<path below it>' ('abs:<path>' outside every root)."""
+        t = self.tokens.get(name)
+        if t is None:
+            p = Path(name)
+            p = (p if p.is_absolute() else ROOT / p).resolve()
+            t = 'abs:' + p.as_posix()
+            for n, r in self.roots:
+                if p.is_relative_to(r):
+                    t = f'{n}:{p.relative_to(r).as_posix()}'
+                    break
+            self.tokens[name] = t
+        return t
+
+    def header_sha(self, token):
+        if token not in self.header_hashes:
+            n, rel = token.split(':', 1)
+            base = dict(self.roots).get(n) if n != 'abs' else None
+            p = Path(rel) if n == 'abs' else base / rel if base else None
+            self.header_hashes[token] = file_sha256(p) if p and p.is_file() else None
+        return self.header_hashes[token]
+
+    def lookup(self, keys):
+        """{object: key} of the hits among keys ({object: key}), each placed at its object path."""
+        found = {}
+        for o, key in keys.items():
+            meta = self.entry(key).with_suffix('.json')
+            try:
+                data = json.loads(meta.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if data.get('format') == self.FORMAT and \
+                    all(self.header_sha(t) == sha for t, sha in data.get('headers', {}).items()):
+                found[o] = (key, data)
+        cached = hash_files(self.entry(key).with_suffix('.o') for key, _ in found.values()
+                            if self.entry(key).with_suffix('.o').is_file())
+        hits = {}
+        for o, (key, data) in found.items():
+            obj = self.entry(key).with_suffix('.o')
+            if cached.get(obj) != data.get('sha256'):
+                obj.unlink(missing_ok=True)
+                obj.with_suffix('.json').unlink(missing_ok=True)
+                continue
+            o.parent.mkdir(parents=True, exist_ok=True)
+            o.unlink(missing_ok=True)
+            try:
+                # clang writes its output under a temporary name and renames it, so the link is a snapshot
+                os.link(obj, o)
+            except OSError:
+                shutil.copy2(obj, o)
+            hits[o] = key
+        return hits
+
+    def store(self, out, keys, base, env):
+        """Add the objects of keys ({object: key}) that Ninja compiled, with the headers its deps log lists."""
+        if not keys:
+            return
+        deps, cur = {}, None
+        targets = {flag_path(o): o for o in keys}
+        names = list(targets)
+        for i in range(0, len(names), 200):
+            r = subprocess.run(base + ['-t', 'deps'] + names[i:i + 200], cwd=ROOT, env=env, capture_output=True,
+                               text=True, encoding='utf-8', errors='replace')
+            for line in r.stdout.splitlines():
+                if not line.strip():
+                    continue
+                if line.startswith((' ', '\t')):
+                    if cur is not None:
+                        deps[cur].append(line.strip())
+                    continue
+                target, _, rest = line.partition(': #deps')
+                cur = targets.get(target) if rest and '(VALID)' in rest else None
+                if cur is not None:
+                    deps[cur] = []
+        digests = hash_files(o for o in keys if o in deps)
+        for o, key in keys.items():
+            if o not in deps:   # no valid deps record: not cacheable this time
+                continue
+            src = deps[o][0] if deps[o] else ''
+            headers = {}
+            for name in deps[o][1:]:
+                if name == src:
+                    continue
+                t = self.token(name)
+                headers[t] = self.header_sha(t)
+            if any(sha is None for sha in headers.values()):
+                continue
+            entry = self.entry(key)
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            tmp = entry.with_name(f'{entry.name}.{os.getpid()}.tmp')
+            try:
+                os.link(o, tmp)
+            except OSError:
+                shutil.copy2(o, tmp)
+            os.replace(tmp, entry.with_suffix('.o'))
+            meta = {'format': self.FORMAT, 'sha256': digests[o], 'headers': headers}
+            tmp.write_text(json.dumps(meta, separators=(',', ':')), encoding='utf-8')
+            os.replace(tmp, entry.with_suffix('.json'))
+
+    def prune(self, keep):
+        """Delete every entry and leftover file whose key is not in keep."""
+        if not self.root.is_dir():
+            return
+        for d in self.root.iterdir():
+            if not d.is_dir():
+                continue
+            for f in d.iterdir():
+                if f.name.split('.')[0] not in keep or f.name.endswith('.tmp'):
+                    f.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                d.rmdir()   # only when empty
 
 
 def ninja_build(base, targets, env):
@@ -772,6 +947,9 @@ def main():
                     help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no xc2.exe)')
     ap.add_argument('--runtime-lib', type=Path, help=f'link against this {LIB_NAME} instead of compiling runtime/ '
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
+    ap.add_argument('--object-cache', type=Path,
+                    help='keep the generated objects in this directory between builds and reuse those whose source and '
+                         'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -787,8 +965,17 @@ def main():
     if not expected:
         if args.version not in DISPLAY_VERSIONS:
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
-        expected = ROOT / 'tools' / 'data' / f'expected-xc2-{DISPLAY_VERSIONS[args.version]}.json'
-    hashes = json.loads(Path(expected).read_text())['exefs_sha256']
+        expected = xc2_titles.of_tag(args.version).expected(DISPLAY_VERSIONS[args.version])
+    expected_json = json.loads(Path(expected).read_text())
+    hashes = expected_json['exefs_sha256']
+    # The release's application id (tools/xc2_titles.py): runtime/fs_host.c checks the save data against it and
+    # runtime/svc.c reports it as the program id
+    title_id = int(expected_json.get('base_title_id', xc2_titles.DEFAULT.title), 16)
+    region = xc2_titles.of_title(f'{title_id:016X}')
+    # A release's update the table above does not name (another release's numbering): named from its expected file
+    game_name = None if args.version in GAME_NAMES or not region else \
+        f'Xenoblade Chronicles 2 {expected_json.get("display_version", "")}' + ('' if region is xc2_titles.DEFAULT
+                                                                               else f' ({region.name})')
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
     if args.ninja:
         NINJA = args.ninja.resolve()
@@ -840,7 +1027,8 @@ def main():
         missing = [n for n in names if n not in hashes]
         if missing:
             sys.exit(f'{expected}: no exefs_sha256 for {missing}')
-        write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
+        write_if_changed(out / 'modules.c',
+                         module_glue(layout, linked, hashes, paths, args.version, title_id, game_name))
         if (paths['romfs'] / 'index.json').is_file():
             count, size, dt = romfs_index.write(paths['romfs'], out)
             print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
@@ -878,8 +1066,17 @@ def main():
     runtime_lib = args.runtime_lib.resolve() if args.runtime_lib else None
     if runtime_lib and not runtime_lib.is_file():
         sys.exit(f'{runtime_lib} not found: build it with --make-runtime-lib')
-    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib)
+    cache, cache_keys, prebuilt = None, {}, pairs is not None
+    if args.object_cache and pairs is None and mods:
+        t0 = time.monotonic()
+        cache = ObjectCache(args.object_cache.resolve(), gen, args.sysroot if not WIN else None)
+        sources = {out / 'obj' / mod / (f.stem + '.o'): f for mod, files in mods.items() for f in files}
+        src_sha = hash_files(sources.values())
+        cache_keys = {o: cache.key(src_sha[f]) for o, f in sources.items()}
+        prebuilt = set(cache.lookup(cache_keys))
+        print(f'object cache: {len(prebuilt)} of {len(cache_keys)} generated objects reused '
+              f'({time.monotonic() - t0:.1f} s)', flush=True)
+    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, prebuilt, runtime_lib, args.make_runtime_lib)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
@@ -897,6 +1094,11 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    if cache:
+        t0 = time.monotonic()
+        cache.store(out, {o: k for o, k in cache_keys.items() if o not in prebuilt}, base, env)
+        cache.prune(set(cache_keys.values()))
+        print(f'object cache: updated ({time.monotonic() - t0:.1f} s)', flush=True)
     if args.compile_only:
         return
     if args.make_runtime_lib:

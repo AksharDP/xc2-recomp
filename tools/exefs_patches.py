@@ -41,10 +41,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cheats import TITLE, Main, convert, fnv  # noqa: E402
+from cheats import Main, convert, fnv, places  # noqa: E402
 
 NSO_HEADER = 0x100
-EXEFS_PLACES = ('exefs', f'atmosphere/contents/{TITLE}/exefs', f'contents/{TITLE}/exefs', f'{TITLE}/exefs')
+EXEFS_PLACES = places('exefs')
 
 
 def patch_files(mods):

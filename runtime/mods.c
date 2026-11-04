@@ -35,8 +35,8 @@
 #include "mods.h"
 #include "platform/platform.h"
 
-#define TITLE "0100E95004038000"
-#define AOC_TITLE "0100E95004039"   // + three hex digits: the add-on content index
+// The title id folders are the release's (rt_title_id, host.h): 0100E95004038000 and its add-on content
+// 0100E95004039NNN in the Americas and Europe, 0100F3400332C000 and 0100F3400332DNNN in Japan.
 #define MAX_MODS 512
 
 static ModInfo *mods;
@@ -68,17 +68,21 @@ static int has_file_cb(const char *name, int kind, uint64_t size, void *ctx) {
 
 // The first of the emulator and Atmosphere places of <mod>/<part> that is a folder, into out ("" none).
 static void find_root(const char *mod, const char *part, char *out, size_t cap) {
-    static const char *const forms[] = {"%s/%s", "%s/atmosphere/contents/" TITLE "/%s", "%s/contents/" TITLE "/%s",
-                                        "%s/" TITLE "/%s"};
+    static const char *const forms[] = {"%s/%s%s", "%s/atmosphere/contents/%s/%s", "%s/contents/%s/%s", "%s/%s/%s"};
+    char title[17];
+    snprintf(title, sizeof title, "%016llX", (unsigned long long)rt_title_id);
     for (size_t i = 0; i < sizeof forms / sizeof *forms; i++) {
-        if (snprintf(out, cap, forms[i], mod, part) < (int)cap && plat_dir_exists(out)) return;
+        if (snprintf(out, cap, forms[i], mod, i ? title : "", part) < (int)cap && plat_dir_exists(out)) return;
     }
     out[0] = 0;
 }
 
-// The add-on content index of a title id folder name, or 0 when it is none of XC2's.
+// The add-on content index of a title id folder name, or 0 when it is none of this release's (the release's id +
+// 0x1000 + the index, whose first 13 hex digits are the same for every index below 0x1000).
 static int aoc_index(const char *name) {
-    if (strlen(name) != 16 || strncasecmp(name, AOC_TITLE, 13)) return 0;
+    char aoc[17];
+    snprintf(aoc, sizeof aoc, "%016llX", (unsigned long long)(rt_title_id + 0x1000));
+    if (strlen(name) != 16 || strncasecmp(name, aoc, 13)) return 0;
     int v = 0;
     for (int i = 13; i < 16; i++) {
         char c = (char)tolower((unsigned char)name[i]);
