@@ -9,7 +9,7 @@
 //   job: { "key", "stage": "vs|ps|cs", "code": path (graphics = 0x50-byte SPH + instructions, compute = instructions), "c1": hex,
 //          "tex": {slot: type}, "img": {slot: {type, fmt}}, "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint},
 //          "local": [x, y, z], "shared": bytes, "debug": bool, "reduced": bool, "softfloat64": bool,
-//          "sbuf_align": int, "subgroup": int }
+//          "sbuf_align": int, "subgroup": int, "xfb": {"stride": int, "words": [int]} }
 //   Output: <out>/<key>.spv and <out>/<key>.res.json (bindings, queried slots, notes).
 using Ryujinx.Common.Memory;
 using Ryujinx.Graphics.Shader;
@@ -120,6 +120,12 @@ static class SwshXlate
         public int QueryHostStorageBufferOffsetAlignment() => _job["sbuf_align"] is JsonNode n ? (int)n : 16;
         // "subgroup": n: lanes per subgroup when the host cannot pin 32 (AMD GCN/Vega run 64): ballots and votes span n lanes.
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
+        // "xfb": {"stride": bytes, "words": [...]}: the vertex shader's transform feedback layout for buffer 0, one output
+        // attribute word per 4 bytes of a record (gfx_shader.c gfx_shader_xfb reads it from the NVN control section).
+        public bool QueryTransformFeedbackEnabled() => _job["xfb"] is JsonObject;
+        public ReadOnlySpan<byte> QueryTransformFeedbackVaryingLocations(int bufferIndex) =>
+            bufferIndex == 0 && _job["xfb"] is JsonObject x ? x["words"].AsArray().Select(w => (byte)(int)w).ToArray() : ReadOnlySpan<byte>.Empty;
+        public int QueryTransformFeedbackStride(int bufferIndex) => bufferIndex == 0 && _job["xfb"] is JsonObject x ? (int)x["stride"] : 0;
     }
 
 

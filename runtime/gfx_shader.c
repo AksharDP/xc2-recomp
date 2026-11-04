@@ -930,6 +930,24 @@ static void build_key(const uint8_t code_hash[32], const GfxShaderAnswers *a, co
     rt_sha256(buf, (size_t)(p - buf), key);
 }
 
+// The transform feedback layout of a vertex shader's control section. Buffer 0 only: XC2's five such shaders (all in
+// shd_post.wishp) use no other. +0xdc holds one byte per varying, 0x20 + i for generic output vector i; +0x4dc its
+// component count; +0x6dc the record stride; +0x6e8 the varying count. Measured on those shaders: each declares as many
+// output vectors as it has varyings, and the components add up to the stride (2 x 3 floats = 24, 3 + 3 + 3 + 4 = 52,
+// 9 x 4 = 144). A layout that does not add up counts as none.
+uint32_t gfx_shader_xfb(const uint8_t *control, uint8_t words[GFX_XFB_WORDS]) {
+    uint32_t stride, n, w = 0;
+    memcpy(&stride, control + 0x6dc, 4), memcpy(&n, control + 0x6e8, 4);
+    if (!stride || !n || n > GFX_XFB_WORDS) return 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t loc = control[0xdc + i], comps = control[0x4dc + i];
+        if (loc < 0x20 || loc >= 0x40 || !comps || comps > 4 || w + comps > GFX_XFB_WORDS) return 0;
+        // Output attribute words as the translator counts them: generic vector 0 starts at word 0x20, 4 words each
+        for (uint32_t k = 0; k < comps; k++) words[w++] = (uint8_t)(0x20 + (loc - 0x20) * 4 + k);
+    }
+    return w * 4 == stride ? stride : 0;
+}
+
 static size_t build_request(char *o0, const char *hex, const char *stage, const char *code_path, const uint8_t *c1,
                             uint32_t c1_len, const GfxShaderAnswers *a, const uint8_t *control) {
     char *o = o0;
@@ -975,7 +993,15 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     // Maxwell dithers alpha to coverage on a single-sample target (docs/maxwell.md 5.7); Vulkan does not, so the
     // fragment shader discards the uncovered pixels of a 2x2 pattern itself (Ryujinx's alpha-to-coverage dither).
     if (!strcmp(stage, "ps") && a && a->a2c_dither) o += sprintf(o, ",\"a2c_dither\":true");
-    int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
+    // Transform feedback outputs. Already part of the code hash (the whole control section).
+    uint8_t xfb[GFX_XFB_WORDS];
+    uint32_t xfb_stride = !strcmp(stage, "vs") ? gfx_shader_xfb(control, xfb) : 0;
+    if (xfb_stride) {
+        o += sprintf(o, ",\"xfb\":{\"stride\":%u,\"words\":[", xfb_stride);
+        for (uint32_t i = 0; i < xfb_stride / 4; i++) o += sprintf(o, "%s%u", i ? "," : "", xfb[i]);
+        o += sprintf(o, "]}");
+    }
+    int si =!strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
     if (host_sg[si] != 32) o += sprintf(o, ",\"subgroup\":%u", host_sg[si]);

@@ -81,6 +81,9 @@ typedef struct VkExec {
     NVNbufferRange vbuf[16];             // OP_BIND_VBUF
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
     uint64_t tex[6][128], samp[6][128], img[6][32];   // OP_BIND_TEX / OP_BIND_SAMP / OP_BIND_IMG handles per stage
+    p_xfb_bind xfb;                      // OP_XFB_BIND
+    int xfb_active;                      // between OP_XFB_ACTIVE 1 and 0: draws store records into xfb
+    uint64_t xfb_written;                // bytes stored into xfb since OP_XFB_ACTIVE 1
 
     // ---- vk_exec_xfer.c slots (render enable, conditional rendering): left empty by vk_exec.c
     int render_disabled;                 // OP_RENDER_ENABLE false or a failed OP_RENDER_COND: clears and draws skip
