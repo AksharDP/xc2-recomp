@@ -59,6 +59,9 @@ jobs:
       - name: Build the shader translator
         run: python tools/build_xlate.py
       - name: Build the release folder and zip
+        timeout-minutes: 25   # about a minute warm; above check_bundle's own limits. v0.1.8 hung here with no way to see where
+        env:
+          PYTHONUNBUFFERED: "1"   # a killed step keeps its log only up to what Python has flushed
         run: python tools/make_release.py --out build/release/XC2-Setup --zip ${{ env.ZIP }}
       - uses: actions/upload-artifact@v4
         with:
