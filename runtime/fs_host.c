@@ -671,6 +671,14 @@ static uint32_t mount_aoc(const char *name, int index) {
     return r;
 }
 
+// The path after an add-on content mount's "<name>:", as a mod or the prompts list it: the game's field BGM paths carry
+// a doubled separator ("aoc1:/stream//bgm/m58.nop"). 0 on an invalid path.
+static int aoc_relative(const char *colon, char *rel, size_t cap) {
+    const char *rest = colon + 1;
+    while (*rest == '/') ++rest;
+    return romfs_path_normalize(rest, rel, cap);
+}
+
 // A player mod's file for an add-on content path (mods.c mods_aoc_file): the game looks a file up in each pack before
 // its base archive, so this is where XC2 mods replace archived files. Into out the host file; 0 when no mod has the
 // path (*is_dir: a folder some mod has files under).
@@ -684,12 +692,8 @@ static int mod_aoc_path(const char *path, char *out, size_t cap, int *is_dir) {
         if (mounts[i].kind == M_AOC && strlen(mounts[i].name) == n && !strncmp(mounts[i].name, path, n))
             index = mounts[i].aoc;
     plat_mutex_unlock_shared(&lock);
-    if (!index) return 0;
-    // The game's field BGM paths carry a doubled separator ("aoc1:/stream//bgm/m58.nop"); a mod lists the plain path.
-    const char *rest = colon + 1;
-    while (*rest == '/') ++rest;
     char rel[PATH_CAP];
-    return romfs_path_normalize(rest, rel, sizeof rel) && mods_aoc_file(index, rel, out, cap, is_dir);
+    return index && aoc_relative(colon, rel, sizeof rel) && mods_aoc_file(index, rel, out, cap, is_dir);
 }
 
 // The redrawn button prompt layout for an add-on content path (prompts.c prompts_file): the game asks every pack for
@@ -704,7 +708,8 @@ static int prompts_aoc_path(const char *path, char *out, size_t cap) {
     for (int i = 0; i < NMOUNTS; i++)
         if (mounts[i].kind == M_AOC && strlen(mounts[i].name) == n && !strncmp(mounts[i].name, path, n)) aoc = 1;
     plat_mutex_unlock_shared(&lock);
-    return aoc && prompts_file(colon + 2, out, cap);
+    char rel[PATH_CAP];
+    return aoc && aoc_relative(colon, rel, sizeof rel) && prompts_file(rel, out, cap);
 }
 
 typedef struct { int32_t index; uint8_t reserved[0x1c]; } CacheStorageInfo;
