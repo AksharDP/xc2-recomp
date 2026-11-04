@@ -28,6 +28,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   profile/                       saves
   logs/                          xc2.log of the last run, xc2.1.log to xc2.4.log of the runs before it
   shader and pipeline caches     prepared by the setup
+  build-cache/                   what the build has of the player's mods; objects/: the last build's generated objects
   xc2-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
@@ -57,9 +58,18 @@ either title id.
 ## Updating the port
 
 The player runs a newer installer on the same folder. It reads `xc2-install.json`, keeps `romfs/`, `exefs/`, `aoc/`,
-`profile/` and `xc2.ini` after checking their hashes, rebuilds `xc2.exe` and re-prepares the shaders. A newer
-release that changes nothing game-derived skips the rebuild. Add-on content can be added later: only the add-on step
-runs again.
+`profile/` and `xc2.ini`, rebuilds `xc2.exe` and re-prepares the shaders. A newer release that changes nothing
+game-derived skips the rebuild. Add-on content can be added later: only the add-on step runs again.
+
+What keeps an update short:
+
+- The RomFS is kept by the size and modification time recorded when the merge finished (the merge hashed every byte it
+  wrote); the ExeFS modules are re-hashed (small). `--verify` reads the whole RomFS again.
+- `build-cache/objects/` in the install folder holds the objects of the last build (`tools/build_game.py`
+  `ObjectCache`, about 2 GB). The compile reuses every object whose generated C, compiler, flags and included headers
+  are unchanged, so a release that changes a few lifted functions or only the runtime library compiles a few chunks
+  or none and relinks. It lives in the install folder because each release folder has its own temp folder. Deleting
+  it only costs a full compile on the next update.
 
 ## Setup steps
 
@@ -72,12 +82,15 @@ runs again.
    the update's BKTR patch while reading both game files in place: it writes the 14 GB RomFS once, decrypting on
    several threads and hashing as it writes, so the folder needs room for the RomFS only.
 3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
-   are encrypted with the title key from the NSP's ticket). Its log is `logs/dlc-<index>.log` in the temp folder.
+   are encrypted with the title key from the NSP's ticket), up to three packs at once in processes of their own
+   (`installer/steps.py` `DLC_JOBS`). Each pack's log is `logs/dlc-<index>.log` in the temp folder.
 4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
    `recomp/patches-v301.txt` is passed when it exists (XC2's frame rate and game resolution). `patches-upd.txt` and the `v121`/`v143`
    tables are XCX's and never used.
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
    and RomFS hashes) and link them with the prebuilt runtime library into `xc2.exe` (`build_game.py --runtime-lib`).
+   Generated objects come from `build-cache/objects/` where they are current, and the new ones go into it
+   (`build_game.py --object-cache`).
 6. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
    shaders are translated on first use and cached in `shader-cache/`.
 7. **Clean up** the temp folder (generated C and objects).
