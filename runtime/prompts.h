@@ -1,8 +1,9 @@
 // Xbox, PlayStation and keyboard button prompts (XC2_PROMPTS). XC2 draws its prompts from texture layouts in bf2.ard
 // (menu/image/button.wilay for the [ML:icon] tags of its text, the battle palette's mnu032_* layouts and a few more).
 // tools/xc2_prompts.py redraws them from the player's own archive into prompts/<set>/ next to xc2.exe, listed in
-// prompts/manifest.tsv. The game asks every add-on content mount for a menu file before it reads bf2.ard, so fs_host.c
-// serves these files to those probes. Without add-on content the game has no mount to ask, and its own prompts stay.
+// prompts/manifest.tsv. The game asks every add-on content mount for a menu or text file before it reads bf2.ard, so
+// fs_host.c serves these files to those probes. Without add-on content the game has no mount to ask, and its own
+// prompts stay. Every redrawn set also gets prompts/text/: the message tables whose stick clicks use the click's icon.
 #pragma once
 #include <stddef.h>
 
