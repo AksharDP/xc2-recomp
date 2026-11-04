@@ -13,7 +13,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
                ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
-    bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe
+    bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe, amd_fidelityfx_vk.dll (AMD's signed
+               build, out of the FidelityFX SDK release)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626 (VERSION alone outside a git checkout); the
                installer's release string
@@ -21,7 +22,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
 
 --from DIR takes python/, llvm/, runtime/deps/, bin/ and licenses/ from an unpacked earlier release (an XCX Recomp
 release, or the TotK Recomp release whose bin/totk_xlate.exe is the same translator) instead of downloading and
-unpacking them; runtime/, the sources and the launcher are still built from this checkout.
+unpacking them; runtime/, the sources, the launcher and the FSR 3.1 library are still taken as usual.
 
 --prove compiles generated/v301 and links build/release-check/xc2.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there. It needs a
@@ -85,10 +86,14 @@ PINS = {
             '44c81162337915afecda3185f66fd98268a54454580b2717080c9dfef57fe781'),
     'zstd': (MSYS2 + 'mingw-w64-ucrt-x86_64-zstd-1.5.7-2-any.pkg.tar.zst',   # static libzstd.a (runtime/resolution.c)
              'dbdb8427280046a2b41697780aa4c52983b708082b0da4755951dc3bea96ca89'),
+    'ffx-sdk': ('https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/FidelityFX-SDK-v1.1.4.zip',
+                '0216556bfb0e243cec30004a2a98d38f4e3f7406cb7938e3c1b85c758e95d952'),   # 450 MiB; one file is read (take_ffx)
 }
 # The component MSI inside the python.org installer that carries Tcl/Tk and tkinter (Burn names its payloads a0..a27).
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
 SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
+FFX_DLL = 'amd_fidelityfx_vk.dll'   # runtime/vk_fsr3.c loads it from next to xc2.exe
+FFX_DLL_SHA256 = 'a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78'   # PrebuiltSignedDLL/ inside the SDK zip
 
 # llvm-mingw: what clang and lld need to compile and link xc2.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
@@ -294,6 +299,18 @@ def build_bin(out):
     shutil.copy2(dll, b / 'SDL3.dll')
     shutil.copy2(unpack('opus') / 'ucrt64' / 'bin' / 'libopus-0.dll', b / 'libopus-0.dll')
     shutil.copy2(unpack('ninja') / 'ninja.exe', b / 'ninja.exe')
+
+
+def take_ffx(out):
+    """AMD's FSR 3.1 library into bin/ and its licence into licenses/. Read straight out of the SDK zip: unpack would
+    extract all of its 450 MiB for this one file. Separate from build_bin, as --from's earlier releases do not have it."""
+    with zipfile.ZipFile(fetch('ffx-sdk')) as z:
+        data = z.read(f'PrebuiltSignedDLL/{FFX_DLL}')
+    if hashlib.sha256(data).hexdigest() != FFX_DLL_SHA256:
+        sys.exit(f'{FFX_DLL}: not the pinned library')
+    (out / 'bin' / FFX_DLL).write_bytes(data)
+    (out / 'licenses').mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / 'runtime' / 'ffx_api' / 'LICENSE.txt', out / 'licenses' / 'FidelityFX-SDK-LICENSE.txt')
 
 
 def build_deps(out):
@@ -574,6 +591,7 @@ def main():
         llvm = build_llvm(out)
         build_bin(out)
         build_deps(out)
+    take_ffx(out)
     runtime_lib(out, llvm)
     build_sources(out)
     build_launcher(out, llvm)

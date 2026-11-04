@@ -9,7 +9,7 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     llvm/                   llvm-mingw (bin/clang.exe)
     runtime/                libxc2rt.a, the headers, install-side sources (romfs.c, patches.c, ov_zstd.c) and the icon; runtime/deps/ holds
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
-    bin/                    xc2_xlate.exe (+ xc2_xlate.id), ninja.exe, SDL3.dll, libopus-0.dll
+    bin/                    xc2_xlate.exe (+ xc2_xlate.id), ninja.exe, SDL3.dll, libopus-0.dll, amd_fidelityfx_vk.dll
     xc2.ini.example
     VERSION                 the release version, one line
     temp/                   the default temp folder (created)
@@ -135,9 +135,12 @@ def release_translator(root):
 
 
 def release_dlls(root):
-    """The DLLs xc2.exe loads: SDL3 and Opus, and the C++ runtime of the llvm-mingw it is linked with."""
+    """The DLLs xc2.exe loads: SDL3 and Opus, the C++ runtime of the llvm-mingw it is linked with, and AMD's FSR 3.1
+    library. That one only when present: the game runs without it, and an older setup used as tools_fallback lacks it."""
+    fsr = root / 'bin' / 'amd_fidelityfx_vk.dll'
     return (root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll',
-            *(root / 'llvm' / 'bin' / n for n in ('libc++.dll', 'libunwind.dll', 'libwinpthread-1.dll')))
+            *(root / 'llvm' / 'bin' / n for n in ('libc++.dll', 'libunwind.dll', 'libwinpthread-1.dll')),
+            *((fsr,) if fsr.is_file() else ()))
 
 
 def release_layout(root):
