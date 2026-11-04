@@ -186,6 +186,9 @@ void *vk_mem_capture(void);
 void vk_mem_capture_drop(void *cap);
 void *vk_usnap_capture(const uint64_t *handles, int n);
 void vk_usnap_capture_drop(void *cap);
+// The programs (prog_t pointers) a captured submission's replay may read: the one bound when it starts and those it
+// binds, sorted and distinct, into *out (owned by the capture); -1 when not known (no capture, or a walk cut short).
+int vk_usnap_programs(const void *cap, const void *const **out);
 void vk_exec_captures(void *mem, void *ubo);   // this thread's next vk_exec_record of handles uses these
 extern int vk_mirror_on;
 void vk_mem_use(VkMemSpan *sp);

@@ -142,6 +142,8 @@ typedef struct {
     uint64_t value, submit_no, at, queued;
     uint64_t *h;
     void *mcap, *ucap;  // RI_SUBMIT: the submit-time captures (vk_mem_capture, vk_usnap_capture)
+    const void **progs; // RI_SUBMIT: the programs its replay may read (vk_usnap_programs, a copy); nprogs -1: any
+    int nprogs;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
@@ -156,6 +158,7 @@ static PlatCond rcv = PLAT_COND_INIT;   // item queued, item taken, item done
 static ReplayItem rq[RQ_CAP];
 static int rq_head, rq_n, r_busy, r_started;
 static uint64_t r_presents_queued, r_presents_done, r_submit_done, game_frames;
+static ReplayItem r_cur;   // the item the replay thread runs while r_busy (its programs for vk_be_program_release)
 // Under rl: calls, calls that waited and the time waited per cause, since the last replay_log line and over the run.
 static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr_twaits[DR_N], dr_tns[DR_N];
 // XC2_REPLAY_CHECK: ReadTexels compared with a read after a full drain (under rl): checked, differing, differing
@@ -208,6 +211,7 @@ static void replay_main(void *arg) {
         rq_head = (rq_head + 1) % RQ_CAP;
         rq_n--;
         r_busy = 1;
+        r_cur = it;
         plat_cond_broadcast(&rcv);
         plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
@@ -229,6 +233,8 @@ static void replay_main(void *arg) {
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
         else r_presents_done++;
         r_busy = 0;
+        free(it.progs);   // under rl: vk_be_program_release reads r_cur's list under it
+        r_cur = (ReplayItem){0};
         plat_cond_broadcast(&rcv);
     }
     return;
@@ -398,7 +404,45 @@ static void vk_be_texture_release(const tex_t *t) {
     plat_mutex_unlock(&rl);
     replay_enqueue(&it);
 }
-static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
+// rl held: the replay of submission item q may read program p.
+static int item_reads(const ReplayItem *q, const prog_t *p) {
+    if (q->kind != RI_SUBMIT) return 0;
+    if (q->nprogs < 0) return 1;
+    int a = 0, b = q->nprogs;   // sorted by address
+    while (a < b) {
+        int k = (a + b) / 2;
+        if ((uintptr_t)q->progs[k] < (uintptr_t)p) a = k + 1;
+        else b = k;
+    }
+    return a < q->nprogs && q->progs[a] == (const void *)p;
+}
+
+// Finalize and SetShaders on a program: the replay reads a bound program's control blocks and code from guest memory
+// (vk_exec_draw.c find_stage, shader_for), which the game may free or reuse once the call returns. Asynchronous: the
+// call waits until every queued submission that may read p (it binds p, or starts with p bound: vk_usnap_programs) was
+// replayed, not for the whole queue. While leaving or entering an area the game releases programs every frame, and
+// waiting for the whole queue each time held it for 1.65 s over two minutes in Goldmouth.
+static void vk_be_program_release(const prog_t *p) {
+    if (gfx_replay_async()) {
+        plat_mutex_lock(&rl);
+        dr_calls[DR_PROG_RELEASE]++, dr_tcalls[DR_PROG_RELEASE]++;
+        uint64_t need = 0;
+        for (int i = 0; i < rq_n; i++) {
+            const ReplayItem *q = &rq[(rq_head + i) % RQ_CAP];
+            if (item_reads(q, p) && q->submit_no > need) need = q->submit_no;
+        }
+        if (r_busy && item_reads(&r_cur, p) && r_cur.submit_no > need) need = r_cur.submit_no;
+        if (need > r_submit_done) {
+            uint64_t p0 = perf_begin();
+            int away = core_away_unlocked();
+            while (r_submit_done < need) plat_cond_wait(&rcv, &rl);
+            wait_counted(DR_PROG_RELEASE, p0);
+            core_back_unlocked(&away);
+        }
+        plat_mutex_unlock(&rl);
+    }
+    vk_program_release(p);
+}
 // Everything the GPU reads from guest memory for a submission is copied here, in the game's submit call (the mirrors'
 // written pages, the uniform ranges it binds: vk_mem_capture, vk_usnap_capture), under the capture lock so captures
 // follow queue order, and handed to the replay with it: the game rewrites vertex, storage and uniform data for its next
@@ -416,6 +460,14 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
         return f;
     }
     ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .mcap = mcap, .ucap = ucap};
+    if (n) {   // copied before the queue: the replay frees the capture
+        const void *const *pl;
+        it.nprogs = vk_usnap_programs(ucap, &pl);
+        if (it.nprogs > 0) {
+            if (!(it.progs = malloc(sizeof *it.progs * (size_t)it.nprogs))) rt_fatal("vk: out of memory (replay queue)");
+            memcpy(it.progs, pl, sizeof *it.progs * (size_t)it.nprogs);
+        }
+    }
     if (n > 0) {
         it.h = malloc(sizeof *it.h * (size_t)n);
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
