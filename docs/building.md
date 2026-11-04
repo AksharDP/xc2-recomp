@@ -185,6 +185,11 @@ change passes these, all run with `.venv`:
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
+`lift.py`, `simd.py` and `func.py` split their cases into chunks over `--jobs` worker processes (default: every logical
+processor). Each chunk seeds its own generator from `--seed`, so a run gives the same cases with any number of jobs. The
+tests with game files read `build\extracted\v301\exefs` when it exists, else `v121`; `--exefs` picks another. Without
+MSYS2 or `CC`, tests use the clang of `toolchain\llvm-mingw-*`.
+
 Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
 `--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes. `--probe-vkexec` and
 `--probe-shader` read XC2's shader census, so run the census below with `--version v301` once first.

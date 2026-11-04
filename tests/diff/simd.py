@@ -25,8 +25,8 @@ from collections import Counter, defaultdict
 import unicorn as uc
 from unicorn import arm64_const as A
 
-from common import BUF, BUF_SIZE, ROOT, UC_INVALID, Emu, build_harness, diff_state, dis, mnemonic, rand_fpcr, \
-    rand_v, rand_x, run_harness
+from common import BUF, BUF_SIZE, ROOT, UC_INVALID, Emu, build_harness, chunk_rng, diff_state, dis, mnemonic, \
+    rand_fpcr, rand_v, rand_x, run_chunks, run_harness, split
 from lifter import Lifter, Unsupported
 
 print = functools.partial(print, flush=True)
@@ -74,32 +74,101 @@ def candidates(r):
     return out
 
 
-def validity(lifter, ws, emu):
+CHUNK = 500              # encodings per case chunk (run_chunks); fixed, so the cases do not depend on --jobs
+VALIDITY_CHUNK = 1 << 15   # words per validity chunk, a multiple of the 32 between register resets
+W = {}                   # worker state, set by the *_init functions
+
+
+def validity_init():
+    W.update(emu=Emu([(CODE, bytes(CODE_SIZE))]), lifter=Lifter(0, 'c'))
+
+
+def validity_chunk(ws):
     """Map word -> (lifter accepts, Unicorn accepts); words are placed at CODE + 4i."""
+    emu, lifter = W['emu'], W['lifter']
     mu = emu.mu
     res = {}
-    step = CODE_SIZE // 4
-    for base in range(0, len(ws), step):
-        chunk = ws[base:base + step]
-        mu.mem_write(CODE, struct.pack(f'<{len(chunk)}I', *chunk))
-        mu.ctl_remove_cache(CODE, CODE + CODE_SIZE)
-        state = list(zip(emu.xregs, [BASE_AREA] * 31)) + [(A.UC_ARM64_REG_SP, BASE_AREA)]
-        for i, w in enumerate(chunk):
-            pc = CODE + 4 * i
-            try:
-                lifter.lift(w, pc)
-                lok = True
-            except Unsupported:
-                lok = False
-            if i % 32 == 0:
-                mu.reg_write_batch(state)
-            try:
-                mu.emu_start(pc, pc + 4, count=1)
-                uok = True
-            except uc.UcError as e:
-                uok = e.errno not in UC_INVALID
-            res[w] = (lok, uok)
+    mu.mem_write(CODE, struct.pack(f'<{len(ws)}I', *ws))
+    mu.ctl_remove_cache(CODE, CODE + CODE_SIZE)
+    state = list(zip(emu.xregs, [BASE_AREA] * 31)) + [(A.UC_ARM64_REG_SP, BASE_AREA)]
+    for i, w in enumerate(ws):
+        pc = CODE + 4 * i
+        try:
+            lifter.lift(w, pc)
+            lok = True
+        except Unsupported:
+            lok = False
+        if i % 32 == 0:
+            mu.reg_write_batch(state)
+        try:
+            mu.emu_start(pc, pc + 4, count=1)
+            uok = True
+        except uc.UcError as e:
+            uok = e.errno not in UC_INVALID
+        res[w] = (lok, uok)
     return res
+
+
+def validity(ws, jobs):
+    chunks = [ws[lo:hi] for _, lo, hi in split(len(ws), VALIDITY_CHUNK)]
+    res = {}
+    for part in run_chunks(validity_chunk, chunks, jobs, validity_init, ()):
+        res.update(part)
+    return res
+
+
+def cases_init(code_bytes, code_path, buf0, pick, exe, work, ncases, seed):
+    emu = Emu([(CODE, bytes(CODE_SIZE))])
+    emu.mu.mem_write(CODE, code_bytes)
+    emu.mu.mem_write(BUF, buf0)
+    W.update(emu=emu, code_path=code_path, buf0=buf0, pick=pick, exe=exe, work=work, cases=ncases, seed=seed)
+
+
+def run_chunk(chunk):
+    """Unicorn, then the harness, on the encodings of one chunk. Returns counts, failures and any harness error."""
+    index, lo, hi = chunk
+    r = chunk_rng(W['seed'], index)
+    emu, pick, buf0 = W['emu'], W['pick'], W['buf0']
+    mu = emu.mu
+    cases, expect = [], []
+    t0 = time.time()
+    for k in range(lo, hi):
+        w = pick[k]
+        pc = CODE + 4 * k
+        st = is_store(w)
+        for _ in range(W['cases']):
+            fpcr, x, sp, nzcv, v = make_case(r, w)
+            try:
+                ox, osp, onz, opc, ov = emu.run(pc, fpcr, x, sp, nzcv, v)
+            except uc.UcError:
+                if st:
+                    mu.mem_write(BUF, buf0)
+                continue
+            mh = 0
+            if st:
+                mh = zlib.crc32(bytes(mu.mem_read(BUF, BUF_SIZE)))
+                mu.mem_write(BUF, buf0)
+            cases.append((k, fpcr, x, sp, nzcv, v, st))
+            expect.append((ox, osp, onz, opc, ov, mh))
+    t1 = time.time()
+    work = W['work'] / f'chunk{index}'
+    work.mkdir(parents=True, exist_ok=True)
+    recs, err = run_harness(W['exe'], work, buf0, cases, [(CODE, W['code_path'])])
+    t2 = time.time()
+    if err:
+        k = cases[len(recs)][0] if len(recs) < len(cases) else None
+        err += f', stopped at {pick[k]:08x} {dis(pick[k])}' if k is not None else ''
+    fails, nfail = {}, 0
+    for case, want, got in zip(cases, expect, recs):
+        k, v, st = case[0], case[5], case[6]
+        d = diff_state(got, want, check_pc=False, check_mem=st)
+        if d:
+            nfail += 1
+            w = pick[k]
+            if w not in fails:
+                ins = [f'v{j}={v[j]:032x}' for j in sorted({(w >> 5) & 31, (w >> 16) & 31, w & 31})]
+                fails[w] = (case[1], d[:3], ins)
+    return len(cases), len(recs), nfail, fails, err, t1 - t0, t2 - t1
 
 
 def make_case(r, w):
@@ -134,15 +203,14 @@ def main():
     r = random.Random(args.seed)
     t0 = time.time()
     lifter = Lifter(0, 'c')
-    emu = Emu([(CODE, bytes(CODE_SIZE))])
     cands = candidates(r)
     if args.filter:
         val, mask = (int(x, 16) for x in args.filter.split('/'))
         cands = [w for w in cands if (w & mask) == val]
     if args.no_validity:
-        val = validity(lifter, r.sample(cands, min(len(cands), args.encodings * 4)), emu)
+        val = validity(r.sample(cands, min(len(cands), args.encodings * 4)), args.jobs)
     else:
-        val = validity(lifter, cands, emu)
+        val = validity(cands, args.jobs)
     agree = Counter()
     only = defaultdict(list)
     for w, (lok, uok) in val.items():
@@ -183,52 +251,24 @@ def main():
     exe = build_harness(work, bodies, args.jobs, args.cflags)
     print(f'compiled {len(bodies)} tests ({time.time() - t1:.0f}s)')
 
-    mu = emu.mu
-    mu.mem_write(CODE, code_bytes)
-    mu.ctl_remove_cache(CODE, CODE + CODE_SIZE)
     buf0 = bytes(r.getrandbits(8) for _ in range(4096)) * (BUF_SIZE // 4096)
-    mu.mem_write(BUF, buf0)
     code_path = work / 'code.bin'
     code_path.write_bytes(code_bytes)
-    cases, expect = [], []
     t2 = time.time()
-    for k, w in enumerate(pick):
-        pc = CODE + 4 * k
-        st = is_store(w)
-        for _ in range(args.cases):
-            fpcr, x, sp, nzcv, v = make_case(r, w)
-            try:
-                ox, osp, onz, opc, ov = emu.run(pc, fpcr, x, sp, nzcv, v)
-            except uc.UcError:
-                if st:
-                    mu.mem_write(BUF, buf0)
-                continue
-            mh = 0
-            if st:
-                mh = zlib.crc32(bytes(mu.mem_read(BUF, BUF_SIZE)))
-                mu.mem_write(BUF, buf0)
-            cases.append((k, fpcr, x, sp, nzcv, v, st))
-            expect.append((ox, osp, onz, opc, ov, mh))
-    print(f'unicorn: {len(cases)} cases ({time.time() - t2:.0f}s)')
-
-    t3 = time.time()
-    recs, err = run_harness(exe, work, buf0, cases, [(CODE, code_path)])
-    print(f'harness: {len(recs)} of {len(cases)} cases ({time.time() - t3:.0f}s)')
-    if err:
-        k = cases[len(recs)][0] if len(recs) < len(cases) else None
-        print(f'harness failed: {err}' + (f', stopped at {pick[k]:08x} {dis(pick[k])}' if k is not None else ''))
-
-    fails, nfail = {}, 0
-    for case, want, got in zip(cases, expect, recs):
-        k, v, st = case[0], case[5], case[6]
-        d = diff_state(got, want, check_pc=False, check_mem=st)
-        if d:
-            nfail += 1
-            w = pick[k]
-            if w not in fails:
-                ins = [f'v{j}={v[j]:032x}' for j in sorted({(w >> 5) & 31, (w >> 16) & 31, w & 31})]
-                fails[w] = (case[1], d[:3], ins)
-    print(f'{len(pick)} encodings, {len(cases)} cases: {nfail} failing cases, {len(fails)} failing encodings '
+    res = run_chunks(run_chunk, split(len(pick), CHUNK), args.jobs, cases_init,
+                     (code_bytes, code_path, buf0, pick, exe, work, args.cases, args.seed))
+    ncases, nrecs = sum(x[0] for x in res), sum(x[1] for x in res)
+    print(f'unicorn and harness: {nrecs} of {ncases} cases ({time.time() - t2:.0f}s; '
+          f'{sum(x[5] for x in res):.0f}s and {sum(x[6] for x in res):.0f}s over {args.jobs} jobs)')
+    errs = [x[4] for x in res if x[4]]
+    err = errs[0] if errs else None
+    for e in errs:
+        print(f'harness failed: {e}')
+    nfail = sum(x[2] for x in res)
+    fails = {}
+    for x in res:
+        fails.update(x[3])
+    print(f'{len(pick)} encodings, {ncases} cases: {nfail} failing cases, {len(fails)} failing encodings '
           f'({time.time() - t0:.0f}s total)')
     if fails:
         print('  failing by mnemonic:', dict(Counter(mnemonic(w) for w in fails).most_common(40)))

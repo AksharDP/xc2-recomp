@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'diff'))
-from common import MSYS_BIN, ROOT, compiler  # noqa: E402
+from common import ROOT, compiler  # noqa: E402
 
 SRC = r'''
 #include <pthread.h>
@@ -139,8 +139,9 @@ def main():
     ap.add_argument('--iters', type=int, default=200000)
     args = ap.parse_args()
     env = dict(os.environ)
-    if os.name == 'nt' and MSYS_BIN.exists():
-        env['PATH'] = str(MSYS_BIN) + os.pathsep + env.get('PATH', '')
+    cc_dir = os.path.dirname(compiler())   # the exe needs the compiler's libwinpthread at run time
+    if cc_dir:
+        env['PATH'] = cc_dir + os.pathsep + env.get('PATH', '')
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / 'excl_mt.c'
         exe = Path(tmp) / ('excl_mt.exe' if os.name == 'nt' else 'excl_mt')

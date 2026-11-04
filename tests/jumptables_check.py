@@ -366,14 +366,26 @@ class FunctionCheck:
 
 
 def table_load(mod, s, br):
-    """Last register-offset load in [s, br): the table read of a dispatch block."""
+    """Register-offset load in [s, br) that the br target is computed from: the table read of a dispatch block.
+
+    The compiler can schedule unrelated register-offset loads between the table read and the br, so the target
+    register is followed back rather than taking the last such load.
+    """
+    last = _insn(mod, br)
+    live = {_regno(last.reg_name(last.operands[0].reg))}
     a = br
     while a > s:
         a -= 4
         ins = _insn(mod, a)
-        if ins and ins.mnemonic.startswith('ldr') and len(ins.operands) == 2 \
+        if ins is None:
+            return None
+        w = _writes(ins)
+        if not live & w:
+            continue
+        if ins.mnemonic.startswith('ldr') and len(ins.operands) == 2 \
                 and ins.operands[1].type == capstone.arm64.ARM64_OP_MEM and ins.operands[1].mem.index:
             return ins
+        live = (live - w) | _reads(ins)
     return None
 
 
@@ -698,7 +710,9 @@ def window(mod, br, entry, n=24):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--exefs', default=str(ROOT / 'build' / 'extracted' / 'v121' / 'exefs'))
+    default = next((p for v in ('v301', 'v121') if (p := ROOT / 'build' / 'extracted' / v / 'exefs').exists()),
+                   ROOT / 'build' / 'extracted' / 'v301' / 'exefs')
+    ap.add_argument('--exefs', default=str(default))
     ap.add_argument('--modules', default='main,sdk,subsdk0')
     ap.add_argument('--samples', type=int, default=8)
     ap.add_argument('--no-oracle', action='store_true')
