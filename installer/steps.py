@@ -25,11 +25,12 @@ import time
 from pathlib import Path
 
 from . import ini
-from .layout import APP_ID, BASE, EXE, GAME_EXE, LEGACY_EXE, SUPPORTED, version_tag
+from .layout import BASE, EXE, GAME_EXE, LEGACY_EXE, SUPPORTED, version_tag
 from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
+import xc2_titles  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory)  # noqa: E402
 from package_select import program_nca  # noqa: E402
 
@@ -179,9 +180,22 @@ def game_version(ctx):
     return ctx.state.get('version', SUPPORTED[0])
 
 
-def expected_of(ctx, version):
-    """The expected hashes of the base game (BASE) or an update (tools/data/expected-xcx-<version>.json)."""
-    return json.loads(ctx.layout.expected(version).read_text(encoding='utf-8'))
+def game_region(ctx):
+    """The release this install is built from (tools/xc2_titles.py): what the check identified from the base game's
+    title id, else the recorded one. A folder from before releases were told apart holds the Americas and Europe's."""
+    found = getattr(ctx, 'region', None)
+    return found or xc2_titles.BY_KEY.get(ctx.state.get('region'), xc2_titles.DEFAULT)
+
+
+def expected_of(ctx, version, region=None):
+    """The expected hashes of the base game (BASE) or an update of the install's release
+    (tools/data/expected-xc2[-jp]-<version>.json)."""
+    return json.loads(ctx.layout.expected(version, region or game_region(ctx)).read_text(encoding='utf-8'))
+
+
+def known_versions(ctx, region=None):
+    """The updates whose expected hashes tools/data holds for the release (installer/layout.py Layout.versions)."""
+    return ctx.layout.versions(region or game_region(ctx))
 
 
 def expected_update(ctx):
@@ -274,7 +288,7 @@ class Check(Step):
             if not path.is_file():
                 raise InstallError('check.input_missing', input='dlc', path=str(path))
             with path.open('rb') as f:
-                dlc_record(f, path, keys)
+                dlc_record(f, path, keys, game_region(ctx))
         del keys
 
     def host(self, ctx):
@@ -334,15 +348,25 @@ class Check(Step):
             raise InstallError('check.keys_unreadable') from None
         if 'header_key' not in keys:
             raise InstallError('check.keys_no_header_key')
+        found = {}
         for name, is_update in (('base', False), ('update', True)):
             path = Path(getattr(o, name))
             with path.open('rb') as f:
-                self.open_input(f, path, keys, name, is_update)
-        for path in dlc_inputs(ctx):   # optional: each must hold this game's add-on content
+                found[name] = xc2_titles.of_title(self.open_input(f, path, keys, name, is_update)['title_id'])
+        # The release comes from the base game's title id: the Americas and Europe share one, Japan has its own
+        # (tools/xc2_titles.py). The update must be that release's, and tools/data must hold its expected hashes.
+        region = found['base']
+        if found['update'] is not region:
+            raise InstallError('check.region_mismatch', base=region.name, update=found['update'].name)
+        if not ctx.layout.supports(region):
+            raise InstallError('check.region_unsupported', region=region.name, title=region.title)
+        ctx.region = region
+        ctx.reporter.log(f'check: {region.name} release ({region.title})')
+        for path in dlc_inputs(ctx):   # optional: each must hold this release's add-on content
             if not path.is_file():
                 raise InstallError('check.input_missing', input='dlc', path=str(path))
             with path.open('rb') as f:
-                dlc_record(f, path, keys)
+                dlc_record(f, path, keys, region)
         del keys
 
     @staticmethod
@@ -381,7 +405,7 @@ class Check(Step):
                 raise InstallError('check.ticket_missing', input=name) from None
             raise InstallError('check.keys_too_old', input=name,
                                generation=max(header[0x206], header[0x220])) from None
-        return record['size']
+        return record
 
     def space(self, ctx):
         # The steps run one after another and each frees its scratch files before the next starts, so the install
@@ -395,7 +419,7 @@ class Check(Step):
         romfs_size = kept = 0
         if ctx.will_run('extract'):
             # the update is identified after this estimate: the larger RomFS of the supported ones
-            romfs_size = max(expected_of(ctx, v)['romfs']['size'] for v in SUPPORTED)
+            romfs_size = max(expected_of(ctx, v)['romfs']['size'] for v in known_versions(ctx))
             romfs = ctx.dest / 'romfs' / 'romfs.bin'
             if romfs.is_file():   # a resumed extraction deletes it first, which frees its space
                 kept = romfs.stat().st_size
@@ -426,7 +450,8 @@ class Check(Step):
         o, work = ctx.options, ctx.temp / 'check'
         logs = ctx.temp / 'logs'
         logs.mkdir(parents=True, exist_ok=True)
-        versions = {v: expected_of(ctx, v) for v in SUPPORTED}
+        region = game_region(ctx)
+        versions = {v: expected_of(ctx, v) for v in known_versions(ctx)}
         for name, is_update in (('base', False), ('update', True)):
             out = work / name
             remove(out)
@@ -444,14 +469,17 @@ class Check(Step):
             found = extract.identify_update(work / 'update' / 'exefs', versions)['version']
         except ValueError:
             found = 'unknown'
-        if found not in SUPPORTED:
-            raise InstallError('check.update_wrong_version', found=found, wanted=' / '.join(SUPPORTED))
-        if found != game_version(ctx):   # another update than the recorded one: every step builds again from it
-            ctx.reporter.log(f'check: update {found} (recorded {game_version(ctx)})')
-            ctx.state['version'] = found
+        if found not in versions:
+            raise InstallError('check.update_wrong_version', found=found, wanted=' / '.join(versions))
+        recorded = xc2_titles.BY_KEY.get(ctx.state.get('region'), xc2_titles.DEFAULT)
+        # another update or another release than the recorded one: every step builds again from it
+        if found != ctx.state.get('version', SUPPORTED[0]) or region is not recorded:
+            ctx.reporter.log(f'check: update {found} of the {region.name} release (recorded '
+                             f'{ctx.state.get("version", SUPPORTED[0])} of the {recorded.name} release)')
+            ctx.state['version'], ctx.state['region'] = found, region.key
             ctx.keys = {}
             ctx.plan(ctx.forced | {'extract', 'dlc', 'lift', 'compile', 'prepare'})
-        ctx.state['version'] = found
+        ctx.state['version'], ctx.state['region'] = found, region.key
 
 
 # ---- 2. extract
@@ -461,7 +489,7 @@ class Extract(Step):
 
     def key(self, ctx):
         # The output is whatever matches the expected hashes, whichever files and tools produced it.
-        return fingerprint('extract-1', ctx.layout.expected(game_version(ctx)))
+        return fingerprint('extract-1', ctx.layout.expected(game_version(ctx), game_region(ctx)))
 
     def current(self, ctx, record):
         # Another update file than the recorded one extracts again; the check then identifies it.
@@ -567,17 +595,10 @@ class Extract(Step):
 
 # ---- 2b. add-on content
 
-AOC_BASE = APP_ID + 0x1000
 AOC_DATA = 5   # NCA content type of add-on content (PublicData)
 # Add-on packs extracted at once. Each takes a core and, while it runs, room for its RomFS image beside the unpacked
 # files (Check.space counts the DLC_JOBS largest).
 DLC_JOBS = max(1, min(3, (os.cpu_count() or 2) // 2))
-
-
-def aoc_index(title_id):
-    """The AddOnContentIndex of an add-on title id, or None when it is not one of this game's."""
-    index = int(title_id, 16) - AOC_BASE
-    return index if 0 < index < 2000 else None
 
 
 def dlc_inputs(ctx):
@@ -585,8 +606,9 @@ def dlc_inputs(ctx):
     return [Path(p) for p in (getattr(ctx.options, 'dlc', None) or [])]
 
 
-def dlc_record(f, path, keys):
-    """(title id, NCA record) of the add-on content in an opened NSP. InstallError when it holds none of this game's."""
+def dlc_record(f, path, keys, region):
+    """(title id, NCA record) of the add-on content in an opened NSP. InstallError when it holds none of this release's
+    (region, tools/xc2_titles.py): another release's add-on names it, since the game would not mount it."""
     try:
         kind, entries = container_entries(f, path.stat().st_size)
         records = nca_inventory(f, entries, keys)
@@ -594,8 +616,12 @@ def dlc_record(f, path, keys):
         raise_if_damaged(e, 'dlc', path)
         raise InstallError('check.file_unreadable', input='dlc', detail=str(e)) from None
     for record, _ in records:
-        if record['content_type'] == AOC_DATA and aoc_index(record['title_id']) is not None:
+        if record['content_type'] == AOC_DATA and region.aoc_index(record['title_id']) is not None:
             return record['title_id'], record
+    for record, _ in records:
+        other = xc2_titles.of_aoc(record['title_id']) if record['content_type'] == AOC_DATA else None
+        if other:
+            raise InstallError('check.dlc_other_region', path=str(path), dlc=other[0].name, game=region.name)
     raise InstallError('check.dlc_not_game', path=str(path))
 
 
@@ -630,8 +656,8 @@ class Dlc(Step):
         todo = []
         for path in files:
             with path.open('rb') as f:
-                title_id, _ = dlc_record(f, path, keys)
-            index = aoc_index(title_id)
+                title_id, _ = dlc_record(f, path, keys, game_region(ctx))
+            index = game_region(ctx).aoc_index(title_id)
             # unpacked under a name the game does not mount, then renamed: a cancelled or killed run leaves no
             # half-filled aoc/<index> that runtime/fs_host.c aoc_present would take for an installed pack
             part = dest / 'aoc' / f'.{index}.part'
@@ -696,9 +722,14 @@ DISCOVERED = re.compile(r'^(\w+): \d+ functions \(.*discovery')
 # The player's mods folder (runtime/mods.c): the Atmosphere cheat files and ExeFS patch files of its mods, the places
 # tools/cheats.py and tools/exefs_patches.py look in (adapted from totk-pc-recomp installer/steps.py @ ab1dee5b, MIT,
 # Copyright (c) 2026 Valiantsin Dzerakh).
-TITLE = '0100E95004038000'
-CHEAT_PLACES = ('cheats', f'atmosphere/contents/{TITLE}/cheats', f'contents/{TITLE}/cheats', f'{TITLE}/cheats')
-EXEFS_PLACES = ('exefs', f'atmosphere/contents/{TITLE}/exefs', f'contents/{TITLE}/exefs', f'{TITLE}/exefs')
+# A mod may be laid out under either release's title id (tools/cheats.py places).
+def mod_places(part):
+    return (part, *(f'{where}{t}/{part}' for t in xc2_titles.TITLES
+                    for where in ('atmosphere/contents/', 'contents/', '')))
+
+
+CHEAT_PLACES = mod_places('cheats')
+EXEFS_PLACES = mod_places('exefs')
 
 
 def cheat_files(ctx):
@@ -762,7 +793,9 @@ class Lift(Step):
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
-        table = layout.recomp / PATCHES.format(tag=version_tag(game_version(ctx)))
+        # A release without its own table (patches-v301jp.txt) is built without code patches: its main differs, and
+        # the runtime's frame rate and resolution code that reads main's data switches on with the patch sets only.
+        table = layout.recomp / PATCHES.format(tag=version_tag(game_version(ctx), game_region(ctx)))
         plain = table if table.is_file() else None   # code patch sites the runtime switches (XC2_FPS60 and the like)
         # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
         # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
@@ -852,7 +885,8 @@ class Compile(Step):
             '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
             '--runtime', layout.runtime, '--runtime-lib', layout.runtime_lib, '--ninja', layout.ninja,
-            '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
+            '--version', version_tag(game_version(ctx), game_region(ctx)),
+            '--expected', layout.expected(game_version(ctx), game_region(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile', '--object-cache', object_cache(ctx)], parse)
         exe = build / ('xc2' + EXE)

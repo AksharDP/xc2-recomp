@@ -7,7 +7,15 @@ Steps, each skipped when its verified output already exists:
 3. Update RomFS: the base RomFS patched with the update's BKTR section, read in place (tools/xc2_merge_romfs.py).
 
 Steps 1 and 3 run for every file in `input.updates`. Each update's version is identified by the SHA-256 of its `main`,
-not by its file name. Output: build/extracted/v0/{exefs,romfs} and build/extracted/v<version>/{exefs,romfs}.
+not by its file name. Output: build/extracted/v0/{exefs,romfs} and build/extracted/v<version>/{exefs,romfs}. The base
+RomFS is extracted only when the base game's expected file has a RomFS hash (XC2's has none: the update's merge reads
+the base game in place).
+
+--region jp takes the Japanese release (tools/xc2_titles.py): its expected files are tools/data/expected-xc2-jp-*.json
+and its folders v0jp and v301jp. --record VERSION writes those expected files from the game files instead of checking
+against them, once, for a release the repository has no hashes for yet: it extracts the base game's ExeFS and the
+update's ExeFS and merged RomFS and records their hashes as the base game 1.0.0 and the update VERSION. Only the
+hashes go into tools/data; check them against a second dump before committing them.
 
 --base, --update, --keys and --work name the files and the output directory instead of the config (the installer
 imports the functions instead). Runs under .venv-py314. Key values are read by the tools from the keys file and never
@@ -30,6 +38,7 @@ VENDOR = ROOT / 'tools' / 'vendor' / 'macnativegames'
 sys.path.insert(0, str(VENDOR))
 from extract_exefs import require  # noqa: E402
 import xc2_merge_romfs  # noqa: E402
+import xc2_titles  # noqa: E402
 
 DATA = ROOT / 'tools' / 'data'
 EXEFS_CODE = ('main', 'sdk', 'subsdk0', 'rtld')
@@ -63,16 +72,18 @@ def sha256(path):
         return hashlib.file_digest(f, 'sha256').hexdigest()
 
 
-def load_expected():
+def load_expected(region=xc2_titles.DEFAULT):
+    """{display version: expected hashes} of one release (tools/xc2_titles.py)."""
     versions = {}
     for path in sorted(DATA.glob('expected-xc2-*.json')):
         data = json.loads(path.read_text())
-        versions[data['display_version']] = data
+        if path.name == region.expected_name(data['display_version']):
+            versions[data['display_version']] = data
     return versions
 
 
-def version_dir(expected):
-    return 'v0' if expected['version'] == 0 else 'v' + expected['display_version'].replace('.', '')
+def version_dir(expected, region=xc2_titles.DEFAULT):
+    return 'v0' + region.suffix if expected['version'] == 0 else region.version_tag(expected['display_version'])
 
 
 # The embeddable Python (a ._pth file) does not put a script's directory on sys.path, so a vendored script that imports
@@ -172,7 +183,8 @@ def merge_update_romfs(base, update, keys_path, output, progress=None):
         if stale.exists():
             shutil.rmtree(stale)
     output.parent.mkdir(parents=True, exist_ok=True)
-    expected = max((e['romfs']['size'] for e in load_expected().values() if e['version']), default=0)
+    expected = max((e['romfs']['size'] for r in xc2_titles.REGIONS for e in load_expected(r).values()
+                    if e['version']), default=0)
     need = merge_need(expected)
     require(shutil.disk_usage(output.parent).free > need, f'Need {need / (1 << 30):.0f} GiB free in {output.parent}')
     try:
@@ -190,7 +202,12 @@ def main():
     parser.add_argument('--keys', type=Path, help='prod.keys (default: input.keys of the config)')
     parser.add_argument('--work', type=Path, help='output directory with extracted/ and logs/ (default: work.dir of '
                                                   'the config, else build)')
+    parser.add_argument('--region', choices=sorted(xc2_titles.BY_KEY), default=xc2_titles.DEFAULT.key,
+                        help='the release of the game files: us (the Americas and Europe, default) or jp')
+    parser.add_argument('--record', metavar='VERSION',
+                        help="write the release's expected files from these game files, the update being VERSION")
     args = parser.parse_args()
+    region = xc2_titles.BY_KEY[args.region]
 
     config = {}
     if not (args.base and args.keys and args.update and args.work):
@@ -201,11 +218,17 @@ def main():
     work = args.work or ROOT / config.get('work', {}).get('dir', 'build')
     extracted, logs = work / 'extracted', work / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
-    versions = load_expected()
+    if args.record:
+        require(len(updates) == 1, '--record takes one update')
+        record(region, args.record, base, Path(updates[0]), keys, extracted, logs)
+        return
+    versions = load_expected(region)
+    require('1.0.0' in versions, f'No expected hashes for the {region.name} release in {shown(DATA)}; '
+                                 f'see --record')
     v0 = versions['1.0.0']
 
-    say('Base game')
-    base_out = extracted / 'v0'
+    say(f'Base game ({region.name} release)')
+    base_out = extracted / version_dir(v0, region)
     if exefs_problems(base_out / 'exefs', v0):
         say('  extracting ExeFS')
         extract_exefs(base, keys, base_out, logs, update=False)
@@ -213,26 +236,63 @@ def main():
     require(not problems, f'Base game is not XC2 1.0.0: {", ".join(problems)} differ')
     say('  ExeFS 1.0.0: main, sdk, subsdk0, rtld match')
     report_npdm(base_out / 'exefs', v0)
-    if not romfs_verified(base_out / 'romfs', v0):
-        say('  extracting RomFS (17 GB)')
-        extract_base_romfs(base_out, keys, logs, base)
-    check_romfs(base_out / 'romfs', v0)
+    if 'romfs' in v0:   # XC2's base has no RomFS hash: only the update's merged RomFS is used
+        if not romfs_verified(base_out / 'romfs', v0):
+            say('  extracting RomFS (17 GB)')
+            extract_base_romfs(base_out, keys, logs, base)
+        check_romfs(base_out / 'romfs', v0)
 
     for update in updates:
-        extract_update(base, Path(update), keys, extracted, logs, versions)
+        extract_update(base, Path(update), keys, extracted, logs, versions, region)
 
 
-def extract_update(base, update, keys, extracted, logs, versions):
+def record(region, version, base, update, keys, extracted, logs):
+    """Write tools/data's expected files of a release from its game files (main --record)."""
+    files = {v: DATA / region.expected_name(v) for v in ('1.0.0', version)}
+    require(not any(f.exists() for f in files.values()), f'{", ".join(f.name for f in files.values() if f.exists())} '
+                                                         'already exist; remove them to record again')
+    exefs_names = (*EXEFS_CODE, 'main.npdm')
+    base_out, update_out = extracted / ('v0' + region.suffix), extracted / region.version_tag(version)
+    say(f'Recording the {region.name} release: base game {base.name}, update {update.name} as {version}')
+    extract_exefs(base, keys, base_out, logs, update=False)
+    extract_exefs(update, keys, update_out, logs, update=True)
+    for name, out in (('base game', base_out), ('update', update_out)):
+        title = json.loads((out / 'extraction-manifest.json').read_text())['program']['title_id'].upper()
+        require(xc2_titles.of_title(title) is region, f'The {name} is title {title}, not the {region.name} release '
+                                                      f'({region.title}); pass the --region of the files')
+    say('  merging RomFS with the update')
+    merge_update_romfs(base, update, keys, update_out / 'romfs')
+    report = json.loads((update_out / 'romfs' / 'index.json').read_text())
+    common = {'title_id': region.title, 'base_title_id': region.title}
+    entries = {
+        '1.0.0': {'_comment': f'Xenoblade Chronicles 2 base game 1.0.0 ({region.name} release, {region.title}), '
+                              'ExeFS of the base Program NCA (tools/extract.py --record).',
+                  **common, 'version': 0, 'display_version': '1.0.0',
+                  'exefs_sha256': {n: sha256(base_out / 'exefs' / n) for n in sorted(exefs_names)}},
+        version: {'_comment': f'Xenoblade Chronicles 2 {version} ({region.name} release, base {region.title} + update '
+                              f'{region.update_title}), ExeFS of the update Program NCA, romfs the BKTR merge of the '
+                              'base and update RomFS (tools/extract.py --record).',
+                  **common, 'title_id': region.update_title, 'version': version, 'display_version': version,
+                  'exefs_sha256': {n: sha256(update_out / 'exefs' / n) for n in sorted(exefs_names)},
+                  'romfs': {'size': report['romfs_size'], 'sha256': report['romfs_sha256']}},
+    }
+    for v, path in files.items():
+        path.write_text(json.dumps(entries[v], indent=2) + '\n', encoding='utf-8')
+        say(f'  wrote {shown(path)}')
+
+
+def extract_update(base, update, keys, extracted, logs, versions, region=xc2_titles.DEFAULT):
     say(f'Update {update.name}')
     staging = extracted / 'update-staging'
-    known = [d for d in extracted.glob('v*') if d.name != 'v0' and (d / 'extraction-manifest.json').is_file()]
+    known = [d for d in extracted.glob('v*') if d.name != 'v0' + region.suffix and
+             (d / 'extraction-manifest.json').is_file()]
     current = next((d for d in known if json.loads((d / 'extraction-manifest.json').read_text())['source']
                     == str(update.resolve())), None)
     if current is None or not any(not exefs_problems(current / 'exefs', e) for e in versions.values() if e['version']):
         say('  extracting ExeFS')
         exefs = extract_exefs(update, keys, staging, logs, update=True)
         expected = identify_update(exefs, versions)
-        current = extracted / version_dir(expected)
+        current = extracted / version_dir(expected, region)
         if current.exists():
             shutil.rmtree(current)
         staging.rename(current)

@@ -16,7 +16,7 @@
 #define ST_FREE 0u
 #define ST_STACK 0xBu
 #define PERM_RW 3u
-#define PROGRAM_ID 0x0100e95004038000ull   // XC2
+#define PROGRAM_ID rt_title_id   // the release's application id (host.h)
 
 static uint64_t g_svcs;
 void (*volatile svc_test_exit_hook)(unsigned code);

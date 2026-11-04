@@ -76,6 +76,7 @@ from pathlib import Path
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
+import xc2_titles
 
 WIN = os.name == 'nt'
 if not WIN:
@@ -154,12 +155,14 @@ WINDRES = UCRT / 'windres.exe'   # runtime/xc2.rc: the manifest of xc2.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'v301': '3.0.1'}
+DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'v301': '3.0.1',
+                    'v301jp': '3.0.1'}   # the Japanese release (tools/xc2_titles.py): expected-xc2-jp-3.0.1.json
 # rt_game_version is TotK's 121/143 discriminator (host.h RT_V143 switches 1.4.3-only offsets and ABI details on).
 # XCX 2.0.0 (upd) and XC2 3.0.1 keep 0: those branches must stay off for a different game.
 GAME_VERSIONS = {'v0': 100, 'v112': 112, 'v121': 121, 'v143': 143}
 # The game version the menu shows. A named game prints this instead of rt_game_version.
-GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0', 'v301': 'Xenoblade Chronicles 2 3.0.1'}
+GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0', 'v301': 'Xenoblade Chronicles 2 3.0.1',
+              'v301jp': 'Xenoblade Chronicles 2 3.0.1 (Japan)'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
@@ -293,9 +296,9 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version):
+def module_glue(layout, linked, hashes, paths, version, title_id, name=None):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version and the default game paths (host.h)."""
+    expected ExeFS hashes, the game version, the release's application id and the default game paths (host.h)."""
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -323,7 +326,8 @@ def module_glue(layout, linked, hashes, paths, version):
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
     number = GAME_VERSIONS.get(version, 0)   # 1.4.3 -> 143; XCX 2.0.0 and XC2 3.0.1 -> 0
     out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};',
-            f'const char rt_game_name[] = {c_string(GAME_NAMES.get(version, ""))};', '']
+            f'const char rt_game_name[] = {c_string(name or GAME_NAMES.get(version, ""))};',
+            f'const uint64_t rt_title_id = {title_id:#018x}ull;', '']
     return '\n'.join(out)
 
 
@@ -953,8 +957,17 @@ def main():
     if not expected:
         if args.version not in DISPLAY_VERSIONS:
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
-        expected = ROOT / 'tools' / 'data' / f'expected-xc2-{DISPLAY_VERSIONS[args.version]}.json'
-    hashes = json.loads(Path(expected).read_text())['exefs_sha256']
+        expected = xc2_titles.of_tag(args.version).expected(DISPLAY_VERSIONS[args.version])
+    expected_json = json.loads(Path(expected).read_text())
+    hashes = expected_json['exefs_sha256']
+    # The release's application id (tools/xc2_titles.py): runtime/fs_host.c checks the save data against it and
+    # runtime/svc.c reports it as the program id
+    title_id = int(expected_json.get('base_title_id', xc2_titles.DEFAULT.title), 16)
+    region = xc2_titles.of_title(f'{title_id:016X}')
+    # A release's update the table above does not name (another release's numbering): named from its expected file
+    game_name = None if args.version in GAME_NAMES or not region else \
+        f'Xenoblade Chronicles 2 {expected_json.get("display_version", "")}' + ('' if region is xc2_titles.DEFAULT
+                                                                               else f' ({region.name})')
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
     if args.ninja:
         NINJA = args.ninja.resolve()
@@ -1006,7 +1019,8 @@ def main():
         missing = [n for n in names if n not in hashes]
         if missing:
             sys.exit(f'{expected}: no exefs_sha256 for {missing}')
-        write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version))
+        write_if_changed(out / 'modules.c',
+                         module_glue(layout, linked, hashes, paths, args.version, title_id, game_name))
         if (paths['romfs'] / 'index.json').is_file():
             count, size, dt = romfs_index.write(paths['romfs'], out)
             print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')

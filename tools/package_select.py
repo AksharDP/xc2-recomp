@@ -5,10 +5,14 @@ Meta NCA under the update title ID, its Program NCA a BKTR patch). base_records(
 checks run unchanged; run() puts that in front of the vendored program_nca() for the vendored scripts it starts."""
 import importlib
 import runpy
+import sys
 from pathlib import Path
 
 VENDOR = Path(__file__).resolve().parent / 'vendor' / 'macnativegames'
-BASE_TITLE = '0100E95004038000'   # Xenoblade Chronicles 2 (tools/xc2_extract.py BASE_TITLE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import xc2_titles  # noqa: E402
+
+BASE_TITLES = xc2_titles.TITLES   # the base title of each release of Xenoblade Chronicles 2
 
 
 def is_bktr(hdr):
@@ -19,7 +23,7 @@ def base_records(records):
     """records minus a bundled update: Meta NCAs of another title and BKTR Program NCAs. A package with no base
     Meta NCA is left as it is, so an update or another game still fails the vendored checks."""
     kept = [(r, h) for r, h in records
-            if not (r['content_type'] == 1 and r['title_id'] != BASE_TITLE)
+            if not (r['content_type'] == 1 and r['title_id'].upper() not in BASE_TITLES)
             and not (r['content_type'] == 0 and is_bktr(h))]
     if not any(r['content_type'] == 1 for r, _ in kept):
         return records

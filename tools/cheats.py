@@ -45,6 +45,9 @@ import flags  # noqa: E402
 from lifter import Lifter, Unsupported  # noqa: E402
 from nso import Nso  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import xc2_titles  # noqa: E402
+
 BASE = 0x7000000000   # main's base in the layout (recomp/layout.py); only pc-relative decoding sees it
 NOP = 0xD503201F
 RET = 0xD65F03C0
@@ -93,7 +96,13 @@ def parse(text, mod):
     return out
 
 
-TITLE = '0100E95004038000'   # XC2's base title
+TITLES = xc2_titles.TITLES   # XC2's base title of each release: a mod is laid out under either
+
+
+def places(part):
+    """The places of <part> (cheats, exefs) inside a mod folder: its own and the Atmosphere and emulator layouts under
+    each release's title id (runtime/mods.c find_root takes the build's own)."""
+    return (part, *(f'{where}{t}/{part}' for t in TITLES for where in ('atmosphere/contents/', 'contents/', '')))
 
 
 def cheat_files(mods, bid):
@@ -101,7 +110,7 @@ def cheat_files(mods, bid):
     (runtime/mods.c find_root), the file name in any case."""
     out = []
     for mod in sorted((d for d in mods.iterdir() if d.is_dir()), key=lambda d: d.name) if mods.is_dir() else []:
-        for where in ('cheats', f'atmosphere/contents/{TITLE}/cheats', f'contents/{TITLE}/cheats', f'{TITLE}/cheats'):
+        for where in places('cheats'):
             folder = mod / where
             if folder.is_dir():
                 f = next((p for p in sorted(folder.iterdir()) if p.is_file() and p.name.lower() == f'{bid}.txt'.lower()),
