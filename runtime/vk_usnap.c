@@ -28,7 +28,11 @@
 
 #define ALIGN 256u
 #define MAX_RANGE (64u << 10)
-#define ARENA_MIN (4u << 20)
+// A submission's uniform ranges are a few hundred KiB (350 to 440 KiB measured), so an arena is sized to the capture:
+// the old 4 MiB minimum held 10 times the bytes it needed, and 222 of them were alive at once in issue 27.
+#define ARENA_MIN (256u << 10)
+#define ARENA_GRAIN (64u << 10)
+#define ARENA_KEEP 16   // free arenas kept for reuse; the rest are destroyed as they come back (issue 27)
 #define CALL_DEPTH 16
 
 typedef struct Arena {
@@ -90,6 +94,8 @@ static int mode(void) {
 }
 
 static Arena *free_arenas;
+static int free_count;            // arenas on the free list
+static int stopping;              // vk_usnap_shutdown ran: new arenas must not touch the allocator
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
 
 static void *grow(void *p, int *cap, size_t elem) {
@@ -100,19 +106,21 @@ static void *grow(void *p, int *cap, size_t elem) {
     return q;
 }
 
+// Smallest free arena that fits, so a small capture does not take the one a big capture needs. A new arena is sized
+// to the capture (rounded to ARENA_GRAIN, at least ARENA_MIN).
 static Arena *arena_get(uint64_t need) {
     plat_mutex_lock(&free_lock);
-    Arena **pp = &free_arenas, *a = NULL;
-    for (; *pp; pp = &(*pp)->next)
-        if ((*pp)->size >= need) {
-            a = *pp, *pp = a->next;
-            break;
-        }
+    Arena **best = NULL;
+    for (Arena **pp = &free_arenas; *pp; pp = &(*pp)->next)
+        if ((*pp)->size >= need && (!best || (*pp)->size < (*best)->size)) best = pp;
+    Arena *a = NULL;
+    if (best) a = *best, *best = a->next, free_count--;
     plat_mutex_unlock(&free_lock);
     if (a) return a;
     a = calloc(1, sizeof *a);
     if (!a) rt_fatal("vk_usnap: out of memory");
-    a->size = need < ARENA_MIN ? ARENA_MIN : (need + (1u << 20) - 1) & ~(uint64_t)((1u << 20) - 1);
+    a->size = (need + ARENA_GRAIN - 1) & ~(uint64_t)(ARENA_GRAIN - 1);
+    if (a->size < ARENA_MIN) a->size = ARENA_MIN;
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = a->size,
                              .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
     // Device-local through the BAR when the device has it (the GPU reads constants on every draw), else host memory.
@@ -132,11 +140,16 @@ static Arena *arena_get(uint64_t need) {
     return a;
 }
 
-static void arena_done(void *arg) {   // completion thread: the GPU has read it
+static void arena_done(void *arg) {   // completion thread (or a dropped capture): the GPU has read it
     Arena *a = arg;
     plat_mutex_lock(&free_lock);
-    a->next = free_arenas, free_arenas = a;
+    int keep = !stopping && free_count < ARENA_KEEP;   // past ARENA_KEEP the arena goes back to the allocator
+    if (keep) {
+        a->next = free_arenas, free_arenas = a, free_count++;
+        a = NULL;
+    }
     plat_mutex_unlock(&free_lock);
+    if (a) vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a);
 }
 
 static void collect(const op_hdr *h, int depth) {
@@ -361,6 +374,7 @@ void vk_usnap_begin(void *p, uint64_t fence) {
     wr_prune(cap ? cap->done : vk_sync_fence_done());
     if (!cap) return;
     U.reg = cap->reg, U.nreg = cap->nreg, U.arena = cap->arena;
+    free(cap->progs);   // the queue item owns its copy (vk_backend.c vk_be_submit)
     free(cap);
     if (!U.arena) return;
     for (int i = 0; i < U.nreg; i++)
@@ -420,7 +434,8 @@ uint64_t vk_usnap_gen(void) { return U.gen; }
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {
     plat_mutex_lock(&free_lock);
+    stopping = 1;
     for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a);
-    free_arenas = NULL;
+    free_arenas = NULL, free_count = 0;
     plat_mutex_unlock(&free_lock);
 }
