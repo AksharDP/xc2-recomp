@@ -46,7 +46,7 @@
 static int deterministic;
 void vk_exec_deterministic(int on) { deterministic = on != 0; }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_XFB, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -2055,7 +2055,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!ex->in_pass) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT | VK_EXEC_DIRTY_SCISSOR;
     vk_exec_pass_begin(ex);
     VkRect2D sc = vk_exec_scissor(ex);
-    if (!sc.extent.width || !sc.extent.height) {
+    if ((!sc.extent.width || !sc.extent.height) && !ex->xfb_active) {   // a scissor does not limit stored vertices
         if (vk_dump_armed) vk_dump_note("draw skipped (empty scissor): count %d", count);
         return 0;
     }
@@ -2081,11 +2081,12 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (!has_vs) return warn_once(W_NO_VS, "a draw with a program that has no vertex stage is skipped"), 0;
     // A draw into a target the previous frame did not render (or into none) waits for a pending shader or pipeline:
     // one-shot draws (volumes and LUTs generated once, later only sampled) would leave their target empty for the
-    // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
-    int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
+    // session. A draw into per-frame targets is skipped until they are ready and comes back next frame. A draw storing
+    // vertices always waits: the game draws from its records whether they were written or not.
+    int oneshot = ex->xfb_active ? 1 : -1, skip = pipe_skip_mode();   // -1: not looked up
     if (vs_wait || fs_wait) {
         if (deterministic) oneshot = 1;   // the replay waits for the translation below, every draw alike
-        else if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) {   // skipped until ready
+        else if (!(oneshot = oneshot > 0 || !vk_exec_targets_recent(ex, skip >= 1))) {   // skipped until ready
             if (vk_dump_armed) vk_dump_note("draw skipped (shader translating): program %llu", (unsigned long long)ex->prog->serial);
             return perf_count(PERF_CNT_SHADER_SKIP), 0;
         }
@@ -2188,11 +2189,75 @@ static void bind_index(VkExec *ex, const void *data, uint64_t bytes, VkIndexType
     ex->recorded++;
 }
 
+// ---- transform feedback (docs/maxwell.md 5.10)
+
+static struct { PFN_vkCmdBindTransformFeedbackBuffersEXT bind; PFN_vkCmdBeginTransformFeedbackEXT begin, end; } XF;
+
+// A transform feedback draw the replay can make: VK_EXT_transform_feedback, and points, whose vertices are the records
+// one for one, so the bytes written are known here. Each draw gets its own Begin and End at the running offset: a
+// command buffer split or a pass ended between the game's Begin and End then changes nothing, and no counter buffer
+// is needed. Anything else is not something XC2 does (nvn_api_cmd.c nvnCommandBufferBindTransformFeedbackBuffer).
+static int xfb_draw_ok(int prim, int indexed) {
+    if (!vk_ctx()->has_transform_feedback) return warn_once(W_XFB, "the device has no transform feedback: such draws are skipped, what is drawn from them is wrong"), 0;
+    if (prim != NVN_DRAW_PRIMITIVE_POINTS || indexed) return warn_once(W_XFB, "a transform feedback draw of primitive %d (indexed %d) is skipped", prim, indexed), 0;
+    if (!XF.bind) {
+        VkDevice dev = vk_ctx()->device;
+        XF.begin = (PFN_vkCmdBeginTransformFeedbackEXT)vkGetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
+        XF.end = (PFN_vkCmdEndTransformFeedbackEXT)vkGetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
+        XF.bind = (PFN_vkCmdBindTransformFeedbackBuffersEXT)vkGetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
+    }
+    return 1;
+}
+
+// Before a draw of n records: binds the next free bytes of the buffer and begins. Returns the bytes the draw stores
+// (the buffer may hold fewer than n records: Vulkan drops the rest as NVN does), 0: the draw must not be made.
+static uint64_t xfb_begin(VkExec *ex, uint64_t n, VkMemSpan *sp) {
+    const uint8_t *ctl, *code;
+    uint32_t len;
+    uint8_t words[GFX_XFB_WORDS];
+    uint32_t stride = find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len) ? gfx_shader_xfb(ctl, words) : 0;
+    if (!stride) return warn_once(W_XFB, "a draw inside transform feedback with a program that stores nothing is skipped"), 0;
+    uint64_t left = ex->xfb.size > ex->xfb_written ? ex->xfb.size - ex->xfb_written : 0, bytes = n * stride;
+    if (bytes > left) bytes = left - left % stride;
+    if (!bytes) return 0;
+    uint64_t addr = ex->xfb.addr + ex->xfb_written;
+    if (!vk_mem_resolve(addr, bytes, sp) || sp->avail < bytes || sp->offset % 4)
+        return warn_once(W_XFB, "transform feedback into %#llx + %#llx is not backed or not aligned: skipped", (unsigned long long)addr, (unsigned long long)bytes), 0;
+    VK_MEM_USE(*sp);
+    static int logged;
+    if (!logged++) rt_log("vk: first transform feedback draw: %llu records of %u bytes", (unsigned long long)n, stride);
+    rec_xfb_bind(XF.bind, ex->cb, sp->buffer, sp->offset, bytes);
+    rec_xfb_mark(XF.begin, ex->cb);
+    ex->recorded += 2;
+    return bytes;
+}
+
+// After the draw: the records are GPU writes like a storage buffer's, read back as vertices after the game's Barrier.
+static void xfb_end(VkExec *ex, const VkMemSpan *sp, uint64_t bytes) {
+    rec_xfb_mark(XF.end, ex->cb);
+    ex->recorded++;
+    uint64_t addr = ex->xfb.addr + ex->xfb_written;
+    vk_mem_gpu_wrote(sp, bytes);
+    vk_usnap_drop(addr, bytes);
+    vk_mem_count(sp->cls, VK_MUSE_GPU_WRITE, bytes);
+    note_written(ex, addr, bytes);
+    ex->xfb_written += bytes;
+}
+
 static void op_draw(VkExec *ex, const p_draw *d) {
     c0_binst = (uint32_t)d->base_instance;
-    if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, 0)) return;
+    if (d->count <= 0 || (ex->xfb_active && !xfb_draw_ok(d->prim, 0)) || !prepare_draw(ex, d->prim, d->count, 0)) return;
     vk_exec_frame.draws++;
     uint32_t inst = d->instances > 0 ? (uint32_t)d->instances : 1, first = (uint32_t)d->first, n = (uint32_t)d->count;
+    if (ex->xfb_active) {
+        VkMemSpan sp;
+        uint64_t bytes = xfb_begin(ex, (uint64_t)n * inst, &sp);
+        if (!bytes) return;
+        vkCmdDraw(ex->cb, n, inst, first, (uint32_t)d->base_instance);
+        ex->recorded++;
+        xfb_end(ex, &sp, bytes);
+        return;
+    }
     if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
@@ -2242,7 +2307,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     static const uint32_t isize[3] = {1, 2, 4};
     if (d->itype < 0 || d->itype > 2) return warn_once(W_INDEX, "index type %d is unknown: draw skipped", d->itype);
     int restart = restart_for(ex, d->prim, d->itype);
-    if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
+    if (d->count <= 0 || (ex->xfb_active && !xfb_draw_ok(d->prim, 1)) || !prepare_draw(ex, d->prim, d->count, restart)) return;
     vk_exec_frame.draws++;
     uint64_t bytes = (uint64_t)d->count * isize[d->itype];
     VkMemSpan sp;
@@ -2386,7 +2451,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         return warn_once(W_INDIRECT, "indirect draw arguments at %#llx are not backed or not aligned: draws skipped", (unsigned long long)d->ind);
     if (!vk_mem_resolve(d->ibuf, 1, &ib) || ib.offset % (d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? 2 : 4))
         return warn_once(W_INDEX, "index buffer %#llx is not backed or not aligned: indirect draws skipped", (unsigned long long)d->ibuf);
-    if (!prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
+    if ((ex->xfb_active && !xfb_draw_ok(d->prim, 1)) || !prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
     vk_exec_frame.draws++;
     VK_MEM_USE(ip);
     VK_MEM_USE(ib);
@@ -2493,6 +2558,15 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         bind_gen++;
         break;
     }
+    case OP_XFB_BIND: ex->xfb = *(const p_xfb_bind *)payload; break;
+    case OP_XFB_ACTIVE:
+        ex->xfb_active = ((const p_flag *)payload)->value != 0;
+        if (ex->xfb_active) {
+            cb_res(ex);
+            vk_exec_barrier(ex);   // earlier draws finished with the old records
+            ex->xfb_written = 0;
+        }
+        break;
     case OP_BIND_STATE: {
         const p_bind_state *b = payload;
         blend_st bs;

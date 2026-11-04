@@ -450,6 +450,9 @@ static uint64_t record_all(void) {
     REC(OP_DEPTH_CLAMP, CALL(nvnCommandBufferSetDepthClamp, U(c), 1));
     REC(OP_RENDER_ENABLE, CALL(nvnCommandBufferSetRenderEnable, U(c), 0));
     REC(OP_RASTER_DISCARD, CALL(nvnCommandBufferSetRasterizerDiscard, U(c), 1));
+    REC(OP_XFB_BIND, CALL(nvnCommandBufferBindTransformFeedbackBuffer, U(c), 0, 0xd000, 0x180));
+    REC(OP_XFB_ACTIVE, CALL(nvnCommandBufferBeginTransformFeedback, U(c), 0xd180));
+    REC(OP_XFB_ACTIVE, CALL(nvnCommandBufferEndTransformFeedback, U(c), 0xd0c0));
     REC(OP_RENDER_COND, CALL(nvnCommandBufferSetRenderEnableConditional, U(c), 1, 0xb000));
     REC(OP_PRIM_RESTART, CALL(nvnCommandBufferSetPrimitiveRestart, U(c), 1, 0xffff));
     REC(OP_DRAW_IDX_IND, CALL(nvnCommandBufferDrawElementsIndirect, U(c), NVN_DRAW_PRIMITIVE_TRIANGLES, NVN_INDEX_TYPE_UNSIGNED_INT,
@@ -658,6 +661,16 @@ static void parse_all(uint64_t h) {
         case OP_DEPTH_CLAMP: CHECK(((const p_flag *)a)->value == 1, "DEPTH_CLAMP payload"); break;
         case OP_RENDER_ENABLE: CHECK(((const p_flag *)a)->value == 0, "RENDER_ENABLE payload"); break;
         case OP_RASTER_DISCARD: CHECK(((const p_flag *)a)->value == 1, "RASTER_DISCARD payload"); break;
+        case OP_XFB_BIND: {
+            const p_xfb_bind *p = a;
+            CHECK(p->addr == 0xd000 && p->size == 0x180, "XFB_BIND payload");
+            break;
+        }
+        case OP_XFB_ACTIVE: {   // Begin, then End
+            static int calls;
+            CHECK(((const p_flag *)a)->value == !calls++, "XFB_ACTIVE payload");
+            break;
+        }
         case OP_RENDER_COND: {
             const p_render_cond *p = a;
             CHECK(p->mode == 1 && p->addr == 0xb000, "RENDER_COND payload");

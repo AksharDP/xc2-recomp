@@ -39,7 +39,8 @@ enum {
     R_SetDepthWriteEnable, R_SetFrontFace, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
-    R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_EndCb,
+    R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_XfbBind,
+    R_XfbMark, R_EndCb,
 };
 
 static uint64_t now_ns(void) { return plat_now_ns(); }
@@ -541,6 +542,23 @@ TARGET_CMD(rec_blend_enable, R_BlendEnable, PFN_vkCmdSetColorBlendEnableEXT, VkB
 TARGET_CMD(rec_blend_equation, R_BlendEquation, PFN_vkCmdSetColorBlendEquationEXT, VkColorBlendEquationEXT)
 TARGET_CMD(rec_write_mask, R_WriteMask, PFN_vkCmdSetColorWriteMaskEXT, VkColorComponentFlags)
 
+typedef struct { PFN_vkCmdBindTransformFeedbackBuffersEXT fn; VkBuffer b; VkDeviceSize offset, size; } A_XfbBind;
+void rec_xfb_bind(PFN_vkCmdBindTransformFeedbackBuffersEXT fn, VkCommandBuffer cb, VkBuffer b, VkDeviceSize offset,
+                  VkDeviceSize size) {
+    if (!OWNED(cb)) { fn(cb, 0, 1, &b, &offset, &size); return; }
+    A_XfbBind *a = put(R_XfbBind, sizeof *a);
+    *a = (A_XfbBind){fn, b, offset, size};
+    pub();
+}
+
+typedef struct { PFN_vkCmdBeginTransformFeedbackEXT fn; } A_XfbMark;
+void rec_xfb_mark(PFN_vkCmdBeginTransformFeedbackEXT fn, VkCommandBuffer cb) {
+    if (!OWNED(cb)) { fn(cb, 0, 0, NULL, NULL); return; }
+    A_XfbMark *a = put(R_XfbMark, sizeof *a);
+    a->fn = fn;
+    pub();
+}
+
 // ---- the recorder's side
 
 static void exec_packet(uint32_t op, void *p) {
@@ -614,6 +632,8 @@ static void exec_packet(uint32_t op, void *p) {
     case R_BlendEnable: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEnableEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_BlendEquation: { A_Targets *a = p; ((PFN_vkCmdSetColorBlendEquationEXT)a->fn)(cb, a->first, a->n, a->v); break; }
     case R_WriteMask: { A_Targets *a = p; ((PFN_vkCmdSetColorWriteMaskEXT)a->fn)(cb, a->first, a->n, a->v); break; }
+    case R_XfbBind: { A_XfbBind *a = p; a->fn(cb, 0, 1, &a->b, &a->offset, &a->size); break; }
+    case R_XfbMark: { A_XfbMark *a = p; a->fn(cb, 0, 0, NULL, NULL); break; }
     case R_EndCb: {
         A_EndCb *a = p;
         if (a->kind) vk_crumb(cb, a->kind, a->n);
