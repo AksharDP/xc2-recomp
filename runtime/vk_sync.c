@@ -442,6 +442,11 @@ uint64_t vk_sync_fence_done(void) { return __atomic_load_n(&done, __ATOMIC_ACQUI
 
 uint64_t vk_sync_issued(void) { return __atomic_load_n(&issued, __ATOMIC_ACQUIRE); }
 
+uint64_t vk_sync_reserved(void) {
+    uint64_t v = __atomic_load_n(&reserved, __ATOMIC_ACQUIRE), issued_now = __atomic_load_n(&issued, __ATOMIC_ACQUIRE);
+    return v > issued_now ? v : issued_now;   // the synchronous path never reserves: issued leads
+}
+
 void vk_sync_finish(void) {
     vk_sync_start();
     vk_sync_fence_wait(__atomic_load_n(&issued, __ATOMIC_ACQUIRE), UINT64_MAX);

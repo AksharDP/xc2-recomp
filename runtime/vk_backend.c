@@ -443,6 +443,23 @@ static void vk_be_program_release(const prog_t *p) {
     }
     vk_program_release(p);
 }
+// A submission's submit-time captures (its uniform arenas, the mirror staging) live until its fence completes, and
+// a GPU that falls behind lets them pile up: a paused game kept submitting while the menu was open, and issue 27
+// held 888 MiB in 222 arenas that way. Past XC2_FLIGHT_MAX values queued or in flight (a value per submission and per
+// present) the submitting thread waits for the oldest, which bounds the backlog without the per-frame GPU wait the
+// frame guard would add in the steady state. 0 turns it off.
+#define FLIGHT_MAX_DEFAULT 6   // values: a frame queues one submit and one present, so this is about three frames
+static void flight_bound(void) {
+    static int max = -1;
+    if (max < 0) {
+        const char *e = cfg_get("XC2_FLIGHT_MAX");
+        max = e && *e ? atoi(e) : FLIGHT_MAX_DEFAULT;
+    }
+    if (max <= 0) return;
+    uint64_t ahead = vk_sync_reserved(), done = vk_sync_fence_done();
+    if (ahead > done + (uint64_t)max) vk_sync_fence_wait(ahead - (uint64_t)max, UINT64_MAX);
+}
+
 // Everything the GPU reads from guest memory for a submission is copied here, in the game's submit call (the mirrors'
 // written pages, the uniform ranges it binds: vk_mem_capture, vk_usnap_capture), under the capture lock so captures
 // follow queue order, and handed to the replay with it: the game rewrites vertex, storage and uniform data for its next
@@ -457,6 +474,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
         if (n) vk_exec_captures(mcap, ucap);
         uint64_t f = submit_sync(handles, n);
         plat_mutex_unlock(&cap_lock);
+        flight_bound();
         return f;
     }
     ReplayItem it = {.kind = RI_SUBMIT, .n = n, .submit_no = nvn_submit_count(), .mcap = mcap, .ucap = ucap};
@@ -475,6 +493,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
     }
     uint64_t v = replay_enqueue(&it);
     plat_mutex_unlock(&cap_lock);
+    flight_bound();
     return v;
 }
 static void vk_be_finish(void) { vk_sync_start(); replay_drain(DR_FINISH); vk_present_drain(); vk_sync_finish(); }
