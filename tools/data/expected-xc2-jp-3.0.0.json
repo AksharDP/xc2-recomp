@@ -1,0 +1,19 @@
+{
+  "_comment": "Xenoblade 2 JP 3.0.0 (base 0100F3400332C000 + update 0100F3400332C800 v983040), ExeFS taken from the update Program NCA. romfs is the BKTR merge of the base and update RomFS: the archive holds bf2.ard/bf2.arh plus stream/, the game's data lives inside bf2.ard. version is the installer's update name (installer/layout.py SUPPORTED); title_version the NSP's.",
+  "title_id": "0100F3400332C800",
+  "base_title_id": "0100F3400332C000",
+  "version": "3.0.0",
+  "display_version": "3.0.0",
+  "exefs_sha256": {
+    "main": "e91c0341ee8af52cc43f0123a08aa250549638473df20da6dac217276f63fd96",
+    "main.npdm": "f2d09dddbda55f4d21d6fb08ce640cf53995d818b3f65019d2c250637cbf5ab8",
+    "rtld": "3522d56dda056d4c7ba6f9508d6d1805d9a751b5a189a8700f9714ce06fb6c5a",
+    "sdk": "bbe0ce6e6803d2793165733f1667ebc6eb204ca7d54adb2c8030e4542d22a52c",
+    "subsdk0": "6d5a18e3bdd5a8e1fedd70b9213d3269425c3c8254055d423aecd98179107da4"
+  },
+  "romfs": {
+    "size": 14027333364,
+    "sha256": "d4a66c8301bce786e01cd4f33ff170bc43de141ba62554d01acb71e8f5cba08e"
+  },
+  "title_version": 983040
+}
