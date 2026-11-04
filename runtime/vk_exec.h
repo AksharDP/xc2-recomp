@@ -104,6 +104,8 @@ typedef struct VkExec {
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+
+    int fsr3_armed;                      // VK_FSR3_*: what FSR 3.1 records when the open pass ends (vk_fsr3.c)
 } VkExec;
 
 // Begins dynamic rendering with the current targets unless a pass is open (a full memory barrier precedes it). Call
@@ -134,6 +136,14 @@ void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass s
 int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
+
+// AMD FSR 3.1 in place of the game's temporal resolve and final stretch (vk_fsr3.c): vk_fsr3_note follows the picture
+// through a draw about to be made in the open pass and arms the pass; vk_fsr3_resolve records FSR once that pass ended.
+// VK_FSR3_RESOLVE waits for the end of the pass; VK_FSR3_UPSCALE ends it at the next draw (prepare_draw), as the rest of
+// the pass, the HUD, goes over FSR's result.
+enum { VK_FSR3_RESOLVE = 1, VK_FSR3_UPSCALE };
+void vk_fsr3_note(VkExec *ex);
+void vk_fsr3_resolve(VkExec *ex);
 
 // XC2_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
 typedef struct {

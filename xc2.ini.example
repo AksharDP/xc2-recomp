@@ -136,6 +136,9 @@
 # from 0 (off) to 100. Changes while the game runs take effect at once.
 # upscaler = fsr
 # sharpness = 80
+# AMD FSR 3.1 in place of the game's temporal anti-aliasing and scaling, upscaling a lower render_scale to the game
+# resolution: 1 on, 0 off. Needs amd_fidelityfx_vk.dll next to the game. Changes while the game runs take effect at once.
+# fsr3 = 0
 # Picture shape when the window's differs from the game resolution's (a 16:9 game on a 16:10 screen): keep (its
 # proportions, with black bars) or stretch (over the whole window). Changes take effect at once.
 # picture_fit = keep
