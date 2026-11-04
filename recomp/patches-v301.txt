@@ -17,19 +17,21 @@ site xc2fps main 6bdc54 sha:8bcf2e461b241ca6 @page:x8 bd404100
 # The limiter's wait, interval * period * 0.997 against the time since the frame started: the page's +0x48, the frame
 # time of the limit. x8 is dead here: the loop calls main+0x6e26f8 next, or returns.
 site xc2fps main 6ab168 sha:b868457ac02f8584 @page:x8 bd404900
-# The grass and wind sway step (main+0x748658: s6 = 1/30, the step it moves per frame): the page's +0x50, the step the
-# game takes this frame (frame_rate.c xc2_steps_store). x8 is the constant's page here and unused after.
-site xc2fps main 74865c sha:c9e5af2144c75b72 @page:x8 bd405106
-# The cloud layers' drift (main+0x716074, for each layer from main+0x70d240): each frame adds the wind velocity
-# (main+0x70d160) times 0.05 (main+0x9b51bc) times the layer's speed to the layer's offsets (+0x10 on), so above 30 fps
-# the layers drifted faster. The 0.05 is scaled by the page's +0x54, the step this frame in 30 fps frames. x8 is free
-# after the load (rewritten at main+0x716108), s2 is loaded at main+0x7160a0.
-site xc2fps main 716094 sha:3057d9aa08443c8a bd41bd01 @page:x8 bd405502 1e220821
-# The cloud sea's own scroll (main+0x70f300, from main+0x70e700): it adds 0.1 (main+0x9b5134) times the product of
-# +0x60 and +0x64 of the graphics settings ([main+0xb8daa0], both 1 in play) times the layer's speed to the scroll
-# vectors at +0x170 to +0x1f0 of the cloud object (the shaders' [10] to [14], main+0x7109b0) every frame. The product is
-# scaled by the page's +0x54. x10 and s1 are free here (s1 is loaded again at main+0x70f470); x8 is not.
-site xc2fps main 70f38c sha:ba333c86651ffca4 1e210800 @page:x10 bd405541 1e210800
+# The effect system's calculation (main+0x858748, the particles of mist, fire and sparks): each frame it adds 1 to the
+# accumulator at +0x15c, runs one step (main+0x84a738, s0 1) for each whole unit and subtracts it; below one unit it runs
+# the call that only keeps what is drawn current (w2 1), the way the effect library slows down. Adding the page's +0x54
+# instead of 1 steps the particles at the game's rate, and their whole-frame life counters (main+0x847c20) with them. s8
+# stays 1 for the comparison. x9 and s1 are free here.
+site xc2fps main 858750 sha:be49105426fb4937 @page:x9 bd405521 1e212800
+# The graphics step (+0x1c8c of the renderer, main+0x71b7e4 each frame and main+0x71ce60): +0x1c84 times +0x1c88, both 1,
+# in frames of 1/30 s. Timers subtract it and speeds are multiplied by it: the frame counters of animated materials
+# (main+0x777d80, the scrolling layers of the sky and of water), fades and lights. main+0x70a7e8 copies it to +0x60 of the
+# graphics settings ([main+0xb8daa0]), which times +0x64 is the speed of the drifting fog (main+0x71247c, offsets at +0x490
+# and +0x4a0 of its object), of the cloud sea's scroll (main+0x70f300) and of the wind (main+0x70d160), which the cloud
+# layers add (main+0x716074). The grass and wind sway (main+0x779118, main+0x748660) multiplies the step itself. All of them ran per frame, so above 30 fps the fog and the sky moved faster. The product is scaled by the page's +0x54. s1 is loaded again before it is read; x9 and
+# x8 are free at their sites.
+site xc2fps main 71b838 sha:0da2b67a045b7306 1e210800 @page:x9 bd405521 1e210800
+site xc2fps main 71ce78 sha:6774aaeebfa5d512 1e210800 @page:x8 bd405501 1e210800
 # Right-stick camera turn: the player camera's update (around main+0x1d1240) adds the stick, after its smoothing, times
 # the yaw speed (+0x52dc) and the pitch speed (+0x52e0) of its speed table (camera.param's YawRotSpeed and
 # PitchRotSpeed per camera speed option, filled at main+0x1cdda8) to the yaw (+0xb8) and the pitch (+0xc0) each frame,

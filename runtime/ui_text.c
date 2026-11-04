@@ -71,17 +71,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Keep (bars)", [UI_MENU_PICTURE_FIT_STRETCH] = "Stretch",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
-    [UI_MENU_FSR3] = "AMD FSR 3.1",
-    [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR 3.1, which upscales a lower "
+    [UI_MENU_FSR3] = "AMD FSR",
+    [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
                           "3D render scale to the game resolution. Needs amd_fidelityfx_loader_vk.dll next to the game.",
     [UI_MENU_FSR_VERSION] = "FSR version",
     [UI_MENU_FSR_VERSION_DESC] = "Which upscaler to ask AMD's library for. Auto takes the newest the GPU and driver "
                                   "support: FSR Upscaling 4.1 on Radeon RX 6000 and newer with a recent driver, FSR 3.1 "
                                   "everywhere else.",
     [UI_MENU_FSR_VERSION_AUTO] = "Auto", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
-    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN] = "FSR Frame Generation",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation shows an interpolated frame between two drawn ones, so the "
-                               "display runs at about twice the frame rate. It needs FSR 3.1 on for depth, motion "
+                               "display runs at about twice the frame rate. It needs AMD FSR on for depth, motion "
                                "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
                                "Off by default.",
 
@@ -383,17 +383,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Сохранять (полосы)", [UI_MENU_PICTURE_FIT_STRETCH] = "Растягивать",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
-    [UI_MENU_FSR3] = "AMD FSR 3.1",
-    [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR 3.1, который поднимает "
+    [UI_MENU_FSR3] = "AMD FSR",
+    [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR, который поднимает "
                           "пониженный масштаб 3D до разрешения игры. Нужен файл amd_fidelityfx_loader_vk.dll рядом с игрой.",
     [UI_MENU_FSR_VERSION] = "Версия FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Какой апскейлер запросить у библиотеки AMD. «Авто» берёт самый новый, который "
                                   "поддерживают видеокарта и драйвер: FSR Upscaling 4.1 на Radeon RX 6000 и новее со "
                                   "свежим драйвером, иначе FSR 3.1.",
     [UI_MENU_FSR_VERSION_AUTO] = "Авто", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
-    [UI_MENU_FRAME_GEN] = "Генерация кадров",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров FSR",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation показывает промежуточный кадр между двумя нарисованными, и "
-                               "экран идёт примерно вдвое быстрее. Нужен включённый FSR 3.1: из него берутся глубина, "
+                               "экран идёт примерно вдвое быстрее. Нужен включённый AMD FSR: из него берутся глубина, "
                                "векторы движения и картинка без интерфейса; частоту кадров ставьте около половины "
                                "частоты экрана. По умолчанию выключено.",
 
