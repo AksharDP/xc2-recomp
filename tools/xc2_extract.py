@@ -2,7 +2,8 @@
 
 The vendored MacNativeGames extractors (MIT) know Xenoblade Chronicles X's title ids. The NCA and container parsing is
 game independent, so this module replaces only their program-NCA selection with XC2's ids and keeps their verified
-readers. Base title 0100E95004038000, update 0100E95004038800.
+readers. It takes either release of tools/xc2_titles.py: base 0100E95004038000 and update 0100E95004038800 (the Americas
+and Europe), base 0100F3400332C000 and update 0100F3400332C800 (Japan).
 
 Run with the .venv Python (3.12): cryptography is the only native dependency of these paths.
 """
@@ -20,20 +21,13 @@ import extract_romfs  # noqa: E402
 import extract_update_romfs  # noqa: E402
 from extract_exefs import require  # noqa: E402
 
-BASE_TITLE = '0100E95004038000'
-UPDATE_TITLE = '0100E95004038800'
+import xc2_titles  # noqa: E402
 
-# Add-on content title ids and the index nn::aoc reports for each. The low three hex digits of a DLC title id are
-# its AddOnContentIndex (0x063 = 99, the Japanese voice pack, as on the console).
-DLC_TITLES = {
-    '0100E95004039001': 1,    # Torna ~ The Golden Country
-    '0100E95004039002': 2,    # New Quests
-    '0100E95004039003': 3,    # New Rare Blade
-    '0100E95004039004': 4,    # New Challenge Mode
-    '0100E95004039005': 5,    # Helpful Items
-    '0100E95004039006': 6,    # My Nintendo Bonus
-    '0100E95004039063': 99,   # Japanese Voice
-}
+BASE_TITLE = xc2_titles.DEFAULT.title       # the Americas and Europe; xc2_titles.REGIONS has every release
+UPDATE_TITLE = xc2_titles.DEFAULT.update_title
+
+# The low three hex digits of a DLC title id are its AddOnContentIndex (0x063 = 99, the western Japanese voice pack, as
+# on the console): xc2_titles.of_aoc maps any release's add-on title id to it.
 
 
 def is_bktr(hdr):
@@ -50,17 +44,21 @@ def program_nca(records, update=False):
         programs = [(r, h) for r, h in records if r['content_type'] == 0]
         require(len(programs) == 1, 'Expected one update Program NCA; combined packages are unsupported')
         record, hdr = programs[0]
-        require(record['title_id'] in (BASE_TITLE, UPDATE_TITLE), 'Update belongs to another game')
+        region = xc2_titles.of_title(record['title_id'])
+        require(region is not None, 'Update belongs to another game')
         require(is_bktr(hdr), 'Expected a BKTR update, not a base game')
-        require(all(r['title_id'] in (BASE_TITLE, UPDATE_TITLE) for r, _ in records), 'Mixed-title update package')
+        require(all(r['title_id'].upper() in (region.title, region.update_title) for r, _ in records),
+                'Mixed-title update package')
         return record, hdr
     metadata = [r for r, _ in records if r['content_type'] == 1]
-    require(len(metadata) <= 1 and all(r['title_id'] == BASE_TITLE for r in metadata),
+    require(len(metadata) <= 1 and all(r['title_id'].upper() in xc2_titles.TITLES for r in metadata),
             'Expected base game metadata; updates, DLC and combined packages are unsupported')
     programs = [(r, h) for r, h in records if r['content_type'] == 0 and not is_bktr(h)]
     require(len(programs) == 1, 'Expected one base Program NCA')
     record, hdr = programs[0]
-    require(record['title_id'] == BASE_TITLE, 'Expected Xenoblade Chronicles 2 base game')
+    title = record['title_id'].upper()
+    require(title in xc2_titles.TITLES and all(r['title_id'].upper() == title for r in metadata),
+            'Expected Xenoblade Chronicles 2 base game')
     return record, hdr
 
 
@@ -126,8 +124,9 @@ def dlc_romfs(game, keys, output):
         public = [(r, h) for r, h in nca_inventory(f, entries, keyring) if r['content_type'] == 5]
         check(len(public) == 1, 'Expected exactly one PublicData NCA')
         record, hdr = public[0]
-        check(record['title_id'] in DLC_TITLES, f'Unexpected DLC title id {record["title_id"]}')
-        index = DLC_TITLES[record['title_id']]
+        found = xc2_titles.of_aoc(record['title_id'])
+        check(found is not None, f'Unexpected DLC title id {record["title_id"]}')
+        index = found[1]
         manifest = {'source': str(game), 'source_size': game.stat().st_size, 'program': record}
     manifest_path = output.parent / f'dlc-{index}-manifest.json'
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

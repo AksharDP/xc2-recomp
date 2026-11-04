@@ -1,6 +1,7 @@
 """xc2-install.json in the install folder: what built it and which steps finished.
 
-    {"format": 1, "release": "...", "lang": "en-US",
+    {"format": 1, "release": "...", "lang": "en-US", "version": "3.0.1", "region": "us" (tools/xc2_titles.py; absent
+     in a folder from before releases were told apart, which holds the American and European one),
      "inputs": {"base": {"name", "size", "sha256"}, "update": {...}},
      "steps": {"<step>": {"key": "<input fingerprint>", "release": "...", "finished": "<UTC time>", "seconds": 12.3,
                           ...the step's own fields}}}

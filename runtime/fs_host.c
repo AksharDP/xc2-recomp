@@ -29,7 +29,7 @@
 #include "prompts.h"
 #include "romfs_path.h"
 
-#define APPLICATION_ID 0x0100e95004038000ull   // XC2's title id: the save data checks compare against it
+#define APPLICATION_ID rt_title_id   // the release's title id (host.h): the save data checks compare against it
 #define FILE_BASE 0x200000000ull
 #define DIR_BASE 0x300000000ull
 #define NFILES 1024

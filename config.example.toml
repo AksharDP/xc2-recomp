@@ -1,9 +1,11 @@
 # Copy to config.local.toml (ignored by git) and point it at your own files.
 
 [input]
-# Base game 1.0.0, title id 0100E95004038000, as NSP or XCI.
+# Base game 1.0.0, title id 0100E95004038000 (the Americas and Europe) or 0100F3400332C000 (Japan: tools/extract.py
+# --region jp), as NSP or XCI.
 base = 'C:\Games\XC2\base.nsp'
-# Cumulative update NSPs, title id 0100E95004038800. Each is identified by its code hash; 3.0.1 is supported.
+# Cumulative update NSPs, title id 0100E95004038800 (Japan: 0100F3400332C800). Each is identified by its code hash;
+# 3.0.1 is supported.
 updates = ['C:\Games\XC2\update-3.0.1.nsp']
 # Keys dumped from your own console. Never printed or copied by the tools.
 keys = 'C:\Switch\prod.keys'

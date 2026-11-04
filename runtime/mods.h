@@ -1,9 +1,9 @@
 // Adapted from totk-pc-recomp runtime/mods.h @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
 // Player mods (mods.c): one folder per mod under mods/ next to xc2.exe (XC2_MODS_DIR), unpacked as emulators take
 // them: <mod>/romfs, <mod>/exefs and <mod>/cheats, or the Atmosphere layout (atmosphere/contents/<title id>/romfs,
-// atmosphere/exefs_patches/<name>/*.ips). The RomFS of an add-on content title (<title id> 0100E950040390NN, pack NN in
-// hex) goes over that pack: XC2 looks a file up in every add-on content pack before its base archive, which is how XC2
-// mods replace files inside bf2.arh / bf2.ard. ExeFS patch files (.ips, .pchtxt) for the game's main are patch sets the
+// atmosphere/exefs_patches/<name>/*.ips). The RomFS of an add-on content title (<title id> 0100E950040390NN, in Japan
+// 0100F3400332D0NN, pack NN in hex) goes over that pack: XC2 looks a file up in every add-on content pack before its
+// base archive, which is how XC2 mods replace files inside bf2.arh / bf2.ard. ExeFS patch files (.ips, .pchtxt) for the game's main are patch sets the
 // setup builds into the game (tools/exefs_patches.py), switched with their mod (mods_exefs_switch). The list is scanned
 // once at start (romfs.c overlay_init); its order and switches live in xc2.ini [mods] (XC2_MODS_ORDER: names top
 // first, separated by '|'; XC2_MODS_DISABLED: names switched off). The top mod wins a file two mods replace.
