@@ -1,7 +1,8 @@
 """Multithreaded test of the exclusive monitor helpers in cpu.h (ldxN/stxN, ldxp128/stxp128).
 
 - ABA: thread A loads X exclusively, thread B changes X->Y->X with its own exclusive pairs, then A's store exclusive
-  must fail. Checked for the 32-bit, 64-bit and 128-bit pair forms, plus a control where B touches nothing.
+  must fail. Checked for the 32-bit, 64-bit and 128-bit pair forms, plus a control where B touches nothing. The
+  compare-and-swap sees the same value; the generation per granule (cpu.h, excl_gen_slot) fails the store.
 - Contention: N threads increment one counter with load/store-exclusive retry loops; the total must be exact.
 
 Needs no game files. Usage: excl_mt.py [--runtime DIR] [--threads N] [--iters K]
@@ -21,6 +22,8 @@ SRC = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include "cpu.h"
+
+ExclGen g_excl_gen[EXCL_GEN_SLOTS];   // the exclusive monitor's generations (runtime/kernel.c in the game)
 
 static volatile int step;
 static uint64_t cell[4] __attribute__((aligned(64)));

@@ -114,6 +114,9 @@ struct RtThread {
                                                                                                  // owner that released
 };
 
+// Generation slots of the exclusive monitor (runtime/cpu.h, excl_gen_slot): shared by every guest thread.
+ExclGen g_excl_gen[EXCL_GEN_SLOTS];
+
 static PlatMutex G = PLAT_MUTEX_INIT;
 static struct { int type; void *obj; } g_h[MAX_H];
 static _Thread_local RtThread *tcur;

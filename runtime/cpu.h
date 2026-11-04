@@ -18,7 +18,8 @@ typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
     uint64_t excl_val_hi;    // 336: upper half of a 128-bit exclusive pair (LDXP/LDAXP of two X registers)
-    uint8_t _pad[512 - 344];
+    uint32_t excl_gen;       // 344: generation of the exclusive's granule slot at the load exclusive (g_excl_gen)
+    uint8_t _pad[512 - 348];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -83,20 +84,67 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define ST32(a, v) (*(u32u *)(uintptr_t)(a) = (uint32_t)(v))
 #define ST64(a, v) (*(u64u *)(uintptr_t)(a) = (uint64_t)(v))
 
-// ---- exclusive monitor (emulated with compare-and-swap)
+// ---- exclusive monitor (emulated with compare-and-swap plus a generation per granule)
+// A compare-and-swap alone cannot see a value another thread changed and changed back between the load exclusive and
+// the store exclusive (X -> Y -> X), where ARM fails the store. So every successful store exclusive also advances a
+// generation counter in a slot picked by the address's 64-byte granule, and a store exclusive fails when its slot's
+// generation moved since its load exclusive. Slots are padded to a cache line, so unrelated granules do not share
+// one unless their addresses hash alike (then they only fail each other spuriously, which ARM allows).
+//
+// Cost: the store exclusive takes one locked instruction, as before. The generation is checked with a plain load and
+// advanced with a plain store after the compare-and-swap, not claimed with a second compare-and-swap: uncontended a
+// load/store exclusive pair costs the same as with the compare-and-swap alone, where a claim made it 5-8 ns slower.
+// Contended, the slot's cache line moves between cores along with the value's, and a thread fails its store when
+// another one's lands between its load and store: 2 to 4 threads that do nothing but increment one counter take
+// 1.7 to 3.8 times as long per pair, a little less than with a claim. Every scheme that tracks writes outside guest
+// memory writes a second cache line per store, so this part has no cheap way around it.
+//
+// What it does not catch:
+// - A round trip that completes inside the few instructions between the generation check and the
+//   compare-and-swap of a store exclusive (a claim would close this, at the cost above).
+// - Writes that are not store exclusives: plain stores, store-release (stlN), the LSE helpers and CAS/CASP, and the
+//   host's own writes to guest memory. They do not advance the generation.
+// Two successful stores to one slot at the same moment can advance it once instead of twice. A thread whose load
+// exclusive came after the first of them read its value too, so it misses nothing.
+#define EXCL_GEN_SLOTS 4096
+typedef struct __attribute__((aligned(64))) ExclGen { uint32_t v; } ExclGen;
+extern ExclGen g_excl_gen[EXCL_GEN_SLOTS];   // defined in runtime/kernel.c (and in each standalone test source)
+
+static inline uint32_t *excl_gen_slot(uint64_t a) {
+    return &g_excl_gen[((a >> 6) ^ (a >> 18)) & (EXCL_GEN_SLOTS - 1)].v;
+}
+// Load exclusive: the generation is read before the value, so a store that advanced it is seen in the value too.
+static inline void excl_open(Cpu *c, uint64_t a) {
+    c->excl_gen = __atomic_load_n(excl_gen_slot(a), __ATOMIC_ACQUIRE);
+}
+// Store exclusive, before its compare-and-swap: 0 when the monitor still holds a, else the failed status 1.
+static inline int excl_check(Cpu *c, uint64_t a) {
+    if (c->excl_addr != a) return 1;
+    c->excl_addr = ~0ull;
+    return __atomic_load_n(excl_gen_slot(a), __ATOMIC_RELAXED) != c->excl_gen;
+}
+// Store exclusive, after a successful compare-and-swap.
+static inline void excl_done(uint64_t a) {
+    uint32_t *s = excl_gen_slot(a);
+    __atomic_store_n(s, __atomic_load_n(s, __ATOMIC_RELAXED) + 1, __ATOMIC_RELEASE);
+}
+
 #define EXCL(N, T)                                                                         \
     static inline uint64_t ldx##N(Cpu *c, uint64_t a) {                                    \
+        excl_open(c, a);                                                                   \
         T v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                        \
         c->excl_addr = a;                                                                  \
         c->excl_val = v;                                                                   \
         return v;                                                                          \
     }                                                                                      \
     static inline uint32_t stx##N(Cpu *c, uint64_t a, uint64_t v) {                        \
-        if (c->excl_addr != a) return 1;                                                   \
-        c->excl_addr = ~0ull;                                                              \
+        if (excl_check(c, a)) return 1;                                                    \
         T expected = (T)c->excl_val;                                                       \
-        return !__atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,         \
-                                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);           \
+        if (!__atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,            \
+                                         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))              \
+            return 1;                                                                      \
+        excl_done(a);                                                                      \
+        return 0;                                                                          \
     }                                                                                      \
     static inline uint64_t lda##N(uint64_t a) {                                            \
         return __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                       \
@@ -112,6 +160,7 @@ EXCL(64, uint64_t)
 // Exclusive pair of two X registers: one 16-byte-aligned 128-bit access (cmpxchg16b; x86-64-v3 has CX16).
 // A pair of two W registers is a 64-bit exclusive and uses ldx64/stx64.
 static inline __uint128_t ldxp128(Cpu *c, uint64_t a) {
+    excl_open(c, a);
     __uint128_t v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);
     c->excl_addr = a;
     c->excl_val = (uint64_t)v;
@@ -119,12 +168,14 @@ static inline __uint128_t ldxp128(Cpu *c, uint64_t a) {
     return v;
 }
 static inline uint32_t stxp128(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi) {
-    if (c->excl_addr != a) return 1;
-    c->excl_addr = ~0ull;
+    if (excl_check(c, a)) return 1;
     __uint128_t expected = ((__uint128_t)c->excl_val_hi << 64) | c->excl_val;
     __uint128_t v = ((__uint128_t)hi << 64) | lo;
-    return !__atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, v, 0, __ATOMIC_SEQ_CST,
-                                        __ATOMIC_SEQ_CST);
+    if (!__atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, v, 0, __ATOMIC_SEQ_CST,
+                                     __ATOMIC_SEQ_CST))
+        return 1;
+    excl_done(a);
+    return 0;
 }
 
 // ---- LSE atomics (ARMv8.1; the A57 lacks them, the SDK carries them behind a CPU feature check).

@@ -14,6 +14,8 @@
 
 #include "cpu.h"
 
+ExclGen g_excl_gen[EXCL_GEN_SLOTS];   // the exclusive monitor's generations (runtime/kernel.c in the game)
+
 extern GuestFn tests[];
 extern int ntests;
 
