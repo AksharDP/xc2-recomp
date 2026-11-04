@@ -180,3 +180,29 @@ site xc2scale main 717db8 sha:d4baac18230cfd88 @page:x10 bd405940 bd001120
 site xc2scale main 717dec sha:b293a4ecc0f3cfdd @page:x10 bd405940 bd001520
 site xc2scale main 717e20 sha:6c937ded467437b5 @page:x10 bd405940 bd001920
 site xc2scale main 717e54 sha:e85fdb91c376cc74 @page:x10 bd405940 bd001d20
+
+# The port's own cheats (runtime/cheats.c, the Cheats tab's built-in rows). XC2's battle units live in one array
+# (main+0x7b5ac: unit = manager + index * 0x11d0 + 0x20, 0x59 slots); the game's own debug menu (main+0xf714, the
+# ReduceEnemyHP / ReducePCHP items) scans indices 0x14..0x59 for enemies and 0..0x13 for the party, so the party is
+# the low half of the array. A unit's flag word at +0xefe carries the side in bit 15: set for the party, clear for
+# enemies (main+0x564cc only processes hits on units with the bit clear; main+0x41728 treats bit 15 set with bit 16
+# clear as its own class). Both cheats read that bit of the attacking unit and rewrite its damage:
+#
+# xc2god (XC2_CHEAT_GOD_MODE, off): enemy attacks land for 0. main+0x5b904 is where the hit processor (main+0x5ab00)
+# loads the damage and flags word pair the damage calc (main+0x61e90) wrote, x19 holding the attacking unit; the
+# replacement keeps the load and masks the damage word with the sign of the side bit, so a party attack is unchanged
+# and an enemy attack lands for 0. Misses and blocks carry damage 0 already and stay 0; the damage estimates of
+# main+0x564cc (enemy AI) are read elsewhere and keep their real values, so the AI does not play dumb.
+set xc2god XC2_CHEAT_GOD_MODE 0
+site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 0a1e0129
+#
+# xc2kill (XC2_CHEAT_INSTA_KILL, off): the party's hits land for 9999. The value is fixed, not the game's damage
+# cap, so the cheat one-shots most enemies but not the high-health uniques and bosses, and scripted scenes keep
+# their headroom. main+0x5b92c reads the damage into w23 after the hit-processor's own miss check (bit 4 of the
+# hit flags at main+0x5b928 jumps past it), so a whiffed or dodged attack is not boosted. The replacement
+# recomputes the damage as side * 9999 + (1 - side) * damage with side = bit 15 (madd; exact for any damage). x30
+# and w9 are free at both sites: the first is rewritten at main+0x5b908 before its next read (and re-set at
+# main+0x5bb98 on the other branch), the second at main+0x6266c / main+0x5b934. Neither site's code reads NZCV
+# after it, so the replacements keep it untouched.
+set xc2kill XC2_CHEAT_INSTA_KILL 0
+site xc2kill main 5b92c sha:292f0128370d1eec b940abf7 913bfa7e b94003de 530f3fde 5284e1e9 4b170129 1b095fd7

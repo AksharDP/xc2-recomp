@@ -305,6 +305,15 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                    "Run the setup again to build it in.",
     [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
+    [UI_MENU_CHEATS_BUILTIN] = "Built-in cheats",
+    [UI_MENU_CHEAT_GOD_MODE] = "God mode",
+    [UI_MENU_CHEAT_GOD_MODE_DESC] = "The party takes no damage. Switches at once.",
+    [UI_MENU_CHEAT_INSTA_KILL] = "Insta kill",
+    [UI_MENU_CHEAT_INSTA_KILL_DESC] = "The party's hits land for 9999 damage. Most enemies fall in one hit; "
+                                      "high-health foes take a few. Switches at once.",
+    [UI_MENU_CHEATS_OPEN] = "Open mods folder",
+    [UI_MENU_CHEATS_OPEN_DESC] = "Cheat files live in a mod's cheats folder: mods\\<mod>\\cheats\\<build id>.txt. "
+                                 "Shows the mods folder; it is created if it is missing.",
 
     [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f ms", [UI_MENU_OV_GAME_PCT] = "game %.0f%%",
     [UI_MENU_OV_MAX_MS] = "max %.1f ms",
@@ -612,6 +621,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                    "установку ещё раз, чтобы собрать его.",
     [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
+    [UI_MENU_CHEATS_BUILTIN] = "Встроенные читы",
+    [UI_MENU_CHEAT_GOD_MODE] = "Режим бога",
+    [UI_MENU_CHEAT_GOD_MODE_DESC] = "Отряд не получает урона. Включается и выключается сразу.",
+    [UI_MENU_CHEAT_INSTA_KILL] = "Мгновенное убийство",
+    [UI_MENU_CHEAT_INSTA_KILL_DESC] = "Удары отряда наносят 9999 урона. Большинство врагов падает с одного "
+                                      "удара, у противников с большим запасом здоровья уйдёт несколько. "
+                                      "Включается и выключается сразу.",
+    [UI_MENU_CHEATS_OPEN] = "Открыть папку модов",
+    [UI_MENU_CHEATS_OPEN_DESC] = "Файлы читов лежат в папке cheats мода: mods\\<мод>\\cheats\\<build id>.txt. "
+                                 "Показывает папку модов; если её нет, она будет создана.",
 
     [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f мс", [UI_MENU_OV_GAME_PCT] = "игра %.0f%%",
     [UI_MENU_OV_MAX_MS] = "макс. %.1f мс",

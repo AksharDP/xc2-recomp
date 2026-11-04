@@ -94,7 +94,22 @@ mods\<mod>\cheats\4F5C96E2D97F45AC.txt
 Upper or lower case in the name does not matter. Files for other game versions have another build id and are not read.
 
 The Cheats tab lists the cheats by mod. Every cheat starts off. Your choices are saved in `xc2.ini` under `[cheats]` as
-`cheat_<hash> = 1`.
+`cheat_<hash> = 1`. The tab's **Open mods folder** button opens the mods folder the cheat files live in (one folder
+per mod, `cheats` inside it); it creates the folder if it is missing.
+
+### The port's own cheats
+
+Above the mods' cheats, the tab lists the cheats that ship with the port, when this build has them:
+
+| Cheat | What it does |
+|---|---|
+| God mode | enemy attacks land for 0 damage |
+| Insta kill | the party's hits land for 9999 damage; most enemies fall in one hit, high-health foes take a few |
+
+They work like code cheats: they turn on and off at once, no setup run needed, and each is saved in `xc2.ini` as
+`cheat_god_mode` / `cheat_insta_kill` under `[cheats]`. Both start off. They only cover damage dealt in battle
+through the game's damage calculation; effects that drain or set HP directly are not affected. A build made for
+another game version without these patches lists none.
 
 | Kind of cheat | What happens |
 |---|---|

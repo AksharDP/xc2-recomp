@@ -236,6 +236,9 @@
 # One line per cheat of the mods' cheat files; the Cheats tab of the menu writes them. cheat_<hash> = 1 switches a
 # cheat on, the hash being FNV-1a 32 of "<mod folder>/<cheat name>". Default: every cheat off.
 # cheat_0123abcd = 1
+# The port's own cheats, the Cheats tab's built-in rows (only in builds whose patch file has them):
+# cheat_god_mode = 1       # enemy attacks land for 0
+# cheat_insta_kill = 1     # the party's hits land for 9999
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's
