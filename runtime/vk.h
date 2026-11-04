@@ -133,6 +133,7 @@ int vk_fsr3_frame_get(VkFsrFrame *out);
 // two frames and presents both. Off, every function below is the plain Vulkan call.
 int vk_fg_wanted(void);      // the setting is on and usable (it needs XC2_FSR3 for its inputs)
 int vk_fg_active(void);      // the live swapchain is the library's
+float vk_fg_generated_fps(uint64_t now_ns);   // generated frames a second, negative while frame generation is off
 // 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is
 // gone, as the library destroys what it is given even when it fails.
 int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc);

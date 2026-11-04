@@ -148,6 +148,26 @@ int vk_fg_wanted(void) {
 
 int vk_fg_active(void) { return G.on; }
 
+// Generated frames a second over the last half second: what the library presented less what the game drew. Negative
+// while frame generation is off. On the present thread, once a frame, like vk_fg_frame and vk_fg_shutdown.
+float vk_fg_generated_fps(uint64_t now_ns) {
+    static uint64_t t0, shown0, drawn0;
+    static float rate;
+    if (!G.on || !G.sc_count || !G.swapchain) {
+        t0 = 0;
+        rate = 0;
+        return -1;
+    }
+    if (t0 && now_ns - t0 < 500000000ull) return rate;
+    uint64_t shown = G.sc_count(G.swapchain), drawn = G.frame_id;
+    if (t0) {
+        uint64_t s = shown - shown0, d = drawn - drawn0;
+        rate = s > d ? (float)((s - d) * 1e9 / (double)(now_ns - t0)) : 0;
+    }
+    t0 = now_ns, shown0 = shown, drawn0 = drawn;
+    return rate;
+}
+
 static void free_hudless(VkCtx *c) {
     for (int i = 0; i < 2; i++) {
         if (G.hudless[i]) vmaDestroyImage(c->vma, G.hudless[i], G.hudless_alloc[i]);
