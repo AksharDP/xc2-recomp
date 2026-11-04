@@ -28,6 +28,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - In-game settings menu (F1) and performance overlay (F10)
 - Keyboard, mouse and gamepad
 - AMD FSR 1 scaling when the window is bigger than the game picture; bilinear is the other option
+- AMD FSR upscaling in place of the game's temporal anti-aliasing and scaling (FSR 3.1, or FSR 4 on Radeon RX 6000 and
+  newer), and frame generation between drawn frames, both off by default
 - Mods for Switch emulators and Atmosphere, in a `mods` folder next to `xc2.exe` ([docs/mods.md](docs/mods.md))
 
 ## Planned

@@ -21,7 +21,9 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 
 ```
 <install folder>/
-  xc2.exe, SDL3.dll, libopus-0.dll, amd_fidelityfx_vk.dll, xc2_xlate.exe
+  xc2.exe, SDL3.dll, libopus-0.dll, xc2_xlate.exe
+  amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll, amd_fidelityfx_framegeneration_vk.dll
+                                AMD FSR SDK 2.4 (FSR upscaling and frame generation); without them the FSR settings stay off
   xc2.ini                       language; the other keys as commented defaults (xc2.ini.example)
   exefs/, romfs/                 extracted from the player's files (base merged with 3.0.1; RomFS about 13 GiB)
   aoc/<index>/                   each add-on's RomFS (about 4.6 GiB for all seven; packs 5 and 6 hold only a key file)

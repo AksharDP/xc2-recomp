@@ -49,6 +49,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PERF_OFF] = "Off", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Full",
     // printf format of the overlay line in FPS mode: the frame rate
     [UI_PERF_LINE_FPS] = "%.0f fps",
+    // the same with frame generation on: the frames the game drew, then all the frames on screen
+    [UI_PERF_LINE_FPS_FG] = "%.0f / %.0f fps",
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in; the game's own is 1280 x 720. Above it the game needs "
@@ -71,9 +73,20 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Keep (bars)", [UI_MENU_PICTURE_FIT_STRETCH] = "Stretch",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
-    [UI_MENU_FSR3] = "AMD FSR 3.1",
-    [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR 3.1, which upscales a lower "
-                          "3D render scale to the game resolution. Needs amd_fidelityfx_vk.dll next to the game.",
+    [UI_MENU_FSR3] = "AMD FSR",
+    [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
+                          "3D render scale to the game resolution. Needs amd_fidelityfx_loader_vk.dll and "
+                          "amd_fidelityfx_upscaler_vk.dll next to the game, or the older amd_fidelityfx_vk.dll.",
+    [UI_MENU_FSR_VERSION] = "FSR version",
+    [UI_MENU_FSR_VERSION_DESC] = "Which upscaler to ask AMD's library for. Auto takes the newest the GPU and driver "
+                                  "support: FSR Upscaling 4.1 on Radeon RX 6000 and newer with a recent driver, FSR 3.1 "
+                                  "everywhere else.",
+    [UI_MENU_FSR_VERSION_AUTO] = "Auto", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
+    [UI_MENU_FRAME_GEN] = "FSR Frame Generation",
+    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation shows an interpolated frame between two drawn ones, so the "
+                               "display runs at about twice the frame rate. It needs AMD FSR on for depth, motion "
+                               "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
+                               "Off by default.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. Above 60 is "
@@ -306,7 +319,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
 
-    [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f ms", [UI_MENU_OV_GAME_PCT] = "game %.0f%%",
+    [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FPS_FG] = "%.0f / %.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f ms", [UI_MENU_OV_GAME_PCT] = "game %.0f%%",
     [UI_MENU_OV_MAX_MS] = "max %.1f ms",
     [UI_MENU_OV_GPU] = "GPU", [UI_MENU_OV_CPU] = "CPU", [UI_MENU_OV_RAM] = "RAM", [UI_MENU_OV_VRAM] = "VRAM",
     [UI_MENU_OV_TEMP] = "Temperature", [UI_MENU_OV_POWER] = "Power", [UI_MENU_OV_CLOCK] = "Clock",
@@ -351,7 +364,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "загрузку ЦП, GPU и памяти, температуры и ожидания потока отрисовки. F10 переключает "
                                   "режимы.",
     [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
-    [UI_PERF_LINE_FPS] = "%.0f к/с",
+    [UI_PERF_LINE_FPS] = "%.0f к/с", [UI_PERF_LINE_FPS_FG] = "%.0f / %.0f к/с",
     [UI_MENU_GRAPHICS] = "Изображение",
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс; свой у игры 1280 × 720. Выше него игре нужно больше "
@@ -373,9 +386,20 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Сохранять (полосы)", [UI_MENU_PICTURE_FIT_STRETCH] = "Растягивать",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
-    [UI_MENU_FSR3] = "AMD FSR 3.1",
-    [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR 3.1, который поднимает "
-                          "пониженный масштаб 3D до разрешения игры. Нужен файл amd_fidelityfx_vk.dll рядом с игрой.",
+    [UI_MENU_FSR3] = "AMD FSR",
+    [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR, который поднимает "
+                          "пониженный масштаб 3D до разрешения игры. Нужны файлы amd_fidelityfx_loader_vk.dll и "
+                          "amd_fidelityfx_upscaler_vk.dll рядом с игрой либо более старый amd_fidelityfx_vk.dll.",
+    [UI_MENU_FSR_VERSION] = "Версия FSR",
+    [UI_MENU_FSR_VERSION_DESC] = "Какой апскейлер запросить у библиотеки AMD. «Авто» берёт самый новый, который "
+                                  "поддерживают видеокарта и драйвер: FSR Upscaling 4.1 на Radeon RX 6000 и новее со "
+                                  "свежим драйвером, иначе FSR 3.1.",
+    [UI_MENU_FSR_VERSION_AUTO] = "Авто", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров FSR",
+    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation показывает промежуточный кадр между двумя нарисованными, и "
+                               "экран идёт примерно вдвое быстрее. Нужен включённый AMD FSR: из него берутся глубина, "
+                               "векторы движения и картинка без интерфейса; частоту кадров ставьте около половины "
+                               "частоты экрана. По умолчанию выключено.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду; часы игры идут по нему. Выше 60 — экспериментальный "
@@ -613,7 +637,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
 
-    [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f мс", [UI_MENU_OV_GAME_PCT] = "игра %.0f%%",
+    [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FPS_FG] = "%.0f / %.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f мс", [UI_MENU_OV_GAME_PCT] = "игра %.0f%%",
     [UI_MENU_OV_MAX_MS] = "макс. %.1f мс",
     [UI_MENU_OV_GPU] = "GPU", [UI_MENU_OV_CPU] = "ЦП", [UI_MENU_OV_RAM] = "ОЗУ", [UI_MENU_OV_VRAM] = "Видеопамять",
     [UI_MENU_OV_TEMP] = "Температура", [UI_MENU_OV_POWER] = "Мощность", [UI_MENU_OV_CLOCK] = "Частота",

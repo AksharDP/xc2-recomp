@@ -134,13 +134,28 @@ def release_translator(root):
     return bin_dir / ('xc2_xlate' + EXE)
 
 
+FSR_DLLS = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
+            'amd_fidelityfx_vk.dll')
+
+
+def dev_fsr_dlls(root):
+    """AMD's FSR libraries from the folders copy_fsr3 in tools/build_game.py takes them from; a later folder wins, as
+    there."""
+    found = {}
+    for d in (root / 'build' / 'ffx-sdk-2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin', root / 'build' / 'ffx-dlls',
+              root / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL'):
+        found.update({n: d / n for n in FSR_DLLS if (d / n).is_file()})
+    return tuple(found.values())
+
+
 def release_dlls(root):
-    """The DLLs xc2.exe loads: SDL3 and Opus, the C++ runtime of the llvm-mingw it is linked with, and AMD's FSR 3.1
-    library. That one only when present: the game runs without it, and an older setup used as tools_fallback lacks it."""
-    fsr = root / 'bin' / 'amd_fidelityfx_vk.dll'
+    """The DLLs xc2.exe loads: SDL3 and Opus, the C++ runtime of the llvm-mingw it is linked with, and AMD's FSR SDK
+    libraries (the loader, the upscaler and the frame generation effect). Those only when present: the game runs without
+    them, and an older setup used as tools_fallback lacks them."""
+    fsr = tuple(root / 'bin' / n for n in FSR_DLLS if (root / 'bin' / n).is_file())
     return (root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll',
             *(root / 'llvm' / 'bin' / n for n in ('libc++.dll', 'libunwind.dll', 'libwinpthread-1.dll')),
-            *((fsr,) if fsr.is_file() else ()))
+            *fsr)
 
 
 def release_layout(root):
@@ -189,7 +204,7 @@ def dev_layout(root):
         runtime=root / 'runtime', runtime_lib=root / 'build' / 'install-rtlib' / 'libxc2rt.a',
         ninja=UCRT / ('ninja' + EXE),
         xlate=root / 'build' / 'xlate' / ('xc2_xlate' + EXE),
-        dlls=tuple(sorted((deps / 'bin').glob('*.dll'))),
+        dlls=(*sorted((deps / 'bin').glob('*.dll')), *dev_fsr_dlls(root)),
         ini_example=root / 'xc2.ini.example', temp=root / 'build' / 'install-temp')
 
 

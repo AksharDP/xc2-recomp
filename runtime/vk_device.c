@@ -170,14 +170,23 @@ static int pick_device(void) {
     VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
     g_vk.gfx_family = find_gfx_family(g_vk.phys, qp, nq);
+    g_vk.gfx_queue_count = g_vk.gfx_family < nq ? qp[g_vk.gfx_family].queueCount : 1;
+    g_vk.comp_family = UINT32_MAX;
     g_vk.xfer_family = g_vk.gfx_family;
     for (uint32_t i = 0; i < nq; i++)   // a family that does transfer only (async DMA engine)
         if ((qp[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(qp[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
             g_vk.xfer_family = i;
             break;
         }
+    for (uint32_t i = 0; i < nq; i++)   // a compute-only family: frame generation needs four distinct queues in all
+        if (i != g_vk.gfx_family && i != g_vk.xfer_family && qp[i].queueCount &&
+            (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+            g_vk.comp_family = i;
+            g_vk.comp_queue_count = qp[i].queueCount < 3 ? qp[i].queueCount : 3;
+            break;
+        }
     free(qp);
-    rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
+    rt_log("vk: using gpu %d: %s, graphics family %u with %u queues", best, g_vk.props.deviceName, g_vk.gfx_family, g_vk.gfx_queue_count);
     vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
     return 1;
 }
@@ -338,15 +347,24 @@ static int create_device(void) {
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
-    float prio = 1.0f;
-    VkDeviceQueueCreateInfo qi[2] = {
-        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family, .queueCount = 1,
-         .pQueuePriorities = &prio}};
+    const float prio[4] = {1.0f, 1.0f, 1.0f, 1.0f};   // one per queue of a family
+    // Up to four queues from the graphics family, and up to three from a compute-only one for GPUs with a single graphics
+    // queue: frame generation refuses less than four distinct queues, and its threads then never submit on the queue the
+    // renderer uses (vk_fg.c pick_queues). gfx_queue_count becomes what exists, as vkGetDeviceQueue takes no other index.
+    if (g_vk.gfx_queue_count > 4) g_vk.gfx_queue_count = 4;
+    VkDeviceQueueCreateInfo qi[3] = {
+        {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.gfx_family,
+         .queueCount = g_vk.gfx_queue_count, .pQueuePriorities = prio}};
     uint32_t nqi = 1;
     if (g_vk.xfer_family != g_vk.gfx_family) {
         qi[1] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = &prio};
+                                          .queueFamilyIndex = g_vk.xfer_family, .queueCount = 1, .pQueuePriorities = prio};
         nqi = 2;
+    }
+    if (g_vk.comp_family != UINT32_MAX) {   // a compute-only family's queues, for frame generation
+        qi[nqi++] = (VkDeviceQueueCreateInfo){.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                              .queueFamilyIndex = g_vk.comp_family, .queueCount = g_vk.comp_queue_count,
+                                              .pQueuePriorities = prio};
     }
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};

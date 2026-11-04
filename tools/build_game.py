@@ -504,6 +504,36 @@ def link_objects(out, pairs):
             shutil.copy2(theirs, dst)
 
 
+def translator_id(d):
+    """The identity a built translator in directory d was stamped with, '' when it has none."""
+    f = d / 'xc2_xlate.id'
+    return f.read_text(encoding='ascii').strip() if f.is_file() else ''
+
+
+def check_translator(exe_dir, allow_stale):
+    """Stops the build when the translator it will use was built from other sources than this checkout's: build/xlate's,
+    or without one exe_dir's, unless exe_dir already holds a matching one (a task build's own translator). A stale
+    translator fails nothing: the runtime asks it for what the current sources implement and it silently leaves that
+    out. One from before transform feedback left the feedback
+    outputs out of the shaders, so nothing wrote the animated vertices of the hanging foliage in Uraya: those draws read
+    the bone matrices sharing that scratch memory as positions and came out as long black spikes. Checkouts without the
+    translator's sources (an unpacked release) have nothing to compare with."""
+    src = ROOT / 'build' / 'xlate'
+    used = src if translator_id(src) else exe_dir
+    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not translator_id(used):
+        return
+    from build_xlate import identity
+    want = identity()
+    if want in (translator_id(src), translator_id(exe_dir)):
+        return
+    what = f'{below_root(used)} is {translator_id(used)[:16]}, these sources are {want[:16]}'
+    if allow_stale:
+        print(f'build_game: warning: stale shader translator: {what}', file=sys.stderr)
+        return
+    sys.exit(f'build_game: stale shader translator: {what}. Shaders would silently lose what the sources added since. '
+             'Run tools/build_xlate.py, or pass --allow-stale-translator to build with it anyway.')
+
+
 def copy_translator(exe_dir):
     """Put xc2_xlate.exe and its .id next to xc2.exe, where gfx_shader.c looks first. Without a translator every
     shader fails and the game draws nothing (black screen, sound plays). Source: build/xlate (tools/build_xlate.py),
@@ -518,6 +548,10 @@ def copy_translator(exe_dir):
                   'will draw nothing unless XC2_XLATE names one', file=sys.stderr)
         return
     src_dir, stem = found[0]
+    if src_dir == ROOT / 'build' / 'xlate' and translator_id(exe_dir) not in ('', translator_id(src_dir)):
+        from build_xlate import identity
+        if translator_id(exe_dir) == identity():
+            return   # a task build's own translator, built from these sources; build/xlate is not
     for ext in (suffix, '.id'):
         if (src_dir / f'{stem}{ext}').is_file():
             shutil.copy2(src_dir / f'{stem}{ext}', exe_dir / f'xc2_xlate{ext}')
@@ -525,11 +559,21 @@ def copy_translator(exe_dir):
 
 
 def copy_fsr3(exe_dir):
-    """Put AMD's signed FSR 3.1 library next to xc2.exe, where runtime/vk_fsr3.c looks for it. It comes from the
-    FidelityFX SDK 1.1.4 release, unpacked under build/ffx-sdk-1.1.4; without it the XC2_FSR3 setting stays off."""
-    dll = ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL' / 'amd_fidelityfx_vk.dll'
-    if WIN and dll.is_file():
-        shutil.copy2(dll, exe_dir / dll.name)
+    """Put AMD's signed FSR libraries next to xc2.exe, where runtime/vk_fsr3.c and runtime/vk_fg.c look for them: the FSR
+    SDK 2.4 Vulkan loader with the upscaler and the frame generation effect, and FidelityFX SDK 1.1.4's single
+    amd_fidelityfx_vk.dll when it is unpacked too (the older path, also the name OptiScaler replaces). Without them the
+    XC2_FSR3 and XC2_FRAME_GEN settings stay off."""
+    dirs = (ROOT / 'build' / 'ffx-sdk-2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin', ROOT / 'build' / 'ffx-dlls',
+            ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL')
+    names = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
+             'amd_fidelityfx_vk.dll')
+    if not WIN:
+        return
+    for d in dirs:
+        for n in names:
+            src = d / n
+            if src.is_file():
+                shutil.copy2(src, exe_dir / n)
 
 
 def unlink_shared(out, mods):
@@ -952,6 +996,8 @@ def main():
                          'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--allow-stale-translator', action='store_true',
+                    help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
@@ -1043,6 +1089,8 @@ def main():
     if stale:
         sys.exit(f'{stale[0]}: its SPIR-V header no longer matches; run python tools/build_shaders.py')
     skip = {s for s in args.skip_runtime.split(',') if s}
+    if not args.make_runtime_lib:   # before the compile: this stops the build, and a library holds no translator
+        check_translator(out, args.allow_stale_translator)
     main_out = (ROOT / 'build' / args.version).resolve()
     pairs = None
     if args.make_runtime_lib:
