@@ -10,7 +10,8 @@ XC2's inputs; file names inside the game folder (`xc2.exe`, `xc2.ini`) are XC2 R
 1. Downloads `XC2-Setup-<version>-windows.zip` (none is published), unpacks it anywhere and starts `XC2-Setup.exe`.
 2. Picks:
    - the base game (XCI or NSP), the 3.0.1 update (NSP) and, optionally, the add-on content NSPs (the Expansion Pass
-     packs 1 to 6 and *Torna ~ The Golden Country*, title ids 0100E95004039001..9006 and 0100E95004039063);
+     packs 1 to 6 and *Torna ~ The Golden Country*, title ids 0100E95004039001..9006 and 0100E95004039063), of
+     either release ([Releases](#releases));
    - their `prod.keys`;
    - the game language and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
@@ -30,6 +31,29 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   xc2-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
+## Releases
+
+Nintendo published XC2 under two titles (`tools/xc2_titles.py`):
+
+| Release | Base | Update | Add-on content | Expected hashes | Build name |
+|---|---|---|---|---|---|
+| The Americas and Europe | 0100E95004038000 | 0100E95004038800 | 0100E9500403900N, ...9063 | `expected-xc2-<version>.json` | v301 |
+| Japan | 0100F3400332C000 | 0100F3400332C800 | 0100F3400332D00N | `expected-xc2-jp-<version>.json` | v301jp |
+
+A European dump is the American title: the same base game, update and add-ons, checked against the same hashes. The
+Japanese release has its own code and data. The check takes the release from the base game's title id, then wants the
+update and every add-on of that release (`check.region_mismatch`, `check.dlc_other_region`) and stops with
+`check.region_unsupported` while `tools/data` has no expected files for it; `tools/extract.py --region jp --record
+VERSION` writes them from a dump (docs/building.md). The updates a release builds are the ones its expected files
+name (`installer/layout.py` `Layout.versions`), so its numbering may differ from 3.0.1.
+
+Each release installs into its own folder, so both can sit side by side: `xc2-install.json` records the release
+(`region`), the build bakes its title id into `xc2.exe` (`rt_title_id` in `modules.c`: the save data and program id
+the game sees, and the title id folders `runtime/mods.c` looks in), and the code patch table is the release's
+(`recomp/patches-v301jp.txt` for Japan; without one the game runs at the console's 30 fps and 1280x720, since the
+runtime's frame rate and resolution code reads `main`'s data only with those patch sets). Mods may be laid out under
+either title id.
+
 ## Updating the port
 
 The player runs a newer installer on the same folder. It reads `xc2-install.json`, keeps `romfs/`, `exefs/`, `aoc/`,
@@ -39,8 +63,9 @@ runs again.
 
 ## Setup steps
 
-1. **Check** before writing anything: the files open with the keys, the base game and the update are 1.0.0 and 3.0.1
-   (by the hashes in `tools/data/expected-xc2-<version>.json`), the keys are new enough for the update, enough space
+1. **Check** before writing anything: the files open with the keys, the base game, the update and the add-ons are one
+   release's ([Releases](#releases)), the base game and the update are 1.0.0 and 3.0.1 (by the hashes in
+   `tools/data/expected-xc2[-jp]-<version>.json`), the keys are new enough for the update, enough space
    is free on the target disk, the CPU has AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one
    clear message.
 2. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies

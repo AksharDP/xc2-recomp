@@ -57,6 +57,7 @@ class Context:
         self.verify = verify
         self.mode = 'install' if state is None else 'resume' if state.get('release') == layout.release else 'update'
         self.keys, self.runs, self.reasons, self.steps, self.forced = {}, {}, {}, [], set()
+        self.region = None   # the release the check found in the game files (installer/steps.py game_region)
 
     def record(self, step_id):
         return self.state['steps'].get(step_id)
