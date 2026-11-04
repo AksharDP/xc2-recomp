@@ -11,7 +11,9 @@
 // what lets it compose the game's HUD onto the interpolated frame instead of interpolating the HUD's pixels, which for
 // XC2's thin text would be very visible.
 //
-// The library submits on its own threads and refuses a swapchain unless its four queues are distinct, so this module asks\n// for a queue of its own where the device has one (vk_device.c, pick_queues). Presentation goes through vk_fg_present, and\n// vk_backend.c drops its own pacing while frame generation is on: two presents per frame are paced by the library.
+// The library submits on its own threads and refuses a swapchain unless its four queues are distinct, so vk_device.c asks
+// for them where the device has them (pick_queues). Presentation goes through vk_fg_present, and vk_backend.c drops its
+// own pacing while frame generation is on: two presents per frame are paced by the library.
 //
 // The upscaler runs on the tone-mapped picture at the game's output size, so the HUD-less picture is only the same size
 // as the swapchain when output_res matches the window; otherwise this module scales it into one of its own images first
@@ -63,6 +65,7 @@ static struct {
     VkImage hudless[2];
     VmaAllocation hudless_alloc[2];
     int par;
+    int gap;                       // the last frame had nothing to interpolate from: the next one starts over
     int warned[4];
     int logged;
 } G;
@@ -81,7 +84,6 @@ static void warn_once(int bit, const char *what) {
     rt_log("vk: frame generation off: %s", what);
 }
 
-// XC2_FG_TRACE=1: a line at each step of the frame generation path, for crashes inside its library.
 // XC2_TRACE=present: a line at each step of the frame generation path, for crashes inside its library.
 static void trace(const char *what) {
     if (rt_trace & RT_TRACE_PRESENT) rt_log("fg: %s", what);
@@ -202,20 +204,21 @@ static int make_fg_context(VkCtx *c, uint32_t w, uint32_t h, VkFormat fmt) {
 
 // The library requires four distinct queues (FrameInterpolationSwapchainVK::init refuses anything else): the game's queue,
 // one for presenting, one for its async compute and one for image acquisition. They come from the graphics family's spare
-// queues, then a compute-only family and a transfer-only one; without four distinct ones frame generation stays off.
+// queues, then a compute-only family's and a transfer-only one; without four distinct ones frame generation stays off.
 static int pick_queues(VkCtx *c, VkQueue q[4], uint32_t fam[4]) {
-    VkQueue pool[16];
-    uint32_t fpool[16];
+    VkQueue pool[8];   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
+    uint32_t fpool[8];
     int n = 0;
     pool[n] = c->gfx_queue, fpool[n++] = c->gfx_family;
-    for (uint32_t i = 1; i < c->gfx_queue_count && i < 8; i++) {
-        VkQueue x = VK_NULL_HANDLE;
-        vkGetDeviceQueue(c->device, c->gfx_family, i, &x);
-        if (x) pool[n] = x, fpool[n++] = c->gfx_family;
+    for (uint32_t i = 1; i < c->gfx_queue_count; i++) {
+        vkGetDeviceQueue(c->device, c->gfx_family, i, &pool[n]);
+        fpool[n++] = c->gfx_family;
     }
-    if (c->comp_queue && n < (int)(sizeof pool / sizeof *pool)) pool[n] = c->comp_queue, fpool[n++] = c->comp_family;
-    if (!c->xfer_shared && c->xfer_queue && n < (int)(sizeof pool / sizeof *pool))
-        pool[n] = c->xfer_queue, fpool[n++] = c->xfer_family;
+    for (uint32_t i = 0; i < c->comp_queue_count; i++) {
+        vkGetDeviceQueue(c->device, c->comp_family, i, &pool[n]);
+        fpool[n++] = c->comp_family;
+    }
+    if (!c->xfer_shared && c->xfer_queue) pool[n] = c->xfer_queue, fpool[n++] = c->xfer_family;
     if (n < 4) {
         rt_log("vk: frame generation off: this device offers %d distinct queues, its swapchain needs 4", n);
         return 0;
@@ -225,7 +228,7 @@ static int pick_queues(VkCtx *c, VkQueue q[4], uint32_t fam[4]) {
 }
 
 // Installs the frame generation swapchain over *sc (which the library destroys and replaces) and creates or keeps the
-// contexts. Called from gfx_present.c with the create info it would have used.
+// contexts. Called from gfx_present.c with the create info it would have used; vk.h has the return values.
 int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
     if (!vk_fg_wanted()) return 0;
     G.fmt = ci->imageFormat;
@@ -258,7 +261,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
             rt_log("vk: frame generation off: the swapchain context could not be created (%u)", r);
             G.sc = NULL;
             G.failed = 1;
-            return 0;
+            return -1;
         }
         struct ffxQueryDescSwapchainReplacementFunctionsVK q;
         memset(&q, 0, sizeof q);
@@ -269,7 +272,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
             G.destroy(&G.sc, NULL);
             G.sc = NULL;
             G.failed = 1;
-            return 0;
+            return -1;
         }
         G.sc_create = q.pOutCreateSwapchainFFXAPI;
         G.sc_destroy = q.pOutDestroySwapchainFFXAPI;
@@ -283,7 +286,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
             G.destroy(&G.sc, NULL);
             G.sc = NULL;
             G.failed = 1;
-            return 0;
+            return -1;
         }
         G.swapchain = *sc;
         G.on = 1;
@@ -295,9 +298,9 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
     VkResult r = G.sc_create(c->device, ci, NULL, sc, G.sc);
     if (r != VK_SUCCESS) {
         rt_log("vk: frame generation off: recreating its swapchain failed (%d)", (int)r);
+        vk_fg_shutdown(c);
         G.failed = 1;
-        G.on = 0;
-        return 0;
+        return -1;
     }
     G.swapchain = *sc;
     G.w = ci->imageExtent.width;
@@ -378,17 +381,21 @@ static ffxReturnCode_t VKAPI_CALL on_generate(struct ffxDispatchDescFrameGenerat
 
 // One presented frame: the HUD-less picture scaled into our own image, the configuration, and the prepare dispatch into
 // the present command buffer. rect is where the game picture sits in the swapchain image (the black bars stay bars).
-int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int rect[4], int reset) {
+int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int rect[4]) {
     if (!G.on || !G.fg) return 0;
-    int have = fr && fr->valid;
+    // A frame without its own depth and motion (a menu or a loading screen, FSR off) goes out as drawn: older ones would
+    // interpolate this picture with the camera of another.
+    int have = fr && fr->valid && fr->fresh, reset = G.gap;
+    G.gap = !have;
     if (!G.logged) {
         G.logged = 1;
         rt_log("vk: frame generation will present about twice per frame: set fps_limit to about half the display rate");
     }
     G.par ^= 1;
     struct FfxApiResource hudless = {0};
-    if (have && fr->fresh && G.hudless[G.par]) {   // a stale picture would put an old HUD on the interpolated frame
-        // The upscaler's picture is at the game's output size; the library wants it at the swapchain's.
+    if (have && G.hudless[G.par]) {
+        // The upscaler's picture is at the game's output size; the library wants it at the swapchain's, where the game's
+        // picture sits in rect: it finds the HUD by comparing this image with the swapchain's, bars included.
         VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                    .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                    .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -406,7 +413,17 @@ int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int re
         VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .srcOffsets = {{0, 0, 0}, {(int)fr->ow, (int)fr->oh, 1}},
                               .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                              .dstOffsets = {{0, 0, 0}, {(int)G.w, (int)G.h, 1}}};
+                              .dstOffsets = {{rect[0], rect[1], 0}, {rect[0] + rect[2], rect[1] + rect[3], 1}}};
+        if (rect[0] || rect[1] || (uint32_t)rect[2] != G.w || (uint32_t)rect[3] != G.h) {
+            VkClearColorValue black = {0};
+            VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cb, G.hudless[G.par], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+            VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                   .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT,
+                                   .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+            VkDependencyInfo md = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+            vkCmdPipelineBarrier2(cb, &md);
+        }
         // the source is the upscaler's output, which it left in GENERAL; it is read here and written next frame
         VkImageMemoryBarrier2 sb = b;
         sb.image = fr->hudless;
@@ -427,7 +444,7 @@ int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int re
         ab.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         ab.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
         ab.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        ab.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ab.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;   // what the state below tells the library
         VkDependencyInfo ad = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
                                .pImageMemoryBarriers = &ab};
         vkCmdPipelineBarrier2(cb, &ad);

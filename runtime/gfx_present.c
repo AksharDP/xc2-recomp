@@ -214,7 +214,7 @@ static void window_settings_live(void) {
     if (started && v == seen) return;
     seen = v;
     const char *e = cfg_value("XC2_VK_PRESENT");
-    int f = cfg_bool("XC2_FRAME_GEN");
+    int f = cfg_bool("XC2_FRAME_GEN") && cfg_bool("XC2_FSR3");   // what vk_fg_wanted asks, the library aside
     if (!started || strncmp(e, present, sizeof present - 1) || f != fg) {
         snprintf(present, sizeof present, "%s", e);
         fg = f;
@@ -324,14 +324,15 @@ static int create_swapchain(void) {
     int fg = vk_fg_wanted();
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (fg) {
-        if (vk_fg_swapchain(c, &ci, &g_sc)) {
+        int got = vk_fg_swapchain(c, &ci, &g_sc);
+        if (got > 0) {
             r = VK_SUCCESS;
         } else {
-            // The library destroys the swapchain it is given even when it fails, so the old one is gone: make a plain one
-            // from nothing rather than from a dead handle.
             fg = 0;
-            g_sc = old = VK_NULL_HANDLE;
-            ci.oldSwapchain = VK_NULL_HANDLE;
+            if (got < 0) {   // the old one is gone: make a plain one from nothing rather than from a dead handle
+                g_sc = old = VK_NULL_HANDLE;
+                ci.oldSwapchain = VK_NULL_HANDLE;
+            }
         }
     }
     if (!fg) r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
@@ -625,7 +626,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkFsrFrame fr;
     int have = vk_fsr3_frame_get(&fr);
     int fgrect[4] = {to[0], to[1], to[2], to[3]};
-    if (vk_fg_active()) vk_fg_frame(c, cb, have ? &fr : NULL, fgrect, !have || !fr.fresh);
+    if (vk_fg_active()) vk_fg_frame(c, cb, have ? &fr : NULL, fgrect);
     // FSR (XC2_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
     int fsr = general && vk_fsr_record(cb, slot, src, fmt, w, h, rect, dst, to[0], to[1], (uint32_t)to[2], (uint32_t)to[3]);
     g_scaler = fsr ? 2 : cw != to[2] || ch != to[3];

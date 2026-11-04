@@ -111,17 +111,11 @@ static struct {
     float near_z, far_z, fov;
 } F;
 
-// The frame the resolve last armed, frozen for frame generation at the present (vk_fsr3_frame_begin). The images stay
-// readable until the next frame of the same parity is recorded, which is two frames later.
-static struct {
-    int valid, fresh;
-    uint64_t frame;
-    VkImage depth, motion, hudless;
-    VkImageView depth_view, motion_view;
-    uint32_t rw, rh, ow, oh;
-    float jitter[2], to_pixels[2], near_z, far_z, fov;
-    float frame_ms;
-} FR, FR_frozen;
+// FR: the frame the replay last upscaled, for the next present (vk_fsr3_frame_take). FR_shown: the frame the present
+// thread is working on (vk_fsr3_frame_show). The images stay readable until the next frame of the same parity is
+// recorded, which is two frames later; images_gen counts the sets of images, as a job may outlive its set.
+static VkFsrFrame FR, FR_shown;
+static uint32_t images_gen;
 
 static void warn_once(uint32_t bit, const char *what) {
     if (F.warned & bit) return;
@@ -285,6 +279,11 @@ static void free_image(VkCtx *c, int i, int p) {
     F.img[i][p] = VK_NULL_HANDLE;
 }
 
+static void forget_frames(void) {
+    FR.valid = FR.fresh = 0;
+    __atomic_add_fetch(&images_gen, 1, __ATOMIC_RELEASE);
+}
+
 static void free_all(VkCtx *c) {
     if (F.ctx) F.destroy(&F.ctx, NULL);
     F.ctx = NULL;
@@ -292,8 +291,7 @@ static void free_all(VkCtx *c) {
         for (int p = 0; p < 2; p++) free_image(c, i, p);
     F.w = F.h = F.ow = F.oh = 0;
     F.pinned[0] = 0;
-    FR.valid = FR.fresh = 0;
-    FR_frozen.valid = 0;
+    forget_frames();
 }
 
 static int make_image(VkCtx *c, int i, int p, uint32_t w, uint32_t h) {
@@ -328,7 +326,7 @@ static int ensure_input(VkCtx *c, uint32_t w, uint32_t h) {
     if (F.img[IMG_COLOUR][0] && F.w == w && F.h == h) return 1;
     if (F.img[IMG_COLOUR][0]) wait_idle(c);
     free_all(c);
-    for (int i = 0; i < IMG_N; i++)
+    for (int i = 0; i < IMG_OUT; i++)   // ensure_output makes the output at its own size
         for (int p = 0; p < (i == IMG_COLOUR ? 1 : 2); p++)
             if (!make_image(c, i, p, w, h)) {
                 free_all(c);
@@ -351,6 +349,7 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
     } else if (F.img[IMG_OUT][0]) {
         wait_idle(c);
     }
+    forget_frames();   // frame generation must not read the images freed here
     for (int p = 0; p < 2; p++) free_image(c, IMG_OUT, p);
     F.ow = F.oh = 0;
     F.pinned[0] = 0;
@@ -377,7 +376,8 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
     ffxReturnCode_t r = FFX_API_RETURN_ERROR;
     for (int attempt = 0; attempt < 2; attempt++) {   // second: the newest 3.x, if the selected provider failed
         if (F.api == API_LOADER) {
-            ver.header.pNext = have_pin && attempt == 0 ? &ov.header : &backend.header;
+            ov.header.pNext = &backend.header;
+            ver.header.pNext = have_pin ? &ov.header : &backend.header;
             desc.header.pNext = &ver.header;
         } else {
             desc.header.pNext = &backend_old.header;
@@ -500,7 +500,6 @@ void vk_fsr3_note(VkExec *ex) {
     F.fov = c3 && c3[2 * 4 + 1] > 0.0f ? 2.0f * atanf(c3[2 * 4 + 1]) : FOV_DEFAULT;
     F.scene = scene->image;
     F.scene_addr = ex->color[4].img->addr;
-    F.last_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     F.stage = STAGE_RESOLVED;
     ex->fsr3_armed = VK_FSR3_RESOLVE;
 }
@@ -625,26 +624,10 @@ static void record_upscale(VkExec *ex) {
                    VK_FILTER_NEAREST);
     memory_barrier(cb);
     // This frame, for frame generation: the depth and motion it reads, and the scene without the HUD it interpolates.
-    FR.valid = 1;
-    FR.fresh = 1;
-    FR.frame = frame;
-    FR.depth = F.img[IMG_DEPTH][F.par];
-    FR.motion = F.img[IMG_MOTION][F.par];
-    FR.hudless = F.img[IMG_OUT][F.par];
-    FR.depth_view = F.view[IMG_DEPTH][F.par];
-    FR.motion_view = F.view[IMG_MOTION][F.par];
-    FR.rw = F.rw;
-    FR.rh = F.rh;
-    FR.ow = F.ow;
-    FR.oh = F.oh;
-    FR.jitter[0] = F.jitter[0];
-    FR.jitter[1] = F.jitter[1];
-    FR.to_pixels[0] = F.to_pixels[0];
-    FR.to_pixels[1] = F.to_pixels[1];
-    FR.near_z = F.near_z;
-    FR.far_z = F.far_z;
-    FR.fov = F.fov;
-    FR.frame_ms = ms;
+    FR = (VkFsrFrame){.valid = 1, .fresh = 1, .gen = __atomic_load_n(&images_gen, __ATOMIC_ACQUIRE),
+                      .depth = F.img[IMG_DEPTH][F.par], .motion = F.img[IMG_MOTION][F.par], .hudless = F.img[IMG_OUT][F.par],
+                      .rw = F.rw, .rh = F.rh, .ow = F.ow, .oh = F.oh, .jitter = {F.jitter[0], F.jitter[1]},
+                      .near_z = F.near_z, .far_z = F.far_z, .fov = F.fov, .frame_ms = ms};
 }
 
 void vk_fsr3_resolve(VkExec *ex) {
@@ -656,32 +639,19 @@ void vk_fsr3_resolve(VkExec *ex) {
     vk_exec_draw_new_cb();   // the pipelines and descriptors of this work replaced what the replay had bound
 }
 
-// At the present: the frame the replay just recorded, held for vk_fg.c. The next frame of the same parity is two frames
-// away, so its images are still the ones this frame wrote.
-void vk_fsr3_frame_begin(void) {
-    FR_frozen = FR;
+void vk_fsr3_frame_take(VkFsrFrame *out) {
+    *out = FR;
     FR.fresh = 0;
 }
 
+void vk_fsr3_frame_show(const VkFsrFrame *fr) {
+    FR_shown = *fr;
+    if (fr->gen != __atomic_load_n(&images_gen, __ATOMIC_ACQUIRE)) FR_shown.valid = 0;
+}
+
 int vk_fsr3_frame_get(VkFsrFrame *out) {
-    if (!FR_frozen.valid) return 0;
-    *out = (VkFsrFrame){.valid = 1,
-                        .fresh = FR_frozen.fresh,
-                        .frame = FR_frozen.frame,
-                        .depth = FR_frozen.depth,
-                        .motion = FR_frozen.motion,
-                        .hudless = FR_frozen.hudless,
-                        .depth_view = FR_frozen.depth_view,
-                        .motion_view = FR_frozen.motion_view,
-                        .rw = FR_frozen.rw,
-                        .rh = FR_frozen.rh,
-                        .ow = FR_frozen.ow,
-                        .oh = FR_frozen.oh,
-                        .jitter = {FR_frozen.jitter[0], FR_frozen.jitter[1]},
-                        .near_z = FR_frozen.near_z,
-                        .far_z = FR_frozen.far_z,
-                        .fov = FR_frozen.fov,
-                        .frame_ms = FR_frozen.frame_ms};
+    if (!FR_shown.valid) return 0;
+    *out = FR_shown;
     return 1;
 }
 
@@ -695,7 +665,7 @@ void vk_fsr3_release(void) {
     if (F.dsl) vkDestroyDescriptorSetLayout(c->device, F.dsl, NULL);
     memset(&F, 0, sizeof F);
     memset(&FR, 0, sizeof FR);
-    memset(&FR_frozen, 0, sizeof FR_frozen);
+    memset(&FR_shown, 0, sizeof FR_shown);
 }
 
 // ---- --probe-fsr: the upscaler alone, without the game

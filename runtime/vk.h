@@ -21,12 +21,11 @@ typedef struct VkCtx {
     VkPhysicalDeviceProperties props;
     VkPhysicalDeviceMemoryProperties mem_props;
     uint32_t gfx_family;                    // graphics + compute + presentation on win32
-    uint32_t gfx_queue_count;               // queues that family has (4 when it can spare them for frame generation)
+    uint32_t gfx_queue_count;               // queues created from that family, at most 4 (frame generation)
     uint32_t comp_family;                   // a compute-only family when the GPU has one (frame generation), else UINT32_MAX
+    uint32_t comp_queue_count;              // queues created from it, at most 3
     uint32_t xfer_family;                   // a transfer-only family when the GPU has one, else gfx_family
     VkQueue gfx_queue;                      // graphics + present
-    VkQueue gfx_queue2;                     // the family's second queue, VK_NULL_HANDLE when it has one (frame generation)
-    VkQueue comp_queue;                     // the compute family's queue, VK_NULL_HANDLE without one
     VkQueue xfer_queue;                     // equals gfx_queue when xfer_shared
     int xfer_shared;                        // 1: no separate queue; serialise with gfx_queue
     VmaAllocator vma;
@@ -114,32 +113,35 @@ void vk_fsr3_release(void);  // FSR 3.1 / FSR Upscaling 4 (vk_fsr3.c, hooks in v
 typedef struct {
     int valid;
     int fresh;                   // 1: the frame the present belongs to, 0: its pictures are from an earlier one
-    uint64_t frame;              // gfx_counters.frames of the frame these images belong to
+    uint32_t gen;                // which set of images these are; a newer set means they are gone (vk_fsr3_frame_show)
     VkImage depth, motion;       // render size, as FSR takes them
     VkImage hudless;             // the upscaled scene, no HUD, at the game's output size
-    VkImageView depth_view, motion_view;
     uint32_t rw, rh;             // render size
     uint32_t ow, oh;             // hudless size
     float jitter[2];
     float near_z, far_z, fov;
     float frame_ms;              // the frame's time, as the upscaler measured it
 } VkFsrFrame;
-// At the present: hold the frame the replay just recorded for vk_fsr3_frame_get, which then stays valid while the next
-// frame is recorded.
-void vk_fsr3_frame_begin(void);
+// The replay thread, at a present: the frame it just recorded, which travels with the present job, as the next frame's
+// recording overwrites the state this reads while the present thread is still working.
+void vk_fsr3_frame_take(VkFsrFrame *out);
+// The present thread: the job's frame becomes what vk_fsr3_frame_get answers until the next job.
+void vk_fsr3_frame_show(const VkFsrFrame *fr);
 int vk_fsr3_frame_get(VkFsrFrame *out);
 
 // AMD FSR Frame Generation (vk_fg.c, XC2_FRAME_GEN): the library's swapchain replaces ours, interpolates the picture of
 // two frames and presents both. Off, every function below is the plain Vulkan call.
 int vk_fg_wanted(void);      // the setting is on and usable (it needs XC2_FSR3 for its inputs)
 int vk_fg_active(void);      // the live swapchain is the library's
+// 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is
+// gone, as the library destroys what it is given even when it fails.
 int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc);
 VkResult vk_fg_images(VkDevice d, VkSwapchainKHR sc, uint32_t *n, VkImage *imgs);
 VkResult vk_fg_acquire(VkDevice d, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence, uint32_t *idx);
 VkResult vk_fg_present(VkQueue q, const VkPresentInfoKHR *pi);
 // The prepare dispatch for the frame being presented, recorded into the present command buffer; rect is where the game
-// picture sits in the swapchain image. 0 when frame generation did not take the frame.
-int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int rect[4], int reset);
+// picture sits in the swapchain image (x, y, width, height). 0 when frame generation did not take the frame.
+int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int rect[4]);
 void vk_fg_shutdown(VkCtx *c);   // disables and destroys the contexts, and the swapchain they own
 void vk_fg_release(VkCtx *c);    // before the device goes away
 void vk_present_flip(void);
