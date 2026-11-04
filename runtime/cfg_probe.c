@@ -270,8 +270,10 @@ int probe_cfg(void) {
     CHECK(st[0] == 32767 * 900 / 3000, "mouse: the same counts over twice the time are half the deflection");
     input_mouse_stick(15, 0, 1.0 / 60, 2, st);
     CHECK(st[0] == 32767 * 1800 / 3000, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
-    input_mouse_stick(1000, 1000, 1.0 / 60, 1, st);
+    double over = input_mouse_stick(1000, 1000, 1.0 / 60, 1, st);
     CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
+    CHECK(over > 28 && over < 29, "mouse: the deflection asked for before the clamp comes back");
+    CHECK(input_mouse_stick(100, 0, 1.0 / 60, 1, st) * 2 == input_mouse_stick(100, 0, 1.0 / 60, 2, st), "mouse: it follows the sensitivity past full deflection");
     input_mouse_stick(30, 0, 1.0 / 60, 0, st);
     CHECK(st[0] == 0 && st[1] == 0, "mouse: sensitivity 0 is off");
     input_pad_stick(3000, -2000, 0.15f, st);
