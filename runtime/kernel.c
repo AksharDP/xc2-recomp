@@ -1531,7 +1531,7 @@ static void lock_acquire_for(RtThread *t, uint64_t addr, uint32_t tag) {
 }
 
 // ---- threads
-// XC2_CORE_FLOAT=1 (off by default, a row of the menu's Performance settings): a thread the game pins to virtual core 1
+// XC2_CORE_FLOAT (on by default, a row of the menu's Performance settings): a thread the game pins to virtual core 1
 // may hold any application core, its own first (t->core). XC2 pins its job workers to core 1; while it streams an area
 // in they queue there while cores 0 and 2 idle, and the main thread waits for their results (XC2_TRACE=sched: 1.5
 // thread-s of core waits per 1.8 s on the walk out of Goldmouth's covered market). Still one thread per virtual core,

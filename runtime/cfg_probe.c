@@ -399,6 +399,8 @@ int probe_cfg(void) {
     plat_setenv("XC2_FREE_CORES", "1");
     CHECK(cfg_bool("XC2_FREE_CORES") == 1, "free_cores 1: on");
     plat_setenv("XC2_FREE_CORES", NULL);
+    plat_setenv("XC2_CORE_FLOAT", NULL);
+    CHECK(cfg_bool("XC2_CORE_FLOAT") == 1, "core_float unset: on");
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
     for (int i = 0; cfg_meta_at(i); i++) {
