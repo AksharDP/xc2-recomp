@@ -161,7 +161,7 @@ float vk_fg_shown_fps(uint64_t now_ns) {
     }
     if (t0 && now_ns - t0 < 500000000ull) return rate;
     uint64_t shown = G.sc_count(G.swapchain);
-    if (t0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - t0));
+    if (t0 && shown >= shown0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - t0));   // a rebuild may restart it
     t0 = now_ns, shown0 = shown;
     return rate;
 }
@@ -312,8 +312,13 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
                "FSR Frame Generation (3.1.7 analytical on this hardware, 4.0.2 ML on Radeon RX 9000)");
         return 1;
     }
-    // A new swapchain for a resize, a present-mode change or a fullscreen switch: the library rebuilds it in place.
-    VkResult r = G.sc_create(c->device, ci, NULL, sc, G.sc);
+    // A new swapchain for a resize, a present-mode change or a fullscreen switch: the library rebuilds it in place. Its
+    // context argument is the frame generation swapchain, not the swapchain context: the handle is that object. It
+    // destroys its real swapchain first and hands the create info to the driver, which must not get our handle as the old
+    // swapchain: that handle is the library's object, not a Vulkan swapchain.
+    VkSwapchainCreateInfoKHR next = *ci;
+    next.oldSwapchain = VK_NULL_HANDLE;
+    VkResult r = G.sc_create(c->device, &next, NULL, sc, G.swapchain);
     if (r != VK_SUCCESS) {
         rt_log("vk: frame generation off: recreating its swapchain failed (%d)", (int)r);
         vk_fg_shutdown(c);
@@ -386,7 +391,7 @@ void vk_fg_shutdown(VkCtx *c) {
     G.destroy(&G.sc, NULL);
     G.sc = NULL;
     G.on = 0;
-    if (G.swapchain) G.sc_destroy(c->device, G.swapchain, NULL, NULL);
+    if (G.swapchain) G.sc_destroy(c->device, G.swapchain, NULL, G.swapchain);
     G.swapchain = VK_NULL_HANDLE;
     free_hudless(c);
 }
