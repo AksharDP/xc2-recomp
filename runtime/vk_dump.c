@@ -681,6 +681,49 @@ static uint64_t bindings_hash(const VkExec *ex, const VkPipeInfo *info) {
     return h;
 }
 
+// The NVN blend factor and equation names the replay maps in vk_pipeline.c blend_factor / blend_op (the fixed: line
+// and blend: line carry them so a wrong composite is one glance, issue 22).
+static const char *bf_name(unsigned f) {
+    switch (f) {
+    case 1: return "zero";
+    case 2: return "one";
+    case 3: return "src_color";
+    case 4: return "1-src_color";
+    case 5: return "src_alpha";
+    case 6: return "1-src_alpha";
+    case 7: return "dst_alpha";
+    case 8: return "1-dst_alpha";
+    case 9: return "dst_color";
+    case 10: return "1-dst_color";
+    case 11: return "src_alpha_sat";
+    case 0x10: return "src1_color";
+    case 0x11: return "1-src1_color";
+    case 0x12: return "src1_alpha";
+    case 0x13: return "1-src1_alpha";
+    case 0x61: return "const_color";
+    case 0x62: return "1-const_color";
+    case 0x63: return "const_alpha";
+    case 0x64: return "1-const_alpha";
+    default: return "?";
+    }
+}
+
+static const char *be_name(unsigned e) {
+    switch (e) {
+    case 2: return "sub";
+    case 3: return "rev_sub";
+    case 4: return "min";
+    case 5: return "max";
+    default: return "add";
+    }
+}
+
+static uint64_t memcpy_bits(float f) {
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return u;
+}
+
 void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info) {
     plat_mutex_lock(&rec_lock);
     if (!active()) goto out;
@@ -700,6 +743,18 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
         goto out;
     }
     Str b = {0};
+    // The blend and alpha-test state rides in dynamic state here (P.dyn_blend_en), so one pipeline carries several:
+    // draws that differ only there get entries of their own, and each entry's blend: line is the whole truth.
+    for (int i = 0; i < 8; i++) {
+        uint64_t bw;
+        memcpy(&bw, &s->blend[i], sizeof bw);
+        th = (th ^ bw) * 0x100000001b3ull;
+    }
+    uint32_t cst;
+    memcpy(&cst, &s->color, sizeof cst);
+    th = (th ^ s->chmask.mask) * 0x100000001b3ull;
+    th = (th ^ cst) * 0x100000001b3ull;
+    th = (th ^ memcpy_bits(ex->alpha_ref)) * 0x100000001b3ull;
     sp(&b, "vs %016llx fs %016llx prog %llu prim %d\n", (unsigned long long)shader_hash(s->vs),
        (unsigned long long)shader_hash(s->fs), (unsigned long long)(ex->prog ? ex->prog->serial : 0), s->prim);
     sp(&b, "    fixed: depth range %g..%g, vp0 %g,%g %gx%g%s, minus_w %d clamp %d, depth test %d write %d func %d, "
@@ -710,7 +765,23 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     // The scissor as the draw sees it: a sprite that is clipped by it shows a rectangle.
     if (ex->has_scissor) sp(&b, "    scissor %d,%d %dx%d\n", (int)ex->scissor.x, (int)ex->scissor.y, (int)ex->scissor.w, (int)ex->scissor.h);
     else sp(&b, "    scissor none\n");
-    sp(&b, "    vertex input:");
+    sp(&b, "    blend: chmask");
+    for (int i = 0; i < 8 && s->color_fmt[i]; i++)
+        sp(&b, " t%d=%#x", i, s->chmask.mask >> (4 * i) & 0xf);
+    sp(&b, ", a2c %d, logic op %#x", (int)s->ms.a2c, (unsigned)s->color.logic_op);
+    for (int i = 0; i < 8; i++)
+        if (s->color.blend_en >> i & 1 && s->color_fmt[i]) {
+            const blend_st *t = &s->blend[i];
+            sp(&b, ", t%d blend %s/%s %s a %s/%s %s", i, bf_name((unsigned)t->src_rgb), bf_name((unsigned)t->dst_rgb),
+               be_name((unsigned)t->eq_rgb), bf_name((unsigned)t->src_a), bf_name((unsigned)t->dst_a),
+               be_name((unsigned)t->eq_a));
+        }
+    if (s->color.alpha_func && s->color.alpha_func != NVN_ALPHA_FUNC_ALWAYS)
+        sp(&b, ", alpha test func %u ref %g", (unsigned)s->color.alpha_func, (double)ex->alpha_ref);
+    else if (ex->alpha_ref)
+        sp(&b, ", alpha ref %g (test off)", (double)ex->alpha_ref);
+    sp(&b, "\n");
+>    sp(&b, "    vertex input:");
     for (int l = 0; l < 16; l++) {
         va_st va;
         memcpy(&va, &s->vattr[l], sizeof va);

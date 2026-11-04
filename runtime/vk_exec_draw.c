@@ -692,7 +692,14 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
 static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
     if (st == NVN_STAGE_VS) vk_pipeline_answers(&ex->pipe, a, NULL);
-    else if (st == NVN_STAGE_FS) vk_pipeline_answers(&ex->pipe, NULL, a);
+    else if (st == NVN_STAGE_FS) {
+        vk_pipeline_answers(&ex->pipe, NULL, a);
+        // The fixed-function alpha test: the colour state's function against nvnCommandBufferSetAlphaRef's reference.
+        // Baked into the fragment shader as a discard (docs/maxwell.md 5.7); unset (0) and ALWAYS stay disabled.
+        unsigned f = ex->pipe.color.alpha_func;
+        if (f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL) a->alpha_func = (uint8_t)f;
+        a->alpha_ref = ex->alpha_ref;
+    }
     else
         for (int k = 0; k < 3; k++) {
             uint32_t l;
@@ -2693,6 +2700,30 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
             cb_res(ex);
             vk_exec_barrier(ex);   // earlier draws finished with the old records
             ex->xfb_written = 0;
+            // One line per program that stores records: its record layout (gfx_shader_xfb reads the control section)
+            // against the vertex input of the draws that consume it. A layout whose words miss a component the consumer
+            // reads is exactly the "alpha is 1" class of fault (issue 22 hypothesis H5).
+            static uint64_t logged_serial;
+            uint64_t serial = ex->prog ? ex->prog->serial : 0;
+            if (serial && serial != logged_serial) {
+                logged_serial = serial;
+                const uint8_t *ctl, *code;
+                uint32_t len;
+                if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len)) {
+                    uint8_t words[GFX_XFB_WORDS] = {0};
+                    uint32_t stride = gfx_shader_xfb(ctl, words);
+                    char w[5 * GFX_XFB_WORDS + 8], *o = w;
+                    for (uint32_t i = 0; i < GFX_XFB_WORDS && words[i]; i++)
+                        o += snprintf(o, (size_t)(w + sizeof w - o), "%s%u", i ? "," : "", words[i]);
+                    if (stride)
+                        rt_log("vk_exec: program %llu stores transform feedback records of %u bytes: words %s",
+                               (unsigned long long)serial, stride, w);
+                    else
+                        rt_log("vk_exec: program %llu begins transform feedback but its vertex shader declares no record "
+                               "layout the replay understands",
+                               (unsigned long long)serial);
+                }
+            }
         }
         break;
     case OP_BIND_STATE: {

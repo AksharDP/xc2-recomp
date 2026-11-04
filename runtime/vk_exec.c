@@ -711,13 +711,17 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
     resolve_rt(ex);
     int i = c->index;
     if (i < 0 || i >= (int)ex->pass_ncolor || !ex->color[i].image) {
-        warn_once(W_CLEAR_TARGET, "colour clear of target %d, which is not bound or not renderable: skipped", i);
+        // Every skip is logged (not once): the second and later targets matter when a stale buffer feeds a decal (H3)
+        rt_log("vk: colour clear of target %d, which is not bound or not renderable: skipped", i);
         return;
     }
     uint32_t mask = (uint32_t)c->mask & 0xf;
     if (!mask) return;
     if (mask != 0xf) {   // vkCmdClearAttachments ignores write masks; a masked clear needs a draw (vk_exec_draw.c)
-        warn_once(W_CLEAR_MASK, "colour clear with channel mask %#x is not replayed: skipped", mask);
+        // Every skip is logged (not once): which targets skip matters when a stale alpha or mask buffer is what a
+        // decal composites against (issue 22 hypothesis H3)
+        rt_log("vk: colour clear of target %d (nvn fmt %d) with channel mask %#x is not replayed: skipped",
+               i, ex->color[i].nvn_format, mask);
         return;
     }
     const VkExecTarget *t = &ex->color[i];
@@ -746,7 +750,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     uint32_t sm = (uint32_t)c->stencil_mask & 0xff;
     if (sm && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) {
         if (sm == 0xff) asp |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        else warn_once(W_STENCIL_MASK, "stencil clear with mask %#x is not replayed: skipped", sm);
+        else rt_log("vk: stencil clear with mask %#x is not replayed: skipped", sm);   // every skip, not once (H3)
     }
     if (!asp) return;
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
@@ -869,6 +873,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
             memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
             ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
             break;
+        case OP_ALPHA_REF: ex->alpha_ref = ((const p_alpha_ref *)a)->ref; break;
         case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
         case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
         case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;

@@ -291,6 +291,19 @@ NVN_API(nvnColorStateSetLogicOp) {
 NVN_API(nvnColorStateSetAlphaTest) {
     unsigned f = (unsigned)arg_x(c, 1);
     if (f > 15) rt_fatal("nvn: alpha func %u", f);
+    // The function the fixed-function alpha test applies to the fragment's alpha against nvnCommandBufferSetAlphaRef
+    // (0 unset and ALWAYS both mean disabled). Every distinct enabled value is logged: a state object that carries one
+    // marks the draws bound to it as alpha-tested (docs/maxwell.md 5.7).
+    if (f && f != NVN_ALPHA_FUNC_ALWAYS) {
+        static _Thread_local unsigned logged;
+        if (f != logged) {
+            logged = f;
+            rt_log("nvn: colour state alpha test func %u (%s)", f, f == NVN_ALPHA_FUNC_NEVER ? "never" :
+                   f == NVN_ALPHA_FUNC_LESS ? "less" : f == NVN_ALPHA_FUNC_EQUAL ? "equal" :
+                   f == NVN_ALPHA_FUNC_LEQUAL ? "lequal" : f == NVN_ALPHA_FUNC_GREATER ? "greater" :
+                   f == NVN_ALPHA_FUNC_NOTEQUAL ? "notequal" : "gequal");
+        }
+    }
     ST(color_st)->alpha_func = f;
 }
 // NVNboolean nvnColorStateGetBlendEnable(const NVNcolorState *s, int index)
@@ -394,9 +407,6 @@ NVN_API(nvnCommandBufferSetSampleMask) {
     int m = (int)arg_x(c, 1);
     if ((m & 0xffff) != 0xffff) ONCE("SetSampleMask %#x: fixed-function sample mask not applied", m);
 }
-// void nvnCommandBufferSetAlphaRef(NVNcommandBuffer *cmd, float ref): used only with the alpha test, which the replay
-// reports
-NVN_API(nvnCommandBufferSetAlphaRef) { (void)c; }
 // void nvnCommandBufferSetDepthBounds(NVNcommandBuffer *cmd, NVNboolean enable, float min, float max): disabling is
 // exact; an enabled range is drawn without the test and reported
 NVN_API(nvnCommandBufferSetDepthBounds) {

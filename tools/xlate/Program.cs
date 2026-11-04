@@ -95,8 +95,18 @@ static class SwshXlate
             // "a2c_dither": the draw has Maxwell's dithered alpha to coverage on a single-sample target (gfx_shader.c);
             // Ryujinx's EmitterContext then discards the uncovered pixels of its 2x2 pattern.
             bool a2c = _job["a2c_dither"] is JsonValue ad && ad.TryGetValue<bool>(out bool ab) && ab;
+            // "alpha_test": the fixed-function alpha test (nvnColorStateSetAlphaTest's function against
+            // nvnCommandBufferSetAlphaRef's reference). The NVNalphaFunc values 1..7 are Ryujinx's AlphaTestOp; the
+            // fragment shader discards what fails it (EmitterContext's alpha-test pass, docs/maxwell.md 5.7).
+            AlphaTestOp alphaOp = AlphaTestOp.Always;
+            float alphaRef = 0f;
+            if (_job["alpha_test"] is JsonObject at) {
+                if (at["op"] is JsonValue aop && aop.TryGetValue<int>(out int opv) && opv >= 1 && opv <= 7)
+                    alphaOp = (AlphaTestOp)opv;
+                if (at["ref"] is JsonValue arf) arf.TryGetValue<float>(out alphaRef);
+            }
             return new GpuGraphicsState(earlyZ, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
-                a2c, a2c, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
+                a2c, a2c, false, depthMinusW, false, 1f, alphaOp, alphaRef, attr, false, fout, false,
                 false /* 不做 Y 取反 | no Y flip */, true /* 原点左上 | origin upper-left */, false);
         }
         public bool QueryHostSupportsDepthClipControl() => true;

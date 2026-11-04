@@ -403,7 +403,7 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
     return q;
 }
 
-static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs) {
+static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs, int *n_alpha) {
     char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
     CHECK(dr_root(root, sizeof root), GFX_CENSUS_DIR "/jobs.json not found");
     snprintf(path, sizeof path, "%s/" GFX_CENSUS_DIR "/jobs.json", root);
@@ -486,6 +486,97 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     }
     CHECK(drawn, "none of %d census pairs changed a pixel of the cleared target", tries);
 
+    // The fixed-function alpha test (nvnColorStateSetAlphaTest's function against nvnCommandBufferSetAlphaRef's
+    // reference, docs/maxwell.md 5.7): the same draw with an alpha test nothing passes must leave the target cleared,
+    // and one everything passes must redraw it. A pair whose fragment shader writes no alpha (no target-0 alpha
+    // component) passes neither: the scan moves on to the next pair.
+    static color_st off, all, none, geq;
+    off = (color_st){0, NVN_LOGIC_OP_COPY, 0};
+    all = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_GREATER};
+    none = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_NEVER};
+    geq = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_GEQUAL};
+    int alpha_pairs = 0, alpha_ok = 0;
+    static uint32_t pxa[TEX_W * TEX_H];
+    for (int t = 0; t < 150 && !alpha_ok; t++) {
+        const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
+        if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
+        const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
+        prog_t *prog = dr_prog(root, both, 2);
+        alpha_pairs++;
+        // step 0: the plain draw (the colour state resets the alpha test a previous pair left on)
+        uint8_t *q = draw_prefix(stream, prog, &pool, &color);
+        p_bind_state bs = {1};
+        memcpy(bs.bytes, &off, sizeof off);
+        q = put(q, OP_BIND_STATE, &bs, sizeof bs);
+        const p_alpha_ref ar0 = {0.0f};
+        q = put(q, OP_ALPHA_REF, &ar0, sizeof ar0);
+        const p_draw d = {NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3, 0, 0};
+        q = put(q, OP_DRAW, &d, sizeof d);
+        q = put(q, OP_END, NULL, 0);
+        uint64_t handle = (uint64_t)(uintptr_t)stream;
+        uint64_t f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the plain draw timed out");
+        const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
+        b->read_texels(&color, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
+        int diff = 0;
+        for (int k = 0; k < TEX_W * TEX_H; k++) diff += px[k] != clear_v;
+        if (!diff) continue;   // the pair draws nothing: no alpha output to test
+        // step 1: greater, ref 2: every fragment fails it (alpha is at most 1), the target stays cleared
+        q = draw_prefix(stream, prog, &pool, &color);
+        memcpy(bs.bytes, &all, sizeof all);
+        q = put(q, OP_BIND_STATE, &bs, sizeof bs);
+        const p_alpha_ref ar2 = {2.0f};
+        q = put(q, OP_ALPHA_REF, &ar2, sizeof ar2);
+        q = put(q, OP_DRAW, &d, sizeof d);
+        q = put(q, OP_END, NULL, 0);
+        f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the alpha-tested draw timed out");
+        b->read_texels(&color, NULL, &r, (uint8_t *)pxa, TEX_W * 4, TEX_W * TEX_H * 4);
+        int ne = 0;
+        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxa[k] != clear_v;
+        if (ne) continue;
+        // step 2: greater, ref 0: the same pixels as the plain draw (opaque fragments pass, alpha 0 fails)
+        q = draw_prefix(stream, prog, &pool, &color);
+        memcpy(bs.bytes, &geq, sizeof geq);
+        q = put(q, OP_BIND_STATE, &bs, sizeof bs);
+        q = put(q, OP_ALPHA_REF, &ar0, sizeof ar0);   // the ref resets: step 1 set 2
+        q = put(q, OP_DRAW, &d, sizeof d);
+        q = put(q, OP_END, NULL, 0);
+        f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the gequal-0 draw timed out");
+        b->read_texels(&color, NULL, &r, (uint8_t *)pxa, TEX_W * 4, TEX_W * TEX_H * 4);
+        ne = 0;
+        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxa[k] != px[k];
+        if (ne) continue;
+        // step 3: never: nothing passes, the target stays cleared
+        q = draw_prefix(stream, prog, &pool, &color);
+        memcpy(bs.bytes, &none, sizeof none);
+        q = put(q, OP_BIND_STATE, &bs, sizeof bs);
+        q = put(q, OP_ALPHA_REF, &ar0, sizeof ar0);
+        q = put(q, OP_DRAW, &d, sizeof d);
+        q = put(q, OP_END, NULL, 0);
+        f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the never-tested draw timed out");
+        b->read_texels(&color, NULL, &r, (uint8_t *)pxa, TEX_W * 4, TEX_W * TEX_H * 4);
+        ne = 0;
+        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxa[k] != clear_v;
+        if (!ne) alpha_ok = TEX_W * TEX_H;
+    }
+    CHECK(alpha_ok, "none of %d drawing census pairs passed the alpha test steps (draw, discard all, keep opaque, discard all)",
+          alpha_pairs);
+    {   // the colour state outlives the submission: clear the alpha test the scan left bound
+        uint8_t *q = draw_prefix(stream, hit, &pool, &color);
+        p_bind_state bs = {1};
+        memcpy(bs.bytes, &off, sizeof off);
+        q = put(q, OP_BIND_STATE, &bs, sizeof bs);
+        const p_alpha_ref ar0 = {0.0f};
+        q = put(q, OP_ALPHA_REF, &ar0, sizeof ar0);
+        q = put(q, OP_END, NULL, 0);
+        uint64_t handle = (uint64_t)(uintptr_t)stream;
+        uint64_t f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the alpha-test reset timed out");
+    }
+
     // DrawElementsIndirect (OP_DRAW_IDX_IND) with the pair that drew: indices {0, 1, 2} at 0xA0000; the arguments are
     // copied by the GPU (COPY_B2B, barrier) to 0xA0200 right before the draw, so the replay must read them on the GPU.
     // {3, 1, 0, 0, 0} draws the same triangle (texel-equal to the direct draw); count 0 draws nothing.
@@ -549,7 +640,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     b->texture_release(&color);
     b->pool_fini(&pool);
     free(pairs), free(cs), free(e), free(jobs);
-    *n_drawn = drawn, *n_tries = tries, *n_cs = dispatched;
+    *n_drawn = drawn, *n_tries = tries, *n_cs = dispatched, *n_alpha = alpha_ok;
     return 0;
 }
 
@@ -988,8 +1079,8 @@ int probe_vkexec(void) {
     int bad = test_sync(b, guest, &first, &last) || test_present(b, guest, &w, &h);
     int sync_bad = bad;
     if (!bad) bad = test_clear(b, guest, &inside);
-    int draw_bad = 0, drawn = 0, tries = 0, dispatched = 0;
-    if (!bad) bad = draw_bad = vk_pipeline_selftest() || test_draw(b, guest, &drawn, &tries, &dispatched);
+    int draw_bad = 0, drawn = 0, tries = 0, dispatched = 0, alpha = 0;
+    if (!bad) bad = draw_bad = vk_pipeline_selftest() || test_draw(b, guest, &drawn, &tries, &dispatched, &alpha);
     if (!bad) bad = test_xfer(b, guest, &xfer_bytes);
     int zero_bytes = 0;
     if (!bad) bad = test_c0() || test_zero(b, guest, &zero_bytes);
@@ -1017,8 +1108,9 @@ int probe_vkexec(void) {
            "clears in a pass on %d texels, read back exact, 0 validation errors)\n",
            TEX_W, TEX_H, inside);
     printf("probe-vkexec: draw part passed (pipeline self-test; one triangle of census pair %d changed %d of %d texels of the "
-           "cleared RGBA8 target; %d census compute shaders dispatched; 0 validation errors)\n",
-           tries, drawn, TEX_W * TEX_H, dispatched);
+           "cleared RGBA8 target; %d census compute shaders dispatched; alpha test greater ref 2 and never discard every "
+           "fragment and gequal 0 keeps the draw (%d texels); 0 validation errors)\n",
+           tries, drawn, TEX_W * TEX_H, dispatched, alpha);
     if (layouts_equal)
         printf("probe-vkexec: layout part passed (the same draw through independent sets 0 and 1 and the shared set 0: "
                "%d of %d texels equal)\n", layouts_equal, TEX_W * TEX_H);

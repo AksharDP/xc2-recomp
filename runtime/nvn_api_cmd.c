@@ -923,6 +923,19 @@ NVN_API(nvnCommandBufferDownsample) {
 NVN_API(nvnCommandBufferSetCopyRowStride) { REC(cmd_of(c), OP_COPY_STRIDE, p_copy_stride)->stride = (int64_t)arg_x(c, 1); }
 // void nvnCommandBufferSetBlendColor(NVNcommandBuffer *cmd, const float *rgba)
 NVN_API(nvnCommandBufferSetBlendColor) { memcpy(REC(cmd_of(c), OP_BLEND_COLOR, p_blend_color)->rgba, arg_p(c, 1), 16); }
+// void nvnCommandBufferSetAlphaRef(NVNcommandBuffer *cmd, float ref): the reference of the fixed-function alpha test
+// (nvnColorStateSetAlphaTest picks the function, both together are baked into the fragment shader, docs/maxwell.md 5.7).
+// The value is logged once per distinct setting: a draw that uses it is exactly what a decal that shows its background
+// looks like from the command stream.
+NVN_API(nvnCommandBufferSetAlphaRef) {
+    float ref = arg_s(c, 0);
+    static _Thread_local float logged = -1.0f;
+    if (ref != logged) {
+        logged = ref;
+        rt_log("nvn: alpha test reference %g", (double)ref);
+    }
+    *REC(cmd_of(c), OP_ALPHA_REF, p_alpha_ref) = (p_alpha_ref){ref};
+}
 
 // Commands without an effect on this replay (hle_nvn.c g_nops): WaitSync and WaitEvent order work against other queues
 // or the CPU, and every submit replays in order on one queue; shader scratch memory and the tessellation patch size
@@ -1033,7 +1046,7 @@ const char *nvn_op_name(uint32_t op) {
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
         "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "XFB_BIND",
-        "XFB_ACTIVE",
+        "XFB_ACTIVE", "ALPHA_REF",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
