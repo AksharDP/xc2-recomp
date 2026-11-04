@@ -74,6 +74,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FSR3] = "AMD FSR 3.1",
     [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR 3.1, which upscales a lower "
                           "3D render scale to the game resolution. Needs amd_fidelityfx_vk.dll next to the game.",
+    [UI_MENU_FSR_VERSION] = "FSR version",
+    [UI_MENU_FSR_VERSION_DESC] = "Which upscaler to ask AMD's library for. Auto takes the newest the GPU and driver "
+                                  "support: FSR Upscaling 4.1 on Radeon RX 6000 and newer with a recent driver, FSR 3.1 "
+                                  "everywhere else.",
+    [UI_MENU_FSR_VERSION_AUTO] = "Auto", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
+    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation shows an interpolated frame between two drawn ones, so the "
+                               "display runs at about twice the frame rate. It needs FSR 3.1 on for depth, motion "
+                               "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
+                               "Off by default.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. Above 60 is "
@@ -376,6 +386,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FSR3] = "AMD FSR 3.1",
     [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR 3.1, который поднимает "
                           "пониженный масштаб 3D до разрешения игры. Нужен файл amd_fidelityfx_vk.dll рядом с игрой.",
+    [UI_MENU_FSR_VERSION] = "Версия FSR",
+    [UI_MENU_FSR_VERSION_DESC] = "Какой апскейлер запросить у библиотеки AMD. «Авто» берёт самый новый, который "
+                                  "поддерживают видеокарта и драйвер: FSR Upscaling 4.1 на Radeon RX 6000 и новее со "
+                                  "свежим драйвером, иначе FSR 3.1.",
+    [UI_MENU_FSR_VERSION_AUTO] = "Авто", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров",
+    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation показывает промежуточный кадр между двумя нарисованными, и "
+                               "экран идёт примерно вдвое быстрее. Нужен включённый FSR 3.1: из него берутся глубина, "
+                               "векторы движения и картинка без интерфейса; частоту кадров ставьте около половины "
+                               "частоты экрана. По умолчанию выключено.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду; часы игры идут по нему. Выше 60 — экспериментальный "

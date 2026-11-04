@@ -187,7 +187,14 @@ change passes these, all run with `.venv`:
 
 Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
 `--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes. `--probe-vkexec` and
-`--probe-shader` read XC2's shader census, so run the census below with `--version v301` once first.
+`--probe-shader` read XC2's shader census, so run the census below with `--version v301` once first. `--probe-fsr` runs
+AMD's upscaler alone (1280x720 to 1920x1080, two flat frames, the result checked), needs no game files, and prints the
+provider version the API picked; it needs the FSR libraries next to `xc2.exe` (see below).
+
+AMD's FSR libraries: `tools\build_game.py` copies what it finds next to `xc2.exe` for a developer build, from
+`build\ffx-sdk-2.4.0\Kits\FidelityFX\signedbin\` or `build\ffx-dlls\`: `amd_fidelityfx_loader_vk.dll`,
+`amd_fidelityfx_upscaler_vk.dll`, `amd_fidelityfx_framegeneration_vk.dll`. `tools\make_release.py` downloads the same
+tagged files and pins their sha256. Without them the FSR settings stay off and the game runs as before.
 
 Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --translate` extracts every Maxwell shader
 to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; failure groups go to `failures.txt`.

@@ -69,7 +69,7 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        wait_until(j.at);
+        if (!vk_fg_active()) wait_until(j.at);   // frame generation paces its own two presents (vk_fg.c)
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
         // XC2_TRACE=present: one line per present: the host present's interval, the interval of the game's present
@@ -117,6 +117,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
                     .at = at_ns, .queued = queued, .value = value};
+    vk_fsr3_frame_begin();   // this frame's depth, motion and HUD-less scene, for frame generation at the present
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];

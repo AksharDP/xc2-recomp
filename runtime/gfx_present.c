@@ -209,13 +209,16 @@ static void window_settings_live(void) {
     static unsigned seen;
     static int started;
     static char present[16];   // the XC2_VK_PRESENT the swapchain was made with
+    static int fg;             // the XC2_FRAME_GEN it was made with
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
     const char *e = cfg_value("XC2_VK_PRESENT");
-    if (!started || strncmp(e, present, sizeof present - 1)) {
+    int f = cfg_bool("XC2_FRAME_GEN");
+    if (!started || strncmp(e, present, sizeof present - 1) || f != fg) {
         snprintf(present, sizeof present, "%s", e);
-        if (started) plat_xchg32(&g_dirty, 1);
+        fg = f;
+        if (started) plat_xchg32(&g_dirty, 1);   // frame generation changes which swapchain exists
     }
     if (started) gfx_window_apply_settings();
     started = 1;
@@ -257,7 +260,7 @@ static void flip_locked(void) {
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
-    VkResult r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
+    VkResult r = vk_fg_present(vk_ctx()->gfx_queue, &pi);   // the frame generation swapchain presents, else this does
     vk_queue_unlock();
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
@@ -303,6 +306,13 @@ static int create_swapchain(void) {
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
     VkSwapchainKHR old = g_sc;
+    // The setting went off while the library owned the swapchain: the library's swapchain goes away with its contexts,
+    // and a plain one is made below.
+    if (vk_fg_active() && !vk_fg_wanted()) {
+        vk_fg_shutdown(c);
+        old = VK_NULL_HANDLE;
+        g_sc = VK_NULL_HANDLE;
+    }
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
@@ -311,23 +321,40 @@ static int create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = pick_present_mode(c->phys), .clipped = VK_TRUE,
         .oldSwapchain = old};
-    VkResult r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+    int fg = vk_fg_wanted();
+    VkResult r = VK_ERROR_INITIALIZATION_FAILED;
+    if (fg) {
+        if (vk_fg_swapchain(c, &ci, &g_sc)) {
+            r = VK_SUCCESS;
+        } else {
+            // The library destroys the swapchain it is given even when it fails, so the old one is gone: make a plain one
+            // from nothing rather than from a dead handle.
+            fg = 0;
+            g_sc = old = VK_NULL_HANDLE;
+            ci.oldSwapchain = VK_NULL_HANDLE;
+        }
+    }
+    if (!fg) r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
     if (r != VK_SUCCESS) {
         rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
         g_sc = old;
         vk_queue_unlock();
         return 0;
     }
-    for (uint32_t i = 0; i < g_sc_n; i++) {
+    uint32_t old_n = g_sc_n;
+    for (uint32_t i = 0; i < old_n; i++) {
         vkDestroySemaphore(c->device, g_render_done[i], NULL);
         if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
         g_sc_view[i] = VK_NULL_HANDLE;
     }
-    if (old) vkDestroySwapchainKHR(c->device, old, NULL);
+    if (!fg && old) vkDestroySwapchainKHR(c->device, old, NULL);
     g_sc_fmt = sf.format;
     g_sc_ext = ext;
-    g_sc_n = MAX_IMAGES;
-    vkGetSwapchainImagesKHR(c->device, g_sc, &g_sc_n, g_sc_img);
+    g_sc_n = 0;
+    vk_fg_images(c->device, g_sc, &g_sc_n, NULL);   // count only: the library does not write the count back with an array
+    if (g_sc_n > MAX_IMAGES) g_sc_n = MAX_IMAGES;
+    if (g_sc_n) vk_fg_images(c->device, g_sc, &g_sc_n, g_sc_img);
+    rt_log("gfx: swapchain ready, %u images, frame generation %s", g_sc_n, vk_fg_active() ? "on" : "off");
     VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (uint32_t i = 0; i < g_sc_n; i++) {
         vkCreateSemaphore(c->device, &semi, NULL, &g_render_done[i]);
@@ -541,11 +568,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         goto out;
     }
     uint32_t idx = 0;
-    VkResult r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+    VkResult r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
-        r = vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+        r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
     vk_device_fault_report(r);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
@@ -593,6 +620,12 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
+    // Frame generation (XC2_FRAME_GEN): the prepare dispatch for the frame about to be presented, with the depth, the
+    // motion vectors and the HUD-less copy of the scene the present interpolates from.
+    VkFsrFrame fr;
+    int have = vk_fsr3_frame_get(&fr);
+    int fgrect[4] = {to[0], to[1], to[2], to[3]};
+    if (vk_fg_active()) vk_fg_frame(c, cb, have ? &fr : NULL, fgrect, !have || !fr.fresh);
     // FSR (XC2_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
     int fsr = general && vk_fsr_record(cb, slot, src, fmt, w, h, rect, dst, to[0], to[1], (uint32_t)to[2], (uint32_t)to[3]);
     g_scaler = fsr ? 2 : cw != to[2] || ch != to[3];
@@ -730,7 +763,9 @@ void gfx_window_release_vk(void) {
             g_sc_view[i] = VK_NULL_HANDLE;
         }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
-        if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
+        int fg_live = vk_fg_active();
+        vk_fg_release(c);   // destroys the frame generation swapchain with its contexts
+        if (g_sc && !fg_live) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
         g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface

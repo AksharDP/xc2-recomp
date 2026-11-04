@@ -525,11 +525,21 @@ def copy_translator(exe_dir):
 
 
 def copy_fsr3(exe_dir):
-    """Put AMD's signed FSR 3.1 library next to xc2.exe, where runtime/vk_fsr3.c looks for it. It comes from the
-    FidelityFX SDK 1.1.4 release, unpacked under build/ffx-sdk-1.1.4; without it the XC2_FSR3 setting stays off."""
-    dll = ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL' / 'amd_fidelityfx_vk.dll'
-    if WIN and dll.is_file():
-        shutil.copy2(dll, exe_dir / dll.name)
+    """Put AMD's signed FSR libraries next to xc2.exe, where runtime/vk_fsr3.c and runtime/vk_fg.c look for them: the FSR
+    SDK 2.4 Vulkan loader with the upscaler and the frame generation effect, and FidelityFX SDK 1.1.4's single
+    amd_fidelityfx_vk.dll when it is unpacked too (the older path, also the name OptiScaler replaces). Without them the
+    XC2_FSR3 and XC2_FRAME_GEN settings stay off."""
+    dirs = (ROOT / 'build' / 'ffx-sdk-2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin', ROOT / 'build' / 'ffx-dlls',
+            ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL')
+    names = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
+             'amd_fidelityfx_vk.dll')
+    if not WIN:
+        return
+    for d in dirs:
+        for n in names:
+            src = d / n
+            if src.is_file():
+                shutil.copy2(src, exe_dir / n)
 
 
 def unlink_shared(out, mods):

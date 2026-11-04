@@ -1,0 +1,49 @@
+AMD FSR SDK 2.4: the signed DLLs this project ships and loads at run time
+
+  amd_fidelityfx_loader_vk.dll
+  amd_fidelityfx_upscaler_vk.dll        (AMD FSR Upscaling 4.1.2, 3.1.6, 2.3.4)
+  amd_fidelityfx_framegeneration_vk.dll (AMD FSR Frame Generation 4.0.2, 3.1.7)
+
+from https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, tag v2.4.0,
+Kits/FidelityFX/signedbin/. They are redistributed unmodified, in binary form, under the
+terms of that SDK's license (docs/license.md in the same release):
+
+  Copyright (C) Advanced Micro Devices, Inc. All rights reserved.
+
+  REDISTRIBUTION: Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the "Software"), to install,
+  reproduce, copy and distribute copies of the Software, in binary form only, and to
+  permit persons to whom the Software is provided to do the same, provided that the
+  following conditions are met:
+
+  No reverse engineering, decompilation, or disassembly of this Software is permitted.
+
+  Redistributions must reproduce the above copyright notice, this permission notice, and
+  the following disclaimers and notices in the Software documentation and/or other
+  materials provided with the Software.
+
+  DISCLAIMER: THE USE OF THE SOFTWARE IS AT YOUR SOLE RISK. THE SOFTWARE IS PROVIDED "AS
+  IS" AND WITHOUT WARRANTY OF ANY KIND AND COPYRIGHT HOLDER AND ITS LICENSORS EXPRESSLY
+  DISCLAIM ALL WARRANTIES, EXPRESS AND IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+  COPYRIGHT HOLDER AND ITS LICENSORS DO NOT WARRANT THAT THE SOFTWARE WILL MEET YOUR
+  REQUIREMENTS, OR THAT THE OPERATION OF THE SOFTWARE WILL BE UNINTERRUPTED OR ERROR-FREE.
+  THE ENTIRE RISK ASSOCIATED WITH THE USE OF THE SOFTWARE IS ASSUMED BY YOU. FURTHERMORE,
+  COPYRIGHT HOLDER AND ITS LICENSORS DO NOT WARRANT OR MAKE ANY REPRESENTATIONS REGARDING
+  THE USE OR THE RESULTS OF THE USE OF THE SOFTWARE IN TERMS OF ITS CORRECTNESS, ACCURACY,
+  RELIABILITY, CURRENTNESS, OR OTHERWISE.
+
+  DISCLAIMER: UNDER NO CIRCUMSTANCES INCLUDING NEGLIGENCE, SHALL COPYRIGHT HOLDER AND ITS
+  LICENSORS OR ITS DIRECTORS, OFFICERS, EMPLOYEES OR AGENTS ("AUTHORIZED
+  REPRESENTATIVES") BE LIABLE FOR ANY INCIDENTAL, INDIRECT, SPECIAL OR CONSEQUENTIAL
+  DAMAGES (INCLUDING DAMAGES FOR LOSS OF BUSINESS PROFITS, BUSINESS INTERRUPTION, LOSS OF
+  BUSINESS INFORMATION, AND THE LIKE) ARISING OUT OF THE USE, MISUSE OR INABILITY TO USE
+  THE SOFTWARE, BREACH OR DEFAULT, INCLUDING THOSE ARISING FROM INFRINGEMENT OR ALLEGED
+  INFRINGEMENT OF ANY PATENT, TRADEMARK, COPYRIGHT OR OTHER INTELLECTUAL PROPERTY RIGHT
+  EVEN IF COPYRIGHT HOLDER AND ITS AUTHORIZED REPRESENTATIVES HAS BEEN ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGES. IN NO EVENT SHALL COPYRIGHT HOLDER OR ITS AUTHORIZED
+  REPRESENTATIVES TOTAL LIABILITY FOR ALL DAMAGES, LOSSES, AND CAUSES OF ACTION (WHETHER
+  IN CONTRACT, TORT (INCLUDING NEGLIGENCE) OR OTHERWISE) EXCEED THE AMOUNT OF US$10.
+
+The API headers under runtime/ffx_api/ are a different matter: they carry AMD's MIT
+licence in each file and are vendored unmodified (see LICENSE.txt next to this file).

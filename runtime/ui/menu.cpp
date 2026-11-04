@@ -538,6 +538,9 @@ static void tab_screen(float scale) {
     opt_choice("XC2_PICTURE_FIT", UI_MENU_PICTURE_FIT, fit, 2, UI_MENU_PICTURE_FIT_DESC);
     opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC);
+    static const UiTextId ver[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
+    opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, ver, 3, UI_MENU_FSR_VERSION_DESC);
+    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
     opt_end();
 }
 

@@ -57,6 +57,11 @@ WORK = MAIN_ROOT / 'toolchain' / 'release-work'   # unpacked downloads
 MSYS2 = 'https://repo.msys2.org/mingw/ucrt64/'
 SDL_VERSION = '3.4.18'
 LLVM_VERSION = '20261020'
+# AMD FSR SDK 2.4: the Vulkan loader, the upscaler (FSR Upscaling 4.1.2, 3.1.6 and 2.3.4 in one DLL) and the frame
+# generation effect (FSR Frame Generation 4.0.2 and 3.1.7). runtime/vk_fsr3.c and runtime/vk_fg.c load them from next to
+# xc2.exe; they come from the SDK's repository, pinned per file.
+FFX_RAW = 'https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin/'
+FFX_DLLS = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll')
 # name: (url, sha256)
 PINS = {
     'python-embed': ('https://www.python.org/ftp/python/3.14.9/python-3.14.9-embed-amd64.zip',
@@ -86,14 +91,16 @@ PINS = {
             '44c81162337915afecda3185f66fd98268a54454580b2717080c9dfef57fe781'),
     'zstd': (MSYS2 + 'mingw-w64-ucrt-x86_64-zstd-1.5.7-2-any.pkg.tar.zst',   # static libzstd.a (runtime/resolution.c)
              'dbdb8427280046a2b41697780aa4c52983b708082b0da4755951dc3bea96ca89'),
-    'ffx-sdk': ('https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/FidelityFX-SDK-v1.1.4.zip',
-                '0216556bfb0e243cec30004a2a98d38f4e3f7406cb7938e3c1b85c758e95d952'),   # 450 MiB; one file is read (take_ffx)
+    'ffx-loader-vk': (FFX_RAW + 'amd_fidelityfx_loader_vk.dll',
+                      '38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9'),
+    'ffx-upscaler-vk': (FFX_RAW + 'amd_fidelityfx_upscaler_vk.dll',
+                        '4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7'),   # 36 MiB
+    'ffx-framegen-vk': (FFX_RAW + 'amd_fidelityfx_framegeneration_vk.dll',
+                        'd002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4'),   # 37 MiB
 }
 # The component MSI inside the python.org installer that carries Tcl/Tk and tkinter (Burn names its payloads a0..a27).
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
 SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
-FFX_DLL = 'amd_fidelityfx_vk.dll'   # runtime/vk_fsr3.c loads it from next to xc2.exe
-FFX_DLL_SHA256 = 'a1624cc4238fef046f30c4d80ce3f47be63fc5f5373f49e3ee9edb9960f54c78'   # PrebuiltSignedDLL/ inside the SDK zip
 
 # llvm-mingw: what clang and lld need to compile and link xc2.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
@@ -302,15 +309,15 @@ def build_bin(out):
 
 
 def take_ffx(out):
-    """AMD's FSR 3.1 library into bin/ and its licence into licenses/. Read straight out of the SDK zip: unpack would
-    extract all of its 450 MiB for this one file. Separate from build_bin, as --from's earlier releases do not have it."""
-    with zipfile.ZipFile(fetch('ffx-sdk')) as z:
-        data = z.read(f'PrebuiltSignedDLL/{FFX_DLL}')
-    if hashlib.sha256(data).hexdigest() != FFX_DLL_SHA256:
-        sys.exit(f'{FFX_DLL}: not the pinned library')
-    (out / 'bin' / FFX_DLL).write_bytes(data)
+    """AMD's signed FSR libraries into bin/ and their notices into licenses/. The FSR SDK 2.4 Vulkan loader with the
+    upscaler and the frame generation effect, each pinned by sha256; separate from build_bin, as --from's earlier
+    releases do not have them."""
+    (out / 'bin').mkdir(parents=True, exist_ok=True)
+    for pin, dll in zip(('ffx-loader-vk', 'ffx-upscaler-vk', 'ffx-framegen-vk'), FFX_DLLS):
+        shutil.copy2(fetch(pin), out / 'bin' / dll)
     (out / 'licenses').mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'runtime' / 'ffx_api' / 'LICENSE.txt', out / 'licenses' / 'FidelityFX-SDK-LICENSE.txt')
+    shutil.copy2(ROOT / 'runtime' / 'ffx_api' / 'REDISTRIBUTION.txt', out / 'licenses' / 'FSR-SDK-REDISTRIBUTION.txt')
 
 
 def build_deps(out):
