@@ -146,7 +146,7 @@ def fetch(name):
         path = DL / 'libvpx-1.17.0.tar.gz'
     if not path.is_file():
         print(f'download {url}')
-        with urllib.request.urlopen(url) as r, open(path, 'wb') as f:
+        with urllib.request.urlopen(url, timeout=60) as r, open(path, 'wb') as f:   # per socket read: a stalled server fails
             shutil.copyfileobj(r, f)
     got = sha256_file(path)
     if got != want:
@@ -239,7 +239,7 @@ def tcltk_files():
     # argument ("NAME=value") is not, so a path with spaces gets the command line as one string.
     cmd = f'msiexec /a "{msi}" /qn TARGETDIR="{dest}"'
     print('+', cmd, flush=True)
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=300)   # takes seconds; msiexec can wait on the Windows Installer service forever
     if not (dest / 'DLLs' / '_tkinter.pyd').is_file():
         sys.exit(f'{dest}: no _tkinter.pyd after msiexec /a')
     return dest
