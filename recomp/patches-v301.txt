@@ -198,11 +198,16 @@ site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 
 #
 # xc2kill (XC2_CHEAT_INSTA_KILL, off): the party's hits land for 9999. The value is fixed, not the game's damage
 # cap, so the cheat one-shots most enemies but not the high-health uniques and bosses, and scripted scenes keep
-# their headroom. main+0x5b92c reads the damage into w23 after the hit-processor's own miss check (bit 4 of the
-# hit flags at main+0x5b928 jumps past it), so a whiffed or dodged attack is not boosted. The replacement
-# recomputes the damage as side * 9999 + (1 - side) * damage with side = bit 15 (madd; exact for any damage). x30
-# and w9 are free at both sites: the first is rewritten at main+0x5b908 before its next read (and re-set at
-# main+0x5bb98 on the other branch), the second at main+0x6266c / main+0x5b934. Neither site's code reads NZCV
-# after it, so the replacements keep it untouched.
+# their headroom. The site is the damage calc's single exit store (main+0x62668; the out struct rides in x8 and
+# main+0x61ebc moves it to x19): every path leaves through it, x20 still holds the attacking unit (main+0x61ec4,
+# never reassigned), and a party attack leaves here only after the calc's own dodge and block handling, which
+# lands in the same store with damage 0. The replacement recomputes the damage as
+# side * 9999 + (1 - side) * damage with side = bit 15 of the attacker's flags, ANDed with a test that the damage
+# is positive: sdiv by itself is 0 only for damage 0 (the runtime's sdiv32 gives ARM's divide-by-zero -> 0), and
+# the asr/bic pair clears the bit for a negative value, so whiffs, blocks and any heal-shaped value stay as the
+# calc wrote them. x9 and x30 are free here: the original code re-initialises x9 at main+0x6266c before its next
+# read and restores x30 at main+0x62690. Nothing after the site reads NZCV, so the replacement leaves it alone.
+# The damage estimates of main+0x564cc pass through the same store; their attackers hit the party, so their side
+# bit is clear and they are unchanged.
 set xc2kill XC2_CHEAT_INSTA_KILL 0
-site xc2kill main 5b92c sha:292f0128370d1eec b940abf7 913bfa7e b94003de 530f3fde 5284e1e9 4b170129 1b095fd7
+site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b
