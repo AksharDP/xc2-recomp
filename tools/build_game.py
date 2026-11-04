@@ -504,6 +504,34 @@ def link_objects(out, pairs):
             shutil.copy2(theirs, dst)
 
 
+def translator_id(d):
+    """The identity a built translator in directory d was stamped with, '' when it has none."""
+    f = d / 'xc2_xlate.id'
+    return f.read_text(encoding='ascii').strip() if f.is_file() else ''
+
+
+def check_translator(exe_dir, allow_stale):
+    """Stops the build when build/xlate was built from other sources than this checkout's, unless exe_dir already holds a
+    matching one (a task build's own translator). A stale translator fails nothing: the runtime asks it for what the
+    current sources implement and it silently leaves that out. One from before transform feedback left the feedback
+    outputs out of the shaders, so nothing wrote the animated vertices of the hanging foliage in Uraya: those draws read
+    the bone matrices sharing that scratch memory as positions and came out as long black spikes. Checkouts without the
+    translator's sources (an unpacked release) have nothing to compare with."""
+    src = ROOT / 'build' / 'xlate'
+    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not translator_id(src):
+        return
+    from build_xlate import identity
+    want = identity()
+    if want in (translator_id(src), translator_id(exe_dir)):
+        return
+    what = f'{below_root(src)} is {translator_id(src)[:16]}, these sources are {want[:16]}'
+    if allow_stale:
+        print(f'build_game: warning: stale shader translator: {what}', file=sys.stderr)
+        return
+    sys.exit(f'build_game: stale shader translator: {what}. Shaders would silently lose what the sources added since. '
+             'Run tools/build_xlate.py, or pass --allow-stale-translator to build with it anyway.')
+
+
 def copy_translator(exe_dir):
     """Put xc2_xlate.exe and its .id next to xc2.exe, where gfx_shader.c looks first. Without a translator every
     shader fails and the game draws nothing (black screen, sound plays). Source: build/xlate (tools/build_xlate.py),
@@ -518,6 +546,10 @@ def copy_translator(exe_dir):
                   'will draw nothing unless XC2_XLATE names one', file=sys.stderr)
         return
     src_dir, stem = found[0]
+    if src_dir == ROOT / 'build' / 'xlate' and translator_id(exe_dir) not in ('', translator_id(src_dir)):
+        from build_xlate import identity
+        if translator_id(exe_dir) == identity():
+            return   # a task build's own translator, built from these sources; build/xlate is not
     for ext in (suffix, '.id'):
         if (src_dir / f'{stem}{ext}').is_file():
             shutil.copy2(src_dir / f'{stem}{ext}', exe_dir / f'xc2_xlate{ext}')
@@ -962,6 +994,8 @@ def main():
                          'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--allow-stale-translator', action='store_true',
+                    help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
@@ -1053,6 +1087,8 @@ def main():
     if stale:
         sys.exit(f'{stale[0]}: its SPIR-V header no longer matches; run python tools/build_shaders.py')
     skip = {s for s in args.skip_runtime.split(',') if s}
+    if not args.make_runtime_lib:   # before the compile: this stops the build, and a library holds no translator
+        check_translator(out, args.allow_stale_translator)
     main_out = (ROOT / 'build' / args.version).resolve()
     pairs = None
     if args.make_runtime_lib:

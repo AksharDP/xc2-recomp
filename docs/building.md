@@ -80,11 +80,15 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    code are written against the American and European `main`; a Japanese build without its own `patches-v301jp.txt`
    runs as the console does (30 fps, 1280x720).
 
-4. Shader translator (once; no game files). This publishes `build\xlate\xc2_xlate.exe`:
+4. Shader translator (no game files; again whenever `tools\xlate` or `tools\vendor` changes). This publishes
+   `build\xlate\xc2_xlate.exe`:
 
    ```powershell
    .venv\Scripts\python tools\build_xlate.py
    ```
+
+   `build_game.py` stops when that translator was built from other sources: a stale one fails nothing, it silently
+   leaves out what the runtime asks of it. `--allow-stale-translator` builds anyway.
 
 5. Lift the modules to C, write the RomFS half of the frame-rate patches, then compile and link `build\<ver>\xc2.exe`:
 
