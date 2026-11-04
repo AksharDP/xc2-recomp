@@ -698,7 +698,9 @@ def window(mod, br, entry, n=24):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--exefs', default=str(ROOT / 'build' / 'extracted' / 'v121' / 'exefs'))
+    default = next((p for v in ('v301', 'v121') if (p := ROOT / 'build' / 'extracted' / v / 'exefs').exists()),
+                   ROOT / 'build' / 'extracted' / 'v301' / 'exefs')
+    ap.add_argument('--exefs', default=str(default))
     ap.add_argument('--modules', default='main,sdk,subsdk0')
     ap.add_argument('--samples', type=int, default=8)
     ap.add_argument('--no-oracle', action='store_true')

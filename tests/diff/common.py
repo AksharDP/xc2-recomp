@@ -2,7 +2,9 @@
 
 Adapted from LAS Recomp tools/test_lift.py and tools/test_simd.py @ da35b83 (MIT, Copyright (c) 2026 Peiikai).
 """
+import multiprocessing
 import os
+import random
 import shutil
 import struct
 import subprocess
@@ -188,7 +190,42 @@ def compiler():
         return cc
     if os.name == 'nt' and (MSYS_BIN / 'clang.exe').exists():
         return str(MSYS_BIN / 'clang.exe')
+    if os.name == 'nt':
+        # Before PATH: a clang on PATH may target MSVC, which cannot build tests that need pthreads or GNU extensions.
+        for cc in sorted((ROOT / 'toolchain').glob('llvm-mingw-*/bin/clang.exe')):
+            return str(cc)
     return shutil.which('clang') or 'clang'
+
+
+def default_exefs():
+    """The extracted ExeFS the game-file tests read: XC2's 3.0.1 when it is there, else the 1.2.1 of the XCX tree."""
+    for ver in ('v301', 'v121'):
+        path = ROOT / 'build' / 'extracted' / ver / 'exefs'
+        if path.exists():
+            return path
+    return ROOT / 'build' / 'extracted' / 'v301' / 'exefs'
+
+
+def run_chunks(fn, chunks, jobs, init, initargs):
+    """fn(chunk) for every chunk, in worker processes that each ran init(*initargs) once; results in chunk order.
+
+    Cases are independent, and Unicorn and the harness run one at a time, so this is where the tests spend their time.
+    A chunk seeds its own generator (chunk_rng), so the results depend on the seed and not on the number of workers."""
+    if jobs <= 1 or len(chunks) <= 1:
+        init(*initargs)
+        return [fn(c) for c in chunks]
+    ctx = multiprocessing.get_context('spawn')
+    with ctx.Pool(min(jobs, len(chunks)), init, initargs) as pool:
+        return pool.map(fn, chunks, chunksize=1)
+
+
+def chunk_rng(seed, index):
+    return random.Random(f'{seed}/{index}')
+
+
+def split(n, per):
+    """(index, lo, hi) ranges covering n items, per items each. The size is fixed: see run_chunks."""
+    return [(i, lo, min(n, lo + per)) for i, lo in enumerate(range(0, n, per))]
 
 
 def build_harness(work, bodies, jobs, cflags):

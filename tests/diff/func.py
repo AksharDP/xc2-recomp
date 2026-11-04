@@ -36,7 +36,8 @@ import numpy as np
 import unicorn as uc
 from unicorn import arm64_const as A
 
-from common import BUF, BUF_SIZE, MSYS_BIN, ROOT, Emu, compiler, diff_state, rand_fpcr, rand_v, rand_x, run_harness
+from common import BUF, BUF_SIZE, MSYS_BIN, ROOT, Emu, chunk_rng, compiler, default_exefs, diff_state, rand_fpcr, \
+    rand_v, rand_x, run_chunks, run_harness, split
 import gen
 import patches
 from layout import layout
@@ -333,9 +334,57 @@ class Runner:
         return list(o[:31]), o[31], o[32] & 0xF0000000, o[33], list(o[34:]), crc
 
 
+CHUNK = 4    # functions per chunk (run_chunks), few because their cost varies widely; fixed, so cases do not depend on --jobs
+W = {}       # worker state, set by worker_init
+
+
+def worker_init(images, buf0, sites, funcs, exe, work, ncases, steps, seed):
+    runner = Runner([(base, Path(img).read_bytes()) for base, img in images], buf0, sites)
+    W.update(runner=runner, images=images, buf0=buf0, funcs=funcs, exe=exe, work=work, cases=ncases, steps=steps,
+             seed=seed)
+
+
+def run_chunk(chunk):
+    """Unicorn, then the harness, on the functions of one chunk. Returns counts, failures and any harness error."""
+    index, lo, hi = chunk
+    r = chunk_rng(W['seed'], index)
+    runner, funcs = W['runner'], W['funcs']
+    cases, expect, tested, skipped = [], [], set(), 0
+    t0 = time.time()
+    for k in range(lo, hi):
+        name, entry, end = funcs[k]
+        for _ in range(W['cases']):
+            case = make_case(r)
+            want_state = runner.run(entry, end, case, W['steps'])
+            if want_state is None:
+                skipped += 1
+                continue
+            fpcr, x, sp, nzcv, v = case
+            cases.append((k, fpcr, x, sp, nzcv, v, True))
+            expect.append(want_state)
+            tested.add(k)
+    t1 = time.time()
+    work = W['work'] / f'chunk{index}'
+    work.mkdir(parents=True, exist_ok=True)
+    recs, err = run_harness(W['exe'], work, W['buf0'], cases, W['images'], stubs=True)
+    t2 = time.time()
+    if err:
+        k = cases[len(recs)][0] if len(recs) < len(cases) else None
+        err += f', stopped in {funcs[k][0]} {funcs[k][1]:#x}' if k is not None else ''
+    fails, nfail = {}, 0
+    for case, want_state, got in zip(cases, expect, recs):
+        # Generated functions keep NZCV in a local (recomp/flags.py) and leave c->nzcv as it was: flags only count
+        # where the function reads them, which the registers and memory show.
+        d = diff_state(got, want_state, check_pc=False, check_mem=True, check_nzcv=False)
+        if d:
+            nfail += 1
+            fails.setdefault(case[0], d[:4])
+    return len(cases), len(recs), nfail, fails, err, t1 - t0, t2 - t1, tested, skipped
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--exefs', type=Path, default=ROOT / 'build' / 'extracted' / 'v121' / 'exefs')
+    ap.add_argument('--exefs', type=Path, default=default_exefs())
     ap.add_argument('--modules', default='main,subsdk0,sdk')
     ap.add_argument('--functions', type=int, default=400, help='per module')
     ap.add_argument('--cases', type=int, default=12, help='random states tried per function')
@@ -376,45 +425,29 @@ def main():
     sites = set()
     for _, entry, end, emitter in emitted:
         sites.update(call_sites(emitter.mod, entry, end))
-    runner = Runner([(base, data) for base, _, data in images], buf0, sites)
-    cases, expect, tested, skipped = [], [], set(), 0
     t2 = time.time()
-    for k, (name, entry, end, _) in enumerate(emitted):
-        for _ in range(args.cases):
-            case = make_case(r)
-            want_state = runner.run(entry, end, case, args.steps)
-            if want_state is None:
-                skipped += 1
-                continue
-            fpcr, x, sp, nzcv, v = case
-            cases.append((k, fpcr, x, sp, nzcv, v, True))
-            expect.append(want_state)
-            tested.add(k)
-    print(f'unicorn: {len(cases)} cases on {len(tested)} functions, {skipped} skipped ({time.time() - t2:.0f}s)',
-          flush=True)
-
-    t3 = time.time()
-    recs, err = run_harness(exe, work, buf0, cases, [(base, img) for base, img, _ in images], stubs=True)
-    print(f'harness: {len(recs)} of {len(cases)} cases ({time.time() - t3:.0f}s)')
-    if err:
-        k = cases[len(recs)][0] if len(recs) < len(cases) else None
-        where = f', stopped in {emitted[k][0]} {emitted[k][1]:#x}' if k is not None else ''
-        print(f'harness failed: {err}{where}')
-
-    fails, nfail = {}, 0
-    for case, want_state, got in zip(cases, expect, recs):
-        # Generated functions keep NZCV in a local (recomp/flags.py) and leave c->nzcv as it was: flags only count
-        # where the function reads them, which the registers and memory show.
-        d = diff_state(got, want_state, check_pc=False, check_mem=True, check_nzcv=False)
-        if d:
-            nfail += 1
-            fails.setdefault(case[0], d[:4])
+    res = run_chunks(run_chunk, split(len(emitted), CHUNK), args.jobs, worker_init,
+                     ([(base, img) for base, img, _ in images], buf0, sites, [e[:3] for e in emitted], exe, work,
+                      args.cases, args.steps, args.seed))
+    ncases, nrecs, skipped = sum(x[0] for x in res), sum(x[1] for x in res), sum(x[8] for x in res)
+    tested = set().union(*(x[7] for x in res))
+    print(f'unicorn and harness: {nrecs} of {ncases} cases on {len(tested)} functions, {skipped} skipped '
+          f'({time.time() - t2:.0f}s; {sum(x[5] for x in res):.0f}s and {sum(x[6] for x in res):.0f}s over '
+          f'{args.jobs} jobs)', flush=True)
+    errs = [x[4] for x in res if x[4]]
+    err = errs[0] if errs else None
+    for e in errs:
+        print(f'harness failed: {e}')
+    nfail = sum(x[2] for x in res)
+    fails = {}
+    for x in res:
+        fails.update(x[3])
     by_tag, fail_tag = Counter(), Counter()
     for k in tested:
         by_tag.update(tags[k] or {'plain'})
         if k in fails:
             fail_tag.update(tags[k] or {'plain'})
-    print(f'{len(tested)} functions, {len(cases)} cases: {nfail} failing cases, {len(fails)} failing functions '
+    print(f'{len(tested)} functions, {ncases} cases: {nfail} failing cases, {len(fails)} failing functions '
           f'({time.time() - t0:.0f}s total)')
     print(f'  tested by tag: {dict(by_tag)}; failing by tag: {dict(fail_tag)}')
     for k, d in list(fails.items())[:args.show]:
