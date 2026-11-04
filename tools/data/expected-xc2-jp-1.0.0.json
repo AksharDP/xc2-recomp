@@ -1,0 +1,14 @@
+{
+  "_comment": "Xenoblade 2 JP base game 1.0.0 (0100F3400332C000), ExeFS of the base Program NCA. The installer checks the player's base file against these before it builds from the 3.0.0 update.",
+  "title_id": "0100F3400332C000",
+  "base_title_id": "0100F3400332C000",
+  "version": 0,
+  "display_version": "1.0.0",
+  "exefs_sha256": {
+    "main": "4b403b3009b6f049e0d69eced7b1d99c71e6a4e65292616cdc381ab1a70c028d",
+    "main.npdm": "5f434e4da9ef9e87b06c3d1f18090c76fc522b38897df271f678f331522e9a6b",
+    "rtld": "3522d56dda056d4c7ba6f9508d6d1805d9a751b5a189a8700f9714ce06fb6c5a",
+    "sdk": "bbe0ce6e6803d2793165733f1667ebc6eb204ca7d54adb2c8030e4542d22a52c",
+    "subsdk0": "6d5a18e3bdd5a8e1fedd70b9213d3269425c3c8254055d423aecd98179107da4"
+  }
+}
