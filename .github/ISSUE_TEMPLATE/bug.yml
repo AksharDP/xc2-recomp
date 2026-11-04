@@ -31,12 +31,12 @@ body:
     attributes:
       label: Save file
       description: |
-        A save standing where the problem shows is how we test textures in that part of the game. Drag
-        `profile\save\<account id>\bf2savefile.sav` from the install folder into this box (GitHub turns it into a
-        link), or paste a link to it. Add `bf2option.sav` too when the settings matter. Write none if the problem
-        happens before any save can load.
+        Optional, but very much appreciated for speeding things up. A save standing where the problem shows is how
+        we test textures in that part of the game. Drag `profile\save\<account id>\bf2savefile.sav` from the install
+        folder into this box (GitHub turns it into a link), or paste a link to it. Add `bf2option.sav` too when the
+        settings matter. Not needed when the problem happens before any save can load.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: log
     attributes:

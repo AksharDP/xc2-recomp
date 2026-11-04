@@ -26,7 +26,7 @@ GPL projects (yuzu, suyu, OpenSmash-Ultimate, Unicorn inside the game binary) ca
 
 ## Reporting bugs
 
-Use the issue form. Include the port version and game update from the title line of the settings menu (F1), your GPU and driver (Copy system info in the menu's Advanced tab copies them), the log (`logs\xc2.log` next to `xc2.exe`; after a crash, copy it before you start the game again), a save standing where the problem shows (`profile\save\<account id>\bf2savefile.sav` in the install folder; it is how texture problems in a specific part of the game get tested), and the steps to reproduce. Screenshots are fine; recordings of long gameplay are not needed.
+Use the issue form. Include the port version and game update from the title line of the settings menu (F1), your GPU and driver (Copy system info in the menu's Advanced tab copies them), the log (`logs\xc2.log` next to `xc2.exe`; after a crash, copy it before you start the game again), and the steps to reproduce. A save standing where the problem shows is optional but very much appreciated for speeding things up (`profile\save\<account id>\bf2savefile.sav` in the install folder); texture problems in a specific part of the game get tested on it. Screenshots are fine; recordings of long gameplay are not needed.
 
 ## Pull requests
 
