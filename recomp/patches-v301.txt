@@ -40,6 +40,14 @@ site xc2fps main 70f38c sha:ba333c86651ffca4 1e210800 @page:x10 bd405541 1e21080
 site xc2fps main 1d12c8 sha:6474ca7bd27d8677 bc696900 @page:x8 bd405d01 1e210800
 site xc2fps main 1d1314 sha:899ffde6a5eca884 bc696900 @page:x8 bd405d01 1e210800
 
+# The cloud sea with the camera at its surface. Next to a dock that lies at the sea's height the player camera dips below
+# it when it looks up (Goldmouth's Exit Dock: top -8, camera -8.15). Prog 1277 then takes its path for a camera inside the
+# sea, which paints everything past the near plane in the sea's flat colour up to about 22 degrees above the horizon.
+# main+0x710250 loads the top (+0x194 of the camera block) and the camera's height (+0x154); keep the top at the camera
+# or below, as in the frame before it dipped. s0 is the camera height, s10 the top, here.
+set xc2sea XC2_SEA_TOP 1
+site xc2sea main 710260 sha:1e74171f216634b1 1e20594a 1e203950
+
 # xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
 # handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
 # setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70

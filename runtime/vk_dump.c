@@ -49,6 +49,7 @@
 
 int vk_dump_armed;
 static uint64_t dump_frame, log_from;   // log_from: XC2_DUMP_LOG, first frame logged to passes.txt without images
+static int64_t dump_at_us;   // XC2_DUMP=w<seconds>: dump the frame after the world clock (frame_step_world_us) reaches this
 static char dir[400];
 static FILE *passes_f, *images_f;
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
@@ -914,7 +915,8 @@ static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
 void vk_dump_init(void) {
     const char *e = cfg_get("XC2_DUMP");
-    if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
+    if (e && *e == 'w') dump_at_us = (int64_t)(atof(e + 1) * 1e6), dump_frame = UINT64_MAX;
+    else if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) return;
     const char *lf = cfg_get("XC2_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
     const char *sr = cfg_get("XC2_DUMP_SKIP_RUNS");
@@ -963,6 +965,11 @@ void vk_dump_init(void) {
 }
 
 void vk_dump_present(uint64_t frame) {
+    if (dump_at_us && frame_step_world_us() >= dump_at_us) {
+        dump_at_us = 0;
+        dump_frame = frame + 2;   // the next frame may already be recording
+        rt_log("vk_dump: world clock reached, dumping frame %llu", (unsigned long long)dump_frame);
+    }
     if (frame != dump_frame) return;
     plat_mutex_lock(&rec_lock);
     finished = 1;
