@@ -82,9 +82,9 @@ void flight_init(void) {
     const char *d = cfg_get("XC2_FLIGHT_DIR");
     char tmp[PLAT_PATH_MAX];
     if (d && *d) snprintf(tmp, sizeof tmp, "%s", d);
-    else {   // <exe dir>/../flight: build/flight for build/v121*/xc2.exe
+    else {   // <exe dir>/flight: build/v121/flight for build/v121/xc2.exe
         char *slash = plat_exe_path(tmp, sizeof tmp) ? plat_last_sep(tmp) : NULL;
-        if (slash) snprintf(slash, sizeof tmp - (size_t)(slash - tmp), "/../flight");
+        if (slash) snprintf(slash, sizeof tmp - (size_t)(slash - tmp), "/flight");
         else snprintf(tmp, sizeof tmp, "flight");
     }
     if (!plat_full_path(tmp, base_dir, sizeof base_dir)) snprintf(base_dir, sizeof base_dir, "%s", tmp);
