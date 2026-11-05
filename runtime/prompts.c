@@ -38,6 +38,15 @@ static const char *pick(const char **why) {
     return !strcmp(kind, "playstation") ? "playstation_nintendo" : "xbox_nintendo";
 }
 
+// The folder of xc2.exe with its separator; 0 when the host cannot say.
+static int exe_dir(char *base, size_t cap) {
+    if (!plat_exe_path(base, cap)) return 0;
+    char *sep = plat_last_sep(base);
+    if (sep) sep[1] = 0;
+    else strcpy(base, "./");
+    return 1;
+}
+
 static void init(void *arg) {
     (void)arg;
     const char *why = NULL, *set = pick(&why);
@@ -47,10 +56,7 @@ static void init(void *arg) {
         return;
     }
     char base[1100];
-    if (!plat_exe_path(base, sizeof base)) return;
-    char *sep = plat_last_sep(base);
-    if (sep) sep[1] = 0;
-    else strcpy(base, "./");
+    if (!exe_dir(base, sizeof base)) return;
     char path[1200];
     snprintf(path, sizeof path, "%sprompts/manifest.tsv", base);
     uint64_t size = 0;
@@ -83,6 +89,14 @@ static void init(void *arg) {
     }
     free(text);
     rt_log("prompts: %s (%s%s), %d files in %s", set, why, !strcmp(why, "prompts = ") ? v : "", nfiles, dir);
+}
+
+int prompts_possible(void) {
+    if (!strcmp(cfg_value("XC2_PROMPTS"), "switch")) return 0;
+    char base[1100], path[1200];
+    if (!exe_dir(base, sizeof base)) return 0;
+    snprintf(path, sizeof path, "%sprompts/manifest.tsv", base);
+    return plat_fs_kind(path) == PLAT_FS_FILE;
 }
 
 int prompts_file(const char *rel, char *out, size_t cap) {

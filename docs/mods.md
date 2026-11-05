@@ -69,6 +69,13 @@ mods\
 When the game asks pack 1 for `bdat/common.bdat`, it gets this file. A Switch and the emulators behave the same way, so
 mods made for them work without changes.
 
+Such a mod needs that pack installed: without it the game never asks the pack, as on a Switch. The one exception is a
+file of the button prompts (the `menu\image` layouts and the `bdat` text the setup lists in `prompts\manifest.tsv`).
+With no add-on content installed the port gives the game an empty pack of its own, numbered 98, to deliver the Xbox,
+PlayStation and keyboard prompts. It unlocks nothing, and the log shows it as `aoc: 0 add-on content present, and the
+port's empty pack for the button prompts`. A mod's copy of one of those files, under any pack's title, replaces the
+port's. Do not make a mod for title `0100E95004039062`: that number is the port's.
+
 A mod's base `romfs\` folder works for files the game opens directly:
 
 - music: `stream\bgm\*.nop`

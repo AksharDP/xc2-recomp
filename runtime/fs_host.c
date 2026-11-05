@@ -12,7 +12,8 @@
 //   <profile>/temp/                    emptied at start
 //   <profile>/cache/<index>/           cache storage
 //   <romfs>/../aoc/<index>/            add-on content: the extracted RomFS of each one the player has (installer),
-//                                      mounted read-only by MountAddOnContent
+//                                      mounted read-only by MountAddOnContent; AOC_PORT_PACK is the port's own, with
+//                                      no folder
 //
 // The save mount is journaled as on Horizon: changes go to a working copy and become the committed save atomically at
 // Commit; a crash or an Unmount before Commit leaves the previous committed save. Commit returns at once and the copy
@@ -638,14 +639,30 @@ static uint32_t mount_cache(const char *name, int index) {
 
 // ---- add-on content
 #define AOC_MAX 256   // AddOnContentIndex values looked for (XCX DE has one add-on, index 1)
+#define AOC_UNSEARCHED 5   // the one pack the game mounts but leaves out of the packs it asks for files
+// The port's own pack, listed when the player has no pack the game would ask for a file: with none, the game reads
+// bf2.ard directly and only a mount can give it the redrawn prompts. The game does three things with a listed index
+// (the same code in 3.0.1 and the Japanese 3.0.0): it mounts it as aoc<index>:, adds that mount to the places it looks
+// for files, and reads key.bin of packs 1 to 6, the only check that grants add-on content. So an index above 6 that no
+// title uses unlocks nothing and touches no save data. Its folder does not exist: the pack holds only what
+// prompts_aoc_path and mod_aoc_path answer for.
+#define AOC_PORT_PACK 98
 
 static void aoc_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/../aoc/%d", rt_config()->romfs, index); }
 
-static int aoc_present(int index) {
+static int aoc_installed(int index) {
     char p[PATH_CAP];
     aoc_dir(index, p, sizeof p);
     return plat_fs_kind(p) == PLAT_FS_DIR;
 }
+
+int fs_aoc_port_pack(void) {
+    for (int i = 1; i < AOC_MAX; i++)
+        if (i != AOC_UNSEARCHED && aoc_installed(i)) return 0;
+    return prompts_possible();
+}
+
+static int aoc_present(int index) { return aoc_installed(index) || (index == AOC_PORT_PACK && fs_aoc_port_pack()); }
 
 // Writes the indices of the add-on content present, from the offset-th on, at most count, and returns how many; with
 // out NULL, returns how many are present.
@@ -693,7 +710,15 @@ static int mod_aoc_path(const char *path, char *out, size_t cap, int *is_dir) {
             index = mounts[i].aoc;
     plat_mutex_unlock_shared(&lock);
     char rel[PATH_CAP];
-    return index && aoc_relative(colon, rel, sizeof rel) && mods_aoc_file(index, rel, out, cap, is_dir);
+    if (!index || !aoc_relative(colon, rel, sizeof rel)) return 0;
+    if (index != AOC_PORT_PACK) return mods_aoc_file(index, rel, out, cap, is_dir);
+    // No mod is made for the port's pack, and a mod's other files need the pack they name. Only for a file the prompts
+    // would serve here, a mod's copy under any pack the game searches goes first, as it does with add-on content.
+    char own[PATH_CAP];
+    if (!prompts_file(rel, own, sizeof own)) return 0;
+    for (int i = 1; i < AOC_MAX; i++)
+        if (i != AOC_UNSEARCHED && mods_aoc_file(i, rel, out, cap, is_dir)) return 1;
+    return 0;
 }
 
 // The redrawn button prompt layout for an add-on content path (prompts.c prompts_file): the game asks every pack for
@@ -1138,6 +1163,7 @@ static void ov_save_exists_own(Cpu *c) { ret_x(c, save_exists(APPLICATION_ID, ar
 #define S_OPEN_DIRECTORY "_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci"
 #define S_READ_DIRECTORY "_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl"
 #define S_CLOSE_DIRECTORY "_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE"
+#define S_MOUNT_AOC "_ZN2nn2fs17MountAddOnContentEPKciPvm"
 #define S_MOUNT_SAVE "_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE"
 #define S_MOUNT_SAVE_RO "_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE"
 #define S_SAVE_EXISTS "_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE"
@@ -1177,7 +1203,7 @@ HOST_OVERRIDE(S_OPEN_DIRECTORY, ov_open_directory);
 HOST_OVERRIDE(S_READ_DIRECTORY, ov_read_directory);
 HOST_OVERRIDE(S_CLOSE_DIRECTORY, ov_close_directory);
 HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
-HOST_OVERRIDE("_ZN2nn2fs17MountAddOnContentEPKciPvm", ov_mount_aoc);
+HOST_OVERRIDE(S_MOUNT_AOC, ov_mount_aoc);
 HOST_OVERRIDE("_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", ov_query_aoc_cache);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
@@ -1205,7 +1231,7 @@ static const char *const probe_symbols[] = {
     S_SET_FILE_SIZE, S_FLUSH_FILE, S_CREATE_FILE, S_DELETE_FILE, S_RENAME_FILE, S_CREATE_DIRECTORY, S_DELETE_RECURSIVE,
     S_OPEN_DIRECTORY, S_READ_DIRECTORY, S_CLOSE_DIRECTORY, S_MOUNT_SAVE, S_MOUNT_SAVE_RO, S_SAVE_EXISTS, S_MOUNT_TEMP,
     S_UNMOUNT, S_COMMIT, S_CREATE_CACHE, S_DELETE_CACHE, S_MOUNT_CACHE, S_OPEN_CACHE_LIST, S_READ_CACHE_LIST,
-    S_CLOSE_CACHE_LIST, S_SET_PRIORITY, S_MOUNT_ROM, S_QUERY_CACHE, S_INITIALIZE};
+    S_CLOSE_CACHE_LIST, S_SET_PRIORITY, S_MOUNT_ROM, S_QUERY_CACHE, S_INITIALIZE, S_MOUNT_AOC};
 #define NPROBE ((int)(sizeof probe_symbols / sizeof *probe_symbols))
 #define SAMPLES 64
 #define HEAD_BYTES (8u << 20)      // a sampled file is compared whole up to this size, else head and tail
@@ -1712,6 +1738,48 @@ static void probe_storage(void) {
            "temporary profile: %s; profile deleted: %s\n", failures ? "see FAIL lines" : "ok", removed ? "yes" : "no");
 }
 
+// The port's own pack: listed last and only when no pack the game searches is installed, granting nothing (it has no
+// key.bin) and answering only for the prompts. Which side runs depends on the RomFS folder's aoc/ and on prompts/ next
+// to the exe: XC2_ROMFS at an install without add-on content takes the other one.
+static void probe_port_pack(void) {
+    int32_t list[AOC_MAX];
+    int n = fs_aoc_list(list, 0, AOC_MAX), port = fs_aoc_port_pack(), searched = 0;
+    for (int i = 0; i < n; i++) searched += list[i] != AOC_UNSEARCHED && list[i] != AOC_PORT_PACK;
+    CHECK(!port || (n && list[n - 1] == AOC_PORT_PACK && !searched), "the port's pack beside a searched pack");
+    uint32_t r = RES(S_MOUNT_AOC, U("aocprobe"), AOC_PORT_PACK, 0, 0);
+    if (!port) {
+        CHECK(r == FS_R_TARGET_NOT_FOUND, "the port's pack mounts while it is not listed");
+        printf("add-on content: %d packs, no port pack\n", n);
+        return;
+    }
+    CHECK(r == 0, "mount of the port's pack: %#x", r);
+    int type = -1;
+    uint64_t h = 0;
+    CHECK(RES(S_ENTRY_TYPE, U(&type), U("aocprobe:/key.bin")) == FS_R_PATH_NOT_FOUND, "the port's pack has a key.bin");
+    CHECK(RES(S_OPEN_FILE, U(&h), U("aocprobe:/bdat/common.bdat"), FS_OPEN_READ) == FS_R_PATH_NOT_FOUND,
+          "the port's pack answers for a file that is no prompt");
+    static const char layout[] = "menu/image/button.wilay";
+    char own[PATH_CAP];
+    int served = prompts_file(layout, own, sizeof own);
+    if (served) {
+        int64_t size = 0;
+        PlatFileId id = {0};
+        int err = 0;
+        PlatFile *f = plat_fs_open(own, 0, &err);
+        CHECK(f && plat_file_id(f, &id), "the prompts' layout opens");
+        if (f) plat_file_close(f);
+        CHECK(RES(S_ENTRY_TYPE, U(&type), U("aocprobe:/menu/image/button.wilay")) == 0 && type == FS_ENTRY_FILE,
+              "the port's pack lists the layout");
+        CHECK(RES(S_OPEN_FILE, U(&h), U("aocprobe:/menu/image/button.wilay"), FS_OPEN_READ) == 0 &&
+              RES(S_FILE_SIZE, U(&size), h) == 0 && (uint64_t)size == id.size, "the port's pack serves the layout");
+        CALL(S_CLOSE_FILE, h);
+        CHECK(RES(S_OPEN_FILE, U(&h), U("aocprobe:/menu/image/button.wilay"), FS_OPEN_WRITE) == FS_R_UNSUPPORTED_OPEN,
+              "the port's pack opens for writing");
+    }
+    CALL(S_UNMOUNT, U("aocprobe"));
+    printf("add-on content: %d packs with the port's, prompts %s\n", n, served ? "served" : "not chosen");
+}
+
 int probe_fs(void) {
     fs_init();
     for (int i = 0; i < NPROBE; i++) {
@@ -1730,6 +1798,7 @@ int probe_fs(void) {
     CALL(S_INITIALIZE, 0);   // nn::fs::InitializeForApplication: fs_init again, idempotent
     uint64_t files = probe_romfs();
     probe_storage();
+    probe_port_pack();
     int kept = 1;
     for (int r = 19; r < 30; r++) kept &= pcpu->x[r] == 0x1900u + r;
     CHECK(kept && pcpu->sp == (uint64_t)(uintptr_t)stack + 0x10000, "an override lost a callee-saved register");

@@ -186,8 +186,8 @@
 # Button prompts the game draws: xbox, playstation, keyboard (the default keys), switch (the game's own) or auto (the
 # connected gamepad's: playstation for a PlayStation pad, switch for a Nintendo one, xbox for the others; keyboard
 # without a gamepad). The Xbox and PlayStation prompts follow pad_layout. The setup draws them from your game into
-# prompts/ next to xc2.exe; the game reads them through its add-on content, so with no add-on content installed it
-# keeps its own. Takes effect at the next start.
+# prompts/ next to xc2.exe; the game reads them through its add-on content, or through an empty pack of the port's
+# own when none is installed, which unlocks nothing. Takes effect at the next start.
 # prompts = auto
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.

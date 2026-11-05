@@ -43,6 +43,7 @@ void fs_trace(const char *what, const char *path);         // XC2_TRACE=fs: one 
 
 // ---- fs_host.c
 int fs_aoc_list(int32_t *out, int offset, int count);       // add-on content indices present (fs_host.c)
+int fs_aoc_port_pack(void);                                 // 1 when that list has the port's own pack (AOC_PORT_PACK)
 void fs_host_set_profile(const char *dir);                 // profile directory; before the first storage mount only
                                                            // (default rt_config()->profile)
 int fs_save_busy(void);                                    // a save is being written: a save file open for writing,
