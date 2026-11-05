@@ -12,7 +12,7 @@ RomFS is extracted only when the base game's expected file has a RomFS hash (XC2
 the base game in place).
 
 --region jp takes the Japanese release (tools/xc2_titles.py): its expected files are tools/data/expected-xc2-jp-*.json
-and its folders v0jp and v301jp. --record VERSION writes those expected files from the game files instead of checking
+and its folders v0jp and v300jp. --record VERSION writes those expected files from the game files instead of checking
 against them, once, for a release the repository has no hashes for yet: it extracts the base game's ExeFS and the
 update's ExeFS and merged RomFS and records their hashes as the base game 1.0.0 and the update VERSION. Only the
 hashes go into tools/data; check them against a second dump before committing them.
