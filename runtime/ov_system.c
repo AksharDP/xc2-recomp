@@ -328,7 +328,12 @@ static void ov_diag_not_null(Cpu *c) {
     }
     ret_x(c, v ? 1 : 0);
 }
-static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: %d add-on content present", fs_aoc_list(NULL, 0, 0)); }
+static void ov_aoc_initialize(Cpu *c) {
+    (void)c;
+    int port = fs_aoc_port_pack();
+    rt_log("aoc: %d add-on content present%s", fs_aoc_list(NULL, 0, 0) - port,
+           port ? ", and the port's empty pack for the button prompts" : "");
+}
 // The add-on content installed beside the RomFS (fs_host.c fs_aoc_list); XCX 1.4.3 and XCX list it.
 // int ListAddOnContent(AddOnContentIndex *out, int offset, int count)
 static void ov_aoc_list(Cpu *c) {
