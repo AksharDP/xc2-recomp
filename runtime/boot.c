@@ -256,6 +256,11 @@ static void series_shot(const tex_t *t, uint64_t n) {
     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
     uint32_t w = t->d.width, h = t->d.height, ow = full ? w : 480, oh = full ? h : 270;
+    // XC2_SHOTS_SIZE=<w>x<h>: that size instead, at most the frame's. The 3D frame's own size keeps a one-pixel fault
+    // one pixel wide at a quarter of the bytes of a 2560x1440 shot.
+    const char *sz = cfg_get("XC2_SHOTS_SIZE");
+    unsigned sw, sh;
+    if (sz && sscanf(sz, "%ux%u", &sw, &sh) == 2 && sw && sh && sw <= w && sh <= h) ow = sw, oh = sh;
     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
     if (!px || !out) rt_fatal("boot: out of memory for a XC2_SHOTS frame");
     view_t view;

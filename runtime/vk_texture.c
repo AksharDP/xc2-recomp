@@ -229,10 +229,36 @@ static int format_compressed(VkFormat f) {   // vkCmdClearColorImage takes no bl
            (f >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && f <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
 }
 
-static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) {
+// XC2_TEX_OVERSIZE, a diagnostic for issue 39 (thin lines in the cloud sea on AMD): 1 (default) keeps colour images in
+// place as above, 0 gives a render target that needs more bytes than its storage memory of its own, as depth images
+// get, and all does that for every render target. Whichever is set, such targets are logged, so one log shows whether
+// the excess exists on a GPU.
+static int tex_oversize_mode(void) {
+    static int m = -1;
+    if (m < 0) {
+        const char *e = cfg_get("XC2_TEX_OVERSIZE");
+        m = !e || !*e ? 1 : !strcmp(e, "all") ? 2 : !strcmp(e, "0") ? 0 : 1;
+        rt_log("vk: render targets above their storage: %s (XC2_TEX_OVERSIZE)",
+               m == 1 ? "stay in the pool" : m == 0 ? "get memory of their own" : "all render targets get memory of their own");
+    }
+    return m;
+}
+
+static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size, int target) {
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(c->device, img, &req);
     if ((e->f.depth || e->f.stencil) && req.size > guest_size) return 0;
+    if (target) {
+        static int logged;
+        int mode = tex_oversize_mode(), over = req.size > guest_size;
+        if (over && logged < 64) {
+            logged++;
+            rt_log("vk: render target %#llx %ux%u VkFormat %d needs %llu bytes (alignment %llu), its storage %llu",
+                   (unsigned long long)e->pub.addr, e->t.d.width, e->t.d.height, (int)e->f.vk,
+                   (unsigned long long)req.size, (unsigned long long)req.alignment, (unsigned long long)guest_size);
+        }
+        if (mode == 2 || (mode == 0 && over)) return 0;
+    }
     VkMemSpan sp;
     if (!vk_mem_resolve(e->pub.addr, req.size, &sp) || !sp.alloc || sp.alloc_offset % req.alignment) return 0;
     VmaAllocationInfo info;
@@ -241,6 +267,20 @@ static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) 
     if (vmaBindImageMemory2(c->vma, sp.alloc, sp.alloc_offset, img, NULL) != VK_SUCCESS) return 0;
     e->bound_to = sp.alloc;
     return 1;
+}
+
+// XC2_TEX_COMPRESS, a diagnostic for issue 39: 1 (default) leaves compression to the driver, 0 creates attachable
+// images with VK_IMAGE_COMPRESSION_DISABLED_EXT, storage adds the storage usage to colour targets, which keeps some
+// drivers from compressing them when the extension is missing.
+static int tex_compress_mode(void) {
+    static int m = -1;
+    if (m < 0) {
+        const char *e = cfg_get("XC2_TEX_COMPRESS");
+        m = !e || !*e ? 1 : !strcmp(e, "storage") ? 2 : !strcmp(e, "0") ? 0 : 1;
+        if (m == 0 && !vk_ctx()->has_image_compression) rt_log("vk: XC2_TEX_COMPRESS=0: the device lacks VK_EXT_image_compression_control");
+        else if (m != 1) rt_log("vk: attachable images: compression off through %s (XC2_TEX_COMPRESS)", m ? "the storage usage" : "the extension");
+    }
+    return m;
 }
 
 // agl's BC4 encoder draws a BC texture's blocks through an RGBA16UI view, one texel per 8-byte block (refs/nxnative
@@ -360,6 +400,14 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     int fb_usage = c->feedback == VK_FEEDBACK_LAYOUT && !block_views &&
                    (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
     if (fb_usage) ci.usage = usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+    VkImageCompressionControlEXT no_compress = {.sType = VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT,
+                                                .flags = VK_IMAGE_COMPRESSION_DISABLED_EXT};
+    int attachable = (usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) != 0;
+    if (attachable && !block_views) {
+        int cm = tex_compress_mode();
+        if (cm == 0 && c->has_image_compression) ci.pNext = &no_compress;
+        if (cm == 2 && !ds && samples == 1 && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ci.usage = usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    }
     Tex *e = calloc(1, sizeof *e);
     if (!e) rt_fatal("vk: out of memory for a texture");
     e->key = *k;
@@ -368,7 +416,8 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     e->pub.addr = k->addr;
     VkImage img = VK_NULL_HANDLE;
     if (nvn_gpu_only(k->addr)) {   // storage in a physical or virtual pool: alias the pool memory (section 3.2)
-        if (vkCreateImage(c->device, &ci, NULL, &img) == VK_SUCCESS && !bind_pool_memory(c, e, img, L.size)) {
+        if (vkCreateImage(c->device, &ci, NULL, &img) == VK_SUCCESS &&
+            !bind_pool_memory(c, e, img, L.size, !ds && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && !block_views)) {
             vkDestroyImage(c->device, img, NULL);
             img = VK_NULL_HANDLE;
             log_limited(&n_unbound, "texture %#llx (%ux%u fmt %#x) cannot alias its pool memory; own memory instead",

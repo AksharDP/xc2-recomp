@@ -289,6 +289,9 @@ static void dump_main(void *arg) {
            recorded ? cost_ns / 1e3 / (double)recorded : 0.0, cost_max_ns / 1e3);
     free(have);
     free(j);
+    // XC2_FLIGHT_EXIT=1: the process ends with the dump, skipping the normal shutdown, for scripted runs that want one
+    // dump each (tools/issue39_test.bat). A fixed run length either wastes time or cuts the dump off.
+    if (cfg_get("XC2_FLIGHT_EXIT")) fflush(NULL), _Exit(0);
     return;
 }
 

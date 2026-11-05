@@ -208,6 +208,7 @@ typedef struct {
     VkPhysicalDeviceRobustness2FeaturesEXT rob2;
     VkPhysicalDeviceFaultFeaturesEXT fault;
     VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT fsi;
+    VkPhysicalDeviceImageCompressionControlFeaturesEXT icc;
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
@@ -285,6 +286,11 @@ static int create_device(void) {
     // Ryujinx's SPIR-V declares fragment shader interlock whenever the host reports it (vk_pipeline.c spirv_fixup).
     OPTIONAL_EXT(has_fragment_shader_interlock, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, fsi,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT);
+    // XC2_TEX_COMPRESS=0 (vk_texture.c tex_compress_mode) creates attachable images without compression.
+    const char *tc = cfg_get("XC2_TEX_COMPRESS");
+    if (tc && !strcmp(tc, "0"))
+        OPTIONAL_EXT(has_image_compression, VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME, icc,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT);
     // Feedback loops (vk.h VkCtx.feedback): the layout, and barriers inside dynamic rendering
     int has_fbl = 0, has_lr = 0;
     if (has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&

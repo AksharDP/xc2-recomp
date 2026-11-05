@@ -1117,9 +1117,15 @@ static uint32_t feedback_writes(const VkExec *ex, const VkPipeState *s) {
 static uint32_t feedback_self(const VkExec *ex, const GfxShader *fs, uint32_t m) {
     uint32_t c = m & ~ex->fbl_mask;
     if (!c) return 0;
+    // XC2_FEEDBACK_READ=1, a diagnostic for issue 39: also attachments the draw only reads, as the cloud sea's depth.
+    static int read_too = -1;
+    if (read_too < 0) {
+        const char *e = cfg_get("XC2_FEEDBACK_READ");
+        read_too = e && !strcmp(e, "1");
+    }
     VkPipeState s = ex->pipe;
     s.fs = fs;
-    c &= feedback_writes(ex, &s);
+    if (!read_too) c &= feedback_writes(ex, &s);
     for (uint32_t i = 0; i < 9; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
         if ((c >> i & 1) && !(t->img && t->img->fb_usage)) c &= ~(1u << i);   // restarting would not help: it stays as it is
