@@ -350,6 +350,23 @@ static void world_clock(double dt, double step) {
 // accumulator by the patch page's +0x54, the step in 30 fps frames, which paces the fog, clouds, wind, animated materials
 // and particles; the camera's per-frame turn takes +0x5c, the same times the mouse's turn beyond a full stick.
 static void xc2_steps_store(double seconds) {
+    // XC2_UIPROBE=1: log the battle UI's own per-frame seconds, the value the scene update's
+    // message writes to battle manager +0x40f8 (read by the ButtonChallenge/QTE counter,
+    // FUN_003b8188, as accumulated_seconds * 30 = its frame counter) against the step the
+    // runtime keeps. Sampled every 30 presents to keep the log readable.
+    static int probe = -1;
+    if (probe < 0) probe = cfg_get("XC2_UIPROBE") != NULL;
+    static unsigned probe_frames;
+    if (probe && ++probe_frames % 30 == 1) {
+        uint64_t bm = 0;
+        if (plat_mem_read(RT_MAIN_BASE + 0xb87288, &bm, 8) && bm) {
+            uint8_t w[0x80];
+            plat_mem_read(bm + 0x4080, w, sizeof w);
+            char hex[3 * sizeof w + 1];
+            for (size_t i = 0; i < sizeof w; i++) snprintf(hex + 3 * i, 4, "%02x ", w[i]);
+            rt_log("uiprobe: step %.5f bm+4080: %s", seconds, hex);
+        }
+    }
     float s = (float)seconds, frames = (float)(seconds * 30.0);
     uint32_t b, f;
     memcpy(&b, &s, 4);

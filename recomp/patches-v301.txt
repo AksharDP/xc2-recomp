@@ -213,3 +213,21 @@ site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 
 # bit is clear and they are unchanged.
 set xc2kill XC2_CHEAT_INSTA_KILL 0
 site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b
+
+# xc2uistep (XC2_UISTEP_FIX, off): the battle UI's own per-frame step, and with it the timing of
+# the Blade Special QTEs. The battle scene's frame message (dispatched by FUN_0032a978) carries
+# the frame step at +0 and a second float at +4; the battle UI manager (FUN_0035a8c8) stores the
+# +4 word into battle manager +0x40f8, and the ButtonChallenge/QTE counter (FUN_003b8188)
+# accumulates it as accumulated_seconds * 30 = its frame counter, against which the challenge
+# windows and the shrinking ring gauge are measured. Issue 48 reports the QTE prompts showing up
+# late against the special's animation and lingering about twice as long, which is what a counter
+# running at half speed does; the suspected cause is the game's own 60 Hz compensation (the
+# VFR ratio interval * 0.5) being applied to the +4 word on top of a frame step that the runtime
+# already corrects each present. The replacement stores the message's frame step (+0) instead.
+# At 30 fps this is expected to equal what the game writes at +4, so the set is a no-op there;
+# at 60 fps it paces the QTEs in real time. Off until the value is measured in a live battle
+# (XC2_UIPROBE=1 logs bm+0x40f8) and the QTE timing is checked against the console.
+set xc2uistep XC2_UISTEP_FIX 0
+site xc2uistep main 35aab4 b9400688 b9400288
+
+
