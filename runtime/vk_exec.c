@@ -74,13 +74,13 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
+           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
-           (unsigned long long)f->fb_layouts, list);
+           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }

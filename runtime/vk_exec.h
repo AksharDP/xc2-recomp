@@ -107,6 +107,8 @@ typedef struct VkExec {
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
+    VkImage snap_of[8], snap[8];         // this draw's targets it samples itself and their copies (feedback_snapshot)
+    int nsnap;
 
     int fsr3_armed;                      // VK_FSR3_*: what FSR 3.1 records when the open pass ends (vk_fsr3.c)
 } VkExec;
@@ -154,6 +156,7 @@ typedef struct {
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
+    uint64_t fb_snaps;                                         // targets copied for the draw that samples them itself
 } VkExecFrame;
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
