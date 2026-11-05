@@ -60,7 +60,8 @@ def tools_fallback():
 
 
 def version_tag(version, region=DEFAULT_REGION):
-    """'3.0.1' -> 'v301' ('v301jp' for Japan): the version name of build_game.py (its generated/ and build/ folders)."""
+    """'3.0.1' -> 'v301' ('3.0.0' -> 'v300jp' for Japan): the version name of build_game.py (its generated/ and build/
+    folders)."""
     return region.version_tag(version)
 
 

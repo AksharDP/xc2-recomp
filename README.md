@@ -21,8 +21,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - Native code, not emulation
 - Update 3.0.1 and all seven add-on content packs
-- The American and European release (one title, 0100E95004038000, so the same files); the Japanese release
-  (0100F3400332C000) is recognised and installs into its own folder once its reference hashes are in `tools/data`
+- The American and European release (one title, 0100E95004038000, so the same files) and the Japanese release
+  (0100F3400332C000, update 3.0.0), which installs into its own folder
   ([docs/installer.md](docs/installer.md#releases))
 - Built from your own NSP files and `prod.keys` by the XC2-Setup installer
 - In-game settings menu (F1) and performance overlay (F10)

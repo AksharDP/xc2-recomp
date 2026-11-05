@@ -73,12 +73,12 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    ```
 
    The Japanese release (title 0100F3400332C000, `tools/xc2_titles.py`) takes `--region jp`: its expected files are
-   `tools/data/expected-xc2-jp-*.json` and its folders `v0jp` and `v301jp`, so it sits beside the American and
+   `tools/data/expected-xc2-jp-*.json` and its folders `v0jp` and `v300jp`, so it sits beside the American and
    European one. While the repository has no hashes for it, `--region jp --record <update version>` writes them from
    your files instead of checking against them (base 1.0.0 and the update's ExeFS and merged RomFS; check them
-   against a second dump before committing). `recomp\patches-v301.txt` and the runtime's frame rate and resolution
-   code are written against the American and European `main`; a Japanese build without its own `patches-v301jp.txt`
-   runs as the console does (30 fps, 1280x720).
+   against a second dump before committing). Japan's 3.0.0 `main` has the code and data of the American and European
+   3.0.1, so `v300jp` takes `recomp\patches-v301.txt` too (`PATCH_TABLES` in `tools/xc2_titles.py`; pass that file
+   to `gen.py` below). An update without a table runs as the console does (30 fps, 1280x720).
 
 4. Shader translator (no game files; again whenever `tools\xlate` or `tools\vendor` changes). This publishes
    `build\xlate\xc2_xlate.exe`:
