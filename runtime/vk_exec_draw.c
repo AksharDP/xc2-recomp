@@ -149,7 +149,7 @@ typedef struct { int cls, use; uint64_t bytes; } RsCount;
 static struct {
     int on;                              // XC2_BIND_SKIP: 1 skip (default), 2 check, 0 off
     uint32_t hn;                         // words of h the last signature filled; 0: none
-    uint64_t h[24];                      // generations, feedback images, support inputs, base instance
+    uint64_t h[25];                      // generations, feedback images, support inputs, base instance
     const VkPipeInfo *info;              // the pipeline whose RsList ranges body holds, as of bind op generation gen
     uint64_t gen;
     uint8_t body[RS_BYTES];
@@ -380,7 +380,10 @@ static void dummies_init(void) {
 }
 
 // Releases the stand-ins. The device must be idle; the game path leaves them to process exit like the pipelines.
+static void snap_shutdown(void);
+
 void vk_exec_draw_shutdown(void) {
+    snap_shutdown();
     if (!Z.ready) return;
     VkCtx *c = vk_ctx();
     for (int i = 0; i < DV_COUNT; i++) {
@@ -1099,12 +1102,110 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     return m;
 }
 
+// A draw that samples a colour target it also writes. Maxwell's texture cache does not see the ROP's writes before the
+// next INVALIDATE_TEXTURE barrier (maxwell.md 1.9), so such a draw reads what the target held before it. XC2's cloud sea
+// is built on that: its composite (fs faf0281677134f56) reads the distance target to fade the sea against the scene and
+// writes the sea's own distance into it. Where a fragment saw a distance the same draw had just written it faded to
+// almost nothing, and the sky showed through as thin flickering lines on AMD (issue 39), whose reads do see those
+// writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target made
+// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off.
+#define SNAP_IMAGES 8
+static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w, h, slot; } snap_imgs[SNAP_IMAGES];
+static int nsn;
+
+// The copy for target slot slot: one image per format, size and slot, so that it outlives the targets it copies and
+// two targets of a draw never share one. VK_NULL_HANDLE when there is none. Replay thread.
+static VkImage snap_image(const VkExecTarget *t, uint32_t slot) {
+    static int warned;
+    const VkTexImage *img = t->img;
+    for (int i = 0; i < nsn; i++)
+        if (snap_imgs[i].format == img->format && snap_imgs[i].w == img->width && snap_imgs[i].h == img->height && snap_imgs[i].slot == slot)
+            return snap_imgs[i].image;
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                            .format = img->format, .extent = {img->width, img->height, 1}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VkImage image;
+    VmaAllocation alloc;
+    if (nsn == SNAP_IMAGES || vmaCreateImage(vk_ctx()->vma, &ci, &ai, &image, &alloc, NULL) != VK_SUCCESS) {
+        if (!warned++) rt_log("vk: no copy for a target its own draw samples (%ux%u format %d): the draw reads the target",
+                              img->width, img->height, (int)img->format);
+        return VK_NULL_HANDLE;
+    }
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .image = image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
+    vkCmdPipelineBarrier2(vk_upload_begin(), &di);   // the upload batch goes to the queue before this part
+    vk_upload_end();
+    snap_imgs[nsn].image = image, snap_imgs[nsn].alloc = alloc, snap_imgs[nsn].format = img->format;
+    snap_imgs[nsn].w = img->width, snap_imgs[nsn].h = img->height, snap_imgs[nsn].slot = slot;
+    nsn++;
+    rt_log("vk: a draw samples a target it writes: it reads a copy (%ux%u format %d, target %u)", img->width, img->height,
+           (int)img->format, slot);
+    return image;
+}
+
+static void snap_shutdown(void) {
+    for (int i = 0; i < nsn; i++) {
+        vk_exec_image_gone(snap_imgs[i].image);
+        vk_defer_image(snap_imgs[i].image, snap_imgs[i].alloc);
+    }
+    nsn = 0;
+}
+
+// A target whose whole content is one 2D image, which is what snap_image copies.
+static int snap_fits(const VkExecTarget *t) {
+    const VkTexImage *img = t->img;
+    return img && !t->is3d && !t->blocks && img->type == VK_IMAGE_TYPE_2D && img->levels == 1 && img->layers == 1 &&
+           img->samples == 1 && img->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
+}
+
+// Copies the colour targets among m that the draw with fragment shader fs writes itself; the draw's descriptors then
+// read the copies (tex_info_full). Returns the targets copied.
+static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
+    static int on = -1;
+    if (on < 0) on = cfg_bool("XC2_FEEDBACK_SNAP");
+    if (!on || !(m & 0xff)) return 0;
+    VkPipeState s = ex->pipe;
+    s.fs = fs;
+    uint32_t c = 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+        if ((m >> i & 1) && ex->color[i].image && snap_fits(&ex->color[i]) && vk_pipeline_target_wmask(&s, (int)i)) c |= 1u << i;
+    if (!c) return 0;
+    VkImage copy[8];
+    for (uint32_t i = 0; i < 8; i++) {
+        copy[i] = c >> i & 1 ? snap_image(&ex->color[i], i) : VK_NULL_HANDLE;
+        if (!copy[i]) c &= ~(1u << i);
+    }
+    if (!c) return 0;
+    vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+    for (uint32_t i = 0; i < 8; i++) {
+        if (!(c >> i & 1)) continue;
+        const VkExecTarget *t = &ex->color[i];
+        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .extent = {t->img->width, t->img->height, 1}};
+        vkCmdCopyImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, copy[i], VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        ex->recorded++;
+        ex->snap_of[ex->nsnap] = t->image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
+        vk_exec_frame.fb_snaps++;
+    }
+    vk_exec_pass_begin(ex);   // its barrier makes the copies visible to the draw
+    return c;
+}
+
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
 // sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
+    ex->nsnap = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
+    m &= ~feedback_snapshot(ex, fs, m);
     uint32_t d = m & ex->fb_dirty;
     if (d) vk_exec_frame.fb_draws++;
     if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
@@ -1169,7 +1270,7 @@ static struct {
 static void tex_info(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate, VkDescriptorImageInfo *out) {
     int td_on = td_mode();
     VkImage image;
-    if (!h || storage || !td_on) return tex_info_full(ex, r, h, storage, separate, out, &image);
+    if (!h || storage || !td_on || ex->nsnap) return tex_info_full(ex, r, h, storage, separate, out, &image);
     uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();   // before any lookup
     typeof(TD[0]) *m = &TD[(h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate) >> 51];
     if (m->valid && m->h == h && m->type == r->type && m->separate == separate && m->sgen == sg &&
@@ -1207,6 +1308,12 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
         view_t v;
         int hv;
         const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
+        VkTexImage copy;
+        for (int i = 0; img && !storage && i < ex->nsnap; i++)
+            if (ex->snap_of[i] == img->image) {   // feedback_snapshot: the same picture, sampled from the copy
+                copy = *img, copy.image = ex->snap[i], img = &copy;
+                break;
+            }
         if (img) view = get_view(ex, img, &v, hv, r->type, storage), *image = img->image;
         if (img && storage) vk_texture_storage_bound_locked(img);
         if (img && !storage && ex->nfbl && in_fbl(ex, img->image)) layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
@@ -1444,7 +1551,10 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     PUT((uintptr_t)ex->prog);
     PUT(ex->prog->serial);
     PUT((uint64_t)vk_texture_slots_gen() << 32 | vk_texture_epoch());
-    PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
+    PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nsnap << 8 | (uint32_t)ex->nfbl);
+    uint64_t snaps = 0;
+    for (int i = 0; i < ex->nsnap; i++) snaps = snaps * 31 + (uintptr_t)ex->snap_of[i] + (uintptr_t)ex->snap[i];
+    PUT(snaps);
     PUT(vk_mem_gen() + vk_usnap_gen());   // both only grow
     for (int i = 0; i < ex->nfbl && i < 9; i++) PUT((uintptr_t)ex->fbl_img[i]);
     if (l->sup) {
@@ -2291,6 +2401,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = (uint32_t)d->x, c0_dim[1] = (uint32_t)d->y, c0_dim[2] = (uint32_t)d->z;
+    ex->nsnap = 0;   // a draw skipped after feedback_snapshot leaves its copies behind
     bind_resources(ex, info);
     vkCmdDispatch(ex->cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     ex->recorded++;
@@ -2317,6 +2428,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = c0_dim[1] = c0_dim[2] = 0;
     B.c0_valid[2] = 0;   // a fresh c0 range: the copy below must not change one an earlier dispatch reads
+    ex->nsnap = 0;   // a draw skipped after feedback_snapshot leaves its copies behind
     bind_resources(ex, info);
     if (B.c0_valid[2]) {   // the shader binds c0
         VkBufferCopy cp = {ip.offset, B.c0_off[2] + 0x200, sizeof(VkDispatchIndirectCommand)};

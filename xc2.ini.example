@@ -72,6 +72,9 @@
 # Wait for the game to finish rewriting level-of-detail data before the GPU reads it: stops objects flashing in the
 # wrong place and a flat far field for a frame.
 # lod_guard = 1
+# A draw that samples a target it also writes reads a copy made just before it, as on the Switch: stops the thin lines
+# that flicker in the cloud sea on AMD GPUs.
+# feedback_snap = 1
 # Start each frame only once the GPU has drawn the one before it: stops props sliding and flickering above 30 fps.
 # auto waits only where the GPU reads live game memory (memory = import, or a pool too large for the memory budget);
 # otherwise the buffers it reads are copied at submit time and the GPU may run a frame behind. 1 always waits (about
