@@ -1,4 +1,5 @@
-# Code patches for XC2 3.0.1 main (recomp/patches.py).
+# Code patches for XC2 3.0.1 main (recomp/patches.py), and for the Japanese 3.0.0, whose code and data are the same
+# (tools/xc2_titles.py PATCH_TABLES).
 
 # xc2fps (XC2_FPS60, on): the frame rate of the frame limit XC2_FPS_LIMIT (frame_rate.c). XC2 paces its frames as
 # XCX 2.0.0 does (recomp/patches-upd.txt, set xcx60): a frame interval in vsyncs at main+0xb75c40, set to 2 at boot; a

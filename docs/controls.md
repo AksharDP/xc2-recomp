@@ -10,7 +10,7 @@ Input comes from the first SDL3 gamepad, the keyboard and the mouse, merged into
 
 The log names the layout in effect (`input: gamepad layout ...`); the menu shows it under *Automatic*.
 
-`XC2_PROMPTS` (`prompts`, the *Button prompts* row) picks the icons the game's prompts draw: `xbox`, `playstation`, `keyboard` (the default keys, not remapped ones), `switch` (the game's own) or `auto`. A redrawn set also moves the tutorial lines that mean a stick click to the game's click icon, so "press" the right stick shows C and not the mouse; `tools/xc2_prompts.py` writes both, and `switch` leaves the text as it is.
+`XC2_PROMPTS` (`prompts`, the *Button prompts* row) picks the icons the game's prompts draw: `xbox`, `playstation`, `keyboard` (the default keys, not remapped ones), `switch` (the game's own) or `auto`. A redrawn set also moves the tutorial lines that mean a stick click to the game's click icon, so "press" the right stick shows C and not the mouse; `tools/xc2_prompts.py` writes both, and `switch` leaves the text as it is. The game takes these files through its add-on content; with none installed the port lists an empty pack of its own for this, which unlocks nothing and leaves saves as they are.
 
 | Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse | Action in the world |
 |---|---|---|---|

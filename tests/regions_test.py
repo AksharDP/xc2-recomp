@@ -53,6 +53,13 @@ class TitlesTest(unittest.TestCase):
         self.assertIs(xc2_titles.of_tag('v301'), US)
         self.assertTrue(US.expected('3.0.1').is_file() and US.expected('1.0.0').is_file())
 
+    def test_patch_tables(self):
+        self.assertEqual(US.patch_table('3.0.1'), 'patches-v301.txt')
+        self.assertEqual(JP.patch_table('3.0.0'), 'patches-v301.txt')
+        self.assertEqual(JP.patch_table('3.0.1'), 'patches-v301jp.txt')   # no such update: no table is shared
+        self.assertTrue(JP.expected('3.0.0').is_file())
+        self.assertTrue((ROOT / 'recomp' / JP.patch_table('3.0.0')).is_file())
+
 
 class SelectTest(unittest.TestCase):
     def test_base_of_either_release(self):

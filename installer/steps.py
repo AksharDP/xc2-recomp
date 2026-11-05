@@ -40,9 +40,8 @@ TEMP_NEED = 3 * GiB       # generated C (about 0.9 GB) and objects
 OBJECT_CACHE = 2 * GiB    # build-cache/objects in the install folder: the generated objects kept for the next build
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
 STAMP = '.install-key'
-# recomp/patches-<version tag>.txt: the code patch sets of the update (recomp/patches.py): XC2's frame rate and game
+# The code patch sets of an update (recomp/patches.py) are in recomp/<Region.patch_table>: XC2's frame rate and game
 # resolution (patches-v301.txt). patches-upd.txt beside it is XCX 2.0.0's and must never reach XC2's code.
-PATCHES = 'patches-{tag}.txt'
 XLATE = 'xc2_xlate' + EXE   # the translator's name beside xc2.exe; runtime/gfx_shader.c starts it by this name
 
 
@@ -774,8 +773,10 @@ class Lift(Step):
     transient = True
 
     def key(self, ctx):
+        # xc2_titles.py names the release's patch table, so a change there has to lift the game again.
         return fingerprint('lift-3', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.tools / 'cheats.py',
-                           ctx.layout.tools / 'exefs_patches.py', *cheat_files(ctx), *exefs_files(ctx))
+                           ctx.layout.tools / 'exefs_patches.py', ctx.layout.tools / 'xc2_titles.py',
+                           *cheat_files(ctx), *exefs_files(ctx))
 
     def current(self, ctx, record):
         gen = ctx.temp / 'gen'
@@ -793,9 +794,9 @@ class Lift(Step):
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
-        # A release without its own table (patches-v301jp.txt) is built without code patches: its main differs, and
-        # the runtime's frame rate and resolution code that reads main's data switches on with the patch sets only.
-        table = layout.recomp / PATCHES.format(tag=version_tag(game_version(ctx), game_region(ctx)))
+        # An update without a table is built without code patches: the runtime's frame rate and resolution code that
+        # reads main's data switches on with the patch sets only, so the game runs as on the console.
+        table = layout.recomp / game_region(ctx).patch_table(game_version(ctx))
         plain = table if table.is_file() else None   # code patch sites the runtime switches (XC2_FPS60 and the like)
         # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
         # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
