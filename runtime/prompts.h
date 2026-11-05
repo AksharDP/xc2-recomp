@@ -2,10 +2,15 @@
 // (menu/image/button.wilay for the [ML:icon] tags of its text, the battle palette's mnu032_* layouts and a few more).
 // tools/xc2_prompts.py redraws them from the player's own archive into prompts/<set>/ next to xc2.exe, listed in
 // prompts/manifest.tsv. The game asks every add-on content mount for a menu or text file before it reads bf2.ard, so
-// fs_host.c serves these files to those probes. Without add-on content the game has no mount to ask, and its own
-// prompts stay. Every redrawn set also gets prompts/text/: the message tables whose stick clicks use the click's icon.
+// fs_host.c serves these files to those probes. A player without add-on content gets an empty pack of the port's own
+// to give the game a mount to ask (fs_host.c AOC_PORT_PACK). Every redrawn set also gets prompts/text/: the message
+// tables whose stick clicks use the click's icon.
 #pragma once
 #include <stddef.h>
+
+// Whether a set may be served: XC2_PROMPTS is not "switch" and prompts/manifest.tsv exists. Unlike prompts_file this
+// picks no set, so it can run at boot, before the gamepads are open. Any thread.
+int prompts_possible(void);
 
 // The host file of the chosen set for rel (a path inside an add-on content mount, "menu/image/button.wilay"); 0 when
 // the set has no such file or no set is chosen. The set is picked at the first call (the game loads its layouts at
