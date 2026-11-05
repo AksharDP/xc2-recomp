@@ -3,7 +3,7 @@
 **XC2 Recomp** is a static recompilation of *Xenoblade Chronicles 2* (Nintendo Switch, 2017) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)). It is a fork of [XCX Recomp](https://github.com/jmars125/xcx-recomp), itself a fork of [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by Valiantsin Dzerakh. Most of the documentation still describes XCX.
 
 > [!IMPORTANT]
-> **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles 2*, dumped from your own console: the base game and the 3.0.1 update (the add-on content is optional). Instructions for obtaining those files will not be provided.
+> **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles 2*, dumped from your own console: the base game and its last update, 3.0.1 (3.0.0 for the Japanese release; the add-on content is optional). Instructions for obtaining those files will not be provided.
 >
 > The game is built from your files on your machine, so the result contains the game. It is for your own use. Do not share it.
 
@@ -20,7 +20,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Features
 
 - Native code, not emulation
-- Update 3.0.1 and all seven add-on content packs
+- The last update (3.0.1; 3.0.0 in Japan) and all seven add-on content packs
 - The American and European release (one title, 0100E95004038000, so the same files) and the Japanese release
   (0100F3400332C000, update 3.0.0), which installs into its own folder
   ([docs/installer.md](docs/installer.md#releases))

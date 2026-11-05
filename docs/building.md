@@ -90,12 +90,18 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    `build_game.py` stops when that translator was built from other sources: a stale one fails nothing, it silently
    leaves out what the runtime asks of it. `--allow-stale-translator` builds anyway.
 
-5. Lift the modules to C, write the RomFS half of the frame-rate patches, then compile and link `build\<ver>\xc2.exe`:
+5. Lift the modules to C, then compile and link `build\<ver>\xc2.exe`:
 
    ```powershell
    .venv\Scripts\python recomp\gen.py --exefs build\extracted\<ver>\exefs --out generated\<ver> --patches recomp\patches-<ver>.txt
-   .venv-py314\Scripts\python tools\make_romfs_patches.py --version <ver>
    .venv\Scripts\python tools\build_game.py --version <ver>
+   ```
+
+   XCX's `v121` and `v143` also need the RomFS half of their frame-rate patches, written between those two commands;
+   XC2's `v301` and `v300jp` have none, and the tool refuses them:
+
+   ```powershell
+   .venv-py314\Scripts\python tools\make_romfs_patches.py --version <ver>
    ```
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
