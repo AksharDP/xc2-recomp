@@ -1004,7 +1004,8 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
 // draws of the pass wrote them (albedo, normals, R32F linear depth). Maxwell reads see those writes; in Vulkan the read
 // is undefined without a barrier, and on the RX 9070 it showed as dark screen-aligned blocks on the island ground
 // and hid Tulin's sage spirit. Before a draw whose fragment shader samples an attachment of
-// the open pass that a draw or clear of the pass wrote since the pass began or the last barrier:
+// the open pass that a draw or clear of the pass wrote since the pass began or the last barrier, or that the draw
+// itself writes (feedback_self; the feedback layout only, a restart cannot separate a draw from itself):
 // - VK_FEEDBACK_LAYOUT: the image is learned (VkTexImage.fb_learned; it has the feedback usage since its creation), the
 //   pass restarts once with it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT, and from then on its passes attach it in that
 //   layout, its descriptors carry that layout, the draws that sample it use a pipeline with the feedback flag
@@ -1099,6 +1100,33 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
     return m;
 }
 
+// The attachments a draw with state s writes: colour targets with a nonzero effective write mask, depth with depth
+// writes or the stencil test on.
+static uint32_t feedback_writes(const VkExec *ex, const VkPipeState *s) {
+    uint32_t w = ex->depth.image && ((s->ds.dt && s->ds.dw) || s->ds.st) ? 0x100 : 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+        if (ex->color[i].image && vk_pipeline_target_wmask(s, (int)i)) w |= 1u << i;
+    return w;
+}
+
+// Attachments among m, not yet in the feedback layout, that the draw about to run with fragment shader fs writes itself
+// and that can enter the layout. XC2's cloud sea does this: its merge (fs 80764f9532d29a26) and composite (fs
+// faf0281677134f56) are single draws that read each of their targets at their own pixel and write it back, so no earlier
+// draw marks the target dirty. Outside the feedback layout the read is undefined, and on AMD (RDNA 2 to 4, also under
+// emulators) the sea showed thin lines on a 64-pixel grid (issue 39).
+static uint32_t feedback_self(const VkExec *ex, const GfxShader *fs, uint32_t m) {
+    uint32_t c = m & ~ex->fbl_mask;
+    if (!c) return 0;
+    VkPipeState s = ex->pipe;
+    s.fs = fs;
+    c &= feedback_writes(ex, &s);
+    for (uint32_t i = 0; i < 9; i++) {
+        const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+        if ((c >> i & 1) && !(t->img && t->img->fb_usage)) c &= ~(1u << i);   // restarting would not help: it stays as it is
+    }
+    return c;
+}
+
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
 // sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
@@ -1107,6 +1135,7 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     uint32_t m = feedback_scan(ex, fs);
     uint32_t d = m & ex->fb_dirty;
     if (d) vk_exec_frame.fb_draws++;
+    if (mode == VK_FEEDBACK_LAYOUT) d |= feedback_self(ex, fs, m);
     if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
         if (mode == VK_FEEDBACK_LAYOUT)
             for (uint32_t i = 0; i < 9; i++) {
@@ -1136,13 +1165,10 @@ static void feedback_barrier(VkExec *ex) {
     vk_exec_frame.fb_barriers++;
 }
 
-// Marks the attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with
-// depth writes or the stencil test on.
+// Marks the attachments the draw with state s writes.
 static void feedback_written(VkExec *ex, const VkPipeState *s) {
     if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
-    if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
-    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if (ex->color[i].image && !(ex->fb_dirty >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) ex->fb_dirty |= 1u << i;
+    ex->fb_dirty |= feedback_writes(ex, s);
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
