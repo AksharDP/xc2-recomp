@@ -41,10 +41,10 @@ Nintendo published XC2 under two titles (`tools/xc2_titles.py`):
 | Release | Base | Update | Add-on content | Expected hashes | Build name |
 |---|---|---|---|---|---|
 | The Americas and Europe | 0100E95004038000 | 0100E95004038800 | 0100E9500403900N, ...9063 | `expected-xc2-<version>.json` | v301 |
-| Japan | 0100F3400332C000 | 0100F3400332C800 | 0100F3400332D00N | `expected-xc2-jp-<version>.json` | v301jp |
+| Japan | 0100F3400332C000 | 0100F3400332C800 | 0100F3400332D00N | `expected-xc2-jp-<version>.json` | v300jp |
 
 A European dump is the American title: the same base game, update and add-ons, checked against the same hashes. The
-Japanese release has its own code and data. The check takes the release from the base game's title id, then wants the
+Japanese release has its own packages and hashes. The check takes the release from the base game's title id, then wants the
 update and every add-on of that release (`check.region_mismatch`, `check.dlc_other_region`) and stops with
 `check.region_unsupported` while `tools/data` has no expected files for it; `tools/extract.py --region jp --record
 VERSION` writes them from a dump (docs/building.md). The updates a release builds are the ones its expected files
@@ -53,7 +53,8 @@ name (`installer/layout.py` `Layout.versions`), so its numbering may differ from
 Each release installs into its own folder, so both can sit side by side: `xc2-install.json` records the release
 (`region`), the build bakes its title id into `xc2.exe` (`rt_title_id` in `modules.c`: the save data and program id
 the game sees, and the title id folders `runtime/mods.c` looks in), and the code patch table is the release's
-(`recomp/patches-v301jp.txt` for Japan; without one the game runs at the console's 30 fps and 1280x720, since the
+(`Region.patch_table` in `tools/xc2_titles.py`: Japan's 3.0.0 has the code and data of 3.0.1 and shares
+`recomp/patches-v301.txt`; an update without a table runs at the console's 30 fps and 1280x720, since the
 runtime's frame rate and resolution code reads `main`'s data only with those patch sets). Mods may be laid out under
 either title id.
 

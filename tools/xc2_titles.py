@@ -2,9 +2,14 @@
 
 Nintendo published XC2 under two application ids. The Americas and Europe share one (0100E95004038000): one title
 has one set of base and update packages, so the hashes of tools/data/expected-xc2-<version>.json cover both. The
-Japanese release (product code ADENA, also sold in Asia) has its own (0100F3400332C000) with its own code and data, so
-its expected hashes live in tools/data/expected-xc2-jp-<version>.json and its build version names carry the suffix jp
-(v301jp). A release whose expected files are missing is recognised and refused with its name.
+Japanese release (product code ADENA, also sold in Asia) has its own (0100F3400332C000) with its own packages and
+numbering (its last update is 3.0.0), so its expected hashes live in tools/data/expected-xc2-jp-<version>.json and its
+build version names carry the suffix jp (v300jp). A release whose expected files are missing is recognised and refused
+with its name.
+
+Japan's 3.0.0 main has the .text and .data of the western 3.0.1, byte for byte at the same offsets; .rodata differs
+only in a version string, two build dates and the build id. So both share recomp/patches-v301.txt and the data
+addresses of runtime/frame_rate.c (PATCH_TABLES), and the generator's checks stop a table that does not fit.
 
 Each release follows the console's numbering: its update is the application id + 0x800 and its add-on content the
 application id + 0x1000 + the AddOnContentIndex (0x063 = 99 is the western Japanese Voice pack).
@@ -20,6 +25,8 @@ DATA = Path(__file__).resolve().parent / 'data'
 AOC_OFFSET = 0x1000
 UPDATE_OFFSET = 0x800
 AOC_MAX = 2000   # the highest AddOnContentIndex taken for one of the game's add-ons
+# (release key, update version) -> the version tag of the patch table it shares; any other update has its own.
+PATCH_TABLES = {('jp', '3.0.0'): 'v301'}
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,10 @@ class Region:
         """'3.0.1' -> 'v301' (or 'v301jp'): the build version name of tools/build_game.py (generated/ and build/)."""
         return 'v' + version.replace('.', '') + self.suffix
 
+    def patch_table(self, version):
+        """The file name in recomp/ of the code patch table of an update of this release."""
+        return f'patches-{PATCH_TABLES.get((self.key, version), self.version_tag(version))}.txt'
+
 
 REGIONS = (
     Region('us', 'Americas and Europe', 0x0100E95004038000, ''),
@@ -83,5 +94,5 @@ def of_aoc(title_id):
 
 
 def of_tag(tag):
-    """The release of a build version name ('v301' -> us, 'v301jp' -> jp)."""
+    """The release of a build version name ('v301' -> us, 'v300jp' -> jp)."""
     return next((r for r in REGIONS if r.suffix and tag.endswith(r.suffix)), DEFAULT)

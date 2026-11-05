@@ -5,7 +5,8 @@ XC2 draws its button prompts from textures: the [ML:icon icon=<name>] tags of th
 button art. This tool reads those layouts from bf2.arh/bf2.ard in the merged RomFS, pastes Kenney's Input Prompts
 (CC0, tools/data/kenney-input-prompts) over the Switch buttons and writes the layouts as loose files. The game asks
 every add-on content mount for a menu file before it reads bf2.ard, so runtime/prompts.c serves these files to those
-probes. The Switch prompts are the game's own and need no files.
+probes, on an empty pack of the port's own for a player without add-on content (runtime/fs_host.c AOC_PORT_PACK). The
+Switch prompts are the game's own and need no files.
 
 The icons take the atlas's style: a white face, the letters or symbols in the game's blue (the face buttons in their
 console's colours), a blue rim and a glow. Sets, one folder each:

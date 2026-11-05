@@ -1,7 +1,7 @@
 """Read a XC2_FLIGHT dump (runtime/flight.c): the frames around the worst interval, the frames whose counts stand out,
 and a contact sheet of the thumbnails with frame number and interval on each.
 
-    python tools/flight_view.py build/flight/<YYYYMMDD-HHMMSS>-f<frame> [--around FRAME] [--span 48] [--cols 12]
+    python tools/flight_view.py build/v121/flight/<YYYYMMDD-HHMMSS>-f<frame> [--around FRAME] [--span 48] [--cols 12]
 
 The sheet goes to <dump>/contact.png (--out to change): --span frames each side of the trigger (or of --around),
 the worst frame boxed red, frames over 1.5x the median interval orange.

@@ -156,13 +156,13 @@ TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
 DISPLAY_VERSIONS = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'v301': '3.0.1',
-                    'v301jp': '3.0.1'}   # the Japanese release (tools/xc2_titles.py): expected-xc2-jp-3.0.1.json
+                    'v300jp': '3.0.0'}   # the Japanese release (tools/xc2_titles.py): expected-xc2-jp-3.0.0.json
 # rt_game_version is TotK's 121/143 discriminator (host.h RT_V143 switches 1.4.3-only offsets and ABI details on).
 # XCX 2.0.0 (upd) and XC2 3.0.1 keep 0: those branches must stay off for a different game.
 GAME_VERSIONS = {'v0': 100, 'v112': 112, 'v121': 121, 'v143': 143}
 # The game version the menu shows. A named game prints this instead of rt_game_version.
 GAME_NAMES = {**DISPLAY_VERSIONS, 'upd': '2.0.0', 'v301': 'Xenoblade Chronicles 2 3.0.1',
-              'v301jp': 'Xenoblade Chronicles 2 3.0.1 (Japan)'}
+              'v300jp': 'Xenoblade Chronicles 2 3.0.0 (Japan)'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
