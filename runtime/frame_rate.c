@@ -342,6 +342,25 @@ static void world_clock(double dt, double step) {
     atomic_store_explicit(&world_us, w + (int64_t)(step * 1e6 + 0.5), memory_order_relaxed);
 }
 
+// The velocity the jiggle bones keep each step (patches-v301.txt, main+0x88d7a4): the patch page's table at +0x400 holds,
+// for a damping of (i + 0.5) / 256, what the step's share of 1/30 s adds to the 1 - damping the game keeps per step. A
+// damping of exactly 1, entry 256, keeps nothing at any rate, and the table's other entries stay 0: the index is masked to
+// 512 entries. Guest threads may read it during a store; an entry from the last frame's step does no harm.
+#define RETENTION_TABLE_OFFSET 0x400
+#define RETENTION_ENTRIES 256
+static void xc2_retention_store(float share) {
+    static float stored = 1.0f;   // the page starts as 0s, right for a share of 1
+    if (share == stored) return;
+    stored = share;
+    _Atomic uint32_t *table = xc2_words + (RETENTION_TABLE_OFFSET - 0x40) / 4;
+    for (int i = 0; i < RETENTION_ENTRIES; i++) {
+        float keep = 1.0f - ((float)i + 0.5f) / RETENTION_ENTRIES, add = powf(keep, share) - keep;
+        uint32_t w;
+        memcpy(&w, &add, 4);
+        atomic_store_explicit(&table[i], w, memory_order_relaxed);
+    }
+}
+
 // XC2's fixed per-frame steps, 1/30 s on the console whatever the frame time; above 30 fps they ran fast. Found with
 // masagrator's Xenoblade2DynFPS (2.1.0) as a guide, which writes its game speed to the same places, then in 3.0.1 by
 // scanning main's data for them in play (each sits 0x1000 above its 2.1.0 address): the game's two step floats at
@@ -361,6 +380,13 @@ static void xc2_steps_store(double seconds) {
     uint32_t tw;
     memcpy(&tw, &turn, 4);
     atomic_store_explicit(&xc2_words[7], tw, memory_order_release);   // +0x5c
+    // +0x68: what the patch set xc2fps scales the jiggle bones' per-frame kick by (patches-v301.txt, main+0x888aec). At most
+    // 1, so frames slower than 30 fps behave as on the console.
+    float kick = frames < 1.0f ? frames : 1.0f;
+    uint32_t kw;
+    memcpy(&kw, &kick, 4);
+    atomic_store_explicit(&xc2_words[10], kw, memory_order_release);   // +0x68
+    xc2_retention_store(kick);
     // A frame step the game reads once, at boot (main+0x328fb8 stores the frame-time getter main+0x6a36bc into
     // main+0xea538c), and 14 places use every frame. It froze at the boot frame time (0.0235 s with a 120 fps limit)
     // while the camera moved by the measured step, so props drawn with it slid against the terrain and flickered when

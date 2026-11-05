@@ -41,6 +41,29 @@ site xc2fps main 71ce78 sha:6774aaeebfa5d512 1e210800 @page:x8 bd405501 1e210800
 # (a call, then an adrp); s1 is free at both.
 site xc2fps main 1d12c8 sha:6474ca7bd27d8677 bc696900 @page:x8 bd405d01 1e210800
 site xc2fps main 1d1314 sha:899ffde6a5eca884 bc696900 @page:x8 bd405d01 1e210800
+# Jiggle bones, hair and cloth (skdlib, main+0x888854 steps every solver with the game's step). The solver works in the
+# model's space, so each frame main+0x88899c hands it how far the model moved and turned, limited to 0.1 (+0x198), and
+# main+0x89005c shifts the particles' current and previous positions by that. The particles then trail the bones by that
+# kick divided by stiffness * step squared (main+0x88d668), which is made for 1/30 s: the limit and the kick are per
+# frame while the pull back shrinks with the square of the step, and the limit's top speed doubles with the frame rate.
+# Chests pressed flat against the body: at most 3 % of the bone's length at 30 fps, 61 % at 60, 188 % at 120. The page's
+# +0x68, the step in 30 fps frames and at most 1, scales the limit, as the speed it stands for, and then the kick, as what
+# it does to the particles; below 30 fps the game keeps what it does on the console. The limit: x8 and s2 are free here.
+site xc2fps main 888aec sha:919ac3428e43aaaf @page:x8 bd406902 bd419a61 1e220821
+# The kick at sp (a position) and sp+0x10 (a quaternion), where both paths of the turn limit meet. The three sites run in
+# a row and only the first is a branch target. The position and the quaternion's x, y and z are scaled, and w is rebuilt
+# as sqrt(1 - x^2 - y^2 - z^2) with its old sign, which keeps the direction of the turn. None of this writes flags. x9, x10
+# and s0 to s5 are free; x8 is loaded again last, as the first site's original instruction does.
+site xc2fps main 888cd4 sha:6f0c54609442f30b @page:x8 bd406900 3dc003e1 4f809021 3d8003e1 3dc007e2 4f809043 f9400e68
+site xc2fps main 888cd8 sha:d037b10834e5b338 6e23dc64 4e1c1fe4 6e24d484 7e30d884 1e2e1005 1e2438a4 1e20c084 b9400919
+site xc2fps main 888cdc sha:dcf467223d4a419b 1e21c084 0e1c3c49 12010129 1e26008a 2a09014a 4e1c1d43 3d8007e3 340003d9
+# Their bounce: the integrator (main+0x88d668) keeps 1 - damping of a particle's velocity each step, also made for 1/30 s,
+# so above 30 fps more of it went per second: a chest swung back 41 % at 30 fps, 8 % at 60 and not at all at 120 (the
+# integrator on the chest's values). What should stay is (1 - damping) ^ (step * 30), and the code has no power. The
+# page's table at +0x400 (frame_rate.c xc2_retention_store) holds that minus 1 - damping, by damping in 256ths, so 0 at
+# 30 fps and below; this adds it. The mask keeps the index on the page whatever the data holds. s6 is the damping;
+# x10, x11 and s7 are free.
+site xc2fps main 88d7a4 sha:0e0f3924fef8c1b5 @page:x10 1e19e0cb 1200216b 9110014a bc6b5947 1e263926 1e2728c6
 
 # The cloud sea with the camera at its surface. Next to a dock that lies at the sea's height the player camera dips below
 # it when it looks up (Goldmouth's Exit Dock: top -8, camera -8.15). Prog 1277 then takes its path for a camera inside the
