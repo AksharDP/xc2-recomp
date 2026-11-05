@@ -349,24 +349,101 @@ static void world_clock(double dt, double step) {
 // Each gets the step the game takes this frame. The patch set xc2fps scales the graphics step and the effect system's
 // accumulator by the patch page's +0x54, the step in 30 fps frames, which paces the fog, clouds, wind, animated materials
 // and particles; the camera's per-frame turn takes +0x5c, the same times the mouse's turn beyond a full stick.
-static void xc2_steps_store(double seconds) {
-    // XC2_UIPROBE=1: log the battle UI's own per-frame seconds, the value the scene update's
-    // message writes to battle manager +0x40f8 (read by the ButtonChallenge/QTE counter,
-    // FUN_003b8188, as accumulated_seconds * 30 = its frame counter) against the step the
-    // runtime keeps. Sampled every 30 presents to keep the log readable.
-    static int probe = -1;
-    if (probe < 0) probe = cfg_get("XC2_UIPROBE") != NULL;
-    static unsigned probe_frames;
-    if (probe && ++probe_frames % 30 == 1) {
-        uint64_t bm = 0;
-        if (plat_mem_read(RT_MAIN_BASE + 0xb87288, &bm, 8) && bm) {
-            uint8_t w[0x80];
-            plat_mem_read(bm + 0x4080, w, sizeof w);
-            char hex[3 * sizeof w + 1];
-            for (size_t i = 0; i < sizeof w; i++) snprintf(hex + 3 * i, 4, "%02x ", w[i]);
-            rt_log("uiprobe: step %.5f bm+4080: %s", seconds, hex);
-        }
+// XC2_UIPROBE=1 logs what the per-frame step writes actually reach. Each target is resolved and read before this
+// frame's store, so a value that is not the previous store is a value the game wrote itself: a step the game still
+// refreshes from its own 1/30 s constant outruns the fix and keeps running per frame, which is what the 60 fps
+// symptoms look like. An unreadable target never got the fix at all.
+static int uiprobe_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("XC2_UIPROBE") != NULL;
+    return on;
+}
+
+static unsigned probe_frames;
+
+static void uiprobe_battle(double seconds) {
+    // The battle UI's own per-frame seconds: the scene update's message writes it to battle manager +0x40f8, and the
+    // ButtonChallenge/QTE counter (FUN_003b8188) accumulates it and multiplies by 30, so the counter is in 30 fps
+    // frames. main+0xb87288 is a pointer table entry holding the address of the slot that holds the manager, so the
+    // manager needs two dereferences, like the frame-time getter stored at main+0xea538c. One dereference reads the
+    // slot itself, whose static neighbourhood is zero. The word at +0x4090 is not a battle gate: every run has it 0
+    // for the two samples before the field loads and 1 for every sample after, battle or not.
+    uint64_t bm = read_ptr(read_ptr(RT_MAIN_BASE + 0xb87288));
+    if (!bm) return;
+    int32_t ready = 0;
+    uint32_t step_bits = 0;
+    float step_f = 0;
+    read_guest(bm + 0x4090, &ready, 4);
+    if (read_guest(bm + 0x40f8, &step_bits, 4)) memcpy(&step_f, &step_bits, 4);
+    rt_log("uiprobe: step %.5f bm %llx ready %d ui step %.6f", seconds, (unsigned long long)bm, ready, step_f);
+}
+
+// The step targets, resolved and read once per present, before xc2_steps_store writes them. Reading before the store
+// says who owns the field: a value that is not the previous store is a value the game wrote itself, so a step the game
+// still refreshes from its own 1/30 s constant outruns the fix and keeps running per frame. An unresolved or unreadable
+// target never got the fix at all.
+typedef struct {
+    const char *name;
+    uint64_t base;      // the pointer table entry holding the object, or the field itself
+    uint64_t off;
+    int indirect;
+    uint64_t obj;       // resolved this frame
+    float pre;          // what the field held before this frame's store
+    float ours;         // what our previous frame stored there
+    unsigned rewritten;  // frames since the last sample that found the game's own value
+    unsigned frames;     // frames since the last sample
+} StepTarget;
+
+static StepTarget step_targets[] = {
+    { "frame_time", RT_MAIN_BASE + 0xea538c, 0, 0 },
+    { "game_step_a", RT_MAIN_BASE + 0xb900d0, 0x78, 1 },
+    { "game_step_b", RT_MAIN_BASE + 0xb900d0, 0x7c, 1 },
+    { "ui_anim_step", RT_MAIN_BASE + 0xc232c8, 0x80, 1 },
+};
+
+#define STEP_TARGET_COUNT (sizeof step_targets / sizeof *step_targets)
+
+static uint64_t step_target_addr(const StepTarget *t, int *readable) {
+    uint64_t addr = t->base;
+    *readable = 1;
+    if (t->indirect) {
+        if (!t->obj || !plat_mem_readable(t->obj + t->off, 4)) *readable = 0;
+        else addr = t->obj + t->off;
+    } else if (!plat_mem_readable(addr, 4)) {
+        *readable = 0;
     }
+    return addr;
+}
+
+static void steps_resolve(void) {
+    for (size_t i = 0; i < STEP_TARGET_COUNT; i++) {
+        StepTarget *t = &step_targets[i];
+        t->obj = t->indirect ? read_ptr(t->base) : 0;
+        int readable;
+        uint64_t addr = step_target_addr(t, &readable);
+        uint32_t bits;
+        if (readable && read_guest(addr, &bits, 4)) memcpy(&t->pre, &bits, 4);
+        else t->pre = 0.0f / 0.0f;   // nan: nothing readable there
+        t->frames++;
+        if (readable && t->ours && t->pre != t->ours) t->rewritten++;
+    }
+}
+
+static void uiprobe_targets(void) {
+    for (size_t i = 0; i < STEP_TARGET_COUNT; i++) {
+        StepTarget *t = &step_targets[i];
+        rt_log("uiprobe: %s obj %llx pre %.6f ours %.6f game rewrote %u/%u", t->name,
+               (unsigned long long)t->obj, t->pre, t->ours, t->rewritten, t->frames);
+        t->rewritten = 0;
+        t->frames = 0;
+    }
+}
+
+static void xc2_steps_store(double seconds) {
+    steps_resolve();
+    int sampling = uiprobe_on() && ++probe_frames % 30 == 1;
+    // Before this frame's store, so the value still held is the one the comparison above used.
+    if (sampling && probe_frames % 300 == 1) uiprobe_targets();
     float s = (float)seconds, frames = (float)(seconds * 30.0);
     uint32_t b, f;
     memcpy(&b, &s, 4);
@@ -378,18 +455,20 @@ static void xc2_steps_store(double seconds) {
     uint32_t tw;
     memcpy(&tw, &turn, 4);
     atomic_store_explicit(&xc2_words[7], tw, memory_order_release);   // +0x5c
-    // A frame step the game reads once, at boot (main+0x328fb8 stores the frame-time getter main+0x6a36bc into
-    // main+0xea538c), and 14 places use every frame. It froze at the boot frame time (0.0235 s with a 120 fps limit)
-    // while the camera moved by the measured step, so props drawn with it slid against the terrain and flickered when
-    // the camera moved or shook; at 30 fps the two agreed.
-    __atomic_store_n((uint32_t *)(uintptr_t)(RT_MAIN_BASE + 0xea538c), b, __ATOMIC_RELAXED);
-    uint64_t game = 0, ui = 0;
-    if (plat_mem_read(RT_MAIN_BASE + 0xb900d0, &game, 8) && game && plat_mem_readable(game + 0x78, 8)) {
-        __atomic_store_n((uint32_t *)(uintptr_t)(game + 0x78), b, __ATOMIC_RELAXED);
-        __atomic_store_n((uint32_t *)(uintptr_t)(game + 0x7c), b, __ATOMIC_RELAXED);
+    // Each target gets the step the game takes this frame. frame_time is the one the game reads once, at boot
+    // (main+0x328fb8 stores the frame-time getter main+0x6a36bc into main+0xea538c) and 14 places use every frame; it
+    // froze at the boot frame time (0.0235 s with a 120 fps limit) while the camera moved by the measured step, so
+    // props drawn with it slid against the terrain and flickered when the camera moved or shook, and agreed again at
+    // 30 fps.
+    for (size_t i = 0; i < STEP_TARGET_COUNT; i++) {
+        StepTarget *t = &step_targets[i];
+        int readable;
+        uint64_t addr = step_target_addr(t, &readable);
+        if (!readable) continue;
+        __atomic_store_n((uint32_t *)(uintptr_t)addr, b, __ATOMIC_RELAXED);
+        t->ours = s;
     }
-    if (plat_mem_read(RT_MAIN_BASE + 0xc232c8, &ui, 8) && ui && plat_mem_readable(ui + 0x80, 4))
-        __atomic_store_n((uint32_t *)(uintptr_t)(ui + 0x80), b, __ATOMIC_RELAXED);
+    if (sampling) uiprobe_battle(seconds);
 }
 
 void frame_step_present(uint64_t display_ns, int interval) {
