@@ -237,3 +237,35 @@ site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 
 # bit is clear and they are unchanged.
 set xc2kill XC2_CHEAT_INSTA_KILL 0
 site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b
+
+# xc2qte (XC2_QTE_FIX, on): the QTE ring counts the frame time twice. Issue 48: a Blade Special's QTE ring closes
+# late against the special's animation. The update (main+0x1d0bc, the challenge layout) loads the frame message's
+# step ([x21,#4], seconds per frame: XC2_UIPROBE=1 shows it tracking the frame time, 0.016667 at 60 fps) and turns
+# it into frames of 1/30 s by 30 (main+0x1d0c0); the ring then multiplies that by the object the lookup
+# main+0x7b4b0 returns (main+0x1d108 to main+0x1d114, the product of [x0,#0xcd8] and [x0,#0xec8], the frame time
+# again), so at 60 fps the factor is 0.5 and the ring advances at half speed. The replacement writes 1.0, which is
+# what the game's own product is at 30 fps, so at and below 30 fps nothing changes and above it the advance is the
+# frame time alone. s8 is the factor's own register and no flag is written. masagrator's FPSLocker 3.0.1 set (BID
+# 4F5C96E2D97F45AC) patches the same word to the same value for the same reason.
+set xc2qte XC2_QTE_FIX 1
+site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008
+# xc2glow (XC2_GLOW_FIX, off): the layer's speed, counted per frame into an effect the game has already paced by
+# the frame time, so above 30 fps the glow advances twice as fast. Issue 48 reports the flashing "Just Range"
+# element symbol over the arts cross growing until it covers the screen. This per-frame branch of a UI effect
+# update (main+0x177948, gated by the event flag byte at +0x2fd6 of the scene object x27) copies the layer's
+# speed word, the 1.0 per frame of [x20,#8], into the layer's +0x358 by the store that follows the site;
+# main+0x177964 reads +0x358 back and passes it in s0 to main+0x842cf0, which keeps it as that layer's speed
+# (+0x7240/+0x7244 of the effect object). The replacement scales the word by the page's +0x54, the step in
+# thirtieths of a second: at 30 fps +0x54 is 1.0 and the product is the word itself. The multiply lands in s8 and
+# moves to w8 with it, because the store that follows the site is str w8 and the guest's integer and vector
+# registers are separate: without the move the store would write the gate byte's 0 that x8 holds here and stop
+# the glow dead. x9 is free as the base of the load, and s8 and s9 are dead here: the call at main+0x177954 is the
+# accessor main+0x83df04, which touches no float register, and the first use of either after the site, the load at
+# main+0x177edc, writes before it reads. Off by default: the growth was not reproduced in the scripted runs, and
+# the effect system's own step counter (main+0x858750, set xc2fps) already carries the same scaling, so enabling
+# both may halve the effect where it should only match it. The console's set patches this site too, so it is one
+# reproduction away from on.
+set xc2glow XC2_GLOW_FIX 0
+site xc2glow main 17794c sha:ad620a8e151ef3d2 @page:x9 bd405529 bd400a88 1e290908 1e260108
+
+
