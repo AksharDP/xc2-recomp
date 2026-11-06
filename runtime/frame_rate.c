@@ -148,6 +148,14 @@ static int xc2_cutscene(void) {
 void frame_step_init(void) {
     xc2_rate = rt_patch_set("xcx60");
     if (xc2_rate < 0 && (xc2_rate = rt_patch_set("xc2fps")) >= 0) xc2_game = 1;
+    if (xc2_game) {
+        // The step in 30 fps frames starts at 1, the 30 fps value: xc2glow scales its layer speed by it whether
+        // or not the xc2fps set stays on to feed it, and the guest can read the page before the first present.
+        float frames = 1.0f;
+        uint32_t f;
+        memcpy(&f, &frames, 4);
+        atomic_store_explicit((_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 0x54), f, memory_order_release);
+    }
     if (rt_patch_enabled(xc2_rate)) {
         xc2_words = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 0x40);
         xc2_rate_store(60, 60);
@@ -374,7 +382,10 @@ static void xc2_retention_store(float share) {
 // symptoms look like. An unreadable target never got the fix at all.
 static int uiprobe_on(void) {
     static int on = -1;
-    if (on < 0) on = cfg_get("XC2_UIPROBE") != NULL;
+    if (on < 0) {
+        const char *e = cfg_get("XC2_UIPROBE");
+        on = e && !strcmp(e, "1");
+    }
     return on;
 }
 
@@ -392,9 +403,28 @@ static void uiprobe_battle(double seconds) {
     int32_t ready = 0;
     uint32_t step_bits = 0;
     float step_f = 0;
-    read_guest(bm + 0x4090, &ready, 4);
-    if (read_guest(bm + 0x40f8, &step_bits, 4)) memcpy(&step_f, &step_bits, 4);
-    rt_log("uiprobe: step %.5f bm %llx ready %d ui step %.6f", seconds, (unsigned long long)bm, ready, step_f);
+    int have_ready = read_guest(bm + 0x4090, &ready, 4);
+    int have_step = read_guest(bm + 0x40f8, &step_bits, 4);
+    if (have_step) memcpy(&step_f, &step_bits, 4);
+    rt_log("uiprobe: step %.5f bm %llx ready %d ui step %.6f%s", seconds, (unsigned long long)bm,
+           have_ready ? ready : -1, step_f, have_step ? "" : " (unreadable)");
+    // The ButtonChallenge/QTE object itself: the menu manager holds its objects in a slot table (the qword at
+    // main+0xb872f8, each slot 0x50 with the object embedded at +0x10, FUN_0032d470), and the challenge occupies
+    // a slot only while a QTE runs. Its accumulated seconds sit at +0x494 and the counter they turn into 30 fps
+    // frames at +0x490, so the deltas between samples say how fast the QTE counts; +0x498 is the deadline the
+    // ring gauge reads and +0x9c the rate the challenge message set.
+    uint64_t table = read_ptr(RT_MAIN_BASE + 0xb872f8);
+    if (!table) return;
+    for (int i = 0; i < 64; i++) {
+        uint64_t obj = table + (uint64_t)i * 0x50 + 0x10;
+        float accum = 0, counter = 0, deadline = 0, rate = 0;
+        if (!read_guest(obj + 0x494, &accum, 4) || !(accum > 0.0f) || accum > 3600.0f) continue;
+        read_guest(obj + 0x490, &counter, 4);
+        read_guest(obj + 0x498, &deadline, 4);
+        read_guest(obj + 0x9c, &rate, 4);
+        rt_log("uiprobe: slot %d vt %llx counter %.3f accum %.5f deadline %.3f rate %.3f", i,
+               (unsigned long long)read_ptr(obj), counter, accum, deadline, rate);
+    }
 }
 
 // The step targets, resolved and read once per present, before xc2_steps_store writes them. Reading before the store
@@ -407,6 +437,7 @@ typedef struct {
     uint64_t off;
     int indirect;
     uint64_t obj;       // resolved this frame
+    uint64_t ours_addr;  // the address ours was stored to: a new object's value is not a rewrite of ours
     float pre;          // what the field held before this frame's store
     float ours;         // what our previous frame stored there
     unsigned rewritten;  // frames since the last sample that found the game's own value
@@ -443,6 +474,8 @@ static void steps_resolve(void) {
         uint32_t bits;
         if (readable && read_guest(addr, &bits, 4)) memcpy(&t->pre, &bits, 4);
         else t->pre = 0.0f / 0.0f;   // nan: nothing readable there
+        if (addr != t->ours_addr) t->rewritten = 0;   // an indirect target moved to another object: start over
+        t->ours_addr = addr;
         t->frames++;
         if (readable && t->ours && t->pre != t->ours) t->rewritten++;
     }
