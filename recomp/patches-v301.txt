@@ -250,23 +250,15 @@ site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 13
 # 4F5C96E2D97F45AC) patches the same word to the same value for the same reason.
 set xc2qte XC2_QTE_FIX 1
 site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008
-# xc2glow (XC2_GLOW_FIX, off): the layer's speed, counted per frame into an effect the game has already paced by
-# the frame time, so above 30 fps the glow advances twice as fast. Issue 48 reports the flashing "Just Range"
-# element symbol over the arts cross growing until it covers the screen. This per-frame branch of a UI effect
-# update (main+0x177948, gated by the event flag byte at +0x2fd6 of the scene object x27) copies the layer's
-# speed word, the 1.0 per frame of [x20,#8], into the layer's +0x358 by the store that follows the site;
-# main+0x177964 reads +0x358 back and passes it in s0 to main+0x842cf0, which keeps it as that layer's speed
-# (+0x7240/+0x7244 of the effect object). The replacement scales the word by the page's +0x54, the step in
-# thirtieths of a second: at 30 fps +0x54 is 1.0 and the product is the word itself. The multiply lands in s8 and
-# moves to w8 with it, because the store that follows the site is str w8 and the guest's integer and vector
-# registers are separate: without the move the store would write the gate byte's 0 that x8 holds here and stop
-# the glow dead. x9 is free as the base of the load, and s8 and s9 are dead here: the call at main+0x177954 is the
-# accessor main+0x83df04, which touches no float register, and the first use of either after the site, the load at
-# main+0x177edc, writes before it reads. Off by default: the growth was not reproduced in the scripted runs, and
-# the effect system's own step counter (main+0x858750, set xc2fps) already carries the same scaling, so enabling
-# both may halve the effect where it should only match it. The console's set patches this site too, so it is one
-# reproduction away from on.
-set xc2glow XC2_GLOW_FIX 0
-site xc2glow main 17794c sha:ad620a8e151ef3d2 @page:x9 bd405529 bd400a88 1e290908 1e260108
+
+# The "Just Range" element symbol over the arts cross grew until it covered the screen at 60 fps (issue 48's second
+# symptom; reproduced 2026-11-07 with a wind blade in a battle). A patch here was tried and removed: scaling the
+# word this site stores ([x20,#8] -> [x27,#0x358], the value main+0x177964 hands in s0 to main+0x842cf0) by the
+# page's +0x54 made the symbol START large and keep growing. The chain behind it was a misread: main+0x842cf0
+# ignores s0 entirely — it only clears one of the two words at +0x87240/+0x87244 of the effect object, by the byte
+# at +0x8724c — so this site's word is not the layer's growth rate, and what advances the symbol's scale is still
+# unpinned. The per-frame update main+0x1778ac also runs an 8-item loop (stride 0x470) calling main+0x8431f0.
+# Revisit with the uniform capture of XC2_DUMP during a battle.
+
 
 
