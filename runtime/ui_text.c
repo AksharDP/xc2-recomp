@@ -55,6 +55,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in; the game's own is 1280 x 720. Above it the game needs "
                                 "more video memory and GPU time.",
+    [UI_MENU_LOD] = "Level of detail",
+    [UI_MENU_LOD_DESC] = "Fl4sh's Level of detail mod: the game's post-process shader gets a depth bias of 0 instead of "
+                         "-0.125, so distant objects keep more detail. Off by default.",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game scales it up to "
                                   "that size. Game leaves it to the game's dynamic resolution (70 to 100 %); a "
@@ -378,6 +381,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OUTPUT_RES] = "Разрешение игры",
     [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс; свой у игры 1280 × 720. Выше него игре нужно больше "
                                 "видеопамяти и времени GPU.",
+    [UI_MENU_LOD] = "Уровень детализации",
+    [UI_MENU_LOD_DESC] = "Мод Fl4sh «Level of detail»: шейдер постобработки получает смещение глубины 0 вместо −0,125, "
+                         "поэтому дальние объекты сохраняют больше деталей. По умолчанию выкл.",
     [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; игра растягивает её до этого размера. "
                                   "«Как в игре» оставляет его динамическому разрешению игры (от 70 до 100 %); процент "

@@ -380,9 +380,9 @@ static void list_gpus(VkInstance inst) {
     g_gpu_n = (int)n;
 }
 
-// Window sizes: the common 16:9 sizes that fit the monitor, the 1920x1080 default and the current size.
-static const int kSizes[][2] = {{1280, 720}, {1366, 768}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3200, 1800},
-                                {3840, 2160}};
+// Window sizes: the common 16:9 and 21:9 sizes that fit the monitor, the 1920x1080 default and the current size.
+static const int kSizes[][2] = {{1280, 720},  {1366, 768},  {1600, 900},  {1920, 1080}, {2560, 1080},
+                                {2560, 1440}, {3200, 1800}, {3440, 1440}, {3840, 2160}};
 enum { MAX_SIZES = sizeof kSizes / sizeof *kSizes + 1 };
 
 static void row_window_size(void) {
@@ -414,21 +414,37 @@ static void row_window_size(void) {
     opt_choice_list("XC2_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
-// The game resolution (resolution.c): 16:9 sizes from the game's own 1280x720 up, and the current value when it is
-// another size.
+// The game resolution (resolution.c): 16:9 and 21:9 sizes from the game's own 1280x720 up, and the current value when
+// it is another size. Any size works; the list is the common ones.
 static void row_output_res(void) {
     // 1280x720: XC2's own, also the Steam Deck's (letterboxed in its 1280x800 screen, XC2_PICTURE_FIT)
-    static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160"};
-    enum { N = sizeof vals / sizeof *vals };
-    char shown[N][32];
-    const char *names[N];
-    for (int i = 0; i < N; i++) {
-        int w = 0, h = 0;
-        sscanf(vals[i], "%dx%d", &w, &h);
-        snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
-        names[i] = shown[i];
+    static const int sizes[][2] = {{1280, 720},  {1600, 900},  {1920, 1080}, {2560, 1080}, {2560, 1440},
+                                   {3200, 1800}, {3440, 1440}, {3840, 2160}};
+    enum { N = sizeof sizes / sizeof *sizes + 1 };
+    int sz[N][2], n = 0, cw = 0, ch = 0;
+    int cur_ok = sscanf(cfg_value("XC2_OUTPUT_RES"), "%dx%d", &cw, &ch) == 2;
+    bool listed = false;
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        int w = sizes[i][0], h = sizes[i][1];
+        bool cur = cur_ok && w == cw && h == ch;
+        listed |= cur;
+        sz[n][0] = w, sz[n][1] = h, n++;
     }
-    opt_choice_list("XC2_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
+    if (cur_ok && !listed) {   // the current size where its area puts it
+        int at = n;
+        while (at > 0 && (long)sz[at - 1][0] * sz[at - 1][1] > (long)cw * ch) at--;
+        memmove(sz[at + 1], sz[at], sizeof sz[0] * (n - at));
+        sz[at][0] = cw, sz[at][1] = ch, n++;
+    }
+    char vals[N][24], shown[N][32];
+    const char *pv[N], *pn[N];
+    for (int i = 0; i < n; i++) {
+        snprintf(vals[i], sizeof vals[i], "%dx%d", sz[i][0], sz[i][1]);
+        snprintf(shown[i], sizeof shown[i], "%d × %d", sz[i][0], sz[i][1]);   // U+00D7, the multiplication sign
+        pv[i] = vals[i];
+        pn[i] = shown[i];
+    }
+    opt_choice_list("XC2_OUTPUT_RES", UI_MENU_OUTPUT_RES, pv, pn, n, UI_MENU_OUTPUT_RES_DESC);
 }
 
 static void row_render_scale(void) {
@@ -532,6 +548,7 @@ static void tab_screen(float scale) {
     opt_choice("XC2_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
+    opt_toggle("XC2_LOD", UI_MENU_LOD, UI_MENU_LOD_DESC);
     row_render_scale();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
