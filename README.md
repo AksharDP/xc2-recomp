@@ -6,6 +6,8 @@
 > **No game files are included.** You need your own legally obtained copy of *Xenoblade Chronicles 2*, dumped from your own console: the base game and its last update, 3.0.1 (3.0.0 for the Japanese release; the add-on content is optional). Instructions for obtaining those files will not be provided.
 >
 > The game is built from your files on your machine, so the result contains the game. It is for your own use. Do not share it.
+>
+> I only have an Intel integrated GPU and an NVIDIA GPU available for testing visual bugs. If you have an AMD GPU, I'd appreciate any contributions. Thanks!
 
 ## Status
 
