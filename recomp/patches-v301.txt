@@ -251,14 +251,22 @@ site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 13
 set xc2qte XC2_QTE_FIX 1
 site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008
 
-# The "Just Range" element symbol over the arts cross grew until it covered the screen at 60 fps (issue 48's second
-# symptom; reproduced 2026-11-07 with a wind blade in a battle). A patch here was tried and removed: scaling the
-# word this site stores ([x20,#8] -> [x27,#0x358], the value main+0x177964 hands in s0 to main+0x842cf0) by the
-# page's +0x54 made the symbol START large and keep growing. The chain behind it was a misread: main+0x842cf0
-# ignores s0 entirely — it only clears one of the two words at +0x87240/+0x87244 of the effect object, by the byte
-# at +0x8724c — so this site's word is not the layer's growth rate, and what advances the symbol's scale is still
-# unpinned. The per-frame update main+0x1778ac also runs an 8-item loop (stride 0x470) calling main+0x8431f0.
-# Revisit with the uniform capture of XC2_DUMP during a battle.
+# xc2glow (XC2_GLOW_FIX, on): the "Just Range" element symbol over the arts cross grew until it covered the screen
+# at 60 fps (issue 48's second symptom; reproduced with a wind blade in a battle, and it kept growing after the
+# battle ended). This per-frame branch of the battle UI effect update (main+0x1778ac, gated by the event flag byte
+# at +0x2fd6 of the scene object x27) copies the word [x20,#8] of its message into the scene's +0x358, and that
+# word is the time step of the UI effect engine's animation tracks in frames of 1/30 s — the same convention the
+# QTE ring's frame message uses (main+0x1d0c0). The engine's track phase accumulates it (f_7000850520: the object's
+# +0x94/+0x98/+0x9c += the track velocity times the delta at +0x130), and the symbol's scale pair (+0x144/+0x148 of
+# the effect object, init 1.0/1.0 by f_7000831d78, the element's RGB at +0x160) is sampled from the tracks. At 60
+# fps the word is 0.5, so the scale ran at 30 times the console's rate and reached 35x in one battle. The
+# replacement divides the word by 30 (as float: s8 and s9 are dead here, main+0x842cf0 and the accessor
+# main+0x83df04 touch no float registers, and the next original instruction, str w8, [x27, #0x358], takes the
+# result from w8), which turns frames of 1/30 s back into seconds and is exact at every frame rate. An earlier
+# patch on this site multiplied the word by the page's +0x54 instead — it made the symbol START large and still
+# grow, because the value is already in 1/30 s frames and halving it left 16 times the console's rate.
+set xc2glow XC2_GLOW_FIX 1
+site xc2glow main 17794c sha:ad620a8e151ef3d2 bd400a88 1e27d009 1e291908 1e260108
 
 
 
