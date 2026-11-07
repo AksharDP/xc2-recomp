@@ -427,16 +427,21 @@ static void uiprobe_battle(double seconds) {
     }
 }
 
-// The step targets, resolved and read once per present, before xc2_steps_store writes them. Reading before the store
-// says who owns the field: a value that is not the previous store is a value the game wrote itself, so a step the game
-// still refreshes from its own 1/30 s constant outruns the fix and keeps running per frame. An unresolved or unreadable
-// target never got the fix at all.
+// The step targets, resolved once per present, before xc2_steps_store writes them; the store loop takes each target's
+// address and readability from here, so one pass per present reads each pointer table entry (shared by the targets
+// that sit in one object) and checks each field once. With XC2_UIPROBE=1 each field is also read before the store,
+// which says who owns it: a value that is not the previous store is a value the game wrote itself, so a step the game
+// still refreshes from its own 1/30 s constant outruns the fix and keeps running per frame. Without the probe the
+// fields are not read: every one of these reads is a host memory call, and win32.c measures those in per cents of the
+// render thread. An unresolved or unreadable target never got the fix at all.
 typedef struct {
     const char *name;
     uint64_t base;      // the pointer table entry holding the object, or the field itself
     uint64_t off;
     int indirect;
     uint64_t obj;       // resolved this frame
+    uint64_t addr;      // resolved this frame: where this frame's store goes, 0 when unresolved
+    int readable;       // whether addr can be read and stored this frame
     uint64_t ours_addr;  // the address ours was stored to: a new object's value is not a rewrite of ours
     float pre;          // what the field held before this frame's store
     float ours;         // what our previous frame stored there
@@ -453,31 +458,31 @@ static StepTarget step_targets[] = {
 
 #define STEP_TARGET_COUNT (sizeof step_targets / sizeof *step_targets)
 
-static uint64_t step_target_addr(const StepTarget *t, int *readable) {
-    uint64_t addr = t->base;
-    *readable = 1;
-    if (t->indirect) {
-        if (!t->obj || !plat_mem_readable(t->obj + t->off, 4)) *readable = 0;
-        else addr = t->obj + t->off;
-    } else if (!plat_mem_readable(addr, 4)) {
-        *readable = 0;
-    }
-    return addr;
-}
-
 static void steps_resolve(void) {
+    int probe_on = uiprobe_on();
+    uint64_t last_base = 0, obj = 0;   // the object the targets of one pointer table entry share
     for (size_t i = 0; i < STEP_TARGET_COUNT; i++) {
         StepTarget *t = &step_targets[i];
-        t->obj = t->indirect ? read_ptr(t->base) : 0;
-        int readable;
-        uint64_t addr = step_target_addr(t, &readable);
+        if (t->indirect) {
+            if (t->base != last_base) {
+                obj = read_ptr(t->base);
+                last_base = t->base;
+            }
+            t->obj = obj;
+            t->addr = obj ? obj + t->off : 0;
+        } else {
+            t->obj = 0;
+            t->addr = t->base;
+        }
+        t->readable = t->addr && plat_mem_readable(t->addr, 4);
+        if (!probe_on) continue;
         uint32_t bits;
-        if (readable && read_guest(addr, &bits, 4)) memcpy(&t->pre, &bits, 4);
+        if (t->readable && read_guest(t->addr, &bits, 4)) memcpy(&t->pre, &bits, 4);
         else t->pre = 0.0f / 0.0f;   // nan: nothing readable there
-        if (addr != t->ours_addr) t->rewritten = 0;   // an indirect target moved to another object: start over
-        t->ours_addr = addr;
+        if (t->addr != t->ours_addr) t->rewritten = 0;   // an indirect target moved to another object: start over
+        t->ours_addr = t->addr;
         t->frames++;
-        if (readable && t->ours && t->pre != t->ours) t->rewritten++;
+        if (t->readable && t->ours && t->pre != t->ours) t->rewritten++;
     }
 }
 
@@ -521,10 +526,8 @@ static void xc2_steps_store(double seconds) {
     // 30 fps.
     for (size_t i = 0; i < STEP_TARGET_COUNT; i++) {
         StepTarget *t = &step_targets[i];
-        int readable;
-        uint64_t addr = step_target_addr(t, &readable);
-        if (!readable) continue;
-        __atomic_store_n((uint32_t *)(uintptr_t)addr, b, __ATOMIC_RELAXED);
+        if (!t->readable) continue;
+        __atomic_store_n((uint32_t *)(uintptr_t)t->addr, b, __ATOMIC_RELAXED);
         t->ours = s;
     }
     if (sampling) uiprobe_battle(seconds);
