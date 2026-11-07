@@ -244,8 +244,9 @@ site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 13
 # it into frames of 1/30 s by 30 (main+0x1d0c0); the ring then multiplies that by the object the lookup
 # main+0x7b4b0 returns (main+0x1d108 to main+0x1d114, the product of [x0,#0xcd8] and [x0,#0xec8], the frame time
 # again), so at 60 fps the factor is 0.5 and the ring advances at half speed. The replacement writes 1.0, which is
-# what the game's own product is at 30 fps, so at and below 30 fps nothing changes and above it the advance is the
-# frame time alone. s8 is the factor's own register and no flag is written. masagrator's FPSLocker 3.0.1 set (BID
+# what the game's own product is at 30 fps: at 30 fps nothing changes, and at any other frame rate the advance is
+# the frame time alone, where the game's own product runs the ring behind the special above 30 fps and ahead of it
+# below. s8 is the factor's own register and no flag is written. masagrator's FPSLocker 3.0.1 set (BID
 # 4F5C96E2D97F45AC) patches the same word to the same value for the same reason.
 set xc2qte XC2_QTE_FIX 1
 site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008

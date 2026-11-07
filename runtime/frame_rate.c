@@ -393,11 +393,12 @@ static unsigned probe_frames;
 
 static void uiprobe_battle(double seconds) {
     // The battle UI's own per-frame seconds: the scene update's message writes it to battle manager +0x40f8, and the
-    // ButtonChallenge/QTE counter (FUN_003b8188) accumulates it and multiplies by 30, so the counter is in 30 fps
-    // frames. main+0xb87288 is a pointer table entry holding the address of the slot that holds the manager, so the
-    // manager needs two dereferences, like the frame-time getter stored at main+0xea538c. One dereference reads the
-    // slot itself, whose static neighbourhood is zero. The word at +0x4090 is not a battle gate: every run has it 0
-    // for the two samples before the field loads and 1 for every sample after, battle or not.
+    // ButtonChallenge/QTE counter (FUN_003b8188) accumulates it times the rate and multiplies by 30, so the counter
+    // is in 30 fps frames. main+0xb87288 is a pointer table entry holding the address of the slot that holds the
+    // manager, so the manager needs two dereferences. FUN_00359a90, the getter the counter takes its step from, makes
+    // the same two dereferences, answers 0 while the byte at +0x4090 is 0 and returns the word at +0x40f8 otherwise:
+    // the byte goes 0 to 1 when the field loads (every run: 0 for the two samples before, 1 for every sample after,
+    // battle or not), which is the gate the getter makes of it.
     uint64_t bm = read_ptr(read_ptr(RT_MAIN_BASE + 0xb87288));
     if (!bm) return;
     int32_t ready = 0;
@@ -408,22 +409,28 @@ static void uiprobe_battle(double seconds) {
     if (have_step) memcpy(&step_f, &step_bits, 4);
     rt_log("uiprobe: step %.5f bm %llx ready %d ui step %.6f%s", seconds, (unsigned long long)bm,
            have_ready ? ready : -1, step_f, have_step ? "" : " (unreadable)");
-    // The ButtonChallenge/QTE object itself: the menu manager holds its objects in a slot table (the qword at
-    // main+0xb872f8, each slot 0x50 with the object embedded at +0x10, FUN_0032d470), and the challenge occupies
-    // a slot only while a QTE runs. Its accumulated seconds sit at +0x494 and the counter they turn into 30 fps
-    // frames at +0x490, so the deltas between samples say how fast the QTE counts; +0x498 is the deadline the
-    // ring gauge reads and +0x9c the rate the challenge message set.
-    uint64_t table = read_ptr(RT_MAIN_BASE + 0xb872f8);
-    if (!table) return;
-    for (int i = 0; i < 64; i++) {
-        uint64_t obj = table + (uint64_t)i * 0x50 + 0x10;
+    // The ButtonChallenge/QTE model itself: the menu object factory (main+0x35aeb0) builds it in its
+    // gf_menu_obj_button_challenge2 case, 0x4a8 bytes, and FUN_003b6460 constructs it with the vtable
+    // [main+0xb88528]+0x10. Every object the factory builds is linked into the manager's intrusive list, the pointer
+    // pair at battle manager +0x4098/+0x40a0 with the link at object+8 (FUN_006985c0) and the count at +0x40a8, so
+    // the walk below takes the model by its vtable and nothing else can be logged. FUN_003b8188, the model's own
+    // update, adds the getter's step times the rate at +0x9c into the accumulated seconds at +0x494 and turns those
+    // into 30 fps frames at +0x490, so the deltas between samples say how fast the QTE counts; the ring gauge takes
+    // 1 - [+0x498]/[+0x490] from the same two words.
+    uint64_t vt = read_ptr(RT_MAIN_BASE + 0xb88528);
+    uint64_t node = read_ptr(bm + 0x40a0);
+    for (unsigned seen = 0; vt && node && seen < 512; seen++) {
+        if (node == bm + 0x4098) break;   // back at the anchor: the list is walked out
+        uint64_t obj = node - 8;
+        node = read_ptr(node + 8);
+        if (read_ptr(obj) != vt + 0x10) continue;
         float accum = 0, counter = 0, deadline = 0, rate = 0;
-        if (!read_guest(obj + 0x494, &accum, 4) || !(accum > 0.0f) || accum > 3600.0f) continue;
+        read_guest(obj + 0x494, &accum, 4);
         read_guest(obj + 0x490, &counter, 4);
         read_guest(obj + 0x498, &deadline, 4);
         read_guest(obj + 0x9c, &rate, 4);
-        rt_log("uiprobe: slot %d vt %llx counter %.3f accum %.5f deadline %.3f rate %.3f", i,
-               (unsigned long long)read_ptr(obj), counter, accum, deadline, rate);
+        rt_log("uiprobe: challenge %llx counter %.3f accum %.5f deadline %.3f rate %.3f",
+               (unsigned long long)obj, counter, accum, deadline, rate);
     }
 }
 
@@ -478,11 +485,12 @@ static void steps_resolve(void) {
         if (!probe_on) continue;
         uint32_t bits;
         if (t->readable && read_guest(t->addr, &bits, 4)) memcpy(&t->pre, &bits, 4);
-        else t->pre = 0.0f / 0.0f;   // nan: nothing readable there
+        else t->pre = NAN;   // nothing readable there
         if (t->addr != t->ours_addr) t->rewritten = 0;   // an indirect target moved to another object: start over
-        t->ours_addr = t->addr;
         t->frames++;
-        if (t->readable && t->ours && t->pre != t->ours) t->rewritten++;
+        // ours_addr moves with ours, in the store loop: a target that moved, or was unreadable and is readable again,
+        // holds some earlier frame's value, which is not the game's rewrite until the store has landed once.
+        if (t->readable && t->addr == t->ours_addr && t->ours && t->pre != t->ours) t->rewritten++;
     }
 }
 
@@ -529,6 +537,7 @@ static void xc2_steps_store(double seconds) {
         if (!t->readable) continue;
         __atomic_store_n((uint32_t *)(uintptr_t)t->addr, b, __ATOMIC_RELAXED);
         t->ours = s;
+        t->ours_addr = t->addr;
     }
     if (sampling) uiprobe_battle(seconds);
 }
