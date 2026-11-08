@@ -551,13 +551,14 @@ static int usage(const char *argv0) {
 }
 
 // Paths for a copied folder (tools/package_build.py). Per path: XC2_EXEFS, XC2_ROMFS, XC2_PROFILE_DIR, else the
-// folder next to xc2.exe (exefs, romfs, profile) if it exists, else the path baked in at build time. A relative
-// value is relative to xc2.exe's folder. A build copied to another machine can name a drive that machine lacks: a
-// profile folder that cannot be made at the baked path goes next to xc2.exe instead.
+// matching folder next to xc2.exe if it exists, else the path baked in at build time. Relative environment values
+// and sibling folders are resolved from xc2.exe, never the process working directory, so a shortcut's "Start in"
+// setting has no effect. A build copied to another machine can name a drive that machine lacks: a profile folder
+// that cannot be made at the baked path goes next to xc2.exe instead.
 static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
 
-static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
-                                 const char *fallback) {
+static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must_file, int must_dir,
+                                 char *out, size_t cap, const char *fallback) {
     const char *e = cfg_get(var);
     if (e && *e) {
         int abs_path = e[0] == '\\' || e[0] == '/' || e[1] == ':';
@@ -567,7 +568,8 @@ static const char *portable_path(const char *dir, const char *var, const char *s
     }
     char probe[PLAT_PATH_MAX * 3];
     snprintf(out, cap, "%s/%s", dir, sub);
-    snprintf(probe, sizeof probe, "%s/%s", out, must);
+    if (must_dir) return plat_dir_exists(out) ? out : fallback;
+    snprintf(probe, sizeof probe, "%s/%s", out, must_file);
     return plat_file_exists(probe) ? out : fallback;
 }
 
@@ -577,9 +579,9 @@ static void portable_paths(RtConfig *c) {
     char *cut = n && n < sizeof exe ? plat_last_sep(exe) : NULL;
     if (!cut) return;
     *cut = 0;
-    c->exefs = portable_path(exe, "XC2_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
-    c->romfs = portable_path(exe, "XC2_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
-    c->profile = portable_path(exe, "XC2_PROFILE_DIR", "profile", ".", pp_profile, sizeof pp_profile, c->profile);
+    c->exefs = portable_path(exe, "XC2_EXEFS", "exefs", "main.npdm", 0, pp_exefs, sizeof pp_exefs, c->exefs);
+    c->romfs = portable_path(exe, "XC2_ROMFS", "romfs", "romfs.bin", 0, pp_romfs, sizeof pp_romfs, c->romfs);
+    c->profile = portable_path(exe, "XC2_PROFILE_DIR", "profile", NULL, 1, pp_profile, sizeof pp_profile, c->profile);
 }
 
 // After the command line: a path given there or in XC2_PROFILE_DIR is the player's own and stays as it is.
