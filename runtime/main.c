@@ -585,7 +585,8 @@ static void portable_paths(RtConfig *c) {
     const char *profile_env = cfg_get("XC2_PROFILE_DIR");
     pp_profile_explicit = profile_env && *profile_env;
     c->exefs = portable_path(exe, "XC2_EXEFS", "exefs", "main.npdm", 0, pp_exefs, sizeof pp_exefs, c->exefs);
-    pp_exefs_portable = c->exefs == pp_exefs;
+    const char *exefs_env = cfg_get("XC2_EXEFS");
+    pp_exefs_portable = !(exefs_env && *exefs_env) && c->exefs == pp_exefs;
     c->romfs = portable_path(exe, "XC2_ROMFS", "romfs", "romfs.bin", 0, pp_romfs, sizeof pp_romfs, c->romfs);
     c->profile = portable_path(exe, "XC2_PROFILE_DIR", "profile", NULL, 1, pp_profile, sizeof pp_profile, c->profile);
     if (!pp_profile_explicit && !pp_exefs_portable && c->profile == pp_profile) c->profile = rt_default_profile;
@@ -594,7 +595,7 @@ static void portable_paths(RtConfig *c) {
 // After the command line, migrate a baked profile only when the portable profile is empty.
 static void profile_fallback(RtConfig *c) {
     if (pp_profile_explicit || (c->profile != rt_default_profile && c->profile != pp_profile) || !*pp_profile) return;
-    if (pp_exefs_portable) {
+    if (pp_exefs_portable && c->exefs == pp_exefs) {
         int use_portable = fs_profile_select(rt_default_profile, pp_profile);
         if (use_portable < 0)
             rt_fatal("cannot safely choose between profile folders %s and %s; choose one with --profile DIR or "
