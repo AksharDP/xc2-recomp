@@ -279,6 +279,154 @@ static int copy_tree(const char *src, const char *dst, const char *base, int dur
     return bad;
 }
 
+static int profile_paths_equal(const char *a, const char *b) {
+    char left[PATH_CAP * 2], right[PATH_CAP * 2];
+    int na = snprintf(left, sizeof left, "%s", a), nb = snprintf(right, sizeof right, "%s", b);
+    if (na < 0 || nb < 0 || na >= (int)sizeof left || nb >= (int)sizeof right) return 0;
+    for (int i = 0; i < na; i++) {
+        if (left[i] == '\\') left[i] = '/';
+#ifdef _WIN32
+        if (left[i] >= 'A' && left[i] <= 'Z') left[i] += 'a' - 'A';
+#endif
+    }
+    for (int i = 0; i < nb; i++) {
+        if (right[i] == '\\') right[i] = '/';
+#ifdef _WIN32
+        if (right[i] >= 'A' && right[i] <= 'Z') right[i] += 'a' - 'A';
+#endif
+    }
+    while (na > 1 && left[na - 1] == '/' && !(na == 3 && left[1] == ':')) left[--na] = 0;
+    while (nb > 1 && right[nb - 1] == '/' && !(nb == 3 && right[1] == ':')) right[--nb] = 0;
+    return !strcmp(left, right);
+}
+
+static int profile_dir_entries(const char *path) {
+    Listing l;
+    int err = list_dir(path, &l);
+    int n = l.n;
+    listing_free(l.e, l.n);
+    return err ? -1 : n;
+}
+
+static int profile_tree_copyable(const char *path) {
+    Listing l;
+    if (list_dir(path, &l)) {
+        listing_free(l.e, l.n);
+        return 0;
+    }
+    int ok = 1;
+    for (int i = 0; i < l.n && ok; i++) {
+        if (l.e[i].kind == PLAT_FS_LINK) ok = 0;
+        else if (l.e[i].kind == PLAT_FS_DIR) {
+            char *child = join(path, l.e[i].name);
+            ok = profile_tree_copyable(child);
+            free(child);
+        }
+    }
+    listing_free(l.e, l.n);
+    return ok;
+}
+
+static int profile_migrated_from(const char *portable, const char *baked) {
+    char marker[PATH_CAP * 2 + 64];
+    if (snprintf(marker, sizeof marker, "%s/.xc2-profile-migrated-from", portable) >= (int)sizeof marker) return 0;
+    uint64_t size = 0;
+    uint8_t *saved = plat_file_read(marker, &size);
+    int same = saved && size == strlen(baked) && !memcmp(saved, baked, (size_t)size);
+    free(saved);
+    return same;
+}
+
+static int profile_migrate(const char *baked, const char *portable) {
+    char stage[PATH_CAP * 2 + 64], marker[PATH_CAP * 2 + 128];
+    int have_stage = 0;
+    for (int i = 0; i < 16; i++) {
+        unsigned suffix;
+        if (!plat_random(&suffix, sizeof suffix)) break;
+        int n = snprintf(stage, sizeof stage, "%s.xc2-migrate-%08x", portable, suffix);
+        if (n < 0 || n >= (int)sizeof stage) break;
+        if (plat_fs_kind(stage) == PLAT_FS_MISSING) {
+            have_stage = 1;
+            break;
+        }
+    }
+    if (!have_stage) {
+        rt_log("profile: cannot make a staging path beside %s", portable);
+        return 0;
+    }
+    int files = 0, links = 0;
+    uint64_t bytes = 0;
+    if (copy_tree(baked, stage, NULL, 1, &files, &links, &bytes)) {
+        remove_tree(stage);
+        rt_log("profile: could not copy %s to %s; keeping the build-time profile", baked, portable);
+        return 0;
+    }
+    int n = snprintf(marker, sizeof marker, "%s/.xc2-profile-migrated-from", stage);
+    if (n < 0 || n >= (int)sizeof marker || !plat_file_write_atomic(marker, baked, strlen(baked))) {
+        remove_tree(stage);
+        rt_log("profile: could not mark the migrated profile at %s", portable);
+        return 0;
+    }
+
+    int target_kind = plat_fs_kind(portable);
+    if (target_kind == PLAT_FS_DIR) {
+        int entries = profile_dir_entries(portable);
+        if (entries != 0 || plat_fs_rmdir(portable)) {
+            remove_tree(stage);
+            return -1;
+        }
+    } else if (target_kind != PLAT_FS_MISSING) {
+        remove_tree(stage);
+        return -1;
+    }
+    if (move_dir(stage, portable)) {
+        remove_tree(stage);
+        rt_log("profile: could not install the migrated profile at %s", portable);
+        return 0;
+    }
+    rt_log("profile: migrated %d files (%.1f MiB) from %s to %s", files, bytes / 1048576.0, baked, portable);
+    return 1;
+}
+
+// Return 1 for the portable profile, 0 for the baked profile, and -1 when the player must choose explicitly.
+int fs_profile_select(const char *baked, const char *portable) {
+    if (!baked || !*baked || !portable || !*portable) return 0;
+    if (profile_paths_equal(baked, portable)) return 1;
+
+    int target_kind = plat_fs_kind(portable);
+    if (target_kind == PLAT_FS_DIR && profile_migrated_from(portable, baked)) return 1;
+    int source_kind = plat_fs_kind(baked);
+    if (source_kind != PLAT_FS_DIR) {
+        if (target_kind == PLAT_FS_FILE || target_kind == PLAT_FS_LINK) return -1;
+        return 1;
+    }
+
+    int source_entries = profile_dir_entries(baked);
+    if (source_entries < 0) {
+        rt_log("profile: cannot inspect the build-time profile %s", baked);
+        return -1;
+    }
+    if (target_kind != PLAT_FS_MISSING && target_kind != PLAT_FS_DIR) {
+        rt_log("profile: portable profile path %s is not a directory", portable);
+        return source_entries ? -1 : 0;
+    }
+    int target_entries = target_kind == PLAT_FS_DIR ? profile_dir_entries(portable) : 0;
+    if (target_entries < 0) {
+        rt_log("profile: cannot inspect the portable profile %s", portable);
+        return -1;
+    }
+    if (!source_entries) return 1;
+    if (target_entries) {
+        rt_log("profile: both %s and %s contain data; refusing to switch profiles", baked, portable);
+        return -1;
+    }
+    if (!profile_tree_copyable(baked)) {
+        rt_log("profile: cannot safely copy links or unreadable entries from %s", baked);
+        return -1;
+    }
+    return profile_migrate(baked, portable) == 1 ? 1 : -1;
+}
+
 static int name_cmp(const void *a, const void *b) { return strcmp(a, b); }
 
 // Move old to save-backup/<UTC time> and delete all backups but the newest SAVE_BACKUPS.
