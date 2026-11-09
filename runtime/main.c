@@ -551,13 +551,16 @@ static int usage(const char *argv0) {
 }
 
 // Paths for a copied folder (tools/package_build.py). Per path: XC2_EXEFS, XC2_ROMFS, XC2_PROFILE_DIR, else the
-// folder next to xc2.exe (exefs, romfs, profile) if it exists, else the path baked in at build time. A relative
-// value is relative to xc2.exe's folder. A build copied to another machine can name a drive that machine lacks: a
-// profile folder that cannot be made at the baked path goes next to xc2.exe instead.
+// matching folder next to xc2.exe if it exists, else the path baked in at build time. Relative environment values
+// and sibling folders are resolved from xc2.exe, never the process working directory, so a shortcut's "Start in"
+// setting has no effect. A build copied to another machine can name a drive that machine lacks: a profile folder
+// that cannot be made at the baked path goes next to xc2.exe instead.
 static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
+static int pp_exefs_portable, pp_profile_explicit;
 
-static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
-                                 const char *fallback) {
+// Resolve one override or a sibling path with its required file or directory, falling back to the build default.
+static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must_file, int must_dir,
+                                 char *out, size_t cap, const char *fallback) {
     const char *e = cfg_get(var);
     if (e && *e) {
         int abs_path = e[0] == '\\' || e[0] == '/' || e[1] == ':';
@@ -567,24 +570,40 @@ static const char *portable_path(const char *dir, const char *var, const char *s
     }
     char probe[PLAT_PATH_MAX * 3];
     snprintf(out, cap, "%s/%s", dir, sub);
-    snprintf(probe, sizeof probe, "%s/%s", out, must);
+    if (must_dir) return plat_dir_exists(out) ? out : fallback;
+    snprintf(probe, sizeof probe, "%s/%s", out, must_file);
     return plat_file_exists(probe) ? out : fallback;
 }
 
+// Resolve copied-folder defaults from xc2.exe's folder so shortcut working directories do not change them.
 static void portable_paths(RtConfig *c) {
     char exe[PLAT_PATH_MAX * 2];
     int n = plat_exe_path(exe, sizeof exe);
     char *cut = n && n < sizeof exe ? plat_last_sep(exe) : NULL;
     if (!cut) return;
     *cut = 0;
-    c->exefs = portable_path(exe, "XC2_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
-    c->romfs = portable_path(exe, "XC2_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
-    c->profile = portable_path(exe, "XC2_PROFILE_DIR", "profile", ".", pp_profile, sizeof pp_profile, c->profile);
+    const char *profile_env = cfg_get("XC2_PROFILE_DIR");
+    pp_profile_explicit = profile_env && *profile_env;
+    c->exefs = portable_path(exe, "XC2_EXEFS", "exefs", "main.npdm", 0, pp_exefs, sizeof pp_exefs, c->exefs);
+    const char *exefs_env = cfg_get("XC2_EXEFS");
+    pp_exefs_portable = !(exefs_env && *exefs_env) && c->exefs == pp_exefs;
+    c->romfs = portable_path(exe, "XC2_ROMFS", "romfs", "romfs.bin", 0, pp_romfs, sizeof pp_romfs, c->romfs);
+    c->profile = portable_path(exe, "XC2_PROFILE_DIR", "profile", NULL, 1, pp_profile, sizeof pp_profile, c->profile);
+    if (!pp_profile_explicit && !pp_exefs_portable && c->profile == pp_profile) c->profile = rt_default_profile;
 }
 
-// After the command line: a path given there or in XC2_PROFILE_DIR is the player's own and stays as it is.
+// After the command line, migrate a baked profile only when the portable profile is empty.
 static void profile_fallback(RtConfig *c) {
-    if (c->profile != rt_default_profile || !*pp_profile) return;
+    if (pp_profile_explicit || (c->profile != rt_default_profile && c->profile != pp_profile) || !*pp_profile) return;
+    if (pp_exefs_portable && c->exefs == pp_exefs) {
+        int use_portable = fs_profile_select(rt_default_profile, pp_profile);
+        if (use_portable < 0)
+            rt_fatal("cannot safely choose between profile folders %s and %s; choose one with --profile DIR or "
+                     "XC2_PROFILE_DIR. Neither folder was overwritten.", rt_default_profile, pp_profile);
+        c->profile = use_portable ? pp_profile : rt_default_profile;
+        if (use_portable) return;
+    }
+    if (c->profile == pp_profile) c->profile = rt_default_profile;
     plat_file_mkdir_p(c->profile);
     if (plat_dir_exists(c->profile)) return;
     rt_log("cfg: cannot use the profile folder %s: using %s", c->profile, pp_profile);

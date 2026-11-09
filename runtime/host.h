@@ -237,6 +237,8 @@ void ipc_handle_closed(int kind, void *obj);               // CloseHandle on a K
 
 // ---- file system (romfs.c / fs_host.c)
 void fs_init(void);                                        // idempotent; paths from rt_config()
+// Select the portable profile when it is safe; 1 selects it, 0 keeps the baked path, -1 requires an explicit choice.
+int fs_profile_select(const char *baked, const char *portable);
 
 // ---- account (ov_system.c)
 void account_uid(uint64_t out[2]);                         // the local user's nn::account::Uid {lo, hi}, persistent in
