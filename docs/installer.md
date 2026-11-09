@@ -64,6 +64,14 @@ The player runs a newer installer on the same folder. It reads `xc2-install.json
 `profile/` and `xc2.ini`, rebuilds `xc2.exe` and re-prepares the shaders. A newer release that changes nothing
 game-derived skips the rebuild. Add-on content can be added later: only the add-on step runs again.
 
+The setup window remembers the last base, update, add-on, keys and install-folder fields in a per-user
+`launcher.json`, so unpacking a newer setup release does not clear them. On Windows it is
+`%LOCALAPPDATA%\XC2 Recomp\launcher.json`; on Linux it is `$XDG_CONFIG_HOME/xc2-recomp/launcher.json` or
+`~/.config/xc2-recomp/launcher.json`. The file
+stores the keys file path, never its contents. Reopen the setup, keep the same install folder selected and start the
+update; the installer uses `xc2-install.json` to keep extracted game files and skip steps whose recorded inputs and
+outputs are still current.
+
 What keeps an update short:
 
 - The RomFS is kept by the size and modification time recorded when the merge finished (the merge hashed every byte it

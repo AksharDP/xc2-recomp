@@ -24,6 +24,7 @@ except ImportError:
 
 from . import ini
 from . import layout as layouts
+from . import preferences
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Model, Process,
                        amount, default_game_language, describe_event, parse_line, windows_ui_language)
 
@@ -43,7 +44,7 @@ def fix_tcl_paths():
 
 
 class App:
-    def __init__(self, root, ui_lang, layout, run_args=None):
+    def __init__(self, root, ui_lang, layout, run_args=None, remember=True):
         self.root, self.layout = root, layout
         # the release runs under pythonw, which has no console: an error in a button's callback would vanish silently
         root.report_callback_exception = self.callback_error
@@ -54,7 +55,16 @@ class App:
         self.run_args = run_args or {}   # extra CLI options for tests: temp, verify
         self.log_entries = []            # events and raw lines of the run, rendered by render_log
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
-        self.vars = {n: tk.StringVar() for n in ('base', 'update', 'dlc', 'keys', 'dest')}
+        self.preferences_path = preferences.config_path() if remember else None
+        saved = preferences.load(self.preferences_path) if remember else preferences.defaults()
+        self.preference_save_after = None
+        self.vars = {
+            'base': tk.StringVar(value=saved['base']),
+            'update': tk.StringVar(value=saved['update']),
+            'dlc': tk.StringVar(value='; '.join(saved['dlc'])),
+            'keys': tk.StringVar(value=saved['keys']),
+            'dest': tk.StringVar(value=saved['dest']),
+        }
         self.vars['lang'] = tk.StringVar()
         self.lang_code = default_game_language(ui_lang)
         self.screen = None
@@ -93,7 +103,11 @@ class App:
         self.body.pack(fill='both', expand=True)
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
         self.vars['lang'].set(self.lang_label(self.lang_code))
+        if remember:
+            for name in ('base', 'update', 'dlc', 'keys', 'dest'):
+                self.vars[name].trace_add('write', self.queue_preferences_save)
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
+        self.refresh_form()
         self.show('form')
 
     # ---- text -----------------------------------------------------------------------------------------------------
@@ -277,6 +291,34 @@ class App:
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=tuple(self.dlc_paths()),
                     keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
 
+    def queue_preferences_save(self, *_):
+        if self.preference_save_after is not None:
+            self.root.after_cancel(self.preference_save_after)
+        self.preference_save_after = self.root.after(400, self.flush_preferences)
+
+    def save_preferences(self):
+        if self.preferences_path is None:
+            return
+        if self.preference_save_after is not None:
+            self.root.after_cancel(self.preference_save_after)
+            self.preference_save_after = None
+        self.write_preferences()
+
+    def flush_preferences(self):
+        self.preference_save_after = None
+        self.write_preferences()
+
+    def write_preferences(self):
+        if self.preferences_path is None:
+            return
+        preferences.save({
+            'base': self.vars['base'].get(),
+            'update': self.vars['update'].get(),
+            'dlc': self.dlc_paths(),
+            'keys': self.vars['keys'].get(),
+            'dest': self.vars['dest'].get(),
+        }, self.preferences_path)
+
     def refresh_form(self):
         form = self.form()
         state = form.installed_state()
@@ -329,6 +371,7 @@ class App:
     # ---- run ------------------------------------------------------------------------------------------------------
 
     def start(self):
+        self.save_preferences()
         form = self.form()
         problems = form.problems()
         if problems:
@@ -478,6 +521,7 @@ class App:
             self.process.cancel()
 
     def on_close(self):
+        self.save_preferences()
         if self.process:
             if not messagebox.askyesno(self.cat('ui.title'), self.cat('ui.confirm_cancel')):
                 return
@@ -569,7 +613,7 @@ def selftest(layout, shots=None):
     fix_tcl_paths()
     root = tk.Tk()
     root.geometry('+60+40')
-    app = App(root, 'en', layout)
+    app = App(root, 'en', layout, remember=False)
     steps, mixed = [], []
 
     def shot(name):
