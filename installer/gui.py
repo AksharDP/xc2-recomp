@@ -45,6 +45,7 @@ def fix_tcl_paths():
 
 class App:
     def __init__(self, root, ui_lang, layout, run_args=None, remember=True):
+        """Build the setup window and restore saved paths unless this is a self-test."""
         self.root, self.layout = root, layout
         # the release runs under pythonw, which has no console: an error in a button's callback would vanish silently
         root.report_callback_exception = self.callback_error
@@ -292,11 +293,13 @@ class App:
                     keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
 
     def queue_preferences_save(self, *_):
+        """Debounce writes so editing a path does not sync the file on every keystroke."""
         if self.preference_save_after is not None:
             self.root.after_cancel(self.preference_save_after)
         self.preference_save_after = self.root.after(400, self.flush_preferences)
 
     def save_preferences(self):
+        """Save the current paths immediately and cancel any pending debounce timer."""
         if self.preferences_path is None:
             return
         if self.preference_save_after is not None:
@@ -305,10 +308,12 @@ class App:
         self.write_preferences()
 
     def flush_preferences(self):
+        """Write the latest paths after the edit debounce interval expires."""
         self.preference_save_after = None
         self.write_preferences()
 
     def write_preferences(self):
+        """Persist form paths without ever reading or storing key-file contents."""
         if self.preferences_path is None:
             return
         preferences.save({
@@ -371,6 +376,7 @@ class App:
     # ---- run ------------------------------------------------------------------------------------------------------
 
     def start(self):
+        """Save form paths, validate the inputs and start the installer process."""
         self.save_preferences()
         form = self.form()
         problems = form.problems()
@@ -521,6 +527,7 @@ class App:
             self.process.cancel()
 
     def on_close(self):
+        """Save form paths before closing or confirming cancellation of a running setup."""
         self.save_preferences()
         if self.process:
             if not messagebox.askyesno(self.cat('ui.title'), self.cat('ui.confirm_cancel')):

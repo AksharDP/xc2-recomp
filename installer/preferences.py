@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 FORMAT = 1
@@ -21,6 +22,7 @@ def config_path():
 
 
 def defaults():
+    """Return empty values for the installer's remembered fields."""
     return {'base': '', 'update': '', 'dlc': [], 'keys': '', 'dest': ''}
 
 
@@ -46,7 +48,7 @@ def load(target=None):
 
 
 def save(values, target=None):
-    """Replace the config atomically; preference write failures must not block an install."""
+    """Write preferences atomically using a unique temporary file; failures must not block an install."""
     path = Path(target) if target is not None else config_path()
     data = {'format': FORMAT}
     for name in ('base', 'update', 'keys', 'dest'):
@@ -54,17 +56,20 @@ def save(values, target=None):
         data[name] = value if isinstance(value, str) else ''
     dlc = values.get('dlc', ())
     data['dlc'] = [item for item in dlc if isinstance(item, str)] if isinstance(dlc, (list, tuple)) else []
-    temporary = path.with_name(path.name + '.tmp')
+    temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with temporary.open('w', encoding='utf-8', newline='\n') as stream:
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', newline='\n', prefix=path.name + '.',
+                                         suffix='.tmp', dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
             json.dump(data, stream, indent=1, ensure_ascii=False)
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     except (OSError, UnicodeError):
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
