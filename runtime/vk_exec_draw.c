@@ -879,8 +879,8 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
 // 2560 the entries that hold 2/W read 2/2560 where the design needs 2/1280, so the quads cover half the target and a box
 // shows in the opening cutscene. A projection of the target itself has 2/pass_w in those entries; the glow's has
 // 1/pass_w and 1/pass_h, so that is the check, on the data: c4[0].x and c4[15].x equal 1/pass_w, c4[1].y and c4[16].y
-// equal 1/pass_h. The scale is set to the design: by 2 * pass_w / 1280 in x and 2 * pass_h / 720 in y (1 at native, 1.5 at
-// 1920, 2 at 2560). The block is copied to transient memory with those four entries scaled. XC2_GLOW_ORTHO=0 binds the
+// equal 1/pass_h, and the pass is half the output in each direction (glow_c4). The scale is set to the design: by
+// 2 * pass_w / 1280 in x and 2 * pass_h / 720 in y (1 at native, 1.5 at 1920, 2 at 2560). The block is copied to transient memory with those four entries scaled. XC2_GLOW_ORTHO=0 binds the
 // block as the guest wrote it.
 #define GLOW_HEAD 0x108u   // the bytes the check reads: c4[0].x at 0x00, c4[1].y at 0x14, c4[15].x at 0xf0, c4[16].y at 0x104
 
@@ -906,6 +906,18 @@ static void glow_scale_at(uint8_t *at, double s) {
     memcpy(at, &v, 4);
 }
 
+// The output size in effect (res_sizes; it does not change while the game runs), read once.
+static void glow_out(unsigned *w, unsigned *h) {
+    static unsigned ow, oh;
+    static int got;
+    if (!got) {
+        unsigned out[2], scene[2];
+        res_sizes(out, scene);
+        ow = out[0], oh = out[1], got = 1;
+    }
+    *w = ow, *h = oh;
+}
+
 // The c4 binding of a glow pass as a copy with its projection scaled to the design; 0 when the block is not a glow
 // projection, the knob is off or the scale is 1 (native), and the caller binds the block as usual.
 static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBufferInfo *out) {
@@ -920,6 +932,11 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
     double pw = ex->pass_w, ph = ex->pass_h;
     if (fabs(x0 * pw - 1) > 1e-3 || fabs(y1 * ph - 1) > 1e-3 || fabs(x15 * pw - 1) > 1e-3 || fabs(y16 * ph - 1) > 1e-3)
         return 0;
+    // The target is half the output: twice its size is the output size, within a pixel for odd sizes. A full-target
+    // projection with the same numbers in some other pass fails this, so only the glow passes are scaled.
+    unsigned ow, oh;
+    glow_out(&ow, &oh);
+    if (fabs(2 * pw - ow) > 1 || fabs(2 * ph - oh) > 1) return 0;
     double sx = 2 * pw / 1280, sy = 2 * ph / 720;
     if (sx == 1 && sy == 1) return 0;
     uint64_t n = b->size < max ? b->size : max;
