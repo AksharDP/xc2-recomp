@@ -875,13 +875,12 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
 }
 
 // Issue 46. The glow passes draw the design's 1280x720 quads (+-640 x +-360 units) into a target that is half the output
-// (640x360 native, 960x540 at 1920, 1280x720 at 2560). Their orthographic projection takes its scale from the output: at
-// 2560 the entries that hold 2/W read 2/2560 where the design needs 2/1280, so the quads cover half the target and a box
-// shows in the opening cutscene. A projection of the target itself has 2/pass_w in those entries; the glow's has
-// 1/pass_w and 1/pass_h, so that is the check, on the data: c4[0].x and c4[15].x equal 1/pass_w, c4[1].y and c4[16].y
-// equal 1/pass_h, and the pass is half the output in each direction (glow_c4). The scale is set to the design: by
-// 2 * pass_w / 1280 in x and 2 * pass_h / 720 in y (1 at native, 1.5 at 1920, 2 at 2560). The block is copied to transient memory with those four entries scaled. XC2_GLOW_ORTHO=0 binds the
-// block as the guest wrote it.
+// (640x360 native, 960x540 at 1920, 1280x720 at 2560). The guest scales their orthographic projection by the output: the
+// entries that hold 2/W read 2/output, so at 2560 they read 2/2560 where the design needs 2/1280, the quads cover half
+// the target and a box shows in the opening cutscene. Those entries are c4[0].x, c4[15].x (x) and c4[1].y, c4[16].y (y).
+// A full-target projection has the same numbers, so the glow is told apart by its target being half the output (glow_c4).
+// The block is copied to transient memory with the four entries scaled by output / 1280 in x and output / 720 in y: 1 at
+// native, 1.5 at 1920, 2 at 2560, 2.38 at 3042x1712. XC2_GLOW_ORTHO=0 binds the block as the guest wrote it.
 #define GLOW_HEAD 0x108u   // the bytes the check reads: c4[0].x at 0x00, c4[1].y at 0x14, c4[15].x at 0xf0, c4[16].y at 0x104
 
 static int glow_on(void) {
@@ -930,15 +929,21 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
     memcpy(&x15, head + 0xf0, 4);
     memcpy(&y16, head + 0x104, 4);
     double pw = ex->pass_w, ph = ex->pass_h;
-    if (fabs(x0 * pw - 1) > 1e-3 || fabs(y1 * ph - 1) > 1e-3 || fabs(x15 * pw - 1) > 1e-3 || fabs(y16 * ph - 1) > 1e-3)
-        return 0;
-    // The target is half the output: twice its size is the output size, within a pixel for odd sizes. A full-target
-    // projection with the same numbers in some other pass fails this, so only the glow passes are scaled.
     unsigned ow, oh;
     glow_out(&ow, &oh);
-    if (fabs(2 * pw - ow) > 1 || fabs(2 * ph - oh) > 1) return 0;
-    double sx = 2 * pw / 1280, sy = 2 * ph / 720;
-    if (sx == 1 && sy == 1) return 0;
+    // The entries read 2/output: doubled over the output size they are 1.
+    int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
+               fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
+    // The glow target is half the output, rounded to the GPU's alignment (1520 for 3042, 848 for 1712): within 5 % of it.
+    int half = fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh;
+    static int logged;
+    if (data && !logged) {
+        logged = 1;
+        rt_log("glow: a %gx%g target in the %ux%u output: %s; scale %.4f x %.4f", pw, ph, ow, oh,
+               half ? "the glow's projection" : "not half the output, left as is", ow / 1280.0, oh / 720.0);
+    }
+    if (!data || !half || (ow == 1280 && oh == 720)) return 0;
+    double sx = ow / 1280.0, sy = oh / 720.0;
     uint64_t n = b->size < max ? b->size : max;
     VkBuffer buf;
     VkDeviceSize off;
