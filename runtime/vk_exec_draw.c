@@ -921,6 +921,13 @@ static void glow_out(unsigned *w, unsigned *h) {
 // projection, the knob is off or the scale is 1 (native), and the caller binds the block as usual.
 static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBufferInfo *out) {
     if (!glow_on() || ex->pass_noatt || !ex->pass_w || !ex->pass_h || !b->addr || b->size < GLOW_HEAD) return 0;
+    unsigned ow, oh;
+    glow_out(&ow, &oh);
+    double pw = ex->pass_w, ph = ex->pass_h;
+    // Checked before any read, so only passes whose target is about half the output read the block. The native output
+    // (1280x720) has scale 1 and reads nothing.
+    if (ow == 1280 && oh == 720) return 0;
+    if (!(fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh)) return 0;
     uint8_t head[GLOW_HEAD];
     if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
     float x0, y1, x15, y16;
@@ -928,22 +935,23 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
     memcpy(&y1, head + 0x14, 4);
     memcpy(&x15, head + 0xf0, 4);
     memcpy(&y16, head + 0x104, 4);
-    double pw = ex->pass_w, ph = ex->pass_h;
-    unsigned ow, oh;
-    glow_out(&ow, &oh);
     // The entries read 2/output: doubled over the output size they are 1.
     int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
                fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
-    // The glow target is half the output, rounded to the GPU's alignment (1520 for 3042, 848 for 1712): within 5 % of it.
-    int half = fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh;
-    static int logged;
-    if (data && !logged) {
-        logged = 1;
-        rt_log("glow: a %gx%g target in the %ux%u output: %s; scale %.4f x %.4f", pw, ph, ow, oh,
-               half ? "the glow's projection" : "not half the output, left as is", ow / 1280.0, oh / 720.0);
-    }
-    if (!data || !half || (ow == 1280 && oh == 720)) return 0;
+    if (!data) return 0;
     double sx = ow / 1280.0, sy = oh / 720.0;
+    // Each distinct target size is logged once (the first 16), so stderr.txt lists what was scaled.
+    static unsigned long long seen[16];
+    static int nseen;
+    unsigned long long key = (unsigned long long)ex->pass_w << 32 | ex->pass_h;
+    int fresh = 1;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i] == key) fresh = 0;
+    if (fresh && nseen < 16) {
+        seen[nseen++] = key;
+        rt_log("glow: scaling the %ux%u target of the %ux%u output by %.4f x %.4f", ex->pass_w, ex->pass_h, ow, oh, sx,
+               sy);
+    }
     uint64_t n = b->size < max ? b->size : max;
     VkBuffer buf;
     VkDeviceSize off;
