@@ -874,6 +874,69 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
 }
 
+// Issue 46. The glow passes draw the design's 1280x720 quads (+-640 x +-360 units) into a target that is half the output
+// (640x360 native, 960x540 at 1920, 1280x720 at 2560). Their orthographic projection takes its scale from the output: at
+// 2560 the entries that hold 2/W read 2/2560 where the design needs 2/1280, so the quads cover half the target and a box
+// shows in the opening cutscene. A projection of the target itself has 2/pass_w in those entries; the glow's has
+// 1/pass_w and 1/pass_h, so that is the check, on the data: c4[0].x and c4[15].x equal 1/pass_w, c4[1].y and c4[16].y
+// equal 1/pass_h. The scale is set to the design: by 2 * pass_w / 1280 in x and 2 * pass_h / 720 in y (1 at native, 1.5 at
+// 1920, 2 at 2560). The block is copied to transient memory with those four entries scaled. XC2_GLOW_ORTHO=0 binds the
+// block as the guest wrote it.
+#define GLOW_HEAD 0x108u   // the bytes the check reads: c4[0].x at 0x00, c4[1].y at 0x14, c4[15].x at 0xf0, c4[16].y at 0x104
+
+static int glow_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("GLOW_ORTHO", "1") != 0;
+    return on;
+}
+
+// [addr, addr+n) as the submission saw it: the snapshot's copy when it has one, else guest memory.
+static int glow_read(uint64_t addr, uint64_t n, void *dst) {
+    VkMemSpan sp;
+    if (vk_usnap_read(addr, n, dst)) return 1;
+    if (!vk_mem_resolve(addr, n, &sp) || sp.avail < n) return 0;
+    memcpy(dst, (const void *)(uintptr_t)addr, n);
+    return 1;
+}
+
+static void glow_scale_at(uint8_t *at, double s) {
+    float v;
+    memcpy(&v, at, 4);
+    v = (float)(v * s);
+    memcpy(at, &v, 4);
+}
+
+// The c4 binding of a glow pass as a copy with its projection scaled to the design; 0 when the block is not a glow
+// projection, the knob is off or the scale is 1 (native), and the caller binds the block as usual.
+static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBufferInfo *out) {
+    if (!glow_on() || ex->pass_noatt || !ex->pass_w || !ex->pass_h || !b->addr || b->size < GLOW_HEAD) return 0;
+    uint8_t head[GLOW_HEAD];
+    if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
+    float x0, y1, x15, y16;
+    memcpy(&x0, head + 0x00, 4);
+    memcpy(&y1, head + 0x14, 4);
+    memcpy(&x15, head + 0xf0, 4);
+    memcpy(&y16, head + 0x104, 4);
+    double pw = ex->pass_w, ph = ex->pass_h;
+    if (fabs(x0 * pw - 1) > 1e-3 || fabs(y1 * ph - 1) > 1e-3 || fabs(x15 * pw - 1) > 1e-3 || fabs(y16 * ph - 1) > 1e-3)
+        return 0;
+    double sx = 2 * pw / 1280, sy = 2 * ph / 720;
+    if (sx == 1 && sy == 1) return 0;
+    uint64_t n = b->size < max ? b->size : max;
+    VkBuffer buf;
+    VkDeviceSize off;
+    RS.volatile_ = 1;   // the copy is transient guest data, as bind_range's copies are
+    uint8_t *copy = scratch(ex, n, &buf, &off);
+    if (!glow_read(b->addr, n, copy)) return 0;
+    glow_scale_at(copy + 0x00, sx);
+    glow_scale_at(copy + 0xf0, sx);
+    glow_scale_at(copy + 0x14, sy);
+    glow_scale_at(copy + 0x104, sy);
+    count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, n);
+    *out = (VkDescriptorBufferInfo){buf, off, n};
+    return 1;
+}
+
 // The buffer range limits, read once: the device's properties are a cold cache line on every binding of every draw.
 static struct { uint64_t ubo_max, ubo_align, sbo_max, sbo_align; } LIM;
 
@@ -899,6 +962,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
+        if (slot == 4 && st == NVN_STAGE_VS && glow_c4(ex, b, max, &bi)) return bi;
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;

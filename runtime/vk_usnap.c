@@ -345,6 +345,18 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     return 1;
 }
 
+// The bytes [addr, addr+n) as the submission's snapshot holds them, copied to dst; 0 when the snapshot does not hold all of
+// them (not captured, dropped by a GPU write, or outside the captured ranges).
+int vk_usnap_read(uint64_t addr, uint64_t n, void *dst) {
+    if (!U.on || !n) return 0;
+    int i = first_above(addr);
+    if (i >= U.nreg) return 0;
+    const Reg *r = &U.reg[i];
+    if (r->dropped || addr < r->lo || addr + n > r->hi) return 0;
+    memcpy(dst, U.arena->map + r->off + (addr - r->lo), n);
+    return 1;
+}
+
 void vk_usnap_drop(uint64_t addr, uint64_t n) {
     if (!__atomic_load_n(&umode, __ATOMIC_RELAXED) || !n) return;
     if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
