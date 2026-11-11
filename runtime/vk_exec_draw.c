@@ -929,6 +929,48 @@ static void glow_out(unsigned *w, unsigned *h) {
     *w = ow, *h = oh;
 }
 
+// XC2_GLOW_AUDIT=1 (diagnostic, changes nothing): logs each program whose c4 projection holds 2/output, at any target size,
+// once per program and target size (the first 64). The glow and full-output cases of glow_c4 are the sizes the fix
+// handles; a line here for any other size is a candidate for the same bug. Read-only: it reads the entries glow_c4 reads.
+static int glow_audit_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("GLOW_AUDIT", "0") != 0;
+    return on;
+}
+
+static void glow_audit(VkExec *ex, const p_bind_buf *b) {
+    if (!glow_audit_on() || ex->pass_noatt || !ex->pass_w || !ex->pass_h || !b->addr || b->size < GLOW_HEAD) return;
+    unsigned ow, oh;
+    glow_out(&ow, &oh);
+    if (ow == 1280 && oh == 720) return;
+    uint8_t head[GLOW_HEAD];
+    if (!glow_read(b->addr, GLOW_HEAD, head)) return;
+    float x0, y1, x15, y16;
+    memcpy(&x0, head + 0x00, 4);
+    memcpy(&y1, head + 0x14, 4);
+    memcpy(&x15, head + 0xf0, 4);
+    memcpy(&y16, head + 0x104, 4);
+    int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
+               fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
+    if (!data) return;
+    unsigned long long serial = ex->prog ? (unsigned long long)ex->prog->serial : 0;
+    static struct { unsigned long long serial; unsigned w, h; } seen[64];
+    static int nseen;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i].serial == serial && seen[i].w == ex->pass_w && seen[i].h == ex->pass_h) return;
+    if (nseen >= 64) return;
+    seen[nseen].serial = serial, seen[nseen].w = ex->pass_w, seen[nseen].h = ex->pass_h;
+    nseen++;
+    double pw = ex->pass_w, ph = ex->pass_h;
+    const char *cls = fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh ? "half-output"
+                    : fabs(pw - ow) <= 0.01 * ow && fabs(ph - oh) <= 0.01 * oh ? "output-size"
+                    : "other size";
+    unsigned long long frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    rt_log("glow audit: prog %llu prim %d draws into a %ux%u %s target of the %ux%u output at frame %llu, with 2/output "
+           "in its c4 projection",
+           serial, glow_prim, ex->pass_w, ex->pass_h, cls, ow, oh, frame);
+}
+
 // The c4 binding of a glow pass as a copy with its projection scaled to the design; 0 when the block is not a glow
 // projection, the knob is off or the scale is 1 (native), and the caller binds the block as usual.
 static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBufferInfo *out) {
@@ -1033,6 +1075,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
+        if (slot == 4 && st == NVN_STAGE_VS) glow_audit(ex, b);
         if (slot == 4 && st == NVN_STAGE_VS && glow_c4(ex, b, max, &bi)) return bi;
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
