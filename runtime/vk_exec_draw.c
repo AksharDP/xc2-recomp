@@ -982,8 +982,11 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
             if (progs[i] == serial) seen = 1;
         if (!seen && nprogs < 32) {
             progs[nprogs++] = serial;
-            rt_log("glow: prog %llu draws quads on a %ux%u full-output target: the projection takes the output scale",
-                   serial, ex->pass_w, ex->pass_h);
+            // frame_now() in vk_dump.c: the presented-frame count plus one, the number a dump's XC2_DUMP takes
+            unsigned long long frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+            rt_log("glow: prog %llu draws quads on a %ux%u full-output target at frame %llu: the projection takes the "
+                   "output scale",
+                   serial, ex->pass_w, ex->pass_h, frame);
         }
     }
     if (vk_dump_armed)   // every binding that takes the scale, so a dump lists the passes the full case reaches
