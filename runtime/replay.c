@@ -14,6 +14,7 @@
 #include "nvn_obj.h"
 #include "replay.h"
 #include "vk.h"
+#include "vk_exec.h"
 #include "platform/platform.h"
 
 typedef struct { const uint8_t *p; uint64_t left; } Cur;
@@ -166,6 +167,9 @@ int replay_main(const char *dir) {
     // the frame's draws are not skipped for want of a build the game had already finished.
     vk_pipeline_async_enable();
     vk_pipeline_prewarm();
+    // The game skips a draw whose shader or pipeline is still building, and which of them that is depends on the frame
+    // clock. The replay waits for each one instead (vk_exec_deterministic), so a draw is never dropped by timing.
+    vk_exec_deterministic(1);
     const char *shots = cfg_get("XC2_REPLAY_SHOTS");
     if (shots && *shots) plat_file_mkdir_p(shots);
     const char *lim = cfg_get("XC2_REPLAY_FRAMES");
