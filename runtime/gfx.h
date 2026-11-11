@@ -49,6 +49,10 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
 const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                   const GfxShaderAnswers *a);
 uint64_t gfx_shader_async_done(void);                      // translations finished by the background worker
+// Transform feedback of a vertex shader: its record stride in bytes, 0 when it has none, and in words the output
+// attribute word stored at each 4 bytes of a record.
+#define GFX_XFB_WORDS 128
+uint32_t gfx_shader_xfb(const uint8_t *control, uint8_t words[GFX_XFB_WORDS]);
 // The shader census the probes and the pipeline self-test read, under the repository root (tools/shader_census.py
 // --version v301): jobs.json and code/<key>.code.
 #define GFX_CENSUS_DIR "build/v301/shaders"

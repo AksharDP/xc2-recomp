@@ -572,8 +572,22 @@ NVN_API(nvnCommandBufferSetDepthRanges) {
 // void nvnCommandBufferSetDepthClamp / SetRenderEnable / SetRasterizerDiscard(NVNcommandBuffer *cmd, NVNboolean enable)
 NVN_API(nvnCommandBufferSetDepthClamp) { REC(cmd_of(c), OP_DEPTH_CLAMP, p_flag)->value = nvn_arg_bool(c, 1) != 0; }
 NVN_API(nvnCommandBufferSetRenderEnable) { REC(cmd_of(c), OP_RENDER_ENABLE, p_flag)->value = nvn_arg_bool(c, 1) != 0; }
-// Rasterizer discard runs vertex work without rasterising; with no transform feedback that equals not drawing.
+// Rasterizer discard runs vertex work without rasterising; only transform feedback sees the result.
 NVN_API(nvnCommandBufferSetRasterizerDiscard) { REC(cmd_of(c), OP_RASTER_DISCARD, p_flag)->value = nvn_arg_bool(c, 1) != 0; }
+// void nvnCommandBufferBindTransformFeedbackBuffer(NVNcommandBuffer *cmd, int index, NVNbufferAddress buffer, size_t size)
+// XC2 streams vertices out of five vertex-only shaders of shd_post.wishp and draws from the result. main+0x704c54 and
+// main+0x704cd4 are its only callers of these procs: discard on, bind buffer 0, Begin, then main+0x73f574 makes one
+// DrawArraysInstanced of points, End, discard off, Barrier. They are not reached on every save.
+NVN_API(nvnCommandBufferBindTransformFeedbackBuffer) {
+    int i = (int)arg_x(c, 1);
+    if (i) rt_fatal("nvn: BindTransformFeedbackBuffer: buffer %d (only 0 is replayed)", i);
+    *REC(cmd_of(c), OP_XFB_BIND, p_xfb_bind) = (p_xfb_bind){arg_x(c, 2), arg_x(c, 3)};
+}
+// void nvnCommandBufferBegin/EndTransformFeedback(NVNcommandBuffer *cmd, NVNbufferAddress control): the control address
+// keeps the hardware's write offsets between Pause, Resume and DrawTransformFeedback. XC2 calls none of those and works
+// out the bytes written from its own vertex count, so the replay neither reads nor writes it (op_draw counts instead).
+NVN_API(nvnCommandBufferBeginTransformFeedback) { REC(cmd_of(c), OP_XFB_ACTIVE, p_flag)->value = 1; }
+NVN_API(nvnCommandBufferEndTransformFeedback) { REC(cmd_of(c), OP_XFB_ACTIVE, p_flag)->value = 0; }
 // void nvnCommandBufferSetPrimitiveRestart(NVNcommandBuffer *cmd, NVNboolean enable, int index): XCX draws its
 // terrain and cliff strips with 16-bit indices and restart at 0xffff; the replay applies it per indexed draw (op_draw_idx)
 NVN_API(nvnCommandBufferSetPrimitiveRestart) {
@@ -1018,7 +1032,8 @@ const char *nvn_op_name(uint32_t op) {
         "BIND_VSTREAM", "BIND_VBUF", "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW",
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
-        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF",
+        "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "XFB_BIND",
+        "XFB_ACTIVE",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";

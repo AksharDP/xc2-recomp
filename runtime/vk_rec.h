@@ -38,6 +38,10 @@ void rec_blend_equation(PFN_vkCmdSetColorBlendEquationEXT fn, VkCommandBuffer cb
                         const VkColorBlendEquationEXT *v);
 void rec_write_mask(PFN_vkCmdSetColorWriteMaskEXT fn, VkCommandBuffer cb, uint32_t first, uint32_t n,
                     const VkColorComponentFlags *v);
+void rec_xfb_bind(PFN_vkCmdBindTransformFeedbackBuffersEXT fn, VkCommandBuffer cb, VkBuffer b, VkDeviceSize offset,
+                  VkDeviceSize size);   // binding 0
+// vkCmdBeginTransformFeedbackEXT or vkCmdEndTransformFeedbackEXT (the same signature) without counter buffers
+void rec_xfb_mark(PFN_vkCmdBeginTransformFeedbackEXT fn, VkCommandBuffer cb);
 
 #define REC_CMDS(X)                                                                                                       \
     X(BeginQuery, (VkCommandBuffer cb, VkQueryPool p, uint32_t q, VkQueryControlFlags f), (cb, p, q, f))                  \

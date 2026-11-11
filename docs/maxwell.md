@@ -112,7 +112,7 @@ Source shorthands:
 | 5.7 | **Alpha-to-coverage** with dither (`SET_ALPHA_TO_COVERAGE_DITHER_CONTROL` 0x12e0), alpha test (fixed function on Maxwell). | A2C without dither; no alpha test. | Ryujinx emulates alpha test and A2C dither in the shader from graphics state; ours passes `AlphaTestOp.Always`, A2C false to the translator (`Program.cs` `QueryGraphicsState`). | OGD 0x12e0, 0x16b4 |
 | 5.8 | **Logic ops** on colour targets. | `logicOp` feature; ignored on float targets. | Ours: in the pipeline key. | OGD 0x19c4 |
 | 5.9 | **Vertex formats**: `*SCALED` 8/16-bit, RGB10A2 SNORM/SCALED, 3-component formats, 32-bit scaled. | No 32-bit SCALED; 3-component formats often unsupported. | Ours: 32-bit scaled read as integers (logged), 3-component widened (`vk_pipeline.c` vertex format table). | — |
-| 5.10 | **Transform feedback**, rasterizer discard. | `VK_EXT_transform_feedback`. | Ours: rasterizer discard without XFB = no draw (`nvn_api_cmd.c`). | OGD 0x0744 |
+| 5.10 | **Transform feedback**, rasterizer discard. | `VK_EXT_transform_feedback`. | Ours: XC2's use only: buffer 0, point draws, the layout from the shader's control section (`gfx_shader.c` `gfx_shader_xfb`), one Begin and End per draw at a running offset (`vk_exec_draw.c` `xfb_begin`). Pause, Resume and DrawTransformFeedback stay fatal: XC2 does not call them. | OGD 0x0744 |
 | 5.11 | **Depth bounds, sample mask, conservative raster**. | Optional features. | Ours: ignored, logged (`nvn_ext.c`). | OGD 0x0fa4 |
 | 5.12 | **Blend factors on targets without alpha** (RGBX emulated as RGBA). | Destination alpha reads the stored value. | Ryujinx replaces DST_ALPHA factors on no-alpha targets (`FilterBlendFactor`, RYU-SU). | RYU-SU |
 
