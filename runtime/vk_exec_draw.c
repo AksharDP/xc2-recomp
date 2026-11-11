@@ -879,9 +879,14 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
 // entries that hold 2/W read 2/output, so at 2560 they read 2/2560 where the design needs 2/1280, the quads cover half
 // the target and a box shows in the opening cutscene. Those entries are c4[0].x, c4[15].x (x) and c4[1].y, c4[16].y (y).
 // A full-target projection has the same numbers, so the glow is told apart by its target being half the output (glow_c4).
+// The porthole's flare sprites (issue 46, 4K: pass 173, prog 1474) have the same 2/output entries and quads designed on
+// 1280x720, but draw into a target the size of the output: at 4K the quads cover 1280/3042 of it and the starburst is
+// cut at their edges. Quads on a full-output target are scaled too (glow_c4's full case; XC2_GLOW_FULL=0 turns it off).
 // The block is copied to transient memory with the four entries scaled by output / 1280 in x and output / 720 in y: 1 at
 // native, 1.5 at 1920, 2 at 2560, 2.38 at 3042x1712. XC2_GLOW_ORTHO=0 binds the block as the guest wrote it.
 #define GLOW_HEAD 0x108u   // the bytes the check reads: c4[0].x at 0x00, c4[1].y at 0x14, c4[15].x at 0xf0, c4[16].y at 0x104
+// The primitive of the draw being prepared (prepare_draw sets it before bind_resources reads the constant blocks).
+static int glow_prim;
 
 static int glow_on(void) {
     static int on = -1;
@@ -890,6 +895,13 @@ static int glow_on(void) {
 }
 
 // [addr, addr+n) as the submission saw it: the snapshot's copy when it has one, else guest memory.
+// XC2_GLOW_FULL=0: quads on full-output targets bind their projection as the guest wrote it (glow_c4's full case off).
+static int glow_full_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("GLOW_FULL", "1") != 0;
+    return on;
+}
+
 static int glow_read(uint64_t addr, uint64_t n, void *dst) {
     VkMemSpan sp;
     if (vk_usnap_read(addr, n, dst)) return 1;
@@ -927,7 +939,14 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
     // Checked before any read, so only passes whose target is about half the output read the block. The native output
     // (1280x720) has scale 1 and reads nothing.
     if (ow == 1280 && oh == 720) return 0;
-    if (!(fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh)) return 0;
+    // A target half the output (the glow layers), or for quads a target the size of the output: the flare sprites of the
+    // porthole (pass 173 at 4K, prog 1474) take the same 2/output projection into a full-output target, and their quads
+    // are designed on the 1280x720 frame (native: 2/1280 into 1280x720). The 1% tolerance covers the target's width
+    // rounding (3048 for a 3042 output).
+    int half = fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh;
+    int full = glow_full_on() && glow_prim == NVN_DRAW_PRIMITIVE_QUADS && fabs(pw - ow) <= 0.01 * ow &&
+               fabs(ph - oh) <= 0.01 * oh;
+    if (!half && !full) return 0;
     uint8_t head[GLOW_HEAD];
     if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
     float x0, y1, x15, y16;
@@ -1935,6 +1954,7 @@ static int pipe_memo_on(void) {
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
+    glow_prim = prim;
     if (ex->render_disabled) {
         if (vk_dump_armed)
             vk_dump_note("draw skipped (render disabled): program %llu prim %d count %d",
