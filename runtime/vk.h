@@ -187,6 +187,7 @@ void *vk_mem_capture(void);
 // since, one call of page per page in address order; returns the generation to pass next time.
 uint32_t vk_mem_record_pages(uint32_t since, uint64_t lo, uint64_t hi, void (*page)(void *ctx, uint64_t addr), void *ctx);
 void vk_mem_capture_drop(void *cap);
+void vk_mem_capture_hold(int on);   // replay_rec.c: a capture holds freezing off (every frozen region thawed) while it runs
 void *vk_usnap_capture(const uint64_t *handles, int n);
 void vk_usnap_capture_drop(void *cap);
 void vk_exec_captures(void *mem, void *ubo);   // this thread's next vk_exec_record of handles uses these

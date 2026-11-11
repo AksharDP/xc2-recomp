@@ -32,7 +32,7 @@ const GfxBackend *gfx_backend(void) {
     if (b) return b;
     const char *gpu = rt_config()->gpu;
     b = gpu && !strcmp(gpu, "null") ? &gfx_null_backend : &gfx_vulkan_backend;
-    b = rec_wrap(b);   // XC2_RECORD: the calls go through the recorder (replay.h); b itself otherwise
+    b = rec_wrap(b);   // the calls go through the recorder (replay.h); a capture writes them out on request
     __atomic_store_n(&chosen, b, __ATOMIC_RELEASE);
     return b;
 }

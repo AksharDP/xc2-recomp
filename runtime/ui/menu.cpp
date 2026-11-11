@@ -693,10 +693,35 @@ static const char *action_value(const ActionNote &a, UiTextId done_text) {
 
 static void action_done(ActionNote &a, bool ok) { a = {plat_now_ns() + 3000000000ull, ok ? 1 : -1}; }
 
+// A button that is dimmed and ignores its click while it is disabled.
+static bool dim_button(const char *label, bool enabled) {
+    if (!enabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+    bool pressed = ImGui::Button(label);
+    if (!enabled) ImGui::PopStyleVar();
+    return pressed && enabled;
+}
+
+// The capture buttons (rec_menu.h): "Capture frame" takes the next frame; "Capture checkpoint" records until its button
+// reads "Stop checkpoint" and is pressed again. Each waits while the other kind runs.
+static void capture_buttons(void) {
+    const int now = rec_menu_state();
+    const char *snap = menu_text(UI_MENU_CAPTURE_FRAME);
+    const char *ckpt = menu_text(now == REC_MENU_CHECKPOINT ? UI_MENU_CAPTURE_STOP : UI_MENU_CAPTURE_CHECKPOINT);
+    if (dim_button(snap, now == 0)) rec_menu_request(REC_MENU_FRAME);
+    ImGui::SameLine();
+    if (dim_button(ckpt, now != REC_MENU_FRAME))
+        rec_menu_request(now == REC_MENU_CHECKPOINT ? REC_MENU_STOP : REC_MENU_CHECKPOINT);
+}
+
 static void tab_advanced(float scale) {
     static ActionNote copy_note, log_note;
     opt_begin("##advanced", scale);
     opt_text(UI_MENU_ADV_WARNING, true);
+
+    // The capture buttons sit above the settings: they are debugging tools, kept off the Continue / Quit row.
+    opt_group(UI_MENU_GROUP_CAPTURE);
+    opt_text(UI_MENU_CAPTURE_HINT, true);
+    capture_buttons();
 
     opt_group(UI_MENU_GROUP_SCHED);
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
@@ -939,28 +964,8 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
     }
     const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
-    // The capture buttons (rec_menu.h): "Capture frame" takes the next frame; "Capture checkpoint" records until its button
-    // reads "Stop checkpoint" and is pressed again. Both need XC2_RECORD, and each waits while the other kind runs.
-    const int rec_ok = rec_menu_available(), rec_now = rec_menu_state();
-    const char *snap = menu_text(UI_MENU_CAPTURE_FRAME);
-    const char *ckpt = menu_text(rec_now == REC_MENU_CHECKPOINT ? UI_MENU_CAPTURE_STOP : UI_MENU_CAPTURE_CHECKPOINT);
-    const char *hint = rec_ok ? nullptr : menu_text(UI_MENU_CAPTURE_NEEDS_RECORD);
-    float bw = fmaxf(fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x),
-                     fmaxf(ImGui::CalcTextSize(snap).x, ImGui::CalcTextSize(ckpt).x)) + st.FramePadding.x * 4;
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 4 - st.ItemSpacing.x * 3, y));
-    // A dimmed button ignores its click; the hint shows while it is hovered.
-    auto dim_button = [](const char *label, ImVec2 size, bool enabled, const char *tip) {
-        if (!enabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
-        bool pressed = ImGui::Button(label, size);
-        if (!enabled) ImGui::PopStyleVar();
-        if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-        return pressed && enabled;
-    };
-    if (dim_button(snap, ImVec2(bw, 0), rec_ok && rec_now == 0, hint)) rec_menu_request(REC_MENU_FRAME);
-    ImGui::SameLine();
-    if (dim_button(ckpt, ImVec2(bw, 0), rec_ok && rec_now != REC_MENU_FRAME, hint))
-        rec_menu_request(rec_now == REC_MENU_CHECKPOINT ? REC_MENU_STOP : REC_MENU_CHECKPOINT);
-    ImGui::SameLine();
+    float bw = fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 2 - st.ItemSpacing.x, y));
     if (ImGui::Button(cont, ImVec2(bw, 0))) set_open(0);
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();

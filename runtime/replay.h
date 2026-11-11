@@ -1,12 +1,12 @@
 // Frame recording and offline replay of the Vulkan back end (replay_rec.c, replay.c).
 //
-// XC2_RECORD=<dir>: the back end's calls are journaled from the start, and nothing is written until a capture is asked for
-// from the F1 menu (rec_menu.h): Capture frame writes <dir>/frame-N/log.bin, Capture checkpoint writes
-// <dir>/checkpoint-N/log.bin until Stop checkpoint. A capture logs every call the front end makes into the back end
-// (gfx_backend), with the guest memory the GPU can read: before each submission and each pool call, the heap pages the
-// CPU wrote since the previous one (vk_mem_record_pages), and every range the game gives back (memory.c decommit).
-// Freezing is turned off while XC2_RECORD is set (XC2_FREEZE_IDLE=0): a frozen page's first write does not show in the
-// write-watch.
+// The back end's calls are journaled from the start, and nothing is written until a capture is asked for from the F1
+// menu's Advanced tab (rec_menu.h): Capture frame writes <dir>/frame-N/log.bin, Capture checkpoint writes
+// <dir>/checkpoint-N/log.bin until Stop checkpoint. <dir> is captures/ in the working folder, or XC2_RECORD=<dir> when set.
+// A capture logs every call the front end makes into the back end (gfx_backend), with the guest memory the GPU can read:
+// before each submission and each pool call, the heap pages the CPU wrote since the previous one (vk_mem_record_pages),
+// and every range the game gives back (memory.c decommit). Freezing is held off while a capture runs
+// (vk_mem_capture_hold): a frozen page's first write does not show in the write-watch.
 // XC2_RECORD_FRAMES=<n> stops the log after the n-th present. XC2_RECORD_SHOTS=<dir> also saves each presented picture
 // as <dir>/p<n>.png, read back by the record itself after the frame's work is done.
 // A capture starts (rec_arm) after the present it is asked at, with a preamble of the state the next frame starts from (the
@@ -73,8 +73,9 @@ typedef struct {
     uint64_t size;      // payload bytes after this header
 } RecRecord;
 
-// The recorder (replay_rec.c). rec_wrap returns the back end the front end calls: b itself, or with XC2_RECORD set a
-// wrapper that logs every call and forwards it to b. rec_note_decommit is called by memory.c for each range it gives back.
+// The recorder (replay_rec.c). rec_wrap returns the back end the front end calls: a wrapper that logs every call and
+// forwards it to b (always, so that a capture can start at any frame). rec_note_decommit is called by memory.c for each
+// range it gives back.
 const GfxBackend *rec_wrap(const GfxBackend *b);
 void rec_note_decommit(uint64_t addr, uint64_t n);
 void rec_note_commit(uint64_t addr, uint64_t n);

@@ -184,7 +184,7 @@ static void commit(uint64_t a, uint64_t n, const char *what) {
 static void decommit(uint64_t a, uint64_t n, const char *what) {
     plat_mutex_lock(&frz_lock);
     thaw_range_locked(a, n, 3);
-    rec_note_decommit(a, n);   // replay.h: a recording drops these pages too (nothing unless XC2_RECORD is set)
+    rec_note_decommit(a, n);   // replay.h: a capture drops these pages too (nothing while no capture runs)
     int ok = !n || plat_mem_decommit(a, n);
     plat_mutex_unlock(&frz_lock);
     if (!ok) rt_fatal("memory: decommit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);

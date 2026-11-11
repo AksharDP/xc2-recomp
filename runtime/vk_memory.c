@@ -620,6 +620,21 @@ static uint32_t reg_tried[RT_ADDRESS_LIMIT >> REG_SHIFT];   // gen_lock: ww_ep o
 static uint32_t *fcand;                       // gen_lock: regions to try at the next freeze pass
 static int nfcand, cfcand;
 static uint64_t n_frz_refused;                // gen_lock: candidates mem_freeze refused
+static int freeze_held, freeze_saved;         // gen_lock: a capture holds freezing off; the setting it restores
+
+// The replay record (replay_rec.c) holds freezing off while a capture runs. A frozen page's first write thaws it without a
+// stamp, so the capture would miss that write. On: every frozen region is thawed now and none freezes until off, which
+// restores the setting the run had.
+void vk_mem_capture_hold(int on) {
+    plat_mutex_lock(&gen_lock);
+    if (on && !freeze_held) {
+        freeze_held = 1, freeze_saved = freeze_idle, freeze_idle = 0;
+        mem_thaw(0, RT_ADDRESS_LIMIT);
+    } else if (!on && freeze_held) {
+        freeze_held = 0, freeze_idle = freeze_saved;
+    }
+    plat_mutex_unlock(&gen_lock);
+}
 
 static uint32_t *gen_slot(uint64_t page_addr, int create) {
     uint64_t ci = page_addr >> GEN_CHUNK_SHIFT;
@@ -1369,10 +1384,7 @@ static void mirror_mode(int discrete) {
     const char *fi = cfg_get("XC2_FREEZE_IDLE");
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
-    // A recording needs every write in the write-watch (replay.h): a frozen page's first write thaws without a stamp.
-    // The device is set up before the recorder's first call, so the recorder cannot turn freezing off in time itself.
-    const char *rec = cfg_get("XC2_RECORD");
-    if (rec && *rec) freeze_idle = 0, rt_log("mem: freezing off for the recording (XC2_RECORD)");
+    // Freezing stays on by default; a capture holds it off while it runs (vk_mem_capture_hold).
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (XC2_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,

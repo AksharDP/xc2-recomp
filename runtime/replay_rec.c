@@ -43,8 +43,8 @@ static uint64_t flush_ns, flush_n;             // rec_lock: time in flush_memory
 static int armed;                              // log_lock: 1 while the record takes calls (from the arm point, rec_arm)
 static uint64_t arm_at, presents_all;          // rec_lock: XC2_RECORD_FROM-1, the present the record arms at; all presents
 static char arm_file[PLAT_PATH_MAX];           // XC2_RECORD_ARM_FILE: arms at the first present after this file appears
-static int wrapped;                            // set once by rec_wrap: XC2_RECORD is set, so the journal runs
-static char rec_dir[PLAT_PATH_MAX];            // XC2_RECORD: the folder the F1 menu's captures are made in
+static int wrapped;                            // set once by rec_wrap: the recorder is on for the run, so the journal runs
+static char rec_dir[PLAT_PATH_MAX];            // the folder the captures go to: XC2_RECORD, else captures
 static int cur_kind;                           // log_lock: REC_MENU_FRAME or REC_MENU_CHECKPOINT while a menu capture runs
 static int req_kind;                           // the F1 menu's request (rec_menu_request), taken by the next present
 
@@ -55,7 +55,7 @@ static int rec_on(void) {
     return on;
 }
 
-// The journal runs for the whole process once XC2_RECORD is set: a capture that starts later needs the objects alive then.
+// The journal runs for the whole process: a capture that starts later needs the objects alive then.
 static int journal_on(void) { return wrapped; }
 
 // Writes the buffer out at log_off. log_lock held.
@@ -102,6 +102,7 @@ static void close_log(const char *why) {
                (unsigned long long)flush_n, (double)flush_ns / 1e9, (unsigned long long)log_off);
     }
     plat_mutex_unlock(&log_lock);
+    vk_mem_capture_hold(0);   // freezing resumes once no capture is open (outside log_lock: gen_lock is not nested in it)
 }
 
 // Opens a log at path and writes its header: the heap's place, as the replay maps it. log_lock held by the caller.
@@ -743,6 +744,7 @@ static void rec_arm(void) {
     }
     armed = 1;
     plat_mutex_unlock(&log_lock);
+    vk_mem_capture_hold(1);   // no frozen page may take a write unstamped while the capture runs
     const RtGuestLayout *g = mem_layout();
     uint64_t committed = mem_heap_committed();
     if (committed > g->heap.size) committed = g->heap.size;
@@ -808,10 +810,11 @@ static void rec_arm(void) {
 }
 
 const GfxBackend *rec_wrap(const GfxBackend *b) {
+    if (real) return &rec_be;
+    // The captures go to XC2_RECORD when it names a folder, else to captures/ in the working folder. Nothing is written
+    // there until a capture starts, so the recorder needs no setting to be ready.
     const char *dir = cfg_get("XC2_RECORD");
-    if (!dir || !*dir || real) return real ? &rec_be : b;
-    snprintf(rec_dir, sizeof rec_dir, "%s", dir);
-    plat_file_mkdir_p(rec_dir);
+    snprintf(rec_dir, sizeof rec_dir, "%s", dir && *dir ? dir : "captures");
     log_buf = malloc(LOG_BUF);
     if (!log_buf) rt_fatal("rec: out of memory for the log buffer");
     atexit(rec_at_exit);   // a capture still open when the game ends gets its last bytes out
@@ -832,6 +835,7 @@ const GfxBackend *rec_wrap(const GfxBackend *b) {
     if (scripted) {
         char path[PLAT_PATH_MAX * 2];
         snprintf(path, sizeof path, "%s/log.bin", rec_dir);
+        plat_file_mkdir_p(rec_dir);
         plat_file_delete(path);   // an earlier record in this folder is replaced
         plat_mutex_lock(&log_lock);
         int ok = start_log(path);
@@ -845,15 +849,11 @@ const GfxBackend *rec_wrap(const GfxBackend *b) {
         snprintf(shots_dir, sizeof shots_dir, "%s", shots);
         plat_file_mkdir_p(shots_dir);
     }
-    // Freezing stays off for the run: vk_memory.c reads XC2_RECORD when the device is set up (before this point).
-    rt_log("rec: the %s back end is recording on request into %s (F1 menu: Capture frame, Capture checkpoint)", b->name,
-           rec_dir);
+    rt_log("rec: %s back end; captures (Advanced tab: Capture frame, Capture checkpoint) go to %s", b->name, rec_dir);
     return &rec_be;
 }
 
 // ---- the F1 menu's captures (rec_menu.h). A script's record (XC2_RECORD_FROM) shows as idle here.
-
-int rec_menu_available(void) { return wrapped; }
 
 int rec_menu_state(void) {
     plat_mutex_lock(&log_lock);
