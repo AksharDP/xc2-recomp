@@ -971,6 +971,10 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
         rt_log("glow: scaling the %ux%u target of the %ux%u output by %.4f x %.4f", ex->pass_w, ex->pass_h, ow, oh, sx,
                sy);
     }
+    if (vk_dump_armed)   // every binding that takes the scale, so a dump lists the passes the full case reaches
+        vk_dump_note("glow: c4 of prog %llu on a %ux%u %s target scaled to the %ux%u output: x %.4f y %.4f (prim %d)",
+                     (unsigned long long)(ex->prog ? ex->prog->serial : 0), ex->pass_w, ex->pass_h, half ? "half-output" : "full-output",
+                     ow, oh, sx, sy, glow_prim);
     uint64_t n = b->size < max ? b->size : max;
     VkBuffer buf;
     VkDeviceSize off;
