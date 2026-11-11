@@ -874,6 +874,182 @@ static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
 }
 
+// Issue 46. The glow passes draw the design's 1280x720 quads (+-640 x +-360 units) into a target that is half the output
+// (640x360 native, 960x540 at 1920, 1280x720 at 2560). The guest scales their orthographic projection by the output: the
+// entries that hold 2/W read 2/output, so at 2560 they read 2/2560 where the design needs 2/1280, the quads cover half
+// the target and a box shows in the opening cutscene. Those entries are c4[0].x, c4[15].x (x) and c4[1].y, c4[16].y (y).
+// A full-target projection has the same numbers, so the glow is told apart by its target being half the output (glow_c4).
+// The porthole's flare sprites (issue 46, 4K: pass 173, prog 1474) have the same 2/output entries and quads designed on
+// 1280x720, but draw into a target the size of the output: at 4K the quads cover 1280/3042 of it and the starburst is
+// cut at their edges. Quads on a full-output target are scaled too (glow_c4's full case; XC2_GLOW_FULL=0 turns it off).
+// The block is copied to transient memory with the four entries scaled by output / 1280 in x and output / 720 in y: 1 at
+// native, 1.5 at 1920, 2 at 2560, 2.38 at 3042x1712. XC2_GLOW_ORTHO=0 binds the block as the guest wrote it.
+#define GLOW_HEAD 0x108u   // the bytes the check reads: c4[0].x at 0x00, c4[1].y at 0x14, c4[15].x at 0xf0, c4[16].y at 0x104
+// The primitive of the draw being prepared (prepare_draw sets it before bind_resources reads the constant blocks).
+static int glow_prim;
+
+static int glow_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("GLOW_ORTHO", "1") != 0;
+    return on;
+}
+
+// [addr, addr+n) as the submission saw it: the snapshot's copy when it has one, else guest memory.
+// XC2_GLOW_FULL=0: quads on full-output targets bind their projection as the guest wrote it (glow_c4's full case off).
+static int glow_full_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("GLOW_FULL", "1") != 0;
+    return on;
+}
+
+static int glow_read(uint64_t addr, uint64_t n, void *dst) {
+    VkMemSpan sp;
+    if (vk_usnap_read(addr, n, dst)) return 1;
+    if (!vk_mem_resolve(addr, n, &sp) || sp.avail < n) return 0;
+    memcpy(dst, (const void *)(uintptr_t)addr, n);
+    return 1;
+}
+
+static void glow_scale_at(uint8_t *at, double s) {
+    float v;
+    memcpy(&v, at, 4);
+    v = (float)(v * s);
+    memcpy(at, &v, 4);
+}
+
+// The output size in effect (res_sizes; it does not change while the game runs), read once.
+static void glow_out(unsigned *w, unsigned *h) {
+    static unsigned ow, oh;
+    static int got;
+    if (!got) {
+        unsigned out[2], scene[2];
+        res_sizes(out, scene);
+        ow = out[0], oh = out[1], got = 1;
+    }
+    *w = ow, *h = oh;
+}
+
+// XC2_GLOW_AUDIT=1 (diagnostic, changes nothing): logs each program whose c4 projection holds 2/output, at any target size,
+// once per program and target size (the first 64). The glow and full-output cases of glow_c4 are the sizes the fix
+// handles; a line here for any other size is a candidate for the same bug. Read-only: it reads the entries glow_c4 reads.
+static int glow_audit_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("GLOW_AUDIT", "0") != 0;
+    return on;
+}
+
+static void glow_audit(VkExec *ex, const p_bind_buf *b) {
+    if (!glow_audit_on() || ex->pass_noatt || !ex->pass_w || !ex->pass_h || !b->addr || b->size < GLOW_HEAD) return;
+    unsigned ow, oh;
+    glow_out(&ow, &oh);
+    if (ow == 1280 && oh == 720) return;
+    uint8_t head[GLOW_HEAD];
+    if (!glow_read(b->addr, GLOW_HEAD, head)) return;
+    float x0, y1, x15, y16;
+    memcpy(&x0, head + 0x00, 4);
+    memcpy(&y1, head + 0x14, 4);
+    memcpy(&x15, head + 0xf0, 4);
+    memcpy(&y16, head + 0x104, 4);
+    int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
+               fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
+    if (!data) return;
+    unsigned long long serial = ex->prog ? (unsigned long long)ex->prog->serial : 0;
+    static struct { unsigned long long serial; unsigned w, h; } seen[64];
+    static int nseen;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i].serial == serial && seen[i].w == ex->pass_w && seen[i].h == ex->pass_h) return;
+    if (nseen >= 64) return;
+    seen[nseen].serial = serial, seen[nseen].w = ex->pass_w, seen[nseen].h = ex->pass_h;
+    nseen++;
+    double pw = ex->pass_w, ph = ex->pass_h;
+    const char *cls = fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh ? "half-output"
+                    : fabs(pw - ow) <= 0.01 * ow && fabs(ph - oh) <= 0.01 * oh ? "output-size"
+                    : "other size";
+    unsigned long long frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    rt_log("glow audit: prog %llu prim %d draws into a %ux%u %s target of the %ux%u output at frame %llu, with 2/output "
+           "in its c4 projection",
+           serial, glow_prim, ex->pass_w, ex->pass_h, cls, ow, oh, frame);
+}
+
+// The c4 binding of a glow pass as a copy with its projection scaled to the design; 0 when the block is not a glow
+// projection, the knob is off or the scale is 1 (native), and the caller binds the block as usual.
+static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBufferInfo *out) {
+    if (!glow_on() || ex->pass_noatt || !ex->pass_w || !ex->pass_h || !b->addr || b->size < GLOW_HEAD) return 0;
+    unsigned ow, oh;
+    glow_out(&ow, &oh);
+    double pw = ex->pass_w, ph = ex->pass_h;
+    // Checked before any read, so only passes whose target is about half the output read the block. The native output
+    // (1280x720) has scale 1 and reads nothing.
+    if (ow == 1280 && oh == 720) return 0;
+    // A target half the output (the glow layers), or for quads a target the size of the output: the flare sprites of the
+    // porthole (pass 173 at 4K, prog 1474) take the same 2/output projection into a full-output target, and their quads
+    // are designed on the 1280x720 frame (native: 2/1280 into 1280x720). The 1% tolerance covers the target's width
+    // rounding (3048 for a 3042 output).
+    int half = fabs(2 * pw - ow) <= 0.05 * ow && fabs(2 * ph - oh) <= 0.05 * oh;
+    int full = glow_full_on() && glow_prim == NVN_DRAW_PRIMITIVE_QUADS && fabs(pw - ow) <= 0.01 * ow &&
+               fabs(ph - oh) <= 0.01 * oh;
+    if (!half && !full) return 0;
+    uint8_t head[GLOW_HEAD];
+    if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
+    float x0, y1, x15, y16;
+    memcpy(&x0, head + 0x00, 4);
+    memcpy(&y1, head + 0x14, 4);
+    memcpy(&x15, head + 0xf0, 4);
+    memcpy(&y16, head + 0x104, 4);
+    // The entries read 2/output: doubled over the output size they are 1.
+    int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
+               fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
+    if (!data) return 0;
+    double sx = ow / 1280.0, sy = oh / 720.0;
+    // Each distinct target size is logged once (the first 16), so stderr.txt lists what was scaled.
+    static unsigned long long seen[16];
+    static int nseen;
+    unsigned long long key = (unsigned long long)ex->pass_w << 32 | ex->pass_h;
+    int fresh = 1;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i] == key) fresh = 0;
+    if (fresh && nseen < 16) {
+        seen[nseen++] = key;
+        rt_log("glow: scaling the %ux%u target of the %ux%u output by %.4f x %.4f", ex->pass_w, ex->pass_h, ow, oh, sx,
+               sy);
+    }
+    // Each program that takes the full-output case is logged once (the first 32), so a run's stderr.txt lists the
+    // programs that case reaches and shows whether any program besides the starburst family takes it.
+    if (!half) {
+        static unsigned long long progs[32];
+        static int nprogs;
+        unsigned long long serial = ex->prog ? (unsigned long long)ex->prog->serial : 0;
+        int seen = 0;
+        for (int i = 0; i < nprogs; i++)
+            if (progs[i] == serial) seen = 1;
+        if (!seen && nprogs < 32) {
+            progs[nprogs++] = serial;
+            // frame_now() in vk_dump.c: the presented-frame count plus one, the number a dump's XC2_DUMP takes
+            unsigned long long frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+            rt_log("glow: prog %llu draws quads on a %ux%u full-output target at frame %llu: the projection takes the "
+                   "output scale",
+                   serial, ex->pass_w, ex->pass_h, frame);
+        }
+    }
+    if (vk_dump_armed)   // every binding that takes the scale, so a dump lists the passes the full case reaches
+        vk_dump_note("glow: c4 of prog %llu on a %ux%u %s target scaled to the %ux%u output: x %.4f y %.4f (prim %d)",
+                     (unsigned long long)(ex->prog ? ex->prog->serial : 0), ex->pass_w, ex->pass_h, half ? "half-output" : "full-output",
+                     ow, oh, sx, sy, glow_prim);
+    uint64_t n = b->size < max ? b->size : max;
+    VkBuffer buf;
+    VkDeviceSize off;
+    RS.volatile_ = 1;   // the copy is transient guest data, as bind_range's copies are
+    uint8_t *copy = scratch(ex, n, &buf, &off);
+    if (!glow_read(b->addr, n, copy)) return 0;
+    glow_scale_at(copy + 0x00, sx);
+    glow_scale_at(copy + 0xf0, sx);
+    glow_scale_at(copy + 0x14, sy);
+    glow_scale_at(copy + 0x104, sy);
+    count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, n);
+    *out = (VkDescriptorBufferInfo){buf, off, n};
+    return 1;
+}
+
 // The buffer range limits, read once: the device's properties are a cold cache line on every binding of every draw.
 static struct { uint64_t ubo_max, ubo_align, sbo_max, sbo_align; } LIM;
 
@@ -899,6 +1075,8 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         }
     } else if (slot >= 3 && slot - 3 < 18) {
         const p_bind_buf *b = &ex->ubo[st][slot - 3];
+        if (slot == 4 && st == NVN_STAGE_VS) glow_audit(ex, b);
+        if (slot == 4 && st == NVN_STAGE_VS && glow_c4(ex, b, max, &bi)) return bi;
         if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {   // as of the submit call
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
@@ -1841,6 +2019,7 @@ static int pipe_memo_on(void) {
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
+    glow_prim = prim;
     if (ex->render_disabled) {
         if (vk_dump_armed)
             vk_dump_note("draw skipped (render disabled): program %llu prim %d count %d",
