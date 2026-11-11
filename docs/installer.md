@@ -212,6 +212,22 @@ bin/                  xc2_xlate, ninja, libSDL3.so.0
   `modules.c` checks them against its layout. `.github/workflows/release.yml` builds both releases from a bare
   checkout when a `v<VERSION>` tag is pushed. Only `--prove` reads `generated/v301` and `build/extracted/v301`.
 
+## RecompLauncher
+
+[RecompLauncher](https://recomplauncher.com) installs this setup from the GitHub release and runs it for the player.
+`recomplauncher.json` sits at the top of the zip and at the root of the AppImage (`tools/make_release.py`
+`build_sources`). It asks the player for the base game, the update, the add-on content and `prod.keys` (the launcher
+keeps its own copy of the keys), then runs the setup without a window:
+
+```
+python\python.exe -m installer --progress-lines --base=... --update=... --keys=... --dlc=... --dest=<release folder>\game
+```
+
+On Linux the same arguments go to the AppImage (`AppRun -m installer ...`). The game lands in `game/` next to the
+setup, so an update of the release leaves it in place and the launcher runs the setup again on it. Play starts
+`game/xc2.exe` (`game/xc2` on Linux), and the launcher's settings page edits `game/xc2.ini`. The setup window and the
+command line work as before.
+
 ## Constraints
 
 - The installer steps contain no Win32 calls: Linux runs the same steps with its own compiler ("Linux release").

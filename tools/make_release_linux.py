@@ -19,6 +19,7 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
                built static; SDL3, Opus and libvpx come from the sysroot)
     bin/       xc2_xlate (+ .id), ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION
+    recomplauncher.json   how RecompLauncher sets the game up and starts it; it is /recomplauncher.json inside the AppImage
     AppRun, xc2-setup.desktop, xc2-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
 
 --appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --prove compiles
