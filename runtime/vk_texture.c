@@ -1258,6 +1258,28 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
     return ok;
 }
 
+// Replay recording (replay_rec.c, rec_arm): a copy of the tex_t of each live texture whose image the GPU owns, so the
+// recorder can read the images back. Released entries are left out. The caller frees the array.
+tex_t *vk_texture_gpu_owned(size_t *n) {
+    size_t cnt = 0, cap = 0;
+    tex_t *out = NULL;
+    lock();
+    for (uint32_t i = 0; i < by_key.cap; i++) {
+        Tex *e = by_key.vals[i];
+        if (!e || e->released || !e->pub.gpu_owned) continue;
+        if (cnt == cap) {
+            size_t c = cap ? cap * 2 : 256;
+            tex_t *p = realloc(out, c * sizeof *out);
+            if (!p) break;
+            out = p, cap = c;
+        }
+        out[cnt++] = e->t;
+    }
+    unlock();
+    *n = cnt;
+    return out;
+}
+
 // ReadTexels: the pool bytes are the content of a mirrored texture the GPU has not rendered into; every other texture
 // is read back from its image.
 void vk_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row, uint64_t img) {

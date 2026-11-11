@@ -183,6 +183,9 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 // vk_mem_capture copies the pages of the mirrors the CPU wrote since the last capture; vk_usnap_capture the uniform
 // ranges the submission binds. Each is owned by the replay from then on (begin), or freed with *_drop.
 void *vk_mem_capture(void);
+// Replay recording (vk_memory.c vk_mem_record_pages): the readable committed pages of [lo, hi) written since generation
+// since, one call of page per page in address order; returns the generation to pass next time.
+uint32_t vk_mem_record_pages(uint32_t since, uint64_t lo, uint64_t hi, void (*page)(void *ctx, uint64_t addr), void *ctx);
 void vk_mem_capture_drop(void *cap);
 void *vk_usnap_capture(const uint64_t *handles, int n);
 void vk_usnap_capture_drop(void *cap);
@@ -313,6 +316,7 @@ typedef struct {
 } VkTexImage;
 void vk_capture_texture(const VkTexImage *img);   // XC2_CAPTURE: notes a texture the measured frame samples (vk_capture.c)
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
+tex_t *vk_texture_gpu_owned(size_t *n);             // replay_rec.c: the tex_t of each live GPU-owned image (caller frees)
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the

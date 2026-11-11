@@ -73,6 +73,9 @@ int nvn_tex_live_at(const void *mem, tex_t *out);
 // Byte offset of a view's first level and layer inside the texture storage (nvnTextureGetViewOffset); v may be NULL.
 uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
 
+// Calls fn for each texture pin made so far (the host copies above, which never change once made): replay_rec.c takes them.
+void nvn_pins_each(void (*fn)(const tex_t *pin, void *ctx), void *ctx);
+
 // ---- nvn_api_cmd.c, nvn_ext.c: command buffers and their replay contract
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of
 // 8-byte-aligned records {op_hdr, payload}, OP_BEGIN first and OP_END last. Called recordings are inlined, so a copy

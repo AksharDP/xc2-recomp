@@ -29,6 +29,7 @@ extern "C" {
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "sysinfo.h"
+#include "rec_menu.h"
 #include "ui/menu.h"
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
@@ -938,8 +939,28 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
         ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
     }
     const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
-    float bw = fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 2 - st.ItemSpacing.x, y));
+    // The capture buttons (rec_menu.h): "Capture frame" takes the next frame; "Capture checkpoint" records until its button
+    // reads "Stop checkpoint" and is pressed again. Both need XC2_RECORD, and each waits while the other kind runs.
+    const int rec_ok = rec_menu_available(), rec_now = rec_menu_state();
+    const char *snap = menu_text(UI_MENU_CAPTURE_FRAME);
+    const char *ckpt = menu_text(rec_now == REC_MENU_CHECKPOINT ? UI_MENU_CAPTURE_STOP : UI_MENU_CAPTURE_CHECKPOINT);
+    const char *hint = rec_ok ? nullptr : menu_text(UI_MENU_CAPTURE_NEEDS_RECORD);
+    float bw = fmaxf(fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x),
+                     fmaxf(ImGui::CalcTextSize(snap).x, ImGui::CalcTextSize(ckpt).x)) + st.FramePadding.x * 4;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 4 - st.ItemSpacing.x * 3, y));
+    // A dimmed button ignores its click; the hint shows while it is hovered.
+    auto dim_button = [](const char *label, ImVec2 size, bool enabled, const char *tip) {
+        if (!enabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+        bool pressed = ImGui::Button(label, size);
+        if (!enabled) ImGui::PopStyleVar();
+        if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+        return pressed && enabled;
+    };
+    if (dim_button(snap, ImVec2(bw, 0), rec_ok && rec_now == 0, hint)) rec_menu_request(REC_MENU_FRAME);
+    ImGui::SameLine();
+    if (dim_button(ckpt, ImVec2(bw, 0), rec_ok && rec_now != REC_MENU_FRAME, hint))
+        rec_menu_request(rec_now == REC_MENU_CHECKPOINT ? REC_MENU_STOP : REC_MENU_CHECKPOINT);
+    ImGui::SameLine();
     if (ImGui::Button(cont, ImVec2(bw, 0))) set_open(0);
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
