@@ -39,6 +39,12 @@
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_CS 5
 #define ONESHOT_WAIT_MS 30000u   // prepare_draw: how long a one-shot draw waits for its pipeline before it is skipped
+#define DET_WAIT_MS 600000u      // deterministic mode (vk_exec_deterministic): how long a draw waits for its pipeline
+
+// The replay runs without the game's frame clock. In deterministic mode every draw waits for its shader and pipeline
+// (prepare_draw) rather than skipping while they build, so the picture does not depend on how fast a build finishes here.
+static int deterministic;
+void vk_exec_deterministic(int on) { deterministic = on != 0; }
 
 enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_COUNT };
 
@@ -789,6 +795,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (!n) return 0;
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
+        if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: the bytes this binding reads
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
         if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
@@ -1926,6 +1933,7 @@ static void bind_vertex_buffers(VkExec *ex) {
         VK_MEM_USE(sp);
         uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
         vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
+        if (vk_capture_on) vk_capture_note(r->address, n);   // XC2_CAPTURE: the vertex bytes this stream reads
     }
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
     memcpy(B.vin, ex->vbuf, sizeof B.vin);
@@ -2076,7 +2084,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
     int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
     if (vs_wait || fs_wait) {
-        if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) {   // skipped until ready
+        if (deterministic) oneshot = 1;   // the replay waits for the translation below, every draw alike
+        else if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) {   // skipped until ready
             if (vk_dump_armed) vk_dump_note("draw skipped (shader translating): program %llu", (unsigned long long)ex->prog->serial);
             return perf_count(PERF_CNT_SHADER_SKIP), 0;
         }
@@ -2103,7 +2112,9 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     static uint64_t wait_left_ns;
     uint32_t wait_ms = 0;
     uint64_t t0 = 0;
-    if (oneshot > 0) {
+    if (deterministic) {
+        wait_ms = DET_WAIT_MS;
+    } else if (oneshot > 0) {
         wait_ms = ONESHOT_WAIT_MS;
     } else if (skip < 2 && count <= 6 && (uint64_t)sc.extent.width * sc.extent.height * 2 >= (uint64_t)ex->pass_w * ex->pass_h) {
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -2128,7 +2139,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
             wait_left_ns = spent < wait_left_ns ? wait_left_ns - spent : 0;
         }
         why = oneshot > 0 ? "one-shot, shader" : wait_ms ? "full-screen" : NULL;
-        if (pending && oneshot < 0 && !vk_exec_targets_recent(ex, skip >= 1)) {
+        if (pending && oneshot < 0 && !deterministic && !vk_exec_targets_recent(ex, skip >= 1)) {
             perf_count(PERF_CNT_ONESHOT_WAIT);
             why = "one-shot";
             if (!w0) w0 = kern_now_ns();

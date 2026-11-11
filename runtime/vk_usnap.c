@@ -341,6 +341,7 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
+    if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: a uniform block read from the submit snapshot
     U.hits++;
     return 1;
 }

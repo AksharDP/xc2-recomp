@@ -24,6 +24,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "replay.h"
 #include "platform/platform.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -619,13 +620,17 @@ int main(int argc, char **argv) {
         rt_logf("XC2_GPU must be null or vulkan, not '%s'\n", cfg.gpu);
         return 2;
     }
-    const char *mode = NULL;
+    const char *mode = NULL, *replay_dir = NULL;
     for (int i = 1; i < argc; i++) {
         const char **path = !strcmp(argv[i], "--exefs") ? &cfg.exefs : !strcmp(argv[i], "--romfs") ? &cfg.romfs
                           : !strcmp(argv[i], "--profile") ? &cfg.profile : NULL;
         if (path) {
             if (++i == argc) return usage(argv[0]);
             *path = argv[i];
+        } else if (!strcmp(argv[i], "--replay")) {
+            if (mode || ++i == argc) return usage(argv[0]);
+            replay_dir = argv[i];
+            mode = "--replay";
         } else if (!strcmp(argv[i], "--seconds")) {
             char *end;
             if (++i == argc) return usage(argv[0]);
@@ -670,6 +675,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-mods")) return probe_mods();
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
+    if (!strcmp(mode, "--replay")) return replay_main(replay_dir);
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
     return usage(argv[0]);
 }

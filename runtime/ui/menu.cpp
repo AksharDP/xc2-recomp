@@ -29,6 +29,7 @@ extern "C" {
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "sysinfo.h"
+#include "rec_menu.h"
 #include "ui/menu.h"
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
@@ -692,10 +693,44 @@ static const char *action_value(const ActionNote &a, UiTextId done_text) {
 
 static void action_done(ActionNote &a, bool ok) { a = {plat_now_ns() + 3000000000ull, ok ? 1 : -1}; }
 
+// A button that is dimmed and ignores its click while it is disabled.
+static bool dim_button(const char *label, bool enabled) {
+    if (!enabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+    bool pressed = ImGui::Button(label);
+    if (!enabled) ImGui::PopStyleVar();
+    return pressed && enabled;
+}
+
+// The capture buttons (rec_menu.h): "Capture frame" takes the next frame; "Record frames" records until its button,
+// which then reads "Stop recording", is pressed again. Each waits while the other kind runs.
+static void capture_buttons(void) {
+    const int now = rec_menu_state();
+    const char *snap = menu_text(UI_MENU_CAPTURE_FRAME);
+    const char *clip = menu_text(now == REC_MENU_CLIP ? UI_MENU_CAPTURE_STOP : UI_MENU_CAPTURE_CLIP);
+    if (dim_button(snap, now == 0)) rec_menu_request(REC_MENU_FRAME);
+    ImGui::SameLine();
+    if (dim_button(clip, now != REC_MENU_FRAME))
+        rec_menu_request(now == REC_MENU_CLIP ? REC_MENU_STOP : REC_MENU_CLIP);
+    // The folder the captures are written to, so a capture can be found without knowing where the game was started.
+    static uint64_t open_failed;   // plat_now_ns until which the button says it failed
+    ImGui::SameLine();
+    if (ImGui::Button(plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED) : menu_text(UI_MENU_CAPTURE_OPEN))) {
+        char dir[1024];
+        bool ok = rec_menu_folder(dir, sizeof dir);
+        if (ok) plat_file_mkdir_p(dir);
+        if (!ok || !plat_open_folder(dir)) open_failed = plat_now_ns() + 3000000000ull;
+    }
+}
+
 static void tab_advanced(float scale) {
     static ActionNote copy_note, log_note;
     opt_begin("##advanced", scale);
     opt_text(UI_MENU_ADV_WARNING, true);
+
+    // The capture buttons sit above the settings: they are debugging tools, kept off the Continue / Quit row.
+    opt_group(UI_MENU_GROUP_CAPTURE);
+    opt_text(UI_MENU_CAPTURE_HINT, true);
+    capture_buttons();
 
     opt_group(UI_MENU_GROUP_SCHED);
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2

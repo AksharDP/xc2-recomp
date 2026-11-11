@@ -56,8 +56,11 @@ void gfx_window_focus_changed(int in) {
 
 // The window was closed: the process ends with it, as in MNG, once a save Commit still running in the background is
 // done.
-void gfx_window_closed(void) {
-    rt_log("gfx: window closed; exiting");
+void gfx_window_closed(void) { gfx_exit_saved("window closed"); }
+
+// Ends the process after the saves and the profile are written: the window close and XC2_STOP_FRAME both end this way.
+void gfx_exit_saved(const char *why) {
+    rt_log("gfx: %s; exiting", why);
     fs_save_flush();
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers

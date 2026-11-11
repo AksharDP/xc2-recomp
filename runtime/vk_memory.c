@@ -620,6 +620,21 @@ static uint32_t reg_tried[RT_ADDRESS_LIMIT >> REG_SHIFT];   // gen_lock: ww_ep o
 static uint32_t *fcand;                       // gen_lock: regions to try at the next freeze pass
 static int nfcand, cfcand;
 static uint64_t n_frz_refused;                // gen_lock: candidates mem_freeze refused
+static int freeze_held, freeze_saved;         // gen_lock: a capture holds freezing off; the setting it restores
+
+// The replay record (replay_rec.c) holds freezing off while a capture runs. A frozen page's first write thaws it without a
+// stamp, so the capture would miss that write. On: every frozen region is thawed now and none freezes until off, which
+// restores the setting the run had.
+void vk_mem_capture_hold(int on) {
+    plat_mutex_lock(&gen_lock);
+    if (on && !freeze_held) {
+        freeze_held = 1, freeze_saved = freeze_idle, freeze_idle = 0;
+        mem_thaw(0, RT_ADDRESS_LIMIT);
+    } else if (!on && freeze_held) {
+        freeze_held = 0, freeze_idle = freeze_saved;
+    }
+    plat_mutex_unlock(&gen_lock);
+}
 
 static uint32_t *gen_slot(uint64_t page_addr, int create) {
     uint64_t ci = page_addr >> GEN_CHUNK_SHIFT;
@@ -674,6 +689,52 @@ int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) 
     plat_mutex_unlock(&gen_lock);
     *now = g;
     return tracked ? changed : -1;
+}
+
+// Replay recording (replay_rec.c): the pages of [lo, hi) the CPU wrote since generation `since`, found the way the
+// submit-time capture finds them: ww_query stamps every page written since its last query with a new generation, and
+// the pages whose generation is newer than since are the new writes, whoever's query stamped them. page(ctx, addr) is
+// called for each readable committed page among them, in address order; a page the game gave back (not committed) is
+// left to the decommit record. Returns the generation to pass as since next time.
+uint32_t vk_mem_record_pages(uint32_t since, uint64_t lo, uint64_t hi, void (*page)(void *ctx, uint64_t addr), void *ctx) {
+    // A query returns at most as many pages as its buffer holds, and each call walks the whole range: a buffer of
+    // 64K pages (512 KiB) needs a sixty-fourth of the calls the 1K buffer of the game's own queries would.
+    static uint64_t *buf;
+    static uint64_t buf_n = 1u << 16;
+    plat_mutex_lock(&gen_lock);
+    if (!buf) buf = malloc(buf_n * sizeof *buf);
+    if (!buf) rt_fatal("vk: out of memory for the page query of a replay record");
+    uint32_t g = ++gen_now;
+    uint64_t n;
+    do {
+        n = mem_written_pages(lo, hi - lo, buf, buf_n);
+        if (n == UINT64_MAX) {
+            rt_log("rec: %#llx+%#llx is not write-watched: its writes are not recorded", (unsigned long long)lo,
+                   (unsigned long long)(hi - lo));
+            break;
+        }
+        for (uint64_t k = 0; k < n; k++) stamp_page(buf[k], g);
+    } while (n == buf_n);
+    for (uint64_t r = lo >> REG_SHIFT; r <= (hi - 1) >> REG_SHIFT; r++) {
+        if (reg_max[r] <= since) continue;   // nothing in this 2 MiB region is newer
+        uint64_t a = r << REG_SHIFT, end = a + (1ull << REG_SHIFT);
+        if (a < lo) a = lo;
+        if (end > hi) end = hi;
+        // plat_mem_state reports how far the page's state holds, so one query covers a run of pages: a no-access page
+        // cannot be copied, and only readable pages are passed on.
+        for (uint64_t p = a; p < end;) {
+            uint64_t e;
+            int st = plat_mem_state(p, end, &e);
+            if (e <= p) e = p + 0x1000;
+            int readable = st == PLAT_PROT_READ || st == PLAT_PROT_RW;
+            for (; p < e && p < end; p += 0x1000) {
+                const uint32_t *s = gen_slot(p, 0);
+                if (readable && s && *s > since) page(ctx, p);
+            }
+        }
+    }
+    plat_mutex_unlock(&gen_lock);
+    return g;
 }
 
 // Write-watch snapshots per submission: the guest address space in 2 MiB regions, each queried at most once per epoch
@@ -1323,6 +1384,7 @@ static void mirror_mode(int discrete) {
     const char *fi = cfg_get("XC2_FREEZE_IDLE");
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
+    // Freezing stays on by default; a capture holds it off while it runs (vk_mem_capture_hold).
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (XC2_SHADOW)" : "");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
