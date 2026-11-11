@@ -971,6 +971,21 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
         rt_log("glow: scaling the %ux%u target of the %ux%u output by %.4f x %.4f", ex->pass_w, ex->pass_h, ow, oh, sx,
                sy);
     }
+    // Each program that takes the full-output case is logged once (the first 32), so a run's stderr.txt lists the
+    // programs that case reaches and shows whether any program besides the starburst family takes it.
+    if (!half) {
+        static unsigned long long progs[32];
+        static int nprogs;
+        unsigned long long serial = ex->prog ? (unsigned long long)ex->prog->serial : 0;
+        int seen = 0;
+        for (int i = 0; i < nprogs; i++)
+            if (progs[i] == serial) seen = 1;
+        if (!seen && nprogs < 32) {
+            progs[nprogs++] = serial;
+            rt_log("glow: prog %llu draws quads on a %ux%u full-output target: the projection takes the output scale",
+                   serial, ex->pass_w, ex->pass_h);
+        }
+    }
     if (vk_dump_armed)   // every binding that takes the scale, so a dump lists the passes the full case reaches
         vk_dump_note("glow: c4 of prog %llu on a %ux%u %s target scaled to the %ux%u output: x %.4f y %.4f (prim %d)",
                      (unsigned long long)(ex->prog ? ex->prog->serial : 0), ex->pass_w, ex->pass_h, half ? "half-output" : "full-output",
