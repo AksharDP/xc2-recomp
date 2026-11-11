@@ -55,14 +55,19 @@
 //               and every 8-byte word that holds the address of another recorded host object is pointed at the copy.
 //   PIN         u64 addr, u64 sizeof(tex_t), tex_t: a texture pin (nvn_api_cmd.c tex_pin) at addr, as the record had it.
 //               The command blocks point at pins; the replay gives each pin a copy and relocates the words as for CMD.
+//   NVN_STATE   u64 depth_minus_w, u64 origin_upper_left: the device modes the game set through DeviceSetDepthMode and
+//               DeviceSetWindowOriginMode (nvn_api_core.c). The back end reads them on every draw, and the calls themselves are
+//               not in the record, so the preamble carries their values and the replay sets them (nvn_replay_state).
 //   The record starts with a COMMIT of the heap's committed part, for what the game committed before the recorder began.
 enum {
     RR_DELTA = 1, RR_DECOMMIT, RR_POOL_INIT, RR_POOL_FINI, RR_POOL_MAP, RR_TEX_REG, RR_SAMP_REG, RR_TEX_REL, RR_PROG_REL,
-    RR_SUBMIT, RR_PRESENT, RR_FINISH, RR_READ, RR_WRITE, RR_GUEST, RR_CPU_SYNCED, RR_COMMIT, RR_CMD, RR_PIN, RR_N
+    RR_SUBMIT, RR_PRESENT, RR_FINISH, RR_READ, RR_WRITE, RR_GUEST, RR_CPU_SYNCED, RR_COMMIT, RR_CMD, RR_PIN, RR_NVN_STATE,
+    RR_N
 };
 
 #define REC_MAGIC "XC2REC01"
-#define REC_VERSION 5   // 2: TEX_REG has_view; 3: COMMIT; 4: CMD (command blocks are host memory); 5: PIN (texture pins)
+#define REC_VERSION 6   // 2: TEX_REG has_view; 3: COMMIT; 4: CMD (command blocks are host memory); 5: PIN (texture pins);
+                        // 6: NVN_STATE (the device's depth mode and window origin, in the preamble)
 typedef struct {
     char magic[8];
     uint32_t version, sz_pool, sz_tex, sz_view, sz_samp, sz_prog, sz_copy, pad;

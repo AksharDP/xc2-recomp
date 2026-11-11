@@ -47,6 +47,7 @@ uint64_t nvn_fence_last(void);                             // fence value of the
 int nvn_callers_on(void);                                  // XC2_DRAW_CALLERS window (nvn_api_cmd.c)
 int nvn_origin_upper_left(void);                           // 1 after DeviceSetWindowOriginMode(UPPER_LEFT), else 0
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
+void nvn_replay_state(int depth_minus_w, int origin_upper_left);   // replay.c: sets both modes from a capture's preamble
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads
 // XC2_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
 // CPU class (0 CPU_CACHED, 1 CPU_UNCACHED, 2 other) since the previous call.

@@ -751,6 +751,10 @@ static void rec_arm(void) {
     rec_note_commit(g->heap.base, committed);
     snapshot_heap(committed);
     snap_module_data();
+    // The device modes the game set at boot (nvn_api_core.c): the back end reads them on each draw, and the calls that set
+    // them are not in the record, so the replay takes their values from here (RR_NVN_STATE).
+    uint64_t dev[2] = {(uint64_t)nvn_depth_minus_w(), (uint64_t)nvn_origin_upper_left()};
+    PUT(RR_NVN_STATE, {dev, sizeof dev});
     size_t np = 0, nm = 0;
     for (size_t i = 0; i < npools; i++) {
         PoolRec *r = &pools[i];

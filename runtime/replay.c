@@ -360,6 +360,11 @@ int replay_main(const char *dir) {
             if (limit && presents >= limit) stop = 1;
             break;
         }
+        case RR_NVN_STATE: {
+            uint64_t dm = take64(&c), ou = take64(&c);
+            nvn_replay_state((int)dm, (int)ou);
+            break;
+        }
         case RR_FINISH:
             b->finish();
             break;
