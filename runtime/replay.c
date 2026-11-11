@@ -140,7 +140,8 @@ int replay_main(const char *dir) {
     setvbuf(f, NULL, _IOFBF, 1u << 20);
     RecHeader h;
     if (fread(&h, sizeof h, 1, f) != 1 || memcmp(h.magic, REC_MAGIC, 8) || h.version != REC_VERSION) {
-        printf("replay: %s is not a version %d recording\n", path, REC_VERSION);
+        printf("replay: %s is not a version %d capture (it was made by another build): capture the frame again\n", path,
+               REC_VERSION);
         fclose(f);
         return 1;
     }
@@ -170,8 +171,12 @@ int replay_main(const char *dir) {
     // The game skips a draw whose shader or pipeline is still building, and which of them that is depends on the frame
     // clock. The replay waits for each one instead (vk_exec_deterministic), so a draw is never dropped by timing.
     vk_exec_deterministic(1);
+    // Each replayed present is saved as replay-<n>.png in the capture's folder, next to the live-<n>.png the recorder
+    // left there. XC2_REPLAY_SHOTS=<dir> saves it as <dir>/p<n>.png instead, and XC2_REPLAY_SHOTS=0 saves nothing.
     const char *shots = cfg_get("XC2_REPLAY_SHOTS");
-    if (shots && *shots) plat_file_mkdir_p(shots);
+    int shots_off = shots && !strcmp(shots, "0");
+    if (shots_off || (shots && !*shots)) shots = NULL;
+    if (shots) plat_file_mkdir_p(shots);
     const char *lim = cfg_get("XC2_REPLAY_FRAMES");
     uint64_t limit = lim ? strtoull(lim, NULL, 10) : 0;
     int verify = cfg_get("XC2_REPLAY_VERIFY") && *cfg_get("XC2_REPLAY_VERIFY") == '1';
@@ -183,6 +188,7 @@ int replay_main(const char *dir) {
 
     const GfxBackend *b = &gfx_vulkan_backend;
     uint64_t t0 = plat_now_ns(), records = 0, mem_bytes = 0, presents = 0, matched = 0, bad = 0, first_bad = 0;
+    uint64_t images = 0, images_bad = 0;   // IMAGE records, and those the back end could not take
     uint8_t *buf = NULL;
     uint64_t cap = 0;
     int ended_early = 0;
@@ -351,9 +357,10 @@ int replay_main(const char *dir) {
                        (unsigned long long)presents, (unsigned long long)tail[1], (unsigned long long)tail[2],
                        (unsigned long long)got);
             }
-            if (px && shots && *shots) {
-                char out[PLAT_PATH_MAX * 2];
-                snprintf(out, sizeof out, "%s/p%06llu.png", shots, (unsigned long long)presents);
+            if (px && !shots_off) {
+                char out[PLAT_PATH_MAX * 2 + 32];
+                if (shots) snprintf(out, sizeof out, "%s/p%06llu.png", shots, (unsigned long long)presents);
+                else snprintf(out, sizeof out, "%s/replay-%06llu.png", dir, (unsigned long long)presents);
                 rec_save_picture(out, &t, px, n);
             }
             free(px);
@@ -415,6 +422,28 @@ int replay_main(const char *dir) {
             }
             break;
         }
+        case RR_IMAGE: {   // one level and layer of an image, as it was when the capture started
+            tex_t t;
+            view_t v;
+            NVNcopyRegion r;
+            memcpy(&t, take(&c, sizeof t), sizeof t);
+            memcpy(&v, take(&c, sizeof v), sizeof v);
+            memcpy(&r, take(&c, sizeof r), sizeof r);
+            int owned = take32(&c) != 0;
+            take32(&c);
+            uint64_t n = take64(&c);
+            const uint8_t *src = take(&c, n);
+            // The record's length is checked against what the region needs here, so a record from another layout of the
+            // structures cannot make the back end read past the bytes.
+            if (n < vk_texture_texel_span(&t, &v, &r, 0, 0) ||!vk_texture_restore(&t, &v, &r, src, owned)) {
+                if (images_bad++ < 8)
+                    printf("replay: image %dx%d (NVN format %#x, level %u, layer %u) could not be restored\n",
+                           (int)t.d.width, (int)t.d.height, (unsigned)t.d.format, (unsigned)v.base_level,
+                           (unsigned)v.min_layer);
+            }
+            images++;
+            break;
+        }
         case RR_GUEST: {
             uint32_t which = take32(&c);
             take32(&c);
@@ -443,6 +472,11 @@ int replay_main(const char *dir) {
     printf("replay: %llu presents, %llu match, %llu differ%s; %llu records, %.1f MiB of guest memory, %.2f s\n",
            (unsigned long long)presents, (unsigned long long)matched, (unsigned long long)bad,
            bad ? "" : " (all pictures identical)", (unsigned long long)records, mem_bytes / 1048576.0, secs);
+    if (images) printf("replay: %llu image parts restored from the capture's preamble, %llu failed\n",
+                       (unsigned long long)(images - images_bad), (unsigned long long)images_bad);
     if (bad) printf("replay: first difference at present %llu\n", (unsigned long long)first_bad);
+    if (presents && !shots_off)
+        printf("replay: pictures saved as %s/%s; the game's own are %s/live-<n>.png\n", shots ? shots : dir,
+               shots ? "p<n>.png" : "replay-<n>.png", dir);
     return bad || ended_early || !presents ? 1 : 0;
 }

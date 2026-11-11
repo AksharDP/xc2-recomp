@@ -1258,26 +1258,70 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
     return ok;
 }
 
-// Replay recording (replay_rec.c, rec_arm): a copy of the tex_t of each live texture whose image the GPU owns, so the
-// recorder can read the images back. Released entries are left out. The caller frees the array.
-tex_t *vk_texture_gpu_owned(size_t *n) {
-    size_t cnt = 0, cap = 0;
-    tex_t *out = NULL;
+// Replay recording (replay_rec.c, rec_arm): the content of every live image that the guest bytes do not hold. That is
+// an image the GPU owns (rendered into, or the target of a copy) and an image without CPU storage (not mirrored), whose
+// texels came from WriteTexels. fn is called once per level and layer (a 3D level in one call, all its slices), with
+// the view and region that select the part and its texels in tight rows; px is NULL when the part cannot be read back
+// (a multisampled image, a packed depth-stencil format, ASTC), so the caller can say what the capture lacks. Released
+// entries are left out: a capture's frame cannot name them before a new registration replaces them. The texture lock
+// is held across the calls, so the images do not change between the parts.
+void vk_texture_snapshot(VkTexSnapFn fn, void *ctx) {
     lock();
     for (uint32_t i = 0; i < by_key.cap; i++) {
         Tex *e = by_key.vals[i];
-        if (!e || e->released || !e->pub.gpu_owned) continue;
-        if (cnt == cap) {
-            size_t c = cap ? cap * 2 : 256;
-            tex_t *p = realloc(out, c * sizeof *out);
-            if (!p) break;
-            out = p, cap = c;
-        }
-        out[cnt++] = e->t;
+        if (!e || e->released || (!e->pub.gpu_owned && e->pub.mirrored)) continue;
+        const nvn_texdesc *d = &e->t.d;
+        int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D;
+        uint32_t levels = linear ? 1 : e->pub.levels, layers = linear || is3d ? 1 : e->pub.layers;
+        for (uint32_t lv = 0; lv < levels; lv++)
+            for (uint32_t ly = 0; ly < layers; ly++) {
+                view_t v = {.set_levels = 1, .set_layers = 1, .base_level = (uint8_t)lv, .min_layer = (uint16_t)ly};
+                NVNcopyRegion r = {.width = (int)mip(d->width, lv),
+                                   .height = d->target == 0 || d->target == 3 ? 1 : (int)mip(d->height, lv),
+                                   .depth = is3d ? (int)mip(d->depth, lv) : 1};
+                Region g;
+                uint8_t *buf = NULL;
+                size_t n = 0;
+                if (e->pub.samples <= 1 && region_of(&e->t, &v, &r, 0, 0, &g)) {
+                    n = g.img * (size_t)g.nz;
+                    buf = malloc(n ? n : 1);
+                    if (!buf) rt_fatal("vk: out of memory for an image snapshot of %zu bytes", n);
+                    if (!image_texels(e, &g, &r, buf, 0)) free(buf), buf = NULL, n = 0;
+                }
+                fn(ctx, &e->t, &v, &r, buf, n, e->pub.gpu_owned);
+                free(buf);
+            }
     }
     unlock();
-    *n = cnt;
-    return out;
+}
+
+// The replay's side of vk_texture_snapshot (replay.c, RR_IMAGE): the texels go into the image itself, not into the
+// texture's storage. With owned set the entry becomes GPU-owned first, as vk_texture_gpu_written leaves it: the storage
+// bytes the record holds are older than the image, and an upload from them would replace what is written here.
+// Returns 0 when the image cannot take the texels.
+int vk_texture_restore(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, int owned) {
+    Region g;
+    if (!t || !t->mem || !region_of(t, v, r, 0, 0, &g)) return 0;
+    lock();
+    Tex *e = entry_of(t);
+    int ok = 0;
+    if (e) {
+        if (owned && !e->pub.gpu_owned) {
+            make_fresh(e);   // the parts the record could not read keep what the storage holds
+            e->pub.gpu_owned = 1;
+            if (e->pub.mirrored) {
+                e->gpu_dirty = 1;
+                storage_rewritten(e, 0, &e->gpu_gen);
+                e->gpu_seq = ++gpu_writes;
+                e->gpu_fence = 0;
+                if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+                own_add(e);
+            }
+        }
+        ok = image_texels(e, &g, r, (uint8_t *)src, 1);
+    }
+    unlock();
+    return ok;
 }
 
 // ReadTexels: the pool bytes are the content of a mirrored texture the GPU has not rendered into; every other texture

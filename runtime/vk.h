@@ -317,7 +317,12 @@ typedef struct {
 } VkTexImage;
 void vk_capture_texture(const VkTexImage *img);   // XC2_CAPTURE: notes a texture the measured frame samples (vk_capture.c)
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
-tex_t *vk_texture_gpu_owned(size_t *n);             // replay_rec.c: the tex_t of each live GPU-owned image (caller frees)
+// Captures (vk_texture.c): vk_texture_snapshot hands the recorder each part of every image whose content the guest
+// bytes do not hold (px NULL: that part cannot be read back), and vk_texture_restore puts one part back in the replay.
+typedef void (*VkTexSnapFn)(void *ctx, const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *px,
+                            size_t n, int owned);
+void vk_texture_snapshot(VkTexSnapFn fn, void *ctx);
+int vk_texture_restore(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, int owned);
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the

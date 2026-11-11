@@ -1,4 +1,4 @@
-// The recorder of XC2_RECORD (replay.h): a back end that logs each call and forwards it to the real one.
+// The recorder of the captures (replay.h): a back end that logs each call and forwards it to the real one.
 //
 // Calls are logged in the order the back end receives them: one decorated call runs at a time (rec_lock), and its
 // record is appended before the call is made, so the replay meets the same order. Submissions and pool calls first
@@ -32,7 +32,7 @@ static PlatMutex log_lock = PLAT_MUTEX_INIT;   // leaf lock: memory.c's decommit
 // EINVAL in the middle of a run, and the C library's descriptor state is not something the game's other file code
 // should be able to touch. log_lock guards the file, its offset and the buffer.
 #define LOG_BUF (1u << 20)
-static PlatFile *log_f;                        // log_lock; NULL when not recording (none, or past XC2_RECORD_FRAMES)
+static PlatFile *log_f;                        // log_lock; NULL when no capture is open
 static uint64_t log_off;                       // log_lock: where the buffer's first byte goes in the file
 static uint8_t *log_buf;                       // log_lock: LOG_BUF bytes
 static size_t log_len;                         // log_lock: bytes waiting in log_buf
@@ -43,9 +43,13 @@ static uint64_t flush_ns, flush_n;             // rec_lock: time in flush_memory
 static int armed;                              // log_lock: 1 while the record takes calls (from the arm point, rec_arm)
 static uint64_t arm_at, presents_all;          // rec_lock: XC2_RECORD_FROM-1, the present the record arms at; all presents
 static char arm_file[PLAT_PATH_MAX];           // XC2_RECORD_ARM_FILE: arms at the first present after this file appears
+static uint64_t script_frames;                 // XC2_RECORD_FRAMES: the frames a scripted capture takes (0: one)
 static int wrapped;                            // set once by rec_wrap: the recorder is on for the run, so the journal runs
 static char rec_dir[PLAT_PATH_MAX];            // the folder the captures go to: XC2_RECORD, else captures
-static int cur_kind;                           // log_lock: REC_MENU_FRAME or REC_MENU_CHECKPOINT while a menu capture runs
+static char cur_dir[PLAT_PATH_MAX * 2];        // rec_lock: the folder of the capture that runs (frame-N or clip-N)
+static uint64_t cur_first;                     // rec_lock: the number of the first frame that capture takes
+static int cur_kind;                           // log_lock: REC_MENU_FRAME or REC_MENU_CLIP while a capture runs
+static int write_failed;                       // log_lock: put could not write, and the capture was dropped (capture_reap)
 static int req_kind;                           // the F1 menu's request (rec_menu_request), taken by the next present
 
 static int rec_on(void) {
@@ -142,18 +146,29 @@ static void put(uint32_t kind, const Part *parts, size_t count) {
         RecRecord h = {.kind = kind, .size = total};
         int ok = log_bytes(&h, sizeof h);
         for (size_t i = 0; ok && i < count; i++) ok = log_bytes(parts[i].p, parts[i].n);
-        if (!ok) {
-            rt_log("rec: cannot write the record (kind %u, %llu bytes at %llu); recording stopped", kind,
-                   (unsigned long long)total, (unsigned long long)log_off);
+        if (!ok) {   // a full disk, most likely: the capture is dropped, and the next present lets freezing resume
+            rt_log("rec: cannot write the record (kind %u, %llu bytes at %llu); the capture is incomplete and stops here",
+                   kind, (unsigned long long)total, (unsigned long long)log_off);
             plat_file_close(log_f);
             log_f = NULL;
+            armed = 0, cur_kind = 0, write_failed = 1;
         }
     }
     plat_mutex_unlock(&log_lock);
 }
 
-// ---- the journal: the objects the back end holds, as the calls made them (rec_lock held). A record that arms at present
-// N-1 (XC2_RECORD_FROM) writes them first (rec_arm), so the replay starts with the objects the frame N finds. Slots and
+// A capture that put dropped (a failed write) still holds freezing off: put runs under locks the hold may not be released
+// under, so the next present releases it here. rec_lock held.
+static void capture_reap(void) {
+    plat_mutex_lock(&log_lock);
+    int failed = write_failed;
+    write_failed = 0;
+    plat_mutex_unlock(&log_lock);
+    if (failed) vk_mem_capture_hold(0);
+}
+
+// ---- the journal: the objects the back end holds, as the calls made them (rec_lock held). A capture that starts after
+// present N-1 writes them first (rec_arm), so the replay starts with the objects the frame N finds. Slots and
 // samplers keep their last registration; a pool keeps its init bytes and its maps until its fini.
 typedef struct { int used, has_view; tex_t t; view_t v; } SlotRec;
 static SlotRec *slots;
@@ -478,20 +493,22 @@ static void d_finish(void) {
     plat_mutex_unlock(&rec_lock);
 }
 
-static void rec_arm(void);   // XC2_RECORD_FROM: starts the record at its preamble (below)
+static void rec_arm(void);   // starts the record at its preamble (below)
 
-// The F1 menu's capture (rec_menu.h): its log goes to <rec_dir>/frame-N or checkpoint-N, N the frame it starts from, and
-// rec_arm writes the state that frame starts from. The frame after this present is the first one taken. rec_lock held.
-static void menu_start(int kind) {
-    char dir[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2];
-    snprintf(dir, sizeof dir, "%s/%s-%llu", rec_dir, kind == REC_MENU_FRAME ? "frame" : "checkpoint",
-             (unsigned long long)(presents_all + 1));
-    snprintf(path, sizeof path, "%s/log.bin", dir);
+// Starts a capture, from the menu or from a script alike: its log goes to <rec_dir>/frame-N or clip-N, N the frame it
+// starts from, and rec_arm writes the state that frame starts from. The frame after this present is the first one taken.
+// limit is the number of presents it takes (0: until it is stopped). rec_lock held.
+static void capture_start(int kind, uint64_t limit) {
+    char path[PLAT_PATH_MAX * 2 + 16];
     close_log("replaced by a new capture");
-    plat_file_mkdir_p(dir);
-    plat_file_delete(path);
+    cur_first = presents_all + 1;
+    snprintf(cur_dir, sizeof cur_dir, "%s/%s-%llu", rec_dir, kind == REC_MENU_FRAME ? "frame" : "clip",
+             (unsigned long long)cur_first);
+    snprintf(path, sizeof path, "%s/log.bin", cur_dir);
+    plat_file_mkdir_p(cur_dir);
+    plat_file_delete(path);   // a capture of the same frame from an earlier run is replaced
     plat_mutex_lock(&log_lock);
-    armed = 0;
+    armed = 0, write_failed = 0;
     int ok = start_log(path);
     if (ok) cur_kind = kind;
     plat_mutex_unlock(&log_lock);
@@ -500,9 +517,38 @@ static void menu_start(int kind) {
         return;
     }
     presents = 0;
-    frames_limit = kind == REC_MENU_FRAME ? 1 : 0;
-    rt_log("rec: %s capture into %s", kind == REC_MENU_FRAME ? "frame" : "checkpoint", dir);
+    frames_limit = limit;
+    rt_log("rec: %s capture into %s", kind == REC_MENU_FRAME ? "frame" : "clip", cur_dir);
     rec_arm();
+}
+
+// A scripted capture (XC2_RECORD_FROM, XC2_RECORD_ARM_FILE): one frame, or a clip of XC2_RECORD_FRAMES frames. rec_lock held.
+static void script_start(void) {
+    capture_start(script_frames > 1 ? REC_MENU_CLIP : REC_MENU_FRAME, script_frames ? script_frames : 1);
+}
+
+// info.txt of the capture's folder, written at its first present: what the capture is, for whoever opens the folder
+// later. t is the presented texture and hash its picture's (rec_picture). rec_lock held.
+static void write_info(const tex_t *t, uint64_t hash) {
+    char path[PLAT_PATH_MAX * 2 + 16], text[1024];
+    snprintf(path, sizeof path, "%s/info.txt", cur_dir);
+    plat_mutex_lock(&log_lock);
+    int kind = cur_kind;
+    plat_mutex_unlock(&log_lock);
+    int n = snprintf(text, sizeof text,
+                     "kind: %s\nfirst frame: %llu\npicture: %dx%d, NVN format %#x\nfirst picture hash: %016llx\n"
+                     "record version: %d\nbuild: %s\nreplay: xc2.exe --replay <this folder>\n"
+                     "live-<n>.png is what the game presented; the replay writes replay-<n>.png next to it.\n",
+                     kind == REC_MENU_FRAME ? "frame" : "clip", (unsigned long long)cur_first, (int)t->d.width,
+                     (int)t->d.height, (unsigned)t->d.format, (unsigned long long)hash, REC_VERSION, rt_port_version);
+    if (n < 0) return;
+    if ((size_t)n >= sizeof text) n = (int)sizeof text - 1;
+    plat_file_delete(path);
+    int err = 0;
+    PlatFile *f = plat_fs_create(path, &err);
+    if (!f) return;   // the capture itself does not depend on this file
+    plat_file_pwrite(f, text, (uint32_t)n, 0);
+    plat_file_close(f);
 }
 
 static void d_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
@@ -518,27 +564,36 @@ static void d_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
                           crop ? (uint32_t)crop[2] : 0, crop ? (uint32_t)crop[3] : 0};
         uint64_t tail[3] = {at_ns, presents_all, hash};
         PUT(RR_PRESENT, {t, sizeof *t}, {hc, sizeof hc}, {tail, sizeof tail});
+        if (presents == 1) write_info(t, hash);
+        // The picture the game showed goes next to the record, so a replay's picture has something to be compared with
+        // by eye: every present of a frame capture, the first of a clip (XC2_RECORD_SHOTS keeps them all).
+        if (px && (presents == 1 || rec_menu_state() == REC_MENU_FRAME)) {
+            char path[PLAT_PATH_MAX * 2 + 32];
+            snprintf(path, sizeof path, "%s/live-%06llu.png", cur_dir, (unsigned long long)presents);
+            rec_save_picture(path, t, px, n);
+        }
         if (px && shots_dir[0]) {
             char path[PLAT_PATH_MAX * 2];
             snprintf(path, sizeof path, "%s/p%06llu.png", shots_dir, (unsigned long long)presents);
             rec_save_picture(path, t, px, n);
         }
         free(px);
-        if (frames_limit && presents >= frames_limit) close_log("XC2_RECORD_FRAMES reached");
+        if (frames_limit && presents >= frames_limit) close_log("its frames are recorded");
     }
-    // XC2_RECORD_FROM: the record arms after present N-1, so frame N is the first one it takes (rec_arm).
-    if (arm_at && presents_all == arm_at) rec_arm();
+    capture_reap();
+    // XC2_RECORD_FROM: the capture starts after present N-1, so frame N is the first one it takes.
+    if (arm_at && presents_all == arm_at && !capture_busy()) script_start();
     // XC2_RECORD_ARM_FILE: "capture now". The file is created while the game shows the state; the next frame is the one
     // recorded, and the file is removed so a second capture needs a new one.
-    if (arm_file[0] && !armed && plat_file_exists(arm_file)) {
+    if (arm_file[0] && !capture_busy() && plat_file_exists(arm_file)) {
         plat_file_delete(arm_file);
-        rt_log("rec: %s found: capturing the next frame", arm_file);
-        rec_arm();
+        rt_log("rec: %s found: capturing from the next frame", arm_file);
+        script_start();
     }
     // The F1 menu's buttons (rec_menu.h): a request taken here starts or stops a capture after this present.
     int want = __atomic_exchange_n(&req_kind, 0, __ATOMIC_ACQ_REL);
     if (want == REC_MENU_STOP) close_log("stopped from the F1 menu");
-    else if (want && wrapped && !capture_busy()) menu_start(want);
+    else if (want && wrapped && !capture_busy()) capture_start(want, want == REC_MENU_FRAME ? 1 : 0);
     plat_mutex_unlock(&rec_lock);
 }
 
@@ -656,18 +711,21 @@ size_t rec_picture(const GfxBackend *b, const tex_t *t, uint8_t **px, uint64_t *
     return (size_t)img;
 }
 
-void rec_save_picture(const char *path, const tex_t *t, uint8_t *px, size_t n) {
+void rec_save_picture(const char *path, const tex_t *t, const uint8_t *px, size_t n) {
     uint32_t w = (uint32_t)t->d.width, h = (uint32_t)t->d.height;
     if (n != 4ull * w * h) return;   // only 4-byte texels are pictures here
     int bgra = t->d.format == NVN_FORMAT_BGRA8 || t->d.format == NVN_FORMAT_BGRA8_SRGB;
     if (!bgra && t->d.format != NVN_FORMAT_RGBA8 && t->d.format != NVN_FORMAT_RGBA8_SRGB) return;
-    if (bgra)
-        for (size_t i = 0; i + 4 <= n; i += 4) {
-            uint8_t x = px[i];
-            px[i] = px[i + 2];
-            px[i + 2] = x;
-        }
-    rt_write_png(path, px, w, h);
+    if (!bgra) {
+        rt_write_png(path, px, w, h);
+        return;
+    }
+    uint8_t *rgba = malloc(n ? n : 1);   // the caller's picture stays as it is: it may be saved twice
+    if (!rgba) return;
+    for (size_t i = 0; i + 4 <= n; i += 4)
+        rgba[i] = px[i + 2], rgba[i + 1] = px[i + 1], rgba[i + 2] = px[i], rgba[i + 3] = px[i + 3];
+    rt_write_png(path, rgba, w, h);
+    free(rgba);
 }
 
 // The module images (loader.c) lie outside the heap, and the replay does not run the loader: the back end reads shader
@@ -733,9 +791,30 @@ static void snapshot_heap(uint64_t committed) {
 
 static void no_page(void *ctx, uint64_t addr) { (void)ctx, (void)addr; }
 
-// XC2_RECORD_FROM=N: the record takes calls from present N-1 on. Its preamble is the state frame N starts from: the
-// committed heap (snapshot_heap), the module data, then every pool, texture slot and sampler the journal holds, in the
-// order the calls made them. The write-watch baseline is taken here, so the next flush sends only what changes after it.
+// vk_texture_snapshot: one level and layer of an image the guest bytes do not hold, as an IMAGE record. A part that
+// cannot be read back is counted, so the arm line says what the capture lacks.
+typedef struct { size_t parts, unread; uint64_t bytes; uint64_t last_serial; size_t images; } ImageSnap;
+
+static void image_cb(void *ctx, const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *px, size_t n,
+                     int owned) {
+    ImageSnap *s = ctx;
+    if (t->serial != s->last_serial) s->last_serial = t->serial, s->images++;   // the parts of one image come in a row
+    if (!px) {
+        if (s->unread++ < 8)
+            rt_log("rec: image %#llx (%dx%d, NVN format %#x, level %u, layer %u) cannot be read back: the replay starts "
+                   "without its content", (unsigned long long)(uintptr_t)t->mem, (int)t->d.width, (int)t->d.height,
+                   (unsigned)t->d.format, (unsigned)v->base_level, (unsigned)v->min_layer);
+        return;
+    }
+    uint32_t hd[2] = {owned != 0, 0};
+    uint64_t len = n;
+    PUT(RR_IMAGE, {t, sizeof *t}, {v, sizeof *v}, {r, sizeof *r}, {hd, sizeof hd}, {&len, sizeof len}, {px, n});
+    s->parts++, s->bytes += n;
+}
+
+// Starts the open capture: from here the record takes calls. Its preamble is the state the next frame starts from: the
+// committed heap (snapshot_heap), the module images, the device modes, then every pool, texture slot and sampler the
+// journal holds, in the order the calls made them, and the images the guest bytes do not hold. rec_lock held.
 static void rec_arm(void) {
     plat_mutex_lock(&log_lock);
     if (!log_f || armed) {
@@ -748,6 +827,15 @@ static void rec_arm(void) {
     const RtGuestLayout *g = mem_layout();
     uint64_t committed = mem_heap_committed();
     if (committed > g->heap.size) committed = g->heap.size;
+    // What an earlier capture of this run left behind does not describe this one: its replay starts from a zeroed heap
+    // and holds no pin, so every pin is sent again and the page map is rebuilt by snapshot_heap.
+    nvn_hm_clear(&pin_sent, NULL);
+    memset(known_nz, 0, (size_t)((known_pages + 7) / 8));
+    run_hi = 0;
+    // The write-watch baseline is taken before the heap is copied, not after: the game's other threads run while the
+    // copy is made, and a page they write after its copy must still count as written. Such a page goes out again with
+    // the first flush; taken after the copy, the baseline would hide that write and the replay would keep the old bytes.
+    gen_since = vk_mem_record_pages(0, g->heap.base, g->heap.base + committed, no_page, NULL);
     rec_note_commit(g->heap.base, committed);
     snapshot_heap(committed);
     snap_module_data();
@@ -755,10 +843,13 @@ static void rec_arm(void) {
     // them are not in the record, so the replay takes their values from here (RR_NVN_STATE).
     uint64_t dev[2] = {(uint64_t)nvn_depth_minus_w(), (uint64_t)nvn_origin_upper_left()};
     PUT(RR_NVN_STATE, {dev, sizeof dev});
-    size_t np = 0, nm = 0;
+    size_t np = 0, nm = 0, nhost = 0;
     for (size_t i = 0; i < npools; i++) {
         PoolRec *r = &pools[i];
         uint64_t obj = r->obj;
+        // A pool whose bytes are host storage, or lie outside the heap block, is not in the heap copy above.
+        uint64_t mem = (uint64_t)(uintptr_t)r->p.mem;
+        if (r->p.host || (mem && (mem < g->heap.base || mem + r->p.size > g->heap.base + g->heap.size))) nhost++;
         PUT(RR_POOL_INIT, {&obj, sizeof obj}, {&r->p, sizeof r->p});
         np++;
         for (size_t k = 0; k < r->maps_n;) {
@@ -785,32 +876,21 @@ static void rec_arm(void) {
         PUT(RR_SAMP_REG, {hd, sizeof hd}, {&samps[id].s, sizeof samps[id].s});
         nsm++;
     }
-    // The images the GPU owns hold content the guest bytes do not have: each is read back (level 0, layer 0) and written
-    // into the replay as WriteTexels, which the replay's back end makes mirror-equivalent (vk_write_texels).
-    size_t ng = 0, ni = 0;
-    tex_t *owned = vk_texture_gpu_owned(&ng);
-    uint64_t image_bytes = 0;
-    for (size_t k = 0; k < ng; k++) {
-        const tex_t *t = &owned[k];
-        int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-        if (!bpb || t->d.width <= 0 || t->d.height <= 0) continue;
-        NVNcopyRegion r = {.width = (int)t->d.width, .height = (int)t->d.height, .depth = 1};
-        uint64_t row = (uint64_t)((r.width + bw - 1) / bw) * (uint64_t)bpb;
-        uint64_t img = row * (uint64_t)((r.height + bh - 1) / bh);
-        uint8_t *buf = malloc(img);
-        if (!buf) rt_fatal("rec: out of memory for an image readback");
-        view_t v;
-        memset(&v, 0, sizeof v);
-        real->read_texels(t, &v, &r, buf, row, img);
-        uint64_t tail[3] = {row, img, img};
-        PUT(RR_WRITE, {t, sizeof *t}, {&v, sizeof v}, {&r, sizeof r}, {tail, sizeof tail}, {buf, (size_t)img});
-        free(buf);
-        ni++, image_bytes += img;
-    }
-    free(owned);
-    gen_since = vk_mem_record_pages(0, g->heap.base, g->heap.base + committed, no_page, NULL);
-    rt_log("rec: armed at present %llu: %zu pools (%zu maps), %zu texture slots, %zu samplers, %zu GPU images (%.1f MiB) in the "
-           "preamble", (unsigned long long)presents_all, np, nm, ns, nsm, ni, image_bytes / (1024.0 * 1024.0));
+    // The images the GPU owns, and those without CPU storage, hold content the guest bytes do not have: every level and
+    // layer is read back and goes in as an IMAGE record, after the slots, so the replay's back end knows the textures
+    // by the time their texels arrive. The work the back end has queued is done first, so the images are complete.
+    real->finish();
+    ImageSnap snap = {0};
+    vk_texture_snapshot(image_cb, &snap);
+    rt_log("rec: armed at present %llu: %zu pools (%zu maps), %zu texture slots, %zu samplers, %zu images in %zu parts "
+           "(%.1f MiB) in the preamble", (unsigned long long)presents_all, np, nm, ns, nsm, snap.images, snap.parts,
+           snap.bytes / (1024.0 * 1024.0));
+    if (snap.unread)
+        rt_log("rec: %zu image parts could not be read back (multisampled, packed depth-stencil or ASTC): a frame that "
+               "reads them before writing them differs in the replay", snap.unread);
+    if (nhost)
+        rt_log("rec: %zu pools keep their bytes outside the guest heap: what the frame reads from them is not in the "
+               "capture", nhost);
 }
 
 const GfxBackend *rec_wrap(const GfxBackend *b) {
@@ -828,36 +908,26 @@ const GfxBackend *rec_wrap(const GfxBackend *b) {
     known_nz = calloc((known_pages + 7) / 8, 1);
     if (!known_nz) rt_fatal("rec: out of memory for the page map");
     wrapped = 1;   // the journal runs from here on, whether or not a capture is taken
-    // XC2_RECORD_FROM=N and XC2_RECORD_ARM_FILE=<path> (scripts): one log.bin in the folder, armed at that point. Without
-    // them nothing is written here: the F1 menu's captures open their own logs (menu_start).
+    // XC2_RECORD_FROM=N and XC2_RECORD_ARM_FILE=<path> (scripts) ask for a capture without the menu: it starts at that
+    // present the way a menu capture does (capture_start), in a folder of its own. Nothing is written before then.
     const char *from = cfg_get("XC2_RECORD_FROM");
     arm_at = from && *from ? strtoull(from, NULL, 10) : 0;
-    if (arm_at) arm_at--;
+    if (arm_at) arm_at--;   // frame 1 has no present before it to start after: XC2_RECORD_FROM=1 takes nothing
     const char *af = cfg_get("XC2_RECORD_ARM_FILE");
     if (af && *af) snprintf(arm_file, sizeof arm_file, "%s", af);
-    int scripted = (from && *from) || arm_file[0];
-    if (scripted) {
-        char path[PLAT_PATH_MAX * 2];
-        snprintf(path, sizeof path, "%s/log.bin", rec_dir);
-        plat_file_mkdir_p(rec_dir);
-        plat_file_delete(path);   // an earlier record in this folder is replaced
-        plat_mutex_lock(&log_lock);
-        int ok = start_log(path);
-        plat_mutex_unlock(&log_lock);
-        if (!ok) rt_log("rec: cannot create %s: no script record", path);
-    }
     const char *lim = cfg_get("XC2_RECORD_FRAMES");
-    frames_limit = lim ? strtoull(lim, NULL, 10) : scripted ? 1 : 0;
+    script_frames = lim && *lim ? strtoull(lim, NULL, 10) : 0;
     const char *shots = cfg_get("XC2_RECORD_SHOTS");
     if (shots && *shots) {
         snprintf(shots_dir, sizeof shots_dir, "%s", shots);
         plat_file_mkdir_p(shots_dir);
     }
-    rt_log("rec: %s back end; captures (Advanced tab: Capture frame, Capture checkpoint) go to %s", b->name, rec_dir);
+    rt_log("rec: %s back end; captures (F1 menu, Advanced tab: Capture frame, Record frames) go to %s", b->name, rec_dir);
     return &rec_be;
 }
 
-// ---- the F1 menu's captures (rec_menu.h). A script's record (XC2_RECORD_FROM) shows as idle here.
+// ---- the capture's state for the F1 menu (rec_menu.h). A scripted capture shows here as well, so the menu's buttons
+// wait for it.
 
 int rec_menu_state(void) {
     plat_mutex_lock(&log_lock);

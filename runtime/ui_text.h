@@ -17,7 +17,7 @@ typedef enum {
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,
     UI_MENU_TAB_ADVANCED,
     UI_MENU_CONTINUE, UI_MENU_QUIT,
-    UI_MENU_CAPTURE_FRAME, UI_MENU_CAPTURE_CHECKPOINT, UI_MENU_CAPTURE_STOP,   // the Advanced tab's capture buttons
+    UI_MENU_CAPTURE_FRAME, UI_MENU_CAPTURE_CLIP, UI_MENU_CAPTURE_STOP,   // the Advanced tab's capture buttons
     UI_MENU_GROUP_CAPTURE, UI_MENU_CAPTURE_HINT,   // that tab's captures group and the note under its buttons
     UI_MENU_ON, UI_MENU_OFF, UI_MENU_AUTO, UI_MENU_DEFAULT_MARK,      // "default" beside the default value
     UI_MENU_AFTER_RESTART,    // note on a setting that is read at start

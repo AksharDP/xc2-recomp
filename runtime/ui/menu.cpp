@@ -701,16 +701,16 @@ static bool dim_button(const char *label, bool enabled) {
     return pressed && enabled;
 }
 
-// The capture buttons (rec_menu.h): "Capture frame" takes the next frame; "Capture checkpoint" records until its button
-// reads "Stop checkpoint" and is pressed again. Each waits while the other kind runs.
+// The capture buttons (rec_menu.h): "Capture frame" takes the next frame; "Record frames" records until its button,
+// which then reads "Stop recording", is pressed again. Each waits while the other kind runs.
 static void capture_buttons(void) {
     const int now = rec_menu_state();
     const char *snap = menu_text(UI_MENU_CAPTURE_FRAME);
-    const char *ckpt = menu_text(now == REC_MENU_CHECKPOINT ? UI_MENU_CAPTURE_STOP : UI_MENU_CAPTURE_CHECKPOINT);
+    const char *clip = menu_text(now == REC_MENU_CLIP ? UI_MENU_CAPTURE_STOP : UI_MENU_CAPTURE_CLIP);
     if (dim_button(snap, now == 0)) rec_menu_request(REC_MENU_FRAME);
     ImGui::SameLine();
-    if (dim_button(ckpt, now != REC_MENU_FRAME))
-        rec_menu_request(now == REC_MENU_CHECKPOINT ? REC_MENU_STOP : REC_MENU_CHECKPOINT);
+    if (dim_button(clip, now != REC_MENU_FRAME))
+        rec_menu_request(now == REC_MENU_CLIP ? REC_MENU_STOP : REC_MENU_CLIP);
 }
 
 static void tab_advanced(float scale) {

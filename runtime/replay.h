@@ -1,29 +1,45 @@
 // Frame recording and offline replay of the Vulkan back end (replay_rec.c, replay.c).
 //
-// The back end's calls are journaled from the start, and nothing is written until a capture is asked for from the F1
-// menu's Advanced tab (rec_menu.h): Capture frame writes <dir>/frame-N/log.bin, Capture checkpoint writes
-// <dir>/checkpoint-N/log.bin until Stop checkpoint. <dir> is captures/ in the working folder, or XC2_RECORD=<dir> when set.
-// A capture logs every call the front end makes into the back end (gfx_backend), with the guest memory the GPU can read:
-// before each submission and each pool call, the heap pages the CPU wrote since the previous one (vk_mem_record_pages),
-// and every range the game gives back (memory.c decommit). Freezing is held off while a capture runs
-// (vk_mem_capture_hold): a frozen page's first write does not show in the write-watch.
-// XC2_RECORD_FRAMES=<n> stops the log after the n-th present. XC2_RECORD_SHOTS=<dir> also saves each presented picture
-// as <dir>/p<n>.png, read back by the record itself after the frame's work is done.
-// A capture starts (rec_arm) after the present it is asked at, with a preamble of the state the next frame starts from (the
-// live heap's non-zero bytes, module images, pools, texture slots, samplers and the images the GPU owns). A frame capture
-// takes one present. Scripts: XC2_RECORD_FROM=N starts a log.bin after present N-1, and XC2_RECORD_ARM_FILE=<path> at the
-// first present after the file is created (the file is removed).
-// XC2_REPLAY_VERIFY=1 (replay): each WriteTexels is read back, and every written image is compared at each present.
+// A capture is the renderer's input, not the game's state: the bytes and objects the back end holds at one present, and
+// the calls the game makes after it. The replay runs those calls on the back end of the current build, so a rendering
+// bug at a point deep in the game is reproduced in seconds, with no game code, input or waiting. It is not a savestate.
+// The game cannot be resumed from one: its threads' call chains live on host stacks and it holds Vulkan and system
+// handles, none of which another process can take over. A change to the game's logic needs a live run; a change to the
+// back end (vk_*.c, the shader translator) is what a replay tests.
 //
-// xc2.exe --replay <dir>: the same calls on the current code, with no game and no window. Before each recorded call
-// the memory records written since the one before are put back at their addresses, then the call is made. A present
-// reads its texture back and compares it with the hash the record took. XC2_REPLAY_SHOTS=<dir> saves each replayed
-// present as <dir>/p<n>.png. The replay runs the back end synchronously (XC2_REPLAY_ASYNC=0), so it is deterministic
-// up to the GPU's own arithmetic.
+// The back end's calls are journaled from the start, and nothing is written until a capture is asked for. Every capture
+// gets a folder of its own under <dir>, which is captures/ in the working folder or XC2_RECORD=<dir>:
+//   <dir>/frame-N/   one frame: the state frame N starts from, and frame N's calls
+//   <dir>/clip-N/    the same state, then every frame from N on until the capture is stopped
+// with log.bin (the record), info.txt (what was captured, written at the first present) and live-<n>.png (the picture
+// the game presented: every present of a frame capture, the first of a clip). Ways to ask:
+//   F1 menu, Advanced tab (rec_menu.h): Capture frame; Record frames, which runs until Stop recording.
+//   XC2_RECORD_FROM=N: frame N, without the menu. With XC2_RECORD_FRAMES=<n> above 1, a clip of n frames from N.
+//   XC2_RECORD_ARM_FILE=<path>: the frame after the first present that finds the file (the file is removed), so a
+//   script or a person can ask at any moment of a run. XC2_RECORD_FRAMES=<n> makes it a clip here too.
+// XC2_RECORD_SHOTS=<dir> also saves every recorded present as <dir>/p<n>.png.
 //
-// The record is only as good as the state it captures: guest memory outside the heap block (module data, the stack,
-// the alias region) and host-owned storage of virtual and physical pools are not in it. The replay compares every
-// presented picture, so a missing piece shows as a mismatch rather than as a silent difference.
+// A capture starts (rec_arm) after the present it is asked at, with a preamble of the state the next frame starts from:
+// the heap's non-zero bytes, the module images, the device modes, pools, texture slots, samplers, and every level and
+// layer of the images whose content the guest bytes do not hold (RR_IMAGE). From there it logs every call the front end
+// makes into the back end (gfx_backend), with the guest memory the GPU can read: before each submission and each pool
+// call, the heap pages the CPU wrote since the previous one (vk_mem_record_pages), and every range the game gives back
+// (memory.c decommit). Freezing is held off while a capture runs (vk_mem_capture_hold): a frozen page's first write
+// does not show in the write-watch.
+//
+// xc2.exe --replay <dir>/frame-N: the same calls on the current code, with no game and no window. Before each recorded
+// call the memory records written since the one before are put back at their addresses, then the call is made. A
+// present reads its texture back, compares it with the hash the record took, and saves it as replay-<n>.png next to
+// live-<n>.png (XC2_REPLAY_SHOTS=<dir> saves it as <dir>/p<n>.png instead; XC2_REPLAY_SHOTS=0 saves nothing). The
+// replay runs the back end synchronously (XC2_REPLAY_ASYNC=0) and waits for every shader and pipeline, so it is
+// deterministic up to the GPU's own arithmetic. XC2_REPLAY_FRAMES=<n> stops after n presents. XC2_REPLAY_VERIFY=1:
+// each WriteTexels is read back, and every written image is compared at each present.
+//
+// The record is only as good as the state it captures. Not in it: guest memory outside the heap block and the module
+// images (stacks, the alias region), writes to module data after the capture starts, host-owned storage of virtual and
+// physical pools, images that cannot be read back (multisampled, packed depth-stencil, ASTC; rec_arm logs how many),
+// and state the back end keeps from earlier submissions. The replay compares every presented picture, so a missing
+// piece shows as a mismatch rather than as a silent difference.
 #pragma once
 #include <stdint.h>
 
@@ -58,16 +74,21 @@
 //   NVN_STATE   u64 depth_minus_w, u64 origin_upper_left: the device modes the game set through DeviceSetDepthMode and
 //               DeviceSetWindowOriginMode (nvn_api_core.c). The back end reads them on every draw, and the calls themselves are
 //               not in the record, so the preamble carries their values and the replay sets them (nvn_replay_state).
+//   IMAGE       tex_t, view_t, NVNcopyRegion, u32 owned, u32 0, u64 n, n bytes: one level and layer of an image as it is
+//               when the capture starts (vk_texture_snapshot), in tight rows; the view names the level and the layer, the
+//               region the part's extent. The replay writes the texels into the image itself (vk_texture_restore) and,
+//               with owned set, makes the image GPU-owned as it was, so that no upload from its storage replaces them.
 //   The record starts with a COMMIT of the heap's committed part, for what the game committed before the recorder began.
 enum {
     RR_DELTA = 1, RR_DECOMMIT, RR_POOL_INIT, RR_POOL_FINI, RR_POOL_MAP, RR_TEX_REG, RR_SAMP_REG, RR_TEX_REL, RR_PROG_REL,
     RR_SUBMIT, RR_PRESENT, RR_FINISH, RR_READ, RR_WRITE, RR_GUEST, RR_CPU_SYNCED, RR_COMMIT, RR_CMD, RR_PIN, RR_NVN_STATE,
-    RR_N
+    RR_IMAGE, RR_N
 };
 
 #define REC_MAGIC "XC2REC01"
-#define REC_VERSION 6   // 2: TEX_REG has_view; 3: COMMIT; 4: CMD (command blocks are host memory); 5: PIN (texture pins);
-                        // 6: NVN_STATE (the device's depth mode and window origin, in the preamble)
+#define REC_VERSION 7   // 2: TEX_REG has_view; 3: COMMIT; 4: CMD (command blocks are host memory); 5: PIN (texture pins);
+                        // 6: NVN_STATE (the device's depth mode and window origin, in the preamble); 7: IMAGE (every
+                        // level and layer of the images the guest bytes do not hold, in place of level 0 as WRITE)
 typedef struct {
     char magic[8];
     uint32_t version, sz_pool, sz_tex, sz_view, sz_samp, sz_prog, sz_copy, pad;
@@ -89,8 +110,8 @@ void rec_note_commit(uint64_t addr, uint64_t n);
 // Returns 0 when the format's block size is unknown (no picture), else the byte count in *px (malloc'd, freed by the
 // caller). The record and the replay use this one function, so their hashes agree.
 size_t rec_picture(const GfxBackend *b, const tex_t *t, uint8_t **px, uint64_t *hash);
-// Saves a picture from rec_picture as a PNG (BGRA swapped to RGBA; other formats are not saved).
-void rec_save_picture(const char *path, const tex_t *t, uint8_t *px, size_t n);
+// Saves a picture from rec_picture as a PNG (BGRA is saved as RGBA; other formats are not saved). px is left as it is.
+void rec_save_picture(const char *path, const tex_t *t, const uint8_t *px, size_t n);
 
 // XC2_REC_TRACE=1 (record and replay): each submission's first words go to stderr, to compare the two runs' memory.
 void rec_trace_submit(const char *who, const uint64_t *handles, int n);

@@ -17,6 +17,7 @@ __pycache__/
 /game/
 /build/
 /generated/
+/captures/
 *.xci
 *.xcz
 *.nsp
