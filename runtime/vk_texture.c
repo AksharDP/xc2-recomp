@@ -1059,6 +1059,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
+    if (vk_capture_on && e) vk_capture_texture(&e->pub);   // XC2_CAPTURE: the textures a measured frame samples
     return e ? &e->pub : NULL;
 }
 
