@@ -128,6 +128,11 @@ with that release's `--toolchain` and `--ninja`.
 - stdout: one JSON event per line, types `start`, `plan`, `step` (started, done, skipped), `progress` (step, phase,
   done/total/unit), `space` (bytes needed and free on the install disk and the temp disk), `warning`, `error`, `end` (`installer/events.py`). Messages are ids with parameters;
   `installer/text/en.json` holds their English text. The human-readable log goes to `<temp>/logs/`.
+- `--progress-lines` (`events.LauncherReporter`): stdout carries `progress <0 to 1> <text>` lines instead of JSON, the
+  format of RecompLauncher's setup step (`recomplauncher.json`, `prepare`), and an error is one line on stderr. A first
+  install without `--lang` gets en-US; an update keeps the recorded language. `--dlc` may be repeated
+  (`--dlc=FILE` once per add-on). In the AppImage, `AppRun -m installer ...` runs the module with the bundled Python
+  and no window, the same arguments as `python\python.exe -m installer ...` in the Windows release.
 - Exit codes: 0 done, 1 failed, 2 bad command line, 3 cancelled. The window cancels with Ctrl+Break to the
   installer's process group.
 - Each step records a key over its inputs (runner.py). A step with the recorded key and intact output is skipped, so

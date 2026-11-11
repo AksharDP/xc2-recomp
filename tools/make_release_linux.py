@@ -409,6 +409,11 @@ HERE="$(dirname "$(readlink -f "$0")")"
 export PYTHONDONTWRITEBYTECODE=1
 export TCL_LIBRARY="$HERE/python/lib/tcl9.0"
 export TK_LIBRARY="$HERE/python/lib/tk9.0"
+# `AppRun -m installer ...` runs that module with the same Python and no window: RecompLauncher's setup step starts the
+# installer this way, with the same arguments as the Windows release's python.exe
+if [ "$1" = "-m" ]; then
+    exec "$HERE/python/bin/python3" "$@"
+fi
 exec "$HERE/python/bin/python3" -m installer.gui "$@"
 '''
 

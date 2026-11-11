@@ -66,10 +66,14 @@ class Reporter:
     def emit(self, type, **fields):
         event = {'type': type, 't': round(self.elapsed(), 2), **fields}
         with self.lock:
-            self.out.write(json.dumps(event, ensure_ascii=False) + '\n')
-            self.out.flush()
+            self.write(event)
         self.log(self.describe(event))
         return event
+
+    def write(self, event):
+        """The event on stdout as a JSON line. LauncherReporter changes only this."""
+        self.out.write(json.dumps(event, ensure_ascii=False) + '\n')
+        self.out.flush()
 
     def describe(self, e):
         c = self.catalog
@@ -121,3 +125,48 @@ class Reporter:
         if self.log_file:
             self.log_file.close()
             self.log_file = None
+
+
+class LauncherReporter(Reporter):
+    """Prints `progress <0 to 1> <text>` lines instead of JSON events, the format RecompLauncher's prepare step reads
+    (--progress-lines). The fraction counts finished steps plus the share of the running one, so a long step moves the
+    bar slowly. An error becomes one line on stderr; the exit code tells the launcher the setup failed."""
+
+    def __init__(self, out=None, log_path=None, err=None):
+        super().__init__(out=out, log_path=log_path)
+        self.err = err or sys.stderr
+        self.steps = []
+        self.index = 0
+
+    def fraction(self, inside=0.0):
+        if not self.steps:
+            return 0.0
+        return min(1.0, (self.index + inside) / len(self.steps))
+
+    def line(self, fraction, text):
+        self.out.write(f'progress {fraction:.3f} {text}\n')
+        self.out.flush()
+
+    def write(self, event):
+        kind = event['type']
+        if kind == 'start':
+            self.steps = event['steps']
+        elif kind == 'step':
+            self.write_step(event)
+        elif kind == 'progress':
+            self.write_progress(event)
+        elif kind == 'error':
+            self.err.write(render(self.catalog, event['id'], event.get('params')) + '\n')
+            self.err.flush()
+
+    def write_step(self, event):
+        name = render(self.catalog, 'step.' + event['step'])
+        self.index = self.steps.index(event['step'])
+        finished = event['state'] != 'started'
+        self.line(self.fraction(1.0 if finished else 0.0), name)
+
+    def write_progress(self, event):
+        text = render(self.catalog, f'phase.{event["step"]}.{event["phase"]}')
+        total = event.get('total')
+        inside = event.get('done', 0) / total if total else 0.0
+        self.line(self.fraction(min(inside, 1.0)), text)
