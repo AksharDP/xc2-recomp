@@ -8,7 +8,7 @@
 // back end (vk_*.c, the shader translator) is what a replay tests.
 //
 // The back end's calls are journaled from the start, and nothing is written until a capture is asked for. Every capture
-// gets a folder of its own under <dir>, which is captures/ in the working folder or XC2_RECORD=<dir>:
+// gets a folder of its own under <dir>, which is captures/ beside xc2.exe or XC2_RECORD=<dir> (a relative one is beside xc2.exe too):
 //   <dir>/frame-N/   one frame: the state frame N starts from, and frame N's calls
 //   <dir>/clip-N/    the same state, then every frame from N on until the capture is stopped
 // with log.bin (the record), info.txt (what was captured, written at the first present) and live-<n>.png (the picture

@@ -895,10 +895,23 @@ static void rec_arm(void) {
 
 const GfxBackend *rec_wrap(const GfxBackend *b) {
     if (real) return &rec_be;
-    // The captures go to XC2_RECORD when it names a folder, else to captures/ in the working folder. Nothing is written
-    // there until a capture starts, so the recorder needs no setting to be ready.
+    // The captures go to XC2_RECORD when it names a folder, else to captures/ beside xc2.exe. A relative XC2_RECORD is
+    // taken from the executable's folder too, as XC2_PROFILE_DIR is (main.c portable_path), so a shortcut or the working
+    // folder the game was started in does not move the captures. Nothing is written there until a capture starts.
+    char exe[PLAT_PATH_MAX * 2];
+    int en = plat_exe_path(exe, sizeof exe);
+    char *cut = en > 0 && en < (int)sizeof exe ? plat_last_sep(exe) : NULL;
+    if (cut) *cut = 0;
     const char *dir = cfg_get("XC2_RECORD");
-    snprintf(rec_dir, sizeof rec_dir, "%s", dir && *dir ? dir : "captures");
+    if (dir && *dir) {
+        int abs_path = dir[0] == '\\' || dir[0] == '/' || dir[1] == ':';
+        if (abs_path || !cut) snprintf(rec_dir, sizeof rec_dir, "%s", dir);
+        else snprintf(rec_dir, sizeof rec_dir, "%s/%s", exe, dir);
+    } else if (cut) {
+        snprintf(rec_dir, sizeof rec_dir, "%s/captures", exe);
+    } else {
+        snprintf(rec_dir, sizeof rec_dir, "captures");   // the executable's path is unknown: the working folder
+    }
     log_buf = malloc(LOG_BUF);
     if (!log_buf) rt_fatal("rec: out of memory for the log buffer");
     atexit(rec_at_exit);   // a capture still open when the game ends gets its last bytes out

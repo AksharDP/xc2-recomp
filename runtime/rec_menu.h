@@ -5,7 +5,7 @@
 // records the state the next frame starts from and that one frame into captures/frame-N/log.bin. "Record frames"
 // records the same state and then every frame into captures/clip-N/log.bin until "Stop recording" is pressed,
 // the game ends, or the write fails. N is the number of the first frame taken.
-// The folder is captures/ in the working folder, or XC2_RECORD=<folder> when that is set. Neither is a savestate:
+// The folder is captures/ beside xc2.exe, or XC2_RECORD=<folder> when that is set (a relative folder is beside xc2.exe). Neither is a savestate:
 // the game cannot be resumed from a capture; the replay (xc2.exe --replay <folder>/frame-N) runs the renderer alone
 // on the recorded calls. Freezing is held off while a capture runs (vk_mem_capture_hold).
 #pragma once
