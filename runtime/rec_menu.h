@@ -21,6 +21,8 @@ int rec_menu_state(void);
 // Asks for a capture: REC_MENU_FRAME or REC_MENU_CLIP starts at the next present (ignored while one runs),
 // REC_MENU_STOP ends a clip at the next present. Any thread.
 void rec_menu_request(int kind);
+// The folder the captures go to, as the recorder writes them (captures/, or XC2_RECORD). 1 when it is known. Any thread.
+int rec_menu_folder(char *out, size_t cap);
 
 #ifdef __cplusplus
 }

@@ -711,6 +711,15 @@ static void capture_buttons(void) {
     ImGui::SameLine();
     if (dim_button(clip, now != REC_MENU_FRAME))
         rec_menu_request(now == REC_MENU_CLIP ? REC_MENU_STOP : REC_MENU_CLIP);
+    // The folder the captures are written to, so a capture can be found without knowing where the game was started.
+    static uint64_t open_failed;   // plat_now_ns until which the button says it failed
+    ImGui::SameLine();
+    if (ImGui::Button(plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED) : menu_text(UI_MENU_CAPTURE_OPEN))) {
+        char dir[1024];
+        bool ok = rec_menu_folder(dir, sizeof dir);
+        if (ok) plat_file_mkdir_p(dir);
+        if (!ok || !plat_open_folder(dir)) open_failed = plat_now_ns() + 3000000000ull;
+    }
 }
 
 static void tab_advanced(float scale) {

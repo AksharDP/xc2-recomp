@@ -937,3 +937,9 @@ int rec_menu_state(void) {
 }
 
 void rec_menu_request(int kind) { __atomic_store_n(&req_kind, kind, __ATOMIC_RELEASE); }
+
+int rec_menu_folder(char *out, size_t cap) {
+    if (!rec_dir[0] || cap == 0) return 0;
+    snprintf(out, cap, "%s", rec_dir);
+    return 1;
+}
