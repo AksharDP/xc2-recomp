@@ -237,6 +237,7 @@ static void replay_main(void *arg) {
             free((void *)it.tex);
         } else {
             uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
+            vk_capture_frame(frame);
             stop_at_frame(frame);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
         }
@@ -344,6 +345,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     vk_sync_start();
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
+        vk_capture_frame(frame);
         stop_at_frame(frame);
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
         present_image(t, crop, at_ns, kern_now_ns(), frame, 0);

@@ -789,6 +789,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (!n) return 0;
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
+        if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: the bytes this binding reads
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
         if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
@@ -1926,6 +1927,7 @@ static void bind_vertex_buffers(VkExec *ex) {
         VK_MEM_USE(sp);
         uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
         vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
+        if (vk_capture_on) vk_capture_note(r->address, n);   // XC2_CAPTURE: the vertex bytes this stream reads
     }
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
     memcpy(B.vin, ex->vbuf, sizeof B.vin);

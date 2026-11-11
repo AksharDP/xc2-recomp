@@ -228,6 +228,9 @@ const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
 void vk_headroom_start(void);
 void vk_headroom_stop(void);   // before vmaDestroyAllocator
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
+extern volatile int vk_capture_on;                       // XC2_CAPTURE: the measured frame is being replayed (vk_capture.c)
+void vk_capture_note(uint64_t addr, uint64_t size);       // notes a range the measured frame reads
+void vk_capture_frame(uint64_t presented);               // arms or reports the XC2_CAPTURE measurement at a present
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
 uint64_t vk_mem_gen(void);
