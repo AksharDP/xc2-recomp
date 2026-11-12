@@ -76,7 +76,7 @@ typedef struct { uint32_t magic; volatile uint32_t *val; } ev_t;                
 typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval, active; NVNtexture *tex[4]; } win_builder_t;
 FITS(win_builder_t, NVNwindowBuilder);
 // avail[i]: time at which swapchain image i can be acquired again (ns, monotonic clock) = its display time + one present period; pace: target time of this window's present pacer
-typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, active, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; } win_t;   // ticket[i]: ticket of the most recent present of image i
+typedef struct { uint32_t magic; void *native; int32_t ntex, interval; uint32_t next; int32_t active, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4]; } win_t;   // ticket[i]: ticket of the most recent present of image i; next: the acquire count, unsigned so that it wraps (signed, it goes negative after 2^31 acquires and indexes avail[] out of range)
 FITS(win_t, NVNwindow);
 
 // Command records live in host memory; finished copies are owned by guest control memory.

@@ -694,7 +694,7 @@ NVN_API(nvnWindowAcquireTexture) {
     sync_t *s = arg_p(c, 1);
     int *out = arg_p(c, 2);
     NVN_BLOCKING();
-    int idx = o->active ? o->next++ % o->active : 0;
+    int idx = o->active ? (int)(o->next++ % (uint32_t)o->active) : 0;
     *out = idx;
     uint64_t at = idx < 4 ? o->avail[idx] : 0;
     if (at) {
