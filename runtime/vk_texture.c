@@ -101,6 +101,10 @@ static Tex **owned;
 static int nowned, cowned;
 static uint64_t max_owned;   // largest storage size in owned[]
 static uint64_t gpu_writes;  // GPU writes into mirrored textures so far: Tex.gpu_seq
+// Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
+// dirty.
+enum { WB_SMALL = 64 << 10 };
+static int small_pending;
 // Bumped whenever the entry a slot resolves to can change: an entry created or destroyed, released or taken back into
 // use (the slot lookup and the follow of a finalized slot read only by_key, by_addr and the released flags).
 static uint32_t tex_gen = 1;
@@ -697,6 +701,18 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
     return vk_mem_changed(lo, hi - lo, since, now);
 }
 
+// A GPU write into a mirrored texture's image, recorded with fence (0: not in a submission): the storage no longer
+// holds the newest texels until write_back copies them there. Every path that makes an image the newest content goes
+// through here, so a CPU read of the storage always finds the dirty flag and the owned[] entry.
+static void mark_gpu_written(Tex *e, uint64_t fence) {
+    e->gpu_dirty = 1;
+    storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
+    e->gpu_seq = ++gpu_writes;
+    e->gpu_fence = fence;
+    if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+    own_add(e);
+}
+
 // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
 static void make_fresh(Tex *e) {
     if (!e->pub.mirrored || e->pub.gpu_owned) return;
@@ -836,6 +852,9 @@ static Tex *entry_of(const tex_t *t) {
                     vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
                     e->uploaded = 1;
                     e->pub.gpu_owned = 1;
+                    uint64_t f = vk_exec_recording_fence();   // alias_copy recorded the copy into this submission
+                    if (f > e->wr_fence) e->wr_fence = f;
+                    mark_gpu_written(e, f);
                 }
             } else {
                 init_image(e, vk_upload_begin());
@@ -877,11 +896,6 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
     return e ? &e->pub : NULL;
 }
 
-// Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
-// dirty.
-enum { WB_SMALL = 64 << 10 };
-static int small_pending;
-
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
     vk_exec_frame_written(t);
@@ -892,14 +906,7 @@ void vk_texture_gpu_written(const tex_t *t) {
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
-        if (e->pub.mirrored) {
-            e->gpu_dirty = 1;
-            storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
-            e->gpu_seq = ++gpu_writes;
-            e->gpu_fence = vk_exec_recording_fence();
-            if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
-            own_add(e);
-        }
+        if (e->pub.mirrored) mark_gpu_written(e, f);
     }
     unlock();
 }
@@ -1334,14 +1341,7 @@ int vk_texture_restore(const tex_t *t, const view_t *v, const NVNcopyRegion *r, 
         if (owned && !e->pub.gpu_owned) {
             make_fresh(e);   // the parts the record could not read keep what the storage holds
             e->pub.gpu_owned = 1;
-            if (e->pub.mirrored) {
-                e->gpu_dirty = 1;
-                storage_rewritten(e, 0, &e->gpu_gen);
-                e->gpu_seq = ++gpu_writes;
-                e->gpu_fence = 0;
-                if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
-                own_add(e);
-            }
+            if (e->pub.mirrored) mark_gpu_written(e, 0);   // the replay writes the image outside a submission
         }
         ok = image_texels(e, &g, r, (uint8_t *)src, 1);
     }
