@@ -341,6 +341,9 @@ static int ensure_init(void) {
 // ---- NVN -> Vulkan mappings (LAS Recomp exec.c blend_factor, blend_op, compare_fn, stencil_op)
 
 static VkBlendFactor blend_factor(unsigned f) {
+    // The translator writes one colour output and no second one (dualSourceBlendEnable is false in its query), so a
+    // blend that reads the second source has no data for it. Logged once so a game that uses it shows up in the log.
+    if (f >= 0x10 && f <= 0x13) LOG_ONCE("vk_pipeline: dual-source blend factor %#x used: the second source has no output to read", f);
     switch (f) {
     case 1: return VK_BLEND_FACTOR_ZERO;
     case 2: return VK_BLEND_FACTOR_ONE;
