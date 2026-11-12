@@ -403,6 +403,166 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
     return q;
 }
 
+// ---- feedback part: a draw whose fragment shader samples the target it writes (vk_exec_draw.c feedback_snapshot).
+// The draw reads that target as it was before the draw, overlapping fragments included. The reference draws the same six
+// vertices into a second target while it samples a third one holding the same colour: the two must agree texel for
+// texel. Only pairs whose output changes when the sampled colour changes are compared, so a copy that held the wrong
+// contents would show. The narrow and full sync modes must agree too. The copy-off draw (XC2_FEEDBACK_SNAP=0) is reported, not required:
+// it differs from the reference only where the GPU's live reads see the draw's own writes, which an NVIDIA GPU does not
+// show (the AMD cloud-sea report does), so on NVIDIA this part cannot show that the copy is what makes the match.
+
+#define FB_VERTS 6
+#define FB_TEX_TARGET 0x3F000u   // texture slot ids of the feedback target and of the reference's sampled target
+#define FB_TEX_REF 0x3F001u
+#define FB_POOL_REF 0x1000000u   // guest offsets of the reference's sampled and drawn targets (the heap is 32 MiB)
+#define FB_POOL_OUT 0x1040000u
+#define FB_POOL_SIZE 0x40000u
+
+// Six vertices of two overlapping triangles at 0x81000 of the draw part's pool (attribute 0 the position).
+static void fb_vertices(const pool_t *pool) {
+    static const float pos[FB_VERTS][4] = {{-0.8f, -0.8f, 0.0f, 1.0f}, {0.8f, -0.8f, 0.0f, 1.0f}, {0.0f, 0.8f, 0.0f, 1.0f},
+                                           {-0.6f, -0.6f, 0.0f, 1.0f}, {0.9f, -0.5f, 0.0f, 1.0f}, {0.1f, 0.9f, 0.0f, 1.0f}};
+    float *vtx = (float *)(pool->mem + 0x81000);
+    for (int v = 0; v < FB_VERTS; v++)
+        for (int a = 0; a < DR_ATTRS; a++)
+            for (int c = 0; c < 4; c++) vtx[(v * DR_ATTRS + a) * 4 + c] = a == 0 ? pos[v][c] : c == 3 ? 1.0f : 0.5f;
+}
+
+// The draw part's prefix into color, then six vertices drawn with every fragment-stage texture slot bound to texture id tex.
+static uint8_t *fb_draw(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *color, uint32_t tex) {
+    q = draw_prefix(q, prog, pool, color);
+    p_bind_vbuf vb;
+    memset(&vb, 0, sizeof vb);
+    vb.n = 1, vb.r[0].address = (uint64_t)(uintptr_t)pool->mem + 0x81000, vb.r[0].size = FB_VERTS * DR_STRIDE;
+    q = put(q, OP_BIND_VBUF, &vb, sizeof vb);
+    p_bind_handles bt;
+    memset(&bt, 0, sizeof bt);
+    bt.stage = 1, bt.first = 0, bt.n = 8;   // NVN stage 1, the fragment stage (test_draw maps census stages the same way)
+    for (int i = 0; i < 8; i++) bt.h[i] = tex;   // no sampler id: the default sampler
+    q = put(q, OP_BIND_TEX, &bt, sizeof bt);
+    const p_draw d = {NVN_DRAW_PRIMITIVE_TRIANGLES, 0, FB_VERTS, 0, 0};
+    q = put(q, OP_DRAW, &d, sizeof d);
+    return put(q, OP_END, NULL, 0);
+}
+
+static uint8_t fb_stream[8192];   // this part's op stream
+
+// Submits fb_stream and waits for it.
+static int fb_run(const GfxBackend *b) {
+    uint64_t handle = (uint64_t)(uintptr_t)fb_stream;
+    uint64_t f = b->submit(&handle, 1);
+    return b->fence_wait(f, 20000000000ull);
+}
+
+static void fb_read(const GfxBackend *b, tex_t *t, uint32_t *px) {
+    const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
+    b->read_texels(t, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
+}
+
+// The reference's sampled target is cleared to the draw part's colour (draw_prefix makes it) or to this one.
+static const float fb_c1[4] = {0.9f, 0.1f, 0.3f, 1.0f};
+
+// A submission that only clears t to rgba (a stream of its own: two clears of one target in one stream are a hazard).
+static uint8_t *fb_clear_only(uint8_t *q, tex_t *t, const float rgba[4]) {
+    q = put(q, OP_BEGIN, NULL, 0);
+    p_set_rt rt;
+    memset(&rt, 0, sizeof rt);
+    rt.n = 1, rt.color[0] = t;
+    q = put(q, OP_SET_RT, &rt, sizeof rt);
+    const p_clear_color c = {0, 0xf, {rgba[0], rgba[1], rgba[2], rgba[3]}};
+    return put(q, OP_CLEAR_COLOR, &c, sizeof c);
+}
+
+static int fb_differ(const uint32_t *a, const uint32_t *b) {
+    int n = 0;
+    for (int k = 0; k < TEX_W * TEX_H; k++) n += a[k] != b[k];
+    return n;
+}
+
+static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_t *color, const char *root,
+                         const DrawEnt *e, int (*pairs)[2], int np) {
+    static tex_t ref, out;
+    pool_t pref = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + FB_POOL_REF, .size = FB_POOL_SIZE,
+                   .game_mem = guest + FB_POOL_REF};
+    pool_t pout = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + FB_POOL_OUT, .size = FB_POOL_SIZE,
+                   .game_mem = guest + FB_POOL_OUT};
+    CHECK(b->pool_init(&pref) && b->pool_init(&pout), "pool_init of the feedback part's targets");
+    init_tex(&ref, &pref, 0, NVN_FORMAT_RGBA8);
+    init_tex(&out, &pout, 0, NVN_FORMAT_RGBA8);
+    CHECK(ref.L.size <= FB_POOL_SIZE && out.L.size <= FB_POOL_SIZE, "feedback part's targets exceed their pools");
+    vk_texture_register(FB_TEX_TARGET, color, NULL);
+    vk_texture_register(FB_TEX_REF, &ref, NULL);
+    fb_vertices(pool);
+    static uint32_t px_f[TEX_W * TEX_H], px_r[TEX_W * TEX_H], px_c[TEX_W * TEX_H], px_o[TEX_W * TEX_H], px_s[TEX_W * TEX_H];
+    int ok = 1, found = -1;
+    uint64_t snapped = 0;
+    prog_t *prog = NULL;
+    int tried = 0;
+    for (int t = 0; t < np && t < 64 && found < 0 && ok; t++) {
+        const int *pr = pairs[(long long)t * np / (np < 64 ? np : 64)];
+        if (t && pr == pairs[(long long)(t - 1) * np / (np < 64 ? np : 64)]) continue;
+        const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
+        prog_t *p = dr_prog(root, both, 2);
+        CHECK(p, "census code file of %.16s is missing", both[0]->key);
+        tried++;
+        // Y0: the six vertices into out, sampling ref cleared to fb_c0 (out is not sampled: no copy); Y1: the same with ref
+        // cleared to fb_c1. Where they differ the output depends on what the draw samples, so the pair can show the copy.
+        uint8_t *q = draw_prefix(fb_stream, p, pool, &ref);
+        put(q, OP_END, NULL, 0);
+        ok = fb_run(b) && ok;
+        fb_draw(fb_stream, p, pool, &out, FB_TEX_REF);
+        ok = fb_run(b) && ok;
+        fb_read(b, &out, px_r);
+        q = fb_clear_only(fb_stream, &ref, fb_c1);
+        put(q, OP_END, NULL, 0);
+        ok = fb_run(b) && ok;
+        fb_draw(fb_stream, p, pool, &out, FB_TEX_REF);
+        ok = fb_run(b) && ok;
+        CHECK(ok, "fence_wait of the feedback part's reference timed out");
+        fb_read(b, &out, px_s);
+        if (!fb_differ(px_r, px_s)) continue;   // the output does not depend on what it samples
+        // the feedback draw: color cleared to fb_c0 by the prefix, then the six vertices sampling color
+        uint64_t s0 = vk_exec_frame.fb_snap_draws;
+        fb_draw(fb_stream, p, pool, color, FB_TEX_TARGET);
+        ok = fb_run(b) && ok;
+        CHECK(ok, "fence_wait of the feedback draw timed out");
+        uint64_t n = vk_exec_frame.fb_snap_draws - s0;
+        if (!n) continue;   // the pair samples no target it writes
+        fb_read(b, color, px_c);
+        // the copy-off draw of the same pair, for the report: where live reads show a fragment's own write the two differ
+        vk_exec_snap_mode(0, -1);
+        fb_draw(fb_stream, p, pool, color, FB_TEX_TARGET);
+        ok = fb_run(b) && ok;
+        vk_exec_snap_mode(1, -1);
+        fb_read(b, color, px_o);
+        found = t, snapped = n, prog = p;
+    }
+    CHECK(found >= 0, "none of %d census pairs both sampled the target it writes and used what it sampled", tried);
+    int differ = fb_differ(px_c, px_r);
+    CHECK(!differ, "feedback draw of pair %d: %d of %d texels differ from the reference (the draw did not read the target as it was before the draw)",
+          found, differ, TEX_W * TEX_H);
+    // the same draw with the full barrier (px_o holds the copy-off draw of this pair, from the search)
+    vk_exec_snap_mode(1, 0);
+    fb_draw(fb_stream, prog, pool, color, FB_TEX_TARGET);
+    ok = fb_run(b) && ok;
+    fb_read(b, color, px_f);
+    vk_exec_snap_mode(1, 1);
+    CHECK(ok, "fence_wait of the feedback part's variants timed out");
+    int narrow_full = fb_differ(px_c, px_f), no_copy = fb_differ(px_o, px_r);
+    CHECK(!narrow_full, "feedback draw: narrow and full sync differ in %d texels", narrow_full);
+    CHECK(vk_exec_frame.snap_skipped == 0, "%llu feedback draws were skipped for lack of a copy",
+          (unsigned long long)vk_exec_frame.snap_skipped);
+    printf("probe-vkexec: feedback part passed (pair %d of %d tried: %llu copies in its draw, %d of %d texels equal the reference "
+           "in both sync modes; with the copy off %d texels differ from it (0 where this GPU's live reads show no same-draw "
+           "writes); 0 skipped)\n",
+           found, tried, (unsigned long long)snapped, TEX_W * TEX_H, TEX_W * TEX_H, no_copy);
+    b->texture_release(&ref);
+    b->texture_release(&out);
+    b->pool_fini(&pref);
+    b->pool_fini(&pout);
+    return 0;
+}
+
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs, int *n_alpha) {
     char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
     CHECK(dr_root(root, sizeof root), GFX_CENSUS_DIR "/jobs.json not found");
@@ -485,6 +645,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         }
     }
     CHECK(drawn, "none of %d census pairs changed a pixel of the cleared target", tries);
+    CHECK(!test_feedback(b, guest, &pool, &color, root, e, pairs, np), "feedback part failed");
 
     // The fixed-function alpha test (nvnColorStateSetAlphaTest's function against nvnCommandBufferSetAlphaRef's
     // reference, docs/maxwell.md 5.7): the same draw with an alpha test nothing passes must leave the target cleared,
@@ -1072,7 +1233,7 @@ int probe_vkexec(void) {
     main_tid = plat_thread_id();
     const GfxBackend *b = &gfx_vulkan_backend;
     uint64_t heap = 0;
-    CHECK(mem_set_heap_size(16ull << 20, &heap) == 0 && heap, "SetHeapSize 16 MiB");
+    CHECK(mem_set_heap_size(32ull << 20, &heap) == 0 && heap, "SetHeapSize 32 MiB");   // the feedback part's targets sit above 16 MiB
     uint8_t *guest = (uint8_t *)(uintptr_t)heap;
     uint64_t first = 0, last = 0;
     int w = 0, h = 0, inside = 0, xfer_bytes = 0;

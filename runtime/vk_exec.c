@@ -74,13 +74,16 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu; targets%s",
+           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu "
+           "(snapshot draws %llu, images new %llu evicted %llu, draws skipped %llu, targets read live %llu); targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
-           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps, list);
+           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps, (unsigned long long)f->fb_snap_draws,
+           (unsigned long long)f->snap_new, (unsigned long long)f->snap_evicted, (unsigned long long)f->snap_skipped,
+           (unsigned long long)f->snap_live, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }
@@ -569,22 +572,37 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
-void vk_exec_pass_begin(VkExec *ex) {
-    if (ex->in_pass) return;
+// The learned targets of the next pass (VkTexImage.fb_learned, attached in the feedback layout): their images and aspects
+// go to want[], and bit i of the result is set for attachment i (bit 8 depth).
+static uint32_t pass_learned(VkExec *ex, VkImage want[9], VkImageAspectFlags wasp[9], int *nwant) {
     resolve_rt(ex);
-    // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
-    VkImage want[9];
-    VkImageAspectFlags wasp[9];
-    int nwant = 0;
     uint32_t fbl = 0;
+    *nwant = 0;
     for (uint32_t i = 0; i < 9; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
         if ((i < 8 && i >= ex->pass_ncolor) || !t->image || !t->img || !t->img->fb_learned) continue;
         fbl |= 1u << i;
-        if (has_image(want, nwant, t->image)) continue;
-        want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
+        if (has_image(want, *nwant, t->image)) continue;
+        want[*nwant] = t->image, wasp[(*nwant)++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
     }
+    return fbl;
+}
+
+static void pass_open(VkExec *ex, uint32_t fbl);
+
+void vk_exec_pass_begin(VkExec *ex) {
+    if (ex->in_pass) return;
+    VkImage want[9];
+    VkImageAspectFlags wasp[9];
+    int nwant = 0;
+    uint32_t fbl = pass_learned(ex, want, wasp, &nwant);
     barrier_to(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
+    pass_open(ex, fbl);
+}
+
+// Begins rendering with the attachments of the open pass; fbl as pass_learned gives it. No barrier: the caller has made
+// the earlier work visible.
+static void pass_open(VkExec *ex, uint32_t fbl) {
     ex->fbl_mask = fbl;
     ex->fb_dirty = 0;
     ex->pass_serial++;
@@ -632,6 +650,93 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
     if (ex->fsr3_armed) vk_fsr3_resolve(ex);
+}
+
+// A layout transition of one colour image, with the stages and accesses of its two sides.
+static VkImageMemoryBarrier2 snap_layout(VkImage img, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 src_stage,
+                                         VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    return (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = src_stage,
+                                   .srcAccessMask = src_access, .dstStageMask = dst_stage, .dstAccessMask = dst_access,
+                                   .oldLayout = from, .newLayout = to, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img,
+                                   .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                        VK_REMAINING_ARRAY_LAYERS}};
+}
+
+void vk_exec_snap_copy(VkExec *ex, const VkExecSnap *s, int n, int narrow) {
+    VkImage want[9];
+    VkImageAspectFlags wasp[9];
+    int nwant = 0;
+    uint32_t fbl = pass_learned(ex, want, wasp, &nwant);
+    int same = nwant == ex->nfbl;
+    for (int i = 0; same && i < nwant; i++) same = has_image(ex->fbl_img, ex->nfbl, want[i]);
+    if (!narrow || !same) {   // the full barrier: copies between it and a pass begin, as before
+        vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+        for (int i = 0; i < n; i++) {
+            VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {s[i].w, s[i].h, 1}};
+            vkCmdCopyImage(ex->cb, s[i].src, VK_IMAGE_LAYOUT_GENERAL, s[i].dst, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            ex->recorded++;
+        }
+        vk_exec_pass_begin(ex);
+        return;
+    }
+    vk_exec_pass_end(ex);
+    // Before the copies: the writes the copies read (attachments of the pass just ended, transfers and dispatches before
+    // it, through ALL_COMMANDS), and the reads of the copies' images by the snapshot draws before (the copies overwrite
+    // them). A learned source leaves the feedback layout for the copy, which cannot read from it.
+    VkImageMemoryBarrier2 ib[8];
+    uint32_t nib = 0;
+    for (int i = 0; i < n; i++)
+        if (has_image(ex->fbl_img, ex->nfbl, s[i].src))
+            ib[nib++] = snap_layout(s[i].src, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT, VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkMemoryBarrier2 pre = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &pre,
+                           .imageMemoryBarrierCount = nib, .pImageMemoryBarriers = ib};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    for (int i = 0; i < n; i++) {
+        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {s[i].w, s[i].h, 1}};
+        vkCmdCopyImage(ex->cb, s[i].src, VK_IMAGE_LAYOUT_GENERAL, s[i].dst, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        ex->recorded++;
+    }
+    // After the copies, before the resumed pass: the copies and every earlier write are visible to the graphics stages
+    // (the snapshot draw's samples, and the pass's LOAD of its attachments), and the copies' reads come before later
+    // writes to the copied targets. The learned sources return to the feedback layout.
+    VkImageMemoryBarrier2 ia[8];
+    uint32_t nia = 0;
+    for (int i = 0; i < n; i++)
+        if (has_image(ex->fbl_img, ex->nfbl, s[i].src))
+            ia[nia++] = snap_layout(s[i].src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+                                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                                    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkMemoryBarrier2 post[2] = {
+        {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+         .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT},
+        {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+         .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT}};
+    di = (VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 2, .pMemoryBarriers = post,
+                            .imageMemoryBarrierCount = nia, .pImageMemoryBarriers = ia};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    vk_exec_frame.fb_layouts += nib + nia;
+    pass_open(ex, fbl);   // the learned set is the one fbl_img holds, so nothing else changes state
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {

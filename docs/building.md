@@ -202,7 +202,10 @@ MSYS2 or `CC`, tests use the clang of `toolchain\llvm-mingw-*`.
 
 Runtime probes, each a mode of `xc2.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
 `--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes. `--probe-vkexec` and
-`--probe-shader` read XC2's shader census, so run the census below with `--version v301` once first. `--probe-fsr` runs
+`--probe-shader` read XC2's shader census, so run the census below with `--version v301` once first. `--probe-vkexec` has a
+feedback part: a draw that samples the target it writes must match a reference draw texel for texel. With
+`XC2_VK_VALIDATION=sync` the layer also checks synchronization (its `VkLayer_khronos_validation.json` must be found through
+`VK_LAYER_PATH`, which names the directory that holds it). `--probe-fsr` runs
 AMD's upscaler alone (1280x720 to 1920x1080, two flat frames, the result checked), needs no game files, and prints the
 provider version the API picked; it needs the FSR libraries next to `xc2.exe` (see below).
 

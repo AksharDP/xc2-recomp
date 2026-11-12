@@ -123,6 +123,17 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
+// A copy the draw about to be recorded samples in place of a target of the open pass (vk_exec_draw.c feedback_snapshot):
+// src is the target's image, dst the image the draw reads, w x h its texels.
+typedef struct { VkImage src, dst; uint32_t w, h; } VkExecSnap;
+// Ends the open pass and copies each n entries' src into its dst, then resumes the pass. narrow (XC2_SNAP_SYNC=narrow,
+// the default): barriers only for the copied images and their readers, and the other learned targets stay in the
+// feedback layout. Otherwise (XC2_SNAP_SYNC=full, or the learned set is not the one the open pass has) the full barrier
+// of vk_exec_barrier and of vk_exec_pass_begin. Both leave the same images in the same layouts.
+void vk_exec_snap_copy(VkExec *ex, const VkExecSnap *s, int n, int narrow);
+// The probe's switches for the copy path (vk_exec_draw.c): on 1 or 0 (XC2_FEEDBACK_SNAP), narrow 1 or 0 (XC2_SNAP_SYNC); -1
+// keeps a setting.
+void vk_exec_snap_mode(int on, int narrow);
 // vk_texture.c (XC2_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.
@@ -162,6 +173,10 @@ typedef struct {
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
     uint64_t fb_snaps;                                         // targets copied for the draw that samples them itself
+    uint64_t fb_snap_draws;                                    // draws that copy at least one such target (each ends the pass)
+    uint64_t snap_new, snap_evicted;                           // snapshot images created, and dropped to keep the pool in its budget
+    uint64_t snap_skipped;                                     // draws not made because their copy could not be had (never read live)
+    uint64_t snap_live;                                        // such targets read live: a shape the copy path does not take
 } VkExecFrame;
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
