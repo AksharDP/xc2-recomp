@@ -444,7 +444,17 @@ static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
     Sub s, d;
     if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, &s)) return;
     if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, &d)) return;
+    // The destination takes the source's slice or layer count (the game's regions do not always name one). sub_resolve
+    // checked the destination's own count, so the image must hold this one too, or the copy writes past its layers.
     d.nz = s.nz;
+    int is3d_dst = d.img->type == VK_IMAGE_TYPE_3D;
+    uint64_t dtop = is3d_dst ? (uint64_t)d.z + d.nz : (uint64_t)d.layer0 + (uint64_t)d.z + d.nz;
+    uint64_t dcap = is3d_dst ? max1(d.img->depth >> d.level) : d.img->layers;
+    if (dtop > dcap) {
+        warn_once(W_COPY, "texture copy of %u slices or layers into a destination with %llu: skipped", s.nz,
+                  (unsigned long long)dcap);
+        return;
+    }
     int same_size = s.w == d.w && s.h == d.h;
     int same_format = s.img->format == d.img->format;
     if (s.img->samples != d.img->samples && !(s.img->samples > 1 && d.img->samples == 1 && same_size && same_format)) {
