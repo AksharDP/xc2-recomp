@@ -593,6 +593,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (cy < 0) cy = 0;
     if (cx + cw > w) cw = w - cx;
     if (cy + ch > h) ch = h - cy;
+    if (cw <= 0 || ch <= 0) cx = cy = 0, cw = w, ch = h;   // a crop that starts outside the image: the whole image, not a
+                                                           // blit with a negative extent
     window_settings_live();
     // The menu overlay: laid out before recording (its first frame starts the ImGui back end and uploads the font)
     const char *menu_shot = NULL;
