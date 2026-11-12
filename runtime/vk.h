@@ -253,6 +253,7 @@ void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU wri
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void *cap);
+int vk_mem_shadow_captures(void);   // shadow storage with submit-time captures (XC2_SHADOW_CAPTURE)
 int vk_mem_snapshots(void);   // the mirrors with staged captures are on: every buffer read can be a submit-time copy
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);

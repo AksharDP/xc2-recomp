@@ -749,6 +749,12 @@ uint32_t vk_mem_record_pages(uint32_t since, uint64_t lo, uint64_t hi, void (*pa
 #define SNAP_REGIONS (RT_ADDRESS_LIMIT >> SNAP_SHIFT)
 static uint32_t snap_at[SNAP_REGIONS];      // epoch of the region's last snapshot; 0 never
 static uint8_t snap_untracked[SNAP_REGIONS];
+// Shadow captures (gen_lock): the generation after the last submit-time capture that queried the region. A capture at
+// least as new as the submission being replayed (cur_gen) already stamped every write to it up to that submit call, so
+// the replay's own snapshot of the region would only repeat the query (a PAGEMAP_SCAN, a fifth of the replay thread
+// on the Steam Deck); writes after it are the next capture's.
+static uint32_t snap_capgen[SNAP_REGIONS];
+static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
 static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
 
 // gen_lock held exclusively. Queries the regions r0..r1 that were not snapped in epoch, one query per run of them;
@@ -759,6 +765,11 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
     uint64_t calls = 0;
     for (uint64_t r = r0; r <= r1;) {
         if (epoch && snap_at[r] == epoch) { r++; continue; }
+        if (epoch && cur_gen && snap_capgen[r] >= cur_gen) {   // the capture queried it (snap_capgen)
+            snap_at[r] = epoch;
+            r++;
+            continue;
+        }
         if (mem_frozen(r << SNAP_SHIFT)) {   // nothing in it changed since its freeze
             if (epoch) snap_at[r] = epoch;
             snap_untracked[r] = 0;
@@ -945,6 +956,35 @@ static SDone *sdone;                // shadow_lock
 static int nsdone, csdone;
 static volatile uint64_t s_wbseq;   // shadow_lock to write, atomic to read
 static void shadow_overlay(uint64_t addr, uint64_t size, uint8_t *snap);
+// Diff write-back snapshots come from size classes of powers of two that are kept for reuse: a fresh malloc of the
+// bound range (about 2.5 MiB a frame on the Deck, many blocks over glibc's mmap threshold) page-faulted on every first
+// write, 7 % of the asynchronous replay thread. A block's class is in the 16 bytes before it.
+#define SNAP_CLASSES 40
+static void *snap_free_list[SNAP_CLASSES];
+static PlatMutex snap_lock = PLAT_MUTEX_INIT;
+static uint8_t *snap_alloc(uint64_t size) {
+    int k = 4;
+    while ((1ull << k) < size) k++;
+    if (k >= SNAP_CLASSES) return NULL;
+    plat_mutex_lock(&snap_lock);
+    void *b = snap_free_list[k];
+    if (b) snap_free_list[k] = *(void **)((uint8_t *)b + 16);   // the link is in the data (snap_release)
+    plat_mutex_unlock(&snap_lock);
+    if (!b) {
+        if (!(b = malloc((1ull << k) + 16))) return NULL;
+        *(int *)b = k;
+    }
+    return (uint8_t *)b + 16;
+}
+static void snap_release(uint8_t *p) {
+    if (!p) return;
+    void *b = p - 16;
+    int k = *(int *)b;
+    plat_mutex_lock(&snap_lock);
+    *(void **)p = snap_free_list[k];   // the link lives in the block's data: the class header stays
+    snap_free_list[k] = p - 16;
+    plat_mutex_unlock(&snap_lock);
+}
 static void sapl_prune(void);
 static uint64_t s_pend_n, s_pend_bytes, s_pend_max, s_skip_bytes, s_wb_n, s_cpu_pages, s_clob_bytes, s_wb_skipped;
 #define S_TOP 6
@@ -1129,7 +1169,7 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
         plat_mutex_lock_shared(&pool_lock);
         const pidx_ent *e = pidx_find(&pool_index, addr, size);
         PoolRec *r = e ? e->buf : NULL;
-        if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (snap = malloc(size))) {
+        if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (snap = snap_alloc(size))) {
             memcpy(snap, r->smap + (addr - r->import_lo), size);
             if (shadow_cap) shadow_overlay(addr, size, snap);
         }
@@ -1191,7 +1231,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
             }
         }
         for (int i = 0; i < nspend; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) { free(spend[i].snap); spend[i] = spend[--nspend]; break; }
+            if (spend[i].lo == addr && spend[i].hi == addr + size) { snap_release(spend[i].snap); spend[i] = spend[--nspend]; break; }
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -1226,7 +1266,10 @@ static void shadow_log(uint64_t frame) {
 }
 
 void vk_mem_dirty_submit(void) {
-    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on) return;   // the mirror's own line replaces the census
+    // The mirror's own line replaces the census, and so does the shadow line with captures: the census's write-watch
+    // queries at every submit were a fifth of the replay thread on the Steam Deck, under XC2_TRACE=perf only, so the
+    // benchmark ran slower than play.
+    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on || shadow_cap) return;
     uint64_t t0 = kern_now_ns();
     uint32_t prev = dirty_sub;   // the submit whose replay noted the bindings
     dirty_sub = prev + 1 ? prev + 1 : 1;
@@ -1413,7 +1456,6 @@ typedef struct MCap {
     int n;
 } MCap;
 static MCap *cur;                      // replay: the capture of the submission being recorded, until its prologue
-static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
 static int cur_have;
 static volatile uint64_t m_live_fence; // the newest submission that read guest memory for a mirror after its submit call
 static PlatMutex cap_lock = PLAT_MUTEX_INIT;   // vk_mem_capture's range list
@@ -1886,6 +1928,12 @@ void *vk_mem_capture(void) {
             if (r->kind == POOL_IMPORT && r->smap && r->import_hi > r->import_lo) pools += (uint64_t)shadow_capture_pool(r);
         }
         cap->gen = gen_now;
+        for (int i = 0; i < pool_index.n; i++) {   // the regions just queried (frozen ones count: nothing wrote them)
+            const PoolRec *r = pool_index.e[i].buf;
+            if (r->kind != POOL_IMPORT || !r->smap || r->import_hi <= r->import_lo) continue;
+            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+            for (uint64_t k = a; k <= b && k < SNAP_REGIONS; k++) snap_capgen[k] = cap->gen;
+        }
     }
     if (freeze_idle) freeze_pass();
     plat_mutex_unlock(&gen_lock);
@@ -2039,6 +2087,8 @@ int vk_mem_mirror_pending(void) { return npend || cur; }
 
 // The GPU reads every buffer of the mirrors as of the submit call: no pool stays imported, the captures are staged,
 // and no submission that read guest memory later (a first use, a capture past STAGE_MAX) may still run.
+int vk_mem_shadow_captures(void) { return shadow_on && shadow_cap; }
+
 // Shadow storage with submit-time captures gives the same (apply_shadow).
 int vk_mem_snapshots(void) { return mirror_stage && (shadow_on ? shadow_cap : vk_mirror_on); }
 
@@ -2780,7 +2830,7 @@ void vk_mem_shutdown(void) {
     pool_index.n = 0;
     nm = npend = nwbl = 0;   // mirrors went with their pools
     plat_mutex_lock(&shadow_lock);
-    for (int i = 0; i < nspend; i++) free(spend[i].snap);
+    for (int i = 0; i < nspend; i++) snap_release(spend[i].snap);
     nstouch = nspend = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);

@@ -407,11 +407,39 @@ void vk_completion_add(uint64_t fence, void (*fn)(void *), void *arg) {
 
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns);
 
+// XC2_WAIT_SITES=1 (diagnostics): time spent in fence waits by caller (return address), logged every 2 s of waiting
+// threads' time; map the addresses with nm on the binary.
+#define WS_N 16
+static struct { void *ra; uint64_t n, ns; } wsite[WS_N];
+static PlatMutex ws_lock = PLAT_MUTEX_INIT;
+static uint64_t ws_t0;
+static int ws_on = -1;
+
+static void wait_site(void *ra, uint64_t ns) {
+    plat_mutex_lock(&ws_lock);
+    int i = 0;
+    while (i < WS_N && wsite[i].ra && wsite[i].ra != ra) i++;
+    if (i < WS_N) wsite[i].ra = ra, wsite[i].n++, wsite[i].ns += ns;
+    uint64_t now = kern_now_ns();
+    if (!ws_t0) ws_t0 = now;
+    if (now - ws_t0 > 2000000000ull) {
+        for (int j = 0; j < WS_N && wsite[j].ra; j++)
+            rt_log("vk: fence waits from %p (exe+%#llx): %llu waits, %.1f ms in %.1f s", wsite[j].ra,
+                   (unsigned long long)((uintptr_t)wsite[j].ra - (uintptr_t)&vk_sync_fence_wait),
+                   (unsigned long long)wsite[j].n, wsite[j].ns / 1e6, (now - ws_t0) / 1e9);
+        memset(wsite, 0, sizeof wsite);
+        ws_t0 = now;
+    }
+    plat_mutex_unlock(&ws_lock);
+}
+
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns) {
-    uint64_t p0 = perf_begin();
+    uint64_t p0 = perf_begin(), w0 = kern_now_ns();
     int ok = fence_wait_impl(value, timeout_ns);
     perf_end(PERF_FENCE, p0);
     perf_gpu_wait(p0);
+    if (ws_on < 0) ws_on = getenv("XC2_WAIT_SITES") && !strcmp(getenv("XC2_WAIT_SITES"), "1");
+    if (ws_on) wait_site(__builtin_return_address(0), kern_now_ns() - w0);
     return ok;
 }
 
