@@ -76,6 +76,9 @@
 # that flicker in the cloud sea on AMD GPUs. The copies cost about 0.1 ms a frame in the beginning-port save (RTX 4070
 # Laptop). Some reporters found 0 cleared frame drops in Torna DLC scenes, and the cloud sea flicker may return on AMD.
 # feedback_snap = 1
+# How those copies are ordered against the rest of the frame: narrow (the default) orders only the copies' reads and
+# writes; full uses the whole-frame barriers the copies had before, for comparison. Only matters while feedback_snap is 1.
+# snap_sync = narrow
 # Start each frame only once the GPU has drawn the one before it: stops props sliding and flickering above 30 fps.
 # auto waits only where the GPU reads live game memory (memory = import, or a pool too large for the memory budget);
 # otherwise the buffers it reads are copied at submit time and the GPU may run a frame behind. 1 always waits (about
