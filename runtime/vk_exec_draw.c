@@ -155,7 +155,7 @@ typedef struct { int cls, use; uint64_t bytes; } RsCount;
 static struct {
     int on;                              // XC2_BIND_SKIP: 1 skip (default), 2 check, 0 off
     uint32_t hn;                         // words of h the last signature filled; 0: none
-    uint64_t h[25];                      // generations, feedback images, support inputs, base instance
+    uint64_t h[28];                      // generations, feedback images, support inputs, base instance, glow inputs
     const VkPipeInfo *info;              // the pipeline whose RsList ranges body holds, as of bind op generation gen
     uint64_t gen;
     uint8_t body[RS_BYTES];
@@ -171,12 +171,13 @@ static struct {
 // The bound-slot bytes of VkExec a pipeline's descriptors read, as ranges merged where they touch, built once per
 // pipeline info: c0's storage table, the uniform and storage ranges of the bound slots and the texture and image
 // handles. sup and c0: the support inputs and the base instance count too. p: storage buffers whose address the shader
-// loads from a user uniform block; the address read from the block counts too. ok 0: never skipped (too many
-// descriptors or such buffers).
+// loads from a user uniform block; the address read from the block counts too. glow: the vertex stage binds uniform
+// slot 4, the block glow_c4 may replace by a scaled copy, so the pass size and the primitive count too. ok 0: never
+// skipped (too many descriptors or such buffers).
 #define RS_PTRS 4
 typedef struct { uint32_t off, len; } RsRange;
 typedef struct { int st; const GfxShaderRes *res; } RsPtr;
-typedef struct { uint32_t n, bytes; uint8_t sup, c0, ok, np; RsPtr p[RS_PTRS]; RsRange r[]; } RsList;
+typedef struct { uint32_t n, bytes; uint8_t sup, c0, ok, np, glow; RsPtr p[RS_PTRS]; RsRange r[]; } RsList;
 static nvn_hmap rs_lists;                // VkPipeInfo pointer -> RsList, until shutdown
 static const VkPipeInfo *rs_last;        // the last lookup
 static const RsList *rs_last_l;
@@ -1644,7 +1645,9 @@ static int push_skip_on(void) {   // XC2_PUSH_SKIP=0: every graphics draw pushes
 // - per binding: the support inputs, c0's storage table and base instance, the bound uniform and storage ranges, the
 //   texture and image handles (RsList; compared only when a bind op ran since the last draw, bind_gen);
 // - storage buffer addresses read from user uniform blocks (RsList.p, ubo_ptr): compared on every draw, since the
-//   block's contents change without a bind op.
+//   block's contents change without a bind op;
+// - the pass size and whether the draw is of quads, for a vertex stage that binds uniform slot 4 (RsList.glow): glow_c4
+//   replaces that block by a scaled copy for some of them.
 // The side effects of a build repeat as no-ops in the same command buffer and submission: c0 and support buffers kept
 // in B, note_written's ranges, vk_mem_gpu_wrote's write-backs, the per-submission mirror sync and dirty census note,
 // the views cached per submission. The census counts are added again. A build that copied guest bytes into transient
@@ -1675,7 +1678,7 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
         static RsRange tmp[MAX_DESC];
         RsPtr ptr[RS_PTRS];
         uint32_t n = 0, nd = 0, np = 0;
-        int sup = 0, c0 = 0, ok = 1;
+        int sup = 0, c0 = 0, ok = 1, glow = 0;
         for (uint32_t i = 0; i < info->n_bindings && ok; i++) {
             const VkPipeBinding *b = &info->bindings[i];
             const GfxShaderRes *r = b->res;
@@ -1689,6 +1692,7 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
                     int slot = r->slot + (int)k;
                     if (slot == 0 && c0_on()) c0 = 1, rs_add(tmp, &n, ex, ex->ssbo[st], sizeof ex->ssbo[st]);
                     else if (slot >= 3 && slot - 3 < 18) rs_add(tmp, &n, ex, &ex->ubo[st][slot - 3], sizeof(p_bind_buf));
+                    if (slot == 4 && st == NVN_STAGE_VS) glow = 1;   // ubo_info asks glow_c4 about this block
                 }   // slot 1: the program (bind_sig); others: the zero buffer
             } else if (b->kind == GFX_RES_SSBO) {   // every descriptor of the binding is the same range
                 int ubo, slot = ssbo_slot(r, st, &ubo);
@@ -1714,7 +1718,7 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
         l = malloc(sizeof *l + sizeof *tmp * n);
         if (!l) rt_fatal("vk: out of memory");
         l->n = n, l->bytes = (uint32_t)bytes, l->sup = (uint8_t)sup, l->c0 = (uint8_t)c0, l->ok = (uint8_t)ok;
-        l->np = (uint8_t)np;
+        l->np = (uint8_t)np, l->glow = (uint8_t)glow;
         memcpy(l->p, ptr, sizeof *ptr * np);
         memcpy(l->r, tmp, sizeof *tmp * n);
         nvn_hm_put(&rs_lists, &info, l);
@@ -1752,6 +1756,12 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
         PUT(ps);
     }
     if (l->c0) PUT(c0_binst);
+    // glow_c4 decides by the pass size and by whether the draw is of quads: a draw with the bindings of the one before
+    // it, but into a target of another size or with another primitive, may need the scaled copy the last build did not make.
+    if (l->glow) {
+        PUT((uint64_t)ex->pass_w << 32 | ex->pass_h);
+        PUT(glow_prim == NVN_DRAW_PRIMITIVE_QUADS);
+    }
     for (int i = 0; i < l->np; i++) PUT(ubo_ptr(ex, l->p[i].st, l->p[i].res));
 #undef PUT
     diff |= n != RS.hn;

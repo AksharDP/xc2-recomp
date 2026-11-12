@@ -1,10 +1,15 @@
 // The recorder of the captures (replay.h): a back end that logs each call and forwards it to the real one.
 //
-// Calls are logged in the order the back end receives them: one decorated call runs at a time (rec_lock), and its
-// record is appended before the call is made, so the replay meets the same order. Submissions and pool calls first
-// append the guest memory the CPU wrote since the previous record (vk_mem_record_pages), because the back end reads
-// those bytes when it runs the submission. The record stays sequential on purpose: the replay is one thread, and a
-// present is compared with what the record took after the same work.
+// While a capture runs, calls are logged in the order the back end receives them: one decorated call runs at a time
+// (rec_lock taken exclusively), and its record is appended before the call is made, so the replay meets the same order.
+// Submissions and pool calls first append the guest memory the CPU wrote since the previous record
+// (vk_mem_record_pages), because the back end reads those bytes when it runs the submission. The record stays
+// sequential on purpose: the replay is one thread, and a present is compared with what the record took after the same
+// work.
+// While no capture runs, which is nearly always, the calls take rec_lock shared and run side by side as the back end
+// expects them to (call_enter): the game's threads reach it from every memcpy of 1 KiB or more (guest_read), and a
+// submit, present or pool call can wait for the replay thread or the GPU for a frame. A capture starts and stops with
+// the lock held exclusively, so it never starts in the middle of a call.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,8 +31,14 @@ typedef struct { const void *p; size_t n; } Part;
 #define PUT(kind, ...) put(kind, (const Part[]){__VA_ARGS__}, sizeof((const Part[]){__VA_ARGS__}) / sizeof(Part))
 
 static const GfxBackend *real;                 // the back end the calls go to; set once by rec_wrap
-static PlatMutex rec_lock = PLAT_MUTEX_INIT;   // one decorated call at a time: the record keeps the calls' order
+// Exclusive while a capture runs (one decorated call at a time: the record keeps the calls' order) and to start or stop
+// one; shared otherwise (call_enter). "rec_lock" on a variable below means the exclusive lock.
+static PlatMutex rec_lock = PLAT_MUTEX_INIT;
+static PlatMutex journal_lock = PLAT_MUTEX_INIT;   // leaf lock: the journal's tables, written by calls that share rec_lock
 static PlatMutex log_lock = PLAT_MUTEX_INIT;   // leaf lock: memory.c's decommit appends under its frozen-region lock
+// 1 while a capture takes calls (log_f && armed) or one that failed has not been reaped (capture_reap). Written with
+// rec_lock held exclusively, so it cannot change under a call that holds the lock shared.
+static int live;
 // The log is written with positional writes through the platform's file layer, not stdio: a stdio write failed with
 // EINVAL in the middle of a run, and the C library's descriptor state is not something the game's other file code
 // should be able to touch. log_lock guards the file, its offset and the buffer.
@@ -41,7 +52,8 @@ static uint64_t frames_limit, presents;        // rec_lock: recorded presents (f
 static uint32_t gen_since;                     // rec_lock: the page generation of the last memory record
 static uint64_t flush_ns, flush_n;             // rec_lock: time in flush_memory and the flushes (close_log reports them)
 static int armed;                              // log_lock: 1 while the record takes calls (from the arm point, rec_arm)
-static uint64_t arm_at, presents_all;          // rec_lock: XC2_RECORD_FROM-1, the present the record arms at; all presents
+static uint64_t arm_at;                        // XC2_RECORD_FROM-1, the present the record arms at; set once by rec_wrap
+static uint64_t presents_all;                  // all presents so far; added to atomically (d_present)
 static char arm_file[PLAT_PATH_MAX];           // XC2_RECORD_ARM_FILE: arms at the first present after this file appears
 static uint64_t script_frames;                 // XC2_RECORD_FRAMES: the frames a scripted capture takes (0: one)
 static int wrapped;                            // set once by rec_wrap: the recorder is on for the run, so the journal runs
@@ -61,6 +73,22 @@ static int rec_on(void) {
 
 // The journal runs for the whole process: a capture that starts later needs the objects alive then.
 static int journal_on(void) { return wrapped; }
+
+// Around every decorated call. Returns 1 with rec_lock held exclusively when a capture runs, else 0 with it held
+// shared; call_leave takes the value back. live is read with the lock held shared, and only a holder of the exclusive
+// lock writes it, so a call that saw no capture finishes before one can start.
+static int call_enter(void) {
+    plat_mutex_lock_shared(&rec_lock);
+    if (!__atomic_load_n(&live, __ATOMIC_ACQUIRE)) return 0;
+    plat_mutex_unlock_shared(&rec_lock);
+    plat_mutex_lock(&rec_lock);   // the capture may have ended meanwhile: the call then runs alone, which is harmless
+    return 1;
+}
+
+static void call_leave(int exclusive) {
+    if (exclusive) plat_mutex_unlock(&rec_lock);
+    else plat_mutex_unlock_shared(&rec_lock);
+}
 
 // Writes the buffer out at log_off. log_lock held.
 static int log_flush(void) {
@@ -102,6 +130,7 @@ static void close_log(const char *why) {
     if (log_f) {
         log_end();
         armed = 0, cur_kind = 0;   // the next capture arms again
+        __atomic_store_n(&live, 0, __ATOMIC_RELEASE);
         rt_log("rec: recording stopped: %s; %llu memory flushes took %.1f s; log %llu bytes", why,
                (unsigned long long)flush_n, (double)flush_ns / 1e9, (unsigned long long)log_off);
     }
@@ -158,18 +187,23 @@ static void put(uint32_t kind, const Part *parts, size_t count) {
 }
 
 // A capture that put dropped (a failed write) still holds freezing off: put runs under locks the hold may not be released
-// under, so the next present releases it here. rec_lock held.
+// under, so the next present releases it here. live stays set until then, so that present comes here with rec_lock held
+// exclusively, as every call does meanwhile. rec_lock held.
 static void capture_reap(void) {
     plat_mutex_lock(&log_lock);
     int failed = write_failed;
     write_failed = 0;
+    if (failed) __atomic_store_n(&live, 0, __ATOMIC_RELEASE);
     plat_mutex_unlock(&log_lock);
     if (failed) vk_mem_capture_hold(0);
 }
 
-// ---- the journal: the objects the back end holds, as the calls made them (rec_lock held). A capture that starts after
+// ---- the journal: the objects the back end holds, as the calls made them. A capture that starts after
 // present N-1 writes them first (rec_arm), so the replay starts with the objects the frame N finds. Slots and
 // samplers keep their last registration; a pool keeps its init bytes and its maps until its fini.
+// The calls that write the journal may hold rec_lock shared, so each write takes journal_lock; rec_arm reads the tables
+// with rec_lock held exclusively, when no call is running. Two calls for one object at the same time would be a race in
+// the game itself, so the journal's order among different objects does not matter.
 typedef struct { int used, has_view; tex_t t; view_t v; } SlotRec;
 static SlotRec *slots;
 static size_t nslots, cslots;
@@ -195,22 +229,26 @@ static void *grow_to(void *p, size_t *have, size_t need, size_t elt) {
 
 static void journal_slot(int id, const tex_t *t, const view_t *v) {
     if (id < 0 || (uint32_t)id >= JOURNAL_IDS) return;
+    plat_mutex_lock(&journal_lock);
     slots = grow_to(slots, &cslots, (size_t)id + 1, sizeof *slots);
     if ((size_t)id + 1 > nslots) nslots = (size_t)id + 1;
     SlotRec *s = &slots[id];
     s->used = 1, s->has_view = v != NULL, s->t = *t;
     if (v) s->v = *v;
     else memset(&s->v, 0, sizeof s->v);
+    plat_mutex_unlock(&journal_lock);
 }
 
 static void journal_samp(int id, const samp_par *s) {
     if (id < 0 || (uint32_t)id >= JOURNAL_IDS) return;
+    plat_mutex_lock(&journal_lock);
     samps = grow_to(samps, &csamps, (size_t)id + 1, sizeof *samps);
     if ((size_t)id + 1 > nsamps) nsamps = (size_t)id + 1;
     samps[id].used = 1, samps[id].s = *s;
+    plat_mutex_unlock(&journal_lock);
 }
 
-static PoolRec *pool_find(uint64_t obj) {
+static PoolRec *pool_find(uint64_t obj) {   // journal_lock held
     for (size_t i = 0; i < npools; i++)
         if (pools[i].obj == obj) return &pools[i];
     return NULL;
@@ -218,6 +256,7 @@ static PoolRec *pool_find(uint64_t obj) {
 
 static void journal_pool_init(pool_t *p) {
     uint64_t obj = (uint64_t)(uintptr_t)p;
+    plat_mutex_lock(&journal_lock);
     PoolRec *r = pool_find(obj);
     if (!r) {
         if (npools == cpools) {
@@ -232,22 +271,29 @@ static void journal_pool_init(pool_t *p) {
     }
     r->maps_n = 0;   // a second init of a live pool starts with no maps
     r->p = *p;
+    plat_mutex_unlock(&journal_lock);
 }
 
 static void journal_pool_fini(pool_t *p) {
     uint64_t obj = (uint64_t)(uintptr_t)p;
+    plat_mutex_lock(&journal_lock);
     for (size_t i = 0; i < npools; i++) {
         if (pools[i].obj != obj) continue;
         free(pools[i].maps);
         pools[i] = pools[--npools];
         memset(&pools[npools], 0, sizeof pools[npools]);
-        return;
+        break;
     }
+    plat_mutex_unlock(&journal_lock);
 }
 
 static void journal_pool_map(pool_t *v, int n, const void *requests) {
+    plat_mutex_lock(&journal_lock);
     PoolRec *r = pool_find((uint64_t)(uintptr_t)v);
-    if (!r || n < 0) return;
+    if (!r || n < 0) {
+        plat_mutex_unlock(&journal_lock);
+        return;
+    }
     size_t need = 8 + (size_t)n * 0x28;
     if (r->maps_n + need > r->maps_cap) {
         size_t cap = r->maps_cap ? r->maps_cap : 4096;
@@ -260,6 +306,7 @@ static void journal_pool_map(pool_t *v, int n, const void *requests) {
     memcpy(r->maps + r->maps_n, hd, 8);
     memcpy(r->maps + r->maps_n + 8, requests, (size_t)n * 0x28);
     r->maps_n += need;
+    plat_mutex_unlock(&journal_lock);
 }
 
 // The replay's copy of the heap starts zeroed, and only DELTA records fill it in. known_nz has one bit per heap page
@@ -320,46 +367,46 @@ static void flush_memory(void) {
 // ---- the decorated back end
 
 static int d_pool_init(pool_t *p) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         flush_memory();
         uint64_t obj = (uint64_t)(uintptr_t)p;
         PUT(RR_POOL_INIT, {&obj, sizeof obj}, {p, sizeof *p});
     }
     int r = real->pool_init(p);
     if (journal_on()) journal_pool_init(p);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
     return r;
 }
 
 static void d_pool_fini(pool_t *p) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         flush_memory();
         uint64_t obj = (uint64_t)(uintptr_t)p;
         PUT(RR_POOL_FINI, {&obj, sizeof obj}, {p, sizeof *p});
     }
     real->pool_fini(p);
     if (journal_on()) journal_pool_fini(p);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static int d_pool_map_virtual(pool_t *v, int n, const void *requests) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         uint64_t obj = (uint64_t)(uintptr_t)v;
         uint32_t hd[2] = {(uint32_t)n, 0};
         PUT(RR_POOL_MAP, {&obj, sizeof obj}, {hd, sizeof hd}, {requests, (size_t)n * 0x28});
     }
     int r = real->pool_map_virtual(v, n, requests);
     if (journal_on()) journal_pool_map(v, n, requests);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
     return r;
 }
 
 static void d_texture_register(int id, const tex_t *t, const view_t *v) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         // A NULL view is a slot without one (vk_texture_register): a flag says so, and the view's bytes are zero.
         uint32_t hd[2] = {(uint32_t)id, v != NULL};
         static const view_t no_view;
@@ -367,32 +414,32 @@ static void d_texture_register(int id, const tex_t *t, const view_t *v) {
     }
     real->texture_register(id, t, v);
     if (journal_on()) journal_slot(id, t, v);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_sampler_register(int id, const samp_par *s) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         uint32_t hd[2] = {(uint32_t)id, 0};
         PUT(RR_SAMP_REG, {hd, sizeof hd}, {s, sizeof *s});
     }
     real->sampler_register(id, s);
     if (journal_on()) journal_samp(id, s);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_texture_release(const tex_t *t) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) PUT(RR_TEX_REL, {t, sizeof *t});
+    int x = call_enter();
+    if (x && rec_on()) PUT(RR_TEX_REL, {t, sizeof *t});
     real->texture_release(t);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_program_release(const prog_t *p) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) PUT(RR_PROG_REL, {p, sizeof *p});
+    int x = call_enter();
+    if (x && rec_on()) PUT(RR_PROG_REL, {p, sizeof *p});
     real->program_release(p);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 // ---- command blocks. The NVN layer keeps the command streams in host memory: a submitted handle is the address of a copy,
@@ -466,8 +513,8 @@ void rec_trace_submit(const char *who, const uint64_t *handles, int n) {
 }
 
 static uint64_t d_submit(const uint64_t *handles, int n) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         if (n > 0) {
             flush_memory();
             nvn_pins_each(pin_send, NULL);   // the pins before the blocks that point at them
@@ -479,7 +526,7 @@ static uint64_t d_submit(const uint64_t *handles, int n) {
         PUT(RR_SUBMIT, {hd, sizeof hd}, {handles, n > 0 ? (size_t)n * 8 : 0});
     }
     uint64_t f = real->submit(handles, n);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
     return f;
 }
 
@@ -487,10 +534,10 @@ static int d_fence_wait(uint64_t value, uint64_t timeout_ns) { return real->fenc
 static uint64_t d_fence_done(void) { return real->fence_done(); }
 
 static void d_finish(void) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) PUT(RR_FINISH, {NULL, 0});
+    int x = call_enter();
+    if (x && rec_on()) PUT(RR_FINISH, {NULL, 0});
     real->finish();
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void rec_arm(void);   // starts the record at its preamble (below)
@@ -552,9 +599,17 @@ static void write_info(const tex_t *t, uint64_t hash) {
 }
 
 static void d_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
-    plat_mutex_lock(&rec_lock);
+    int x = call_enter();
     real->present(t, crop, at_ns);   // the frame's work is queued or done; the picture is read back below, after it
-    presents_all++;
+    uint64_t all = __atomic_add_fetch(&presents_all, 1, __ATOMIC_RELAXED);
+    if (!x) {
+        // No capture runs, and one starts only below, at a present: when the menu asked for it, at the present
+        // XC2_RECORD_FROM names, or while XC2_RECORD_ARM_FILE is watched. Without any of them the present is done.
+        int asked = __atomic_load_n(&req_kind, __ATOMIC_ACQUIRE) || (arm_at && all == arm_at) || arm_file[0];
+        call_leave(0);
+        if (!asked) return;
+        plat_mutex_lock(&rec_lock);   // starting a capture waits for the calls that are running
+    }
     if (rec_on()) {
         uint8_t *px = NULL;
         uint64_t hash = 0;
@@ -562,7 +617,7 @@ static void d_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
         presents++;
         uint32_t hc[6] = {crop ? 1u : 0u, 0, crop ? (uint32_t)crop[0] : 0, crop ? (uint32_t)crop[1] : 0,
                           crop ? (uint32_t)crop[2] : 0, crop ? (uint32_t)crop[3] : 0};
-        uint64_t tail[3] = {at_ns, presents_all, hash};
+        uint64_t tail[3] = {at_ns, all, hash};
         PUT(RR_PRESENT, {t, sizeof *t}, {hc, sizeof hc}, {tail, sizeof tail});
         if (presents == 1) write_info(t, hash);
         // The picture the game showed goes next to the record, so a replay's picture has something to be compared with
@@ -582,7 +637,7 @@ static void d_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     }
     capture_reap();
     // XC2_RECORD_FROM: the capture starts after present N-1, so frame N is the first one it takes.
-    if (arm_at && presents_all == arm_at && !capture_busy()) script_start();
+    if (arm_at && all == arm_at && !capture_busy()) script_start();
     // XC2_RECORD_ARM_FILE: "capture now". The file is created while the game shows the state; the next frame is the one
     // recorded, and the file is removed so a second capture needs a new one.
     if (arm_file[0] && !capture_busy() && plat_file_exists(arm_file)) {
@@ -599,25 +654,25 @@ static void d_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 
 static void d_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row,
                           uint64_t img) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         uint64_t tail[3] = {row, img, vk_texture_texel_span(t, v, r, row, img)};
         PUT(RR_READ, {t, sizeof *t}, {v, sizeof *v}, {r, sizeof *r}, {tail, sizeof tail});
     }
     real->read_texels(t, v, r, dst, row, img);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, uint64_t row,
                            uint64_t img) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) {
+    int x = call_enter();
+    if (x && rec_on()) {
         uint64_t n = vk_texture_texel_span(t, v, r, row, img);
         uint64_t tail[3] = {row, img, n};
         PUT(RR_WRITE, {t, sizeof *t}, {v, sizeof *v}, {r, sizeof *r}, {tail, sizeof tail}, {src, (size_t)n});
     }
     real->write_texels(t, v, r, src, row, img);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_guest(uint32_t which, uint64_t addr, uint64_t size) {
@@ -626,24 +681,24 @@ static void d_guest(uint32_t which, uint64_t addr, uint64_t size) {
 }
 
 static void d_guest_written(uint64_t addr, uint64_t size) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) d_guest(0, addr, size);
+    int x = call_enter();
+    if (x && rec_on()) d_guest(0, addr, size);
     real->guest_written(addr, size);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_guest_read(uint64_t addr, uint64_t size) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) d_guest(1, addr, size);
+    int x = call_enter();
+    if (x && rec_on()) d_guest(1, addr, size);
     real->guest_read(addr, size);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static void d_cpu_synced(uint64_t fence) {
-    plat_mutex_lock(&rec_lock);
-    if (rec_on()) PUT(RR_CPU_SYNCED, {&fence, sizeof fence});
+    int x = call_enter();
+    if (x && rec_on()) PUT(RR_CPU_SYNCED, {&fence, sizeof fence});
     real->cpu_synced(fence);
-    plat_mutex_unlock(&rec_lock);
+    call_leave(x);
 }
 
 static const GfxBackend rec_be = {
@@ -678,7 +733,10 @@ void rec_note_commit(uint64_t addr, uint64_t n) {
 void rec_note_decommit(uint64_t addr, uint64_t n) {
     if (!n) return;
     const RtGuestLayout *g = mem_layout();
-    if (known_nz && addr >= g->heap.base && addr < g->heap.base + g->heap.size) {   // the replay zeroes these pages
+    // The page map belongs to the capture that runs (rec_arm clears it for the next one): without one there is nothing
+    // to keep, and a heap that shrinks by a gigabyte would clear a quarter of a million bits for nobody.
+    if (known_nz && __atomic_load_n(&live, __ATOMIC_ACQUIRE) && addr >= g->heap.base &&
+        addr < g->heap.base + g->heap.size) {   // the replay zeroes these pages
         uint64_t lo = (addr - g->heap.base) >> 12, hi = ((addr + n + 0xfff) - g->heap.base) >> 12;
         if (hi > known_pages) hi = known_pages;
         for (uint64_t i = lo; i < hi; i++) known_set(i, 0);
@@ -822,6 +880,7 @@ static void rec_arm(void) {
         return;
     }
     armed = 1;
+    __atomic_store_n(&live, 1, __ATOMIC_RELEASE);   // rec_lock is held exclusively: no call is running (call_enter)
     plat_mutex_unlock(&log_lock);
     vk_mem_capture_hold(1);   // no frozen page may take a write unstamped while the capture runs
     const RtGuestLayout *g = mem_layout();

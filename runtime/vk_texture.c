@@ -923,6 +923,7 @@ void vk_texture_release(const tex_t *t) {
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc) {
     lock();
     Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
+    if (!list) rt_fatal("vk: out of memory for a list of textures");
     int n = 0;
     for (uint32_t i = 0; i < by_key.cap; i++) {
         Tex *e = by_key.vals[i];
@@ -1149,7 +1150,7 @@ static int read_aspect(const Tex *e, VkImageAspectFlags *a) {
 
 // Image <-> caller rows through a staging buffer; the GPU copy is waited for.
 static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t *mem, int write) {
-    static volatile int32_t n_astc, n_ds;
+    static volatile int32_t n_astc, n_ds, n_out;
     VkCtx *c = vk_ctx();
     VkImageAspectFlags aspect;
     if (e->f.astc_bw && !write) {
@@ -1163,6 +1164,27 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
     }
     if (g->level >= e->pub.levels) return 0;
     uint32_t w = (uint32_t)r->width, h = (uint32_t)r->height;
+    // The region comes from the game (ReadTexels, WriteTexels): a copy that leaves the level, its layers or its depth
+    // planes, or names a multisampled image, is not a valid Vulkan copy and may take the driver down with it.
+    uint64_t planes = g->is3d ? mip(e->pub.depth, g->level) : e->pub.layers;
+    uint64_t z0 = (g->is3d ? 0 : g->layer0) + (uint64_t)r->zoffset;
+    uint32_t lw = mip(e->pub.width, g->level), lh = mip(e->pub.height, g->level);
+    uint64_t x1 = (uint64_t)r->xoffset + w, y1 = (uint64_t)r->yoffset + h;
+    if (!e->f.astc_bw && !e->f.expand_rgb && (g->bw > 1 || g->bh > 1)) {
+        // An image that is block-compressed in Vulkan too. The game may give whole blocks past the edge of a small
+        // level (4x4 texels of a 2x2 one), as the storage path accepts (nvn_texels_box counts blocks); Vulkan takes
+        // that copy with its extent cut at the edge. The blocks, and so the rows of the buffer, stay the same.
+        uint64_t bx = ((uint64_t)lw + (uint32_t)g->bw - 1) / (uint32_t)g->bw * (uint32_t)g->bw;
+        uint64_t by = ((uint64_t)lh + (uint32_t)g->bh - 1) / (uint32_t)g->bh * (uint32_t)g->bh;
+        if (x1 > lw && x1 <= bx) w = lw - (uint32_t)r->xoffset, x1 = lw;
+        if (y1 > lh && y1 <= by) h = lh - (uint32_t)r->yoffset, y1 = lh;
+    }
+    if (e->pub.samples > 1 || x1 > lw || y1 > lh || z0 + (uint64_t)g->nz > planes) {
+        log_limited(&n_out, "texels %d,%d,%d %ux%ux%d of level %u are outside texture %#llx (%ux%u, %u samples): not copied",
+                    r->xoffset, r->yoffset, r->zoffset, w, h, g->nz, g->level, (unsigned long long)e->pub.addr,
+                    e->pub.width, e->pub.height, e->pub.samples);
+        return 0;
+    }
     int rgb = e->f.expand_rgb, astc = e->f.astc_bw != 0, agpu = astc && write && vk_astc_gpu();
     size_t texels = (size_t)w * h, ib = agpu ? 0 : astc ? 4 : rgb ? (size_t)g->bpb / 3 * 4 : 0;
     size_t slice = ib ? texels * ib : g->wb * g->hb;   // agpu: the raw blocks, decoded by vk_astc_record
@@ -1170,6 +1192,7 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
     VmaAllocation sa;
     uint8_t *stg = vk_staging(slice * (size_t)g->nz, &sb, &sa);
     VkBufferImageCopy *rg = calloc((size_t)g->nz, sizeof *rg);
+    if (!rg) rt_fatal("vk: out of memory for a texel copy");
     for (int z = 0; z < g->nz; z++) {
         uint8_t *s = stg + slice * (size_t)z;
         const uint8_t *m = mem + (size_t)z * g->img;
@@ -1178,6 +1201,7 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
                 for (size_t y = 0; y < g->hb; y++) memcpy(s + y * g->wb, m + y * g->row, g->wb);
             } else if (astc) {
                 uint8_t *tight = malloc(g->wb * g->hb);
+                if (!tight) rt_fatal("vk: out of memory for a texel copy");
                 for (size_t y = 0; y < g->hb; y++) memcpy(tight + y * g->wb, m + y * g->row, g->wb);
                 uint64_t a0 = perf_begin();
                 astc_decode_ldr_mt(tight, w, h, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, s);
@@ -1201,6 +1225,7 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
         int done = 0;
         if (agpu) {
             VkAstcRegion *ar = calloc((size_t)g->nz, sizeof *ar);
+            if (!ar) rt_fatal("vk: out of memory for a texel copy");
             for (int z = 0; z < g->nz; z++)
                 ar[z] = (VkAstcRegion){.src = slice * (size_t)z, .w = w, .h = h, .slices = 1, .level = rg[z].imageSubresource.mipLevel,
                                        .layer = rg[z].imageSubresource.baseArrayLayer, .offset = rg[z].imageOffset};
@@ -1729,6 +1754,7 @@ void vk_texture_shutdown(void) {
     VkCtx *c = vk_ctx();
     lock();
     Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
+    if (!list) rt_fatal("vk: out of memory for a list of textures");
     int n = 0;
     for (uint32_t i = 0; i < by_key.cap; i++)
         if (by_key.vals[i]) list[n++] = by_key.vals[i];
