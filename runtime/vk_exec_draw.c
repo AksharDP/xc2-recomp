@@ -698,7 +698,8 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
         // Baked into the fragment shader as a discard (docs/maxwell.md 5.7); unset (0) and ALWAYS stay disabled.
         unsigned f = ex->pipe.color.alpha_func;
         if (f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL) a->alpha_func = (uint8_t)f;
-        a->alpha_ref = ex->alpha_ref;
+        // Zero with the test off: a reference nothing tests must not split the shader cache (the input id hashes it).
+        a->alpha_ref = a->alpha_func ? ex->alpha_ref : 0;
     }
     else
         for (int k = 0; k < 3; k++) {
