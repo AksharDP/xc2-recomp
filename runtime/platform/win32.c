@@ -1032,6 +1032,36 @@ int plat_clipboard_set(const char *utf8) {
     return ok;
 }
 
+// Whether the shell opens folders for this process. ShellExecuteW refuses a process at low integrity (ERROR_ACCESS_DENIED),
+// which a security tool or a policy can give the game; then the buttons copy the folder's path instead. advapi32 is
+// loaded by name: this is the only user of it, and it is always there in a Windows process.
+int plat_folder_can_open(void) {
+    static int can = -1;
+    if (can >= 0) return can;
+    can = 1;
+    typedef BOOL(WINAPI *OpenTokenFn)(HANDLE, DWORD, PHANDLE);
+    typedef BOOL(WINAPI *InfoTokenFn)(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD);
+    HMODULE adv = LoadLibraryW(L"advapi32.dll");
+    OpenTokenFn open_tok = adv ? (OpenTokenFn)GetProcAddress(adv, "OpenProcessToken") : NULL;
+    InfoTokenFn info_tok = adv ? (InfoTokenFn)GetProcAddress(adv, "GetTokenInformation") : NULL;
+    HANDLE tok = NULL;
+    if (open_tok && info_tok && open_tok(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
+        DWORD n = 0;
+        info_tok(tok, TokenIntegrityLevel, NULL, 0, &n);
+        TOKEN_MANDATORY_LABEL *ml = n ? malloc(n) : NULL;
+        if (ml && info_tok(tok, TokenIntegrityLevel, ml, n, &n)) {
+            // The integrity level is the last sub-authority of the label's SID: 0x1000 low, 0x2000 medium.
+            const BYTE *sid = ml->Label.Sid;
+            BYTE count = sid[1];
+            DWORD rid = *(const DWORD *)(sid + 8 + 4 * (count - 1));
+            can = rid >= SECURITY_MANDATORY_MEDIUM_RID;
+        }
+        free(ml);
+        CloseHandle(tok);
+    }
+    return can;
+}
+
 static DWORD WINAPI open_folder_main(void *arg) {
     ShellExecuteW(NULL, L"open", arg, NULL, NULL, SW_SHOWNORMAL);
     free(arg);

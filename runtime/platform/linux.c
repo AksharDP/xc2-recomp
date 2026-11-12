@@ -1393,6 +1393,9 @@ static void reap_main(void *arg) {
     waitpid((pid_t)(intptr_t)arg, NULL, 0);
 }
 
+// The desktop's file manager answers for the folder; no integrity level stops it here.
+int plat_folder_can_open(void) { return 1; }
+
 // xdg-open picks the desktop's file manager; it runs detached, so a slow answer does not hold up the caller, and a
 // thread of its own reaps it so it does not stay a zombie.
 int plat_open_folder(const char *path) {
