@@ -279,8 +279,8 @@ NVN_API(nvnSamplerCompare) { ret_x(c, !memcmp(sp_of(c), &((const samp_t *)arg_p(
 // uint64_t nvnSamplerGetDebugID(const NVNsampler *s)
 NVN_API(nvnSamplerGetDebugID) { ret_x(c, arg_x(c, 0)); }
 
-// ---------- fixed-function state objects: setters without a host equivalent store the value (the replay reports any
-// non-default use); getters return what was set
+// ---------- fixed-function state objects: setters without a host equivalent store the value, and the non-default uses the
+// replay cannot apply are reported once (ONCE / MS_ONCE calls where a setter notices them); getters return what was set
 #define ST(T) ((T *)arg_p(c, 0))
 // void nvnColorStateSetLogicOp(NVNcolorState *s, NVNlogicOp op) / SetAlphaTest(NVNcolorState *s, NVNalphaFunc f)
 NVN_API(nvnColorStateSetLogicOp) {
@@ -351,6 +351,11 @@ NVN_API(nvnMultisampleStateSetRasterSamples) {
     int n = (int)arg_x(c, 1);
     if (n < 0 || n > 16) rt_fatal("nvn: raster samples %d", n);
     ST(ms_st)->raster_samples = (uint8_t)n;
+    if (n > 1) {
+        // The replay rasterises at the pass's own sample count (vk_exec.c, pass_samples); the stored value is not read.
+        static int once_;
+        if (!once_++) rt_log("nvn: MultisampleState raster samples %d: stored, not applied (the replay rasterises at the pass's sample count)", n);
+    }
 }
 // void nvnMultisampleStateSetAlphaToCoverageDither(NVNmultisampleState *s, NVNboolean enable)
 NVN_API(nvnMultisampleStateSetAlphaToCoverageDither) { ST(ms_st)->a2c_dither = nvn_arg_bool(c, 1) != 0; }

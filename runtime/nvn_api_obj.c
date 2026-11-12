@@ -522,13 +522,32 @@ NVN_API(nvnMultisampleStateSetDefaults) {
     ST(ms_st, c)->enable = 1;
     ST(ms_st, c)->a2c_dither = 1;   // dithered alpha to coverage by default, as Maxwell (0x12e0) and deko3d's defaults
 }
-NVN_API(nvnMultisampleStateSetMultisampleEnable) { ST(ms_st, c)->enable = nvn_arg_bool(c, 1) != 0; }
-NVN_API(nvnMultisampleStateSetSamples) { ST(ms_st, c)->samples = (uint8_t)arg_x(c, 1); }
+// The multisample state is stored, and its getters return it, but the replay draws at each pass's own sample count
+// (vk_exec.c, pipe.samples) with the standard sample positions. A non-default value is reported once, not dropped
+// silently.
+#define MS_ONCE(...) do { static int once_; if (!once_++) rt_log("nvn: " __VA_ARGS__); } while (0)
+NVN_API(nvnMultisampleStateSetMultisampleEnable) {
+    int on = nvn_arg_bool(c, 1) != 0;
+    ST(ms_st, c)->enable = on;
+    if (!on) MS_ONCE("MultisampleState enable 0: stored, not applied (the replay draws at the pass's sample count)");
+}
+NVN_API(nvnMultisampleStateSetSamples) {
+    unsigned n = (unsigned)arg_x(c, 1);
+    ST(ms_st, c)->samples = (uint8_t)n;
+    if (n > 1) MS_ONCE("MultisampleState samples %u: stored, not applied (the replay draws at the pass's sample count)", n);
+}
 NVN_API(nvnMultisampleStateSetAlphaToCoverageEnable) { ST(ms_st, c)->a2c = nvn_arg_bool(c, 1) != 0; }
-NVN_API(nvnMultisampleStateSetSampleLocationsEnable) { ST(ms_st, c)->sl_en = nvn_arg_bool(c, 1) != 0; }
+NVN_API(nvnMultisampleStateSetSampleLocationsEnable) {
+    int on = nvn_arg_bool(c, 1) != 0;
+    ST(ms_st, c)->sl_en = on;
+    if (on) MS_ONCE("MultisampleState sample locations enable: stored, not applied (the standard positions are used)");
+}
 // void nvnMultisampleStateSetSampleLocations(NVNmultisampleState *s, int start, int n, const float *v): programmable
 // sample positions are not replayed
-NVN_API(nvnMultisampleStateSetSampleLocations) { (void)c; }
+NVN_API(nvnMultisampleStateSetSampleLocations) {
+    (void)c;
+    MS_ONCE("MultisampleState sample locations: programmable positions not replayed");
+}
 NVN_API(nvnPolygonStateSetDefaults) {
     *ST(poly_st, c) = (poly_st){NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0};
 }
