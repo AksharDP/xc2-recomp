@@ -1391,8 +1391,12 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     ex->nsnap = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
-    m &= ~feedback_snapshot(ex, fs, m);
-    uint32_t d = m & ex->fb_dirty;
+    uint32_t dirty = m & ex->fb_dirty;   // read before the snapshot, whose pass restart clears fb_dirty
+    uint32_t snapped = feedback_snapshot(ex, fs, m);
+    m &= ~snapped;
+    // A snapshot ends the pass behind a full barrier, which makes every earlier write visible, so RESTART mode has nothing
+    // left to do. LAYOUT mode still learns the sampled targets it did not copy, or they stay attached in GENERAL.
+    uint32_t d = !snapped ? dirty : mode == VK_FEEDBACK_LAYOUT ? dirty & ~snapped : 0;
     if (d) vk_exec_frame.fb_draws++;
     if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
         if (mode == VK_FEEDBACK_LAYOUT)
