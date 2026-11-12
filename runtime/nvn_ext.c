@@ -94,7 +94,7 @@ NVN_API(nvnTextureBuilderGetLevels) { ret_x(c, tb_of(c)->d.levels); }
 NVN_API(nvnTextureBuilderGetFormat) { ret_x(c, (uint32_t)tb_of(c)->d.format); }
 NVN_API(nvnTextureBuilderGetSamples) { ret_x(c, (uint32_t)tb_of(c)->d.samples); }
 NVN_API(nvnTextureBuilderGetSwizzle) { get_swizzle(c, &tb_of(c)->d); }
-NVN_API(nvnTextureBuilderGetDepthStencilMode) { ret_x(c, NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH); }
+NVN_API(nvnTextureBuilderGetDepthStencilMode) { ret_x(c, tb_of(c)->d.dsmode); }
 NVN_API(nvnTextureBuilderGetStride) { ret_x(c, tb_of(c)->d.stride); }
 NVN_API(nvnTextureBuilderGetMemoryPool) { ret_x(c, (uintptr_t)tb_of(c)->pool); }
 NVN_API(nvnTextureBuilderGetMemoryOffset) { ret_x(c, (uint64_t)tb_of(c)->off); }
@@ -103,7 +103,7 @@ NVN_API(nvnTextureGetLevels) { ret_x(c, tex_of(c)->d.levels); }
 NVN_API(nvnTextureGetFormat) { ret_x(c, (uint32_t)tex_of(c)->d.format); }
 NVN_API(nvnTextureGetSamples) { ret_x(c, (uint32_t)tex_of(c)->d.samples); }
 NVN_API(nvnTextureGetSwizzle) { get_swizzle(c, &tex_of(c)->d); }
-NVN_API(nvnTextureGetDepthStencilMode) { ret_x(c, NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH); }
+NVN_API(nvnTextureGetDepthStencilMode) { ret_x(c, tex_of(c)->d.dsmode); }
 NVN_API(nvnTextureGetStride) { ret_x(c, tex_of(c)->d.stride); }
 NVN_API(nvnTextureGetTextureAddress) { ret_x(c, (uintptr_t)tex_of(c)->mem); }
 NVN_API(nvnTextureGetMemoryPool) { ret_x(c, (uintptr_t)tex_of(c)->pool); }

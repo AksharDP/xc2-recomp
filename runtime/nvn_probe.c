@@ -222,6 +222,15 @@ static void probe_textures(void) {
     set_tex(NVN_FORMAT_RGBA_DXT5_SRGB, 160, 160, 8, 0x10000);
     CHECK((uint8_t)CALL(nvnTextureInitialize, U(&tex2), U(&texb)) == 1, "BC3 texture");
     CHECK(CALL(nvnTextureGetStorageSize, U(&tex2)) == 57344, "BC3 160x160 storage size");
+    // depth-stencil mode: the builder and a texture report the mode they hold (the getters used to answer DEPTH always)
+    CALL(nvnTextureBuilderSetDepthStencilMode, U(&texb), NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    CHECK(CALL(nvnTextureBuilderGetDepthStencilMode, U(&texb)) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL,
+          "builder depth-stencil mode is read back");
+    CALL(nvnTextureBuilderSetDepthStencilMode, U(&texb), NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH);
+    ((tex_t *)(void *)&tex2)->d.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+    CHECK(CALL(nvnTextureGetDepthStencilMode, U(&tex2)) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL,
+          "texture depth-stencil mode is read back");
+    ((tex_t *)(void *)&tex2)->d.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH;
     CHECK(CALL(nvnTextureCompare, U(&tex1), U(&tex1)) == 1 && CALL(nvnTextureCompare, U(&tex1), U(&tex2)) == 0, "TextureCompare");
 
     // packaged texture data is copied into the pool storage at Initialize
