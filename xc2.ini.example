@@ -73,7 +73,8 @@
 # wrong place and a flat far field for a frame.
 # lod_guard = 1
 # A draw that samples a target it also writes reads a copy made just before it, as on the Switch: stops the thin lines
-# that flicker in the cloud sea on AMD GPUs.
+# that flicker in the cloud sea on AMD GPUs. The copies cost about 0.1 ms a frame in the beginning-port save (RTX 4070
+# Laptop). Some reporters found 0 cleared frame drops in Torna DLC scenes, and the cloud sea flicker may return on AMD.
 # feedback_snap = 1
 # Start each frame only once the GPU has drawn the one before it: stops props sliding and flickering above 30 fps.
 # auto waits only where the GPU reads live game memory (memory = import, or a pool too large for the memory budget);
