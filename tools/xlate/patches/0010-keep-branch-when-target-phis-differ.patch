@@ -1,0 +1,62 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BranchElimination.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BranchElimination.cs
+@@ -7,7 +7,8 @@
+     {
+         public static bool RunPass(BasicBlock block)
+         {
+-            if (block.HasBranch && IsRedundantBranch((Operation)block.GetLastOp(), Next(block)))
++            if (block.HasBranch && IsRedundantBranch((Operation)block.GetLastOp(), Next(block)) &&
++                SamePhiSources(block.Branch, block, Next(block)))
+             {
+                 block.Branch = null;
+
+@@ -40,6 +41,49 @@
+             return current.Dest == next.Dest;
+         }
+
++        private static bool SamePhiSources(BasicBlock target, BasicBlock current, BasicBlock nextBlock)
++        {
++            // We are in SSA form: a phi in the target takes one value per predecessor. Without the branch,
++            // the current block falls through to the next block, and the phi's value for the current block
++            // is overwritten by the one for the next block. So the branch is only redundant if every phi
++            // gets the same value from both (a conditional "if (p) x = 1.0;" would otherwise always set x).
++
++            foreach (INode node in target.Operations)
++            {
++                if (node is not PhiNode phi)
++                {
++                    continue;
++                }
++
++                Operand fromCurrent = null;
++                Operand fromNext = null;
++
++                for (int index = 0; index < phi.SourcesCount; index++)
++                {
++                    if (phi.GetBlock(index) == current)
++                    {
++                        fromCurrent = phi.GetSource(index);
++                    }
++                    else if (phi.GetBlock(index) == nextBlock)
++                    {
++                        fromNext = phi.GetSource(index);
++                    }
++                }
++
++                if (fromCurrent != null && !IsSameValue(fromCurrent, fromNext))
++                {
++                    return false;
++                }
++            }
++
++            return true;
++        }
++
++        private static bool IsSameValue(Operand x, Operand y)
++        {
++            return x == y || (y != null && x.Type == OperandType.Constant && y.Type == OperandType.Constant && x.Value == y.Value);
++        }
++
+         private static BasicBlock Next(BasicBlock block)
+         {
+             block = block.Next;
