@@ -15,7 +15,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from installer import ini, runner, state  # noqa: E402
-from installer.events import Reporter  # noqa: E402
+from installer.events import LauncherReporter, Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
 
@@ -249,6 +249,22 @@ class EventsTest(unittest.TestCase):
             log = (Path(d) / 'x.log').read_text(encoding='utf-8')
             self.assertIn('40 GB needed, 3 GB free', log)
             self.assertIn('[check.disk_space]', log)
+
+    def test_launcher_lines_count_steps_and_phases(self):
+        out = io.StringIO()
+        rep = LauncherReporter(out=out, err=io.StringIO())
+        rep.emit('start', steps=['check', 'extract'])
+        rep.step('extract', 'started')
+        rep.progress('extract', 'copy', 5, 10, 'bytes')
+        self.assertEqual(out.getvalue().splitlines(),
+                         ['progress 0.500 Extracting the game', 'progress 0.750 Copying the game data'])
+
+    def test_launcher_error_goes_to_stderr_as_text(self):
+        out, err = io.StringIO(), io.StringIO()
+        rep = LauncherReporter(out=out, err=err)
+        rep.error('check.disk_space', {'path': 'D:\\x', 'need_gb': 40, 'free_gb': 3}, step='check')
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('40 GB needed, 3 GB free', err.getvalue())
 
     def test_catalog_has_every_id_the_code_uses(self):
         catalog = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))

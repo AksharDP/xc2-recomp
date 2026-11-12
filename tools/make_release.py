@@ -16,6 +16,7 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe, amd_fidelityfx_vk.dll (AMD's signed
                build, out of the FidelityFX SDK release)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
+    recomplauncher.json  how RecompLauncher sets the game up and starts it (docs/installer.md, "RecompLauncher")
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626 (VERSION alone outside a git checkout); the
                installer's release string
     XC2-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
@@ -414,6 +415,7 @@ def build_sources(out):
         copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
     copy_tree(ROOT / 'installer', out / 'installer', lambda r: '__pycache__' in r or r.startswith('launcher/'))
     shutil.copy2(ROOT / 'xc2.ini.example', out / 'xc2.ini.example')
+    shutil.copy2(ROOT / 'recomplauncher.json', out / 'recomplauncher.json')   # RecompLauncher reads it from the zip's top and the AppImage's root
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
