@@ -2388,13 +2388,20 @@ static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t i
     if (!split || q < 4 || q > 16 || inst != 1) return 0;
     static int rej;
 #define QS_NO(...) do { if (q > 1 && rej < 12) rej++, rt_log("vk: quad split skips %u quads of prog %llu: " __VA_ARGS__); return 0; } while (0)
-    GfxShaderIo io[32];
-    uint32_t in = draw_vs ? gfx_shader_inputs(draw_vs, io) : 0;
+    // The vertex format first: it is a load, and most quad draws (the UI's) fail it; the shader's inputs are a walk.
     unsigned long long pg = ex->prog ? ex->prog->serial : 0;
-    if (in != 1u) QS_NO("inputs %#x", q, pg, in);
     va_st va;
     memcpy(&va, &ex->pipe.vattr[0], sizeof va);
     if (va.fmt != 0x22 || va.stream >= 16) QS_NO("format %#x stream %u", q, pg, (unsigned)va.fmt, (unsigned)va.stream);
+    static const GfxShader *last_vs;   // the last vertex shader asked and its answer: the sea draws repeat each frame
+    static uint32_t last_in;
+    if (draw_vs != last_vs) {
+        GfxShaderIo io[32];
+        last_in = draw_vs ? gfx_shader_inputs(draw_vs, io) : 0;
+        last_vs = draw_vs;
+    }
+    uint32_t in = last_in;
+    if (in != 1u) QS_NO("inputs %#x", q, pg, in);
     uint32_t vs = ex->pipe.vstream[va.stream].stride;
     uint64_t vbase = ex->vbuf[va.stream].address;
     if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
