@@ -80,7 +80,6 @@ These tools run on the developer's or player's machine during the build. They ar
 | Vulkan-Headers and Vulkan-Loader 1.4.363.0 (MSYS2 packages; headers and `libvulkan-1.dll.a` only, no loader DLL) | https://github.com/KhronosGroup | Apache-2.0 OR MIT | `runtime/deps/` |
 | Vulkan Memory Allocator 3.4.0 (MSYS2 package), header | https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator | MIT | `runtime/deps/` |
 | Ninja 1.13.2 (`ninja-win.zip`) | https://github.com/ninja-build/ninja/releases/tag/v1.13.2 | Apache-2.0 | `bin/ninja.exe` |
-| Ryujinx `BranchElimination` fix, keeps a branch whose target's phi values differ between its two predecessors (`0010-keep-branch-when-target-phis-differ.patch`): contributed by circerio in issue #74, with its test scripts; original work, AI-assisted per the contributor; the patch's context lines are Ryujinx code, Copyright (c) Ryujinx Team and Contributors | https://github.com/circerio/XC2-Recomp-Contributions/tree/main/translator/branch-phi (the folder README states MIT) | MIT | `tools/xlate/patches/0010-keep-branch-when-target-phis-differ.patch`, `tools/build_xlate.py` (patch count) |
 | `xc2_xlate.exe` (Ryujinx shader translator, NativeAOT build of `tools/xlate/`, see the Ryujinx row above) | built by `tools/build_xlate.py` | MIT | `bin/xc2_xlate.exe` |
 | MacNativeGames shader variant list | https://github.com/ly05010419/MacNativeGames @ `b75be8cfa704df3701e86130c8ced268e79d6b11` (`games/totk/assets/shader_list.tsv`), Copyright (c) 2026 MacNativeGames contributors | MIT | `data/shader_list.tsv` |
 
