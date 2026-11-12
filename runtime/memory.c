@@ -293,7 +293,7 @@ static int inside(uint64_t a, uint64_t n, RtRange r) { return a >= r.base && n <
 
 // The heap block's committed size (SetHeapSize's last value). Read without the memory lock: the replay recorder reads it
 // on the game's own threads, which are the only ones that change it.
-uint64_t mem_heap_committed(void) { return heap_size; }
+uint64_t mem_heap_committed(void) { return __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE); }
 
 // ---- 0x01 SetHeapSize
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
@@ -306,7 +306,7 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     }
     if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
     if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
-    heap_size = size;
+    __atomic_store_n(&heap_size, size, __ATOMIC_RELEASE);
     plat_mutex_unlock(&lock);
     rt_logf("memory: SetHeapSize %#llx at %#llx\n", (unsigned long long)size, (unsigned long long)L.heap.base);
     if (addr) *addr = L.heap.base;

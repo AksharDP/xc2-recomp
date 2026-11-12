@@ -852,6 +852,11 @@ static void rec_arm(void) {
         if (r->p.host || (mem && (mem < g->heap.base || mem + r->p.size > g->heap.base + g->heap.size))) nhost++;
         PUT(RR_POOL_INIT, {&obj, sizeof obj}, {&r->p, sizeof r->p});
         np++;
+    }
+    // Every pool's init comes before any map, so replay resolves the pool a map names whatever the order of pools[].
+    for (size_t i = 0; i < npools; i++) {
+        PoolRec *r = &pools[i];
+        uint64_t obj = r->obj;
         for (size_t k = 0; k < r->maps_n;) {
             uint32_t n;
             memcpy(&n, r->maps + k, 4);
@@ -893,8 +898,8 @@ static void rec_arm(void) {
                "capture", nhost);
 }
 
-const GfxBackend *rec_wrap(const GfxBackend *b) {
-    if (real) return &rec_be;
+// Sets up the wrapper the first time; rec_wrap calls it under its lock, so it runs once.
+static void rec_wrap_setup(const GfxBackend *b) {
     // The captures go to XC2_RECORD when it names a folder, else to captures/ beside xc2.exe. A relative XC2_RECORD is
     // taken from the executable's folder too, as XC2_PROFILE_DIR is (main.c portable_path), so a shortcut or the working
     // folder the game was started in does not move the captures. Nothing is written there until a capture starts.
@@ -936,8 +941,20 @@ const GfxBackend *rec_wrap(const GfxBackend *b) {
         plat_file_mkdir_p(shots_dir);
     }
     rt_log("rec: %s back end; captures (F1 menu, Advanced tab: Capture frame, Record frames) go to %s", b->name, rec_dir);
+}
+
+// Called by gfx_backend() on every thread that asks. The first caller arms the journal; a caller that arrives meanwhile
+// waits for it, so no caller sees the recorder half set up.
+const GfxBackend *rec_wrap(const GfxBackend *b) {
+    static PlatMutex init_lock = PLAT_MUTEX_INIT;
+    plat_mutex_lock(&init_lock);
+    if (!real) rec_wrap_setup(b);
+    plat_mutex_unlock(&init_lock);
     return &rec_be;
 }
+
+// The back end under the recorder's wrapper, or b itself when b is not the wrapper.
+const GfxBackend *rec_unwrap(const GfxBackend *b) { return b == &rec_be && real ? real : b; }
 
 // ---- the capture's state for the F1 menu (rec_menu.h). A scripted capture shows here as well, so the menu's buttons
 // wait for it.

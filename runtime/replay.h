@@ -103,6 +103,8 @@ typedef struct {
 // forwards it to b (always, so that a capture can start at any frame). rec_note_decommit is called by memory.c for each
 // range it gives back.
 const GfxBackend *rec_wrap(const GfxBackend *b);
+// The back end the recorder forwards to when b is its wrapper (what rec_wrap returns), else b itself.
+const GfxBackend *rec_unwrap(const GfxBackend *b);
 void rec_note_decommit(uint64_t addr, uint64_t n);
 void rec_note_commit(uint64_t addr, uint64_t n);
 

@@ -193,7 +193,8 @@ int replay_main(const char *dir) {
     uint64_t cap = 0;
     int ended_early = 0;
     RecRecord rh;
-    while (fread(&rh, sizeof rh, 1, f) == 1) {
+    size_t got;   // bytes of the record header read: fewer than sizeof rh at a cut-off record or at the clean end
+    while ((got = fread(&rh, 1, sizeof rh, f)) == sizeof rh) {
         records++;
         if (rh.kind == RR_DELTA) {   // the bytes go straight to guest memory
             uint64_t hd[2];
@@ -330,7 +331,10 @@ int replay_main(const char *dir) {
             if (verify) {   // the written images must still hold what the record wrote, when the frame is presented
                 size_t moved = 0;
                 for (size_t k = 0; k < nvw; k++) {
-                    uint8_t *back = malloc(kept[k].img ? kept[k].img : 1);
+                    // The hash covers the n bytes the WRITE carried, and the read fills the slice stride: the buffer holds
+                    // the larger of the two, zeroed, so the hash never reads past it or reads bytes nothing wrote.
+                    size_t need = kept[k].n > kept[k].img ? kept[k].n : kept[k].img;
+                    uint8_t *back = calloc(need ? need : 1, 1);
                     if (!back) rt_fatal("replay: out of memory for a verify read");
                     b->read_texels(&kept[k].t, &kept[k].v, &kept[k].r, back, kept[k].row, kept[k].img);
                     uint64_t h = 1469598103934665603ull;
@@ -463,6 +467,8 @@ int replay_main(const char *dir) {
         }
         if (stop) break;
     }
+    // A header cut short or a read error ends the recording early; a clean end of the file does not.
+    if ((got && got < sizeof rh) || ferror(f)) ended_early = 1;
     if (ended_early) printf("replay: the recording ends early (a record is cut short)\n");
     b->finish();
     double secs = (double)(plat_now_ns() - t0) / 1e9;

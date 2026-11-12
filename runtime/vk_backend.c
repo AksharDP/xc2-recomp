@@ -198,8 +198,12 @@ int vk_replay_async(void) {
     return on;
 }
 
-// The front end's view (nvn_api_core.c, nvn_api_cmd.c): replay is asynchronous only on this back end.
-int gfx_replay_async(void) { return gfx_backend() == &gfx_vulkan_backend && vk_replay_async(); }
+// The back end under the recorder's wrapper (replay_rec.c), or b itself.
+const GfxBackend *rec_unwrap(const GfxBackend *b);
+
+// The front end's view (nvn_api_core.c, nvn_api_cmd.c): replay is asynchronous only on this back end. gfx_backend() is
+// the recorder's wrapper, so the check looks through it to the back end the calls go to.
+int gfx_replay_async(void) { return rec_unwrap(gfx_backend()) == &gfx_vulkan_backend && vk_replay_async(); }
 
 // The newest submit number (nvn_submit_count) whose replay is done: recording copies it used may be freed.
 uint64_t gfx_replayed_submits(void) {

@@ -10,6 +10,8 @@
 // on the recorded calls. Freezing is held off while a capture runs (vk_mem_capture_hold).
 #pragma once
 
+#include <stddef.h>   // size_t, for rec_menu_folder below
+
 #ifdef __cplusplus
 extern "C" {
 #endif
