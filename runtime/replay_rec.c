@@ -733,7 +733,10 @@ void rec_note_commit(uint64_t addr, uint64_t n) {
 void rec_note_decommit(uint64_t addr, uint64_t n) {
     if (!n) return;
     const RtGuestLayout *g = mem_layout();
-    if (known_nz && addr >= g->heap.base && addr < g->heap.base + g->heap.size) {   // the replay zeroes these pages
+    // The page map belongs to the capture that runs (rec_arm clears it for the next one): without one there is nothing
+    // to keep, and a heap that shrinks by a gigabyte would clear a quarter of a million bits for nobody.
+    if (known_nz && __atomic_load_n(&live, __ATOMIC_ACQUIRE) && addr >= g->heap.base &&
+        addr < g->heap.base + g->heap.size) {   // the replay zeroes these pages
         uint64_t lo = (addr - g->heap.base) >> 12, hi = ((addr + n + 0xfff) - g->heap.base) >> 12;
         if (hi > known_pages) hi = known_pages;
         for (uint64_t i = lo; i < hi; i++) known_set(i, 0);
