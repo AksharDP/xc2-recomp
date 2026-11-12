@@ -1399,9 +1399,12 @@ void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, co
 // A mirrored texture the GPU rendered into holds its texels in its image only; its storage keeps what the CPU last put
 // there. The game may still read that storage with the CPU: XCX moves its generated grass maps between pools with
 // memcpy once the GPU is done, and the copy then carried zeros. Such a read writes the image back first.
+// The dirty flag is cleared even when a copy fails. Every failure of image_texels is a property of the texture or the
+// region (ASTC read back as RGBA8, packed depth-stencil, a region outside the level), not a passing one, so a retry
+// would fail the same way and keep the texture stale on every guest read. The failure is logged instead.
 static void write_back(Tex *e) {
     const nvn_texdesc *d = &e->t.d;
-    int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D, ok = 1;
     uint32_t levels = linear ? 1 : e->pub.levels, layers = linear || is3d ? 1 : e->pub.layers;
     for (uint32_t lv = 0; lv < levels; lv++)
         for (uint32_t ly = 0; ly < layers; ly++) {
@@ -1413,9 +1416,14 @@ static void write_back(Tex *e) {
             if (!region_of(&e->t, &v, &r, 0, 0, &g)) continue;
             uint8_t *buf = malloc(g.img * (size_t)g.nz);
             if (!buf) rt_fatal("vk: out of memory for a texture write-back");
-            if (image_texels(e, &g, &r, buf, 0)) storage_texels(&e->t, &g, &r, buf, 1);
+            if (!image_texels(e, &g, &r, buf, 0) || !storage_texels(&e->t, &g, &r, buf, 1)) ok = 0;
             free(buf);
         }
+    if (!ok) {
+        static volatile int32_t n_fail;
+        log_limited(&n_fail, "write-back of GPU-written texture %#llx (format %#x) to its storage failed: CPU reads of "
+                    "that storage see texels from before the GPU's render", (unsigned long long)e->pub.addr, d->format);
+    }
     e->gpu_dirty = 0;
 }
 
