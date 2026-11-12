@@ -716,14 +716,22 @@ static void capture_buttons(void) {
     ImGui::SameLine();
     if (dim_button(clip, now != REC_MENU_FRAME))
         rec_menu_request(now == REC_MENU_CLIP ? REC_MENU_STOP : REC_MENU_CLIP);
-    // The folder the captures are written to, so a capture can be found without knowing where the game was started.
-    static uint64_t open_failed;   // plat_now_ns until which the button says it failed
+    // The folder the captures are written to, so a capture can be found without knowing where the game was started. Where
+    // the shell cannot open folders (plat_folder_can_open), the button copies the path instead and says so.
+    static uint64_t open_failed;   // plat_now_ns until which the button says it did not work
+    static uint64_t copied_until;  // plat_now_ns until which the button says the path was copied
+    const bool cap_opens = plat_folder_can_open();
+    const char *open_label = plat_now_ns() < copied_until ? menu_text(UI_MENU_COPY_INFO_DONE)
+                           : plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED)
+                           : menu_text(cap_opens ? UI_MENU_CAPTURE_OPEN : UI_MENU_CAPTURE_COPY);
     ImGui::SameLine();
-    if (ImGui::Button(plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED) : menu_text(UI_MENU_CAPTURE_OPEN))) {
+    if (ImGui::Button(open_label)) {
         char dir[1024];
         bool ok = rec_menu_folder(dir, sizeof dir);
         if (ok) plat_file_mkdir_p(dir);
-        if (!ok || !plat_open_folder(dir)) open_failed = plat_now_ns() + 3000000000ull;
+        if (ok) ok = cap_opens ? plat_open_folder(dir) != 0 : plat_clipboard_set(dir) != 0;
+        if (!ok) open_failed = plat_now_ns() + 3000000000ull;
+        else if (!cap_opens) copied_until = plat_now_ns() + 3000000000ull;
     }
 }
 
@@ -794,10 +802,15 @@ static void tab_advanced(float scale) {
         snprintf(rec_path, sizeof rec_path, "%s/input-record.txt", sysinfo_log_folder(dir, sizeof dir) ? dir : ".");
     }
     row_set_or_not("XC2_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
-    if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
+    // Where the shell cannot open folders, the button copies the log folder's path and says so.
+    const bool log_opens = plat_folder_can_open();
+    if (opt_button("##open_log", log_opens ? UI_MENU_OPEN_LOG : UI_MENU_OPEN_LOG_COPY, UI_MENU_OPEN_LOG_DESC,
+                   action_value(log_note, UI_MENU_COPY_INFO_DONE))) {
         char dir[512];
-        bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
+        bool ok = sysinfo_log_folder(dir, sizeof dir);
+        if (ok) ok = log_opens ? plat_open_folder(dir) != 0 : plat_clipboard_set(dir) != 0;
         if (!ok) action_done(log_note, false);   // success shows as the opened folder
+        else if (!log_opens) action_done(log_note, true);
     }
     if (opt_button("##copy_info", UI_MENU_COPY_INFO, UI_MENU_COPY_INFO_DESC,
                    action_value(copy_note, UI_MENU_COPY_INFO_DONE))) {
