@@ -225,7 +225,11 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 // vk_mem_capture copies the pages of the mirrors the CPU wrote since the last capture; vk_usnap_capture the uniform
 // ranges the submission binds. Each is owned by the replay from then on (begin), or freed with *_drop.
 void *vk_mem_capture(void);
+// Replay recording (vk_memory.c vk_mem_record_pages): the readable committed pages of [lo, hi) written since generation
+// since, one call of page per page in address order; returns the generation to pass next time.
+uint32_t vk_mem_record_pages(uint32_t since, uint64_t lo, uint64_t hi, void (*page)(void *ctx, uint64_t addr), void *ctx);
 void vk_mem_capture_drop(void *cap);
+void vk_mem_capture_hold(int on);   // replay_rec.c: a capture holds freezing off (every frozen region thawed) while it runs
 void *vk_usnap_capture(const uint64_t *handles, int n);
 void vk_usnap_capture_drop(void *cap);
 // The programs (prog_t pointers) a captured submission's replay may read: the one bound when it starts and those it
@@ -243,6 +247,7 @@ void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 void vk_usnap_begin(void *cap, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
+int vk_usnap_read(uint64_t addr, uint64_t n, void *dst);   // the same bytes copied out; 0 when the snapshot lacks them
 const void *vk_usnap_host(uint64_t addr, uint64_t n);   // the copy for the CPU to read; NULL: not copied
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
@@ -273,6 +278,9 @@ const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
 void vk_headroom_start(void);
 void vk_headroom_stop(void);   // before vmaDestroyAllocator
 int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out);   // 1 when all of [addr, addr+size) is backed
+extern volatile int vk_capture_on;                       // XC2_CAPTURE: the measured frame is being replayed (vk_capture.c)
+void vk_capture_note(uint64_t addr, uint64_t size);       // notes a range the measured frame reads
+void vk_capture_frame(uint64_t presented);               // arms or reports the XC2_CAPTURE measurement at a present
 // Changes whenever vk_mem_resolve plus VK_MEM_USE may give another span for an address: a pool added, finalized or
 // mapped, a mirror created, refused or forgotten, a submission started.
 uint64_t vk_mem_gen(void);
@@ -353,7 +361,14 @@ typedef struct {
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
 } VkTexImage;
+void vk_capture_texture(const VkTexImage *img);   // XC2_CAPTURE: notes a texture the measured frame samples (vk_capture.c)
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
+// Captures (vk_texture.c): vk_texture_snapshot hands the recorder each part of every image whose content the guest
+// bytes do not hold (px NULL: that part cannot be read back), and vk_texture_restore puts one part back in the replay.
+typedef void (*VkTexSnapFn)(void *ctx, const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *px,
+                            size_t n, int owned);
+void vk_texture_snapshot(VkTexSnapFn fn, void *ctx);
+int vk_texture_restore(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, int owned);
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the

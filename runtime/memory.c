@@ -15,6 +15,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "replay.h"
 
 #define PAGE 0x1000ull
 #define GiB (1ull << 30)
@@ -191,6 +192,7 @@ static void commit(uint64_t a, uint64_t n, const char *what) {
     plat_mutex_lock(&frz_lock);
     thaw_range_locked(a, n, 3);
     int ok = !n || plat_mem_commit(a, n);
+    if (ok) rec_note_commit(a, n);   // replay.h: a replay commits the same pages, whether or not the CPU writes them
     plat_mutex_unlock(&frz_lock);
     if (!ok) rt_fatal("memory: commit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
 }
@@ -198,6 +200,7 @@ static void commit(uint64_t a, uint64_t n, const char *what) {
 static void decommit(uint64_t a, uint64_t n, const char *what) {
     plat_mutex_lock(&frz_lock);
     thaw_range_locked(a, n, 3);
+    rec_note_decommit(a, n);   // replay.h: a capture drops these pages too (nothing while no capture runs)
     int ok = !n || plat_mem_decommit(a, n);
     plat_mutex_unlock(&frz_lock);
     if (!ok) rt_fatal("memory: decommit %s %#llx+%#llx failed", what, (unsigned long long)a, (unsigned long long)n);
@@ -288,6 +291,10 @@ static uint64_t image_bytes(void) {
 static int overlaps(uint64_t a, uint64_t n, uint64_t b, uint64_t m) { return a < b + m && b < a + n; }
 static int inside(uint64_t a, uint64_t n, RtRange r) { return a >= r.base && n <= r.size && a - r.base <= r.size - n; }
 
+// The heap block's committed size (SetHeapSize's last value). Read without the memory lock: the replay recorder reads it
+// on the game's own threads, which are the only ones that change it.
+uint64_t mem_heap_committed(void) { return __atomic_load_n(&heap_size, __ATOMIC_ACQUIRE); }
+
 // ---- 0x01 SetHeapSize
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     plat_mutex_lock(&lock);
@@ -299,7 +306,7 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     }
     if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
     if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
-    heap_size = size;
+    __atomic_store_n(&heap_size, size, __ATOMIC_RELEASE);
     plat_mutex_unlock(&lock);
     rt_logf("memory: SetHeapSize %#llx at %#llx\n", (unsigned long long)size, (unsigned long long)L.heap.base);
     if (addr) *addr = L.heap.base;

@@ -135,6 +135,7 @@ void mem_init(void);                                       // reserve every regi
                                                            // (up to 20 times, XC2_REEXEC), then fatal
 const RtGuestLayout *mem_layout(void);
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr);                      // 0x01
+uint64_t mem_heap_committed(void);                                              // the heap's size as last set
 uint32_t mem_set_permission(uint64_t a, uint64_t n, uint32_t perm);             // 0x02
 uint32_t mem_set_attribute(uint64_t a, uint64_t n, uint32_t mask, uint32_t at); // 0x03
 uint32_t mem_map(uint64_t dst, uint64_t src, uint64_t n);                       // 0x04

@@ -55,6 +55,7 @@ static FILE *passes_f, *images_f;
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
 static int skip_runs, dump_ubo;        // XC2_DUMP_SKIP_RUNS, XC2_DUMP_UBO
 static int pass_lo = -1, pass_hi = -1; // XC2_DUMP_PASS: passes/dispatches always copied
+static int pass_only;                  // XC2_DUMP_PASS_ONLY=1: with XC2_DUMP_PASS, only that range is copied (the PNG cap is global)
 static uint32_t want_tex[16][2];       // XC2_DUMP_TEX: slot id and 0, or width and height
 static int nwant_tex;
 static uint64_t last_targets;          // targets_sig of the last render pass; 0 after a dispatch
@@ -583,8 +584,13 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) 
             sp(b, "    %s ubo c%d addr %#llx size %#llx", stn[st], r->slot, (unsigned long long)u->addr, (unsigned long long)u->size);
             if (u->addr && vk_mem_resolve(u->addr, 1, &ms)) {
                 uint64_t n = u->size && u->size < ms.avail ? u->size : ms.avail;
+                // the bytes the draw read: the submit-time copy when the snapshot has them (the game rewrites uniform
+                // blocks after the submit, so guest memory can differ), else guest memory
+                float snap[256];   // 64 rows: the sprite shaders index c4 past row 16 (row 32)
+                uint64_t cn = n < sizeof snap ? n : sizeof snap;
                 const float *f = (const float *)(uintptr_t)u->addr;
-                for (uint64_t k = 0; k < 16 && (k + 1) * 16 <= n; k++)
+                if (cn >= 16 && vk_usnap_read(u->addr, cn, snap)) f = snap;
+                for (uint64_t k = 0; k < 64 && (k + 1) * 16 <= n; k++)
                     sp(b, "%s[%llu] %g %g %g %g", k % 4 ? " " : "\n      ", (unsigned long long)k, f[4 * k], f[4 * k + 1],
                        f[4 * k + 2], f[4 * k + 3]);
             } else {
@@ -701,6 +707,9 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
        ex->depth_range[0], ex->depth_range[1], ex->vp[0][0], ex->vp[0][1], ex->vp[0][2], ex->vp[0][3],
        ex->has_vp ? "" : " (unset)", s->depth_minus_w, s->depth_clamp, (int)s->ds.dt, (int)s->ds.dw, (int)s->ds.df,
        (unsigned)s->poly.offset_en, ex->poly_offset.factor, ex->poly_offset.units, ex->poly_offset.clamp);
+    // The scissor as the draw sees it: a sprite that is clipped by it shows a rectangle.
+    if (ex->has_scissor) sp(&b, "    scissor %d,%d %dx%d\n", (int)ex->scissor.x, (int)ex->scissor.y, (int)ex->scissor.w, (int)ex->scissor.h);
+    else sp(&b, "    scissor none\n");
     sp(&b, "    vertex input:");
     for (int l = 0; l < 16; l++) {
         va_st va;
@@ -710,6 +719,27 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
                (unsigned)va.offset, va.stream < 16 ? s->vstream[va.stream].stride : 0);
     }
     sp(&b, "\n");
+    // The first four vertices of stream 0 as the draw reads them: the position, then the attribute at location 1 when
+    // it comes from the same stream. A quad's corners show how far the sprite it draws reaches.
+    va_st p0, p1;
+    memcpy(&p0, &s->vattr[0], sizeof p0);
+    memcpy(&p1, &s->vattr[1], sizeof p1);
+    uint64_t vb = p0.stream < 16 ? ex->vbuf[p0.stream].address : 0;
+    uint64_t vbsz = p0.stream < 16 ? ex->vbuf[p0.stream].size : 0;
+    uint32_t vsd = p0.stream < 16 ? s->vstream[p0.stream].stride : 0;
+    // 0x22 is NVN_FORMAT_RGB32F (nvn.h): three floats. Any other format is not dumped as a position.
+    if (vb && vsd && p0.fmt == 0x22 && !nvn_gpu_only(vb))
+        for (int k = 0; k < 4; k++) {
+            // A vertex is read only where its bytes lie inside the bound buffer: a short buffer stops the corners early.
+            if ((uint64_t)k * vsd + p0.offset + 12 > vbsz) break;
+            const uint8_t *v = (const uint8_t *)(uintptr_t)(vb + (uint64_t)k * vsd);
+            float f[5] = {0};
+            memcpy(f, v + p0.offset, 12);
+            // 0x16 is NVN_FORMAT_RG32F (nvn.h): two floats, the 8 bytes read here. Other formats are not read as floats.
+            if (p1.fmt == 0x16 && p1.stream == p0.stream && (uint64_t)k * vsd + p1.offset + 8 <= vbsz)
+                memcpy(f + 3, v + p1.offset, 8);
+            sp(&b, "    vertex %d: pos %g %g %g attr1 %g %g\n", k, f[0], f[1], f[2], f[3], f[4]);
+        }
     describe_bindings(&b, ex, info);
     ents[nents++] = (Ent){p, th, 1, b.s};
 out:
@@ -755,8 +785,9 @@ static uint64_t targets_sig(const VkExec *ex) {
 static void pass_decide(int same_targets, int n) {
     if (frame_now() != dump_frame) copied = 0;
     int forced = pass_lo >= 0 && n >= pass_lo && n <= pass_hi;
-    pass_skip = forced ? NULL : copied >= MAX_PASSES ? "pass cap" : same_targets ? "same targets as the previous pass"
-                                                                                 : NULL;
+    if (forced) pass_skip = NULL;
+    else if (pass_only && pass_lo >= 0) pass_skip = "outside XC2_DUMP_PASS";
+    else pass_skip = copied >= MAX_PASSES ? "pass cap" : same_targets ? "same targets as the previous pass" : NULL;
     if (!pass_skip) copied++;
 }
 
@@ -928,6 +959,8 @@ void vk_dump_init(void) {
         long hi = *q == '-' ? strtol(q + 1, NULL, 10) : lo;
         if (lo >= 0 && hi >= lo) pass_lo = (int)lo, pass_hi = (int)hi;
     }
+    const char *po = cfg_get("XC2_DUMP_PASS_ONLY");
+    pass_only = po && *po && *po != '0';
     const char *du = cfg_get("XC2_DUMP_UBO");
     dump_ubo = du && *du && *du != '0';
     const char *only = cfg_get("XC2_DUMP_ONLY");

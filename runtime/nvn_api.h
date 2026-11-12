@@ -47,6 +47,7 @@ uint64_t nvn_fence_last(void);                             // fence value of the
 int nvn_callers_on(void);                                  // XC2_DRAW_CALLERS window (nvn_api_cmd.c)
 int nvn_origin_upper_left(void);                           // 1 after DeviceSetWindowOriginMode(UPPER_LEFT), else 0
 int nvn_depth_minus_w(void);                               // 1 after DeviceSetDepthMode(NEAR_IS_MINUS_W), else 0
+void nvn_replay_state(int depth_minus_w, int origin_upper_left);   // replay.c: sets both modes from a capture's preamble
 void nvn_guest_written(uint64_t addr, uint64_t size);      // the host or the game wrote pool storage: back end re-reads
 // XC2_TRACE=perf: MemoryPoolFlushMappedRange [0] and BufferFlushMappedRange [1] calls [0] and bytes [1] by the pool's
 // CPU class (0 CPU_CACHED, 1 CPU_UNCACHED, 2 other) since the previous call.
@@ -72,6 +73,9 @@ extern GfxStats gfx_counters;                              // behind gfx_stats()
 int nvn_tex_live_at(const void *mem, tex_t *out);
 // Byte offset of a view's first level and layer inside the texture storage (nvnTextureGetViewOffset); v may be NULL.
 uint64_t nvn_tex_view_offset(const tex_t *t, const view_t *v);
+
+// Calls fn for each texture pin made so far (the host copies above, which never change once made): replay_rec.c takes them.
+void nvn_pins_each(void (*fn)(const tex_t *pin, void *ctx), void *ctx);
 
 // ---- nvn_api_cmd.c, nvn_ext.c: command buffers and their replay contract
 // A command handle (what QueueSubmitCommands receives) points at a host copy of one recording: a flat sequence of

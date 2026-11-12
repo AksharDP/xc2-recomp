@@ -857,6 +857,8 @@ static int mod_aoc_path(const char *path, char *out, size_t cap, int *is_dir) {
         if (mounts[i].kind == M_AOC && strlen(mounts[i].name) == n && !strncmp(mounts[i].name, path, n))
             index = mounts[i].aoc;
     plat_mutex_unlock_shared(&lock);
+    // The game's field BGM paths carry a doubled separator ("aoc1:/stream//bgm/m58.nop"); a mod lists the plain path,
+    // which aoc_relative produces.
     char rel[PATH_CAP];
     if (!index || !aoc_relative(colon, rel, sizeof rel)) return 0;
     if (index != AOC_PORT_PACK) return mods_aoc_file(index, rel, out, cap, is_dir);
