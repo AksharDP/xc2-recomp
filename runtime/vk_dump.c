@@ -727,7 +727,7 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     uint64_t vb = p0.stream < 16 ? ex->vbuf[p0.stream].address : 0;
     uint64_t vbsz = p0.stream < 16 ? ex->vbuf[p0.stream].size : 0;
     uint32_t vsd = p0.stream < 16 ? s->vstream[p0.stream].stride : 0;
-    // 0x22 is the position format the draw path checks for (vk_exec_draw.c); any other format is not dumped as a position.
+    // 0x22 is NVN_FORMAT_RGB32F (nvn.h): three floats. Any other format is not dumped as a position.
     if (vb && vsd && p0.fmt == 0x22 && !nvn_gpu_only(vb))
         for (int k = 0; k < 4; k++) {
             // A vertex is read only where its bytes lie inside the bound buffer: a short buffer stops the corners early.
@@ -735,7 +735,8 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
             const uint8_t *v = (const uint8_t *)(uintptr_t)(vb + (uint64_t)k * vsd);
             float f[5] = {0};
             memcpy(f, v + p0.offset, 12);
-            if (p1.fmt && p1.stream == p0.stream && (uint64_t)k * vsd + p1.offset + 8 <= vbsz)
+            // 0x16 is NVN_FORMAT_RG32F (nvn.h): two floats, the 8 bytes read here. Other formats are not read as floats.
+            if (p1.fmt == 0x16 && p1.stream == p0.stream && (uint64_t)k * vsd + p1.offset + 8 <= vbsz)
                 memcpy(f + 3, v + p1.offset, 8);
             sp(&b, "    vertex %d: pos %g %g %g attr1 %g %g\n", k, f[0], f[1], f[2], f[3], f[4]);
         }

@@ -428,6 +428,7 @@ int vk_usnap_read(uint64_t addr, uint64_t n, void *dst) {
     const void *p = vk_usnap_host(addr, n);
     if (!p) return 0;
     memcpy(dst, p, n);
+    if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: the bytes a glow read takes from the snapshot
     return 1;
 }
 

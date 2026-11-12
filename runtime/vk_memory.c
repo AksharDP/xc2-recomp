@@ -399,9 +399,12 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
             if (!resolve_locked(addr, size, &s) || memcmp(&s, out, sizeof s))
                 rt_fatal("vk: resolve cache of 0x%llx differs from the pool index", (unsigned long long)addr);
         }
+        if (vk_capture_on) vk_capture_note(addr, size);   // XC2_CAPTURE: every resolved range the measured frame reads
         return 1;
     }
-    return resolve_locked(addr, size, out);
+    int ok = resolve_locked(addr, size, out);
+    if (ok && vk_capture_on) vk_capture_note(addr, size);   // XC2_CAPTURE: as above, on the locked lookup path
+    return ok;
 }
 
 // The pool index lookup under the lock; a non-overlapped import or physical pool goes into the address's cache slot.
