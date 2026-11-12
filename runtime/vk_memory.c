@@ -897,7 +897,8 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
 //   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
 // XC2_SHADOW=1/0 forces the mode on or off; the default is on for Linux.
-typedef struct { uint64_t lo, hi; } SRange;
+typedef struct { uint64_t lo, hi; uint32_t g; uint8_t *snap; } SRange;   // g: the page generation when the GPU write was
+                                                                    // recorded; snap: the shadow's bytes then (XC2_SHADOW_WB=diff)
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
@@ -905,6 +906,31 @@ static SRange *spend;                             // shadow_lock: GPU writes rec
 static int nspend, cspend;
 static int64_t s_live_n, s_live_bytes;            // shadow_lock
 static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
+// XC2_SHADOW_DIAG=1 (diagnostics, shadow_lock): what the fence write-backs do to bytes the CPU wrote while the GPU write
+// was in flight. pend: GPU-written ranges recorded (count, bytes, largest); skip: guest bytes a CPU->shadow sync left out
+// because a GPU write over them was pending; cpu_pages: write-back pages the CPU wrote in flight; clob: bytes of those the
+// write-back changed (the CPU's newer bytes reverted to the shadow's). XC2_SHADOW_WB_SKIP_CPU=1 leaves such pages out of
+// the write-back (the CPU's bytes win).
+static int s_diag = -1, s_wb_skip_cpu = -1;
+// Diff write-back (the default): a GPU-written range keeps a copy of its shadow bytes from record time, and the fence
+// write-back copies only the bytes the GPU changed. The recorded range is the whole bound storage range (often far more
+// than the shader writes), and the CPU keeps writing it for the next frame while the GPU runs: a whole-range copy put
+// the shadow's older bytes over those writes (about 2.3 KB a frame on the Steam Deck title screen). On the Deck the GPU
+// changes about 16 % of the bytes recorded (23 of 148 MiB per 60 frames), at no measurable frame cost.
+// XC2_SHADOW_WB=full copies the whole range back, as before.
+static int s_wb_diff = -1;
+static uint64_t s_diff_bytes;   // shadow_lock: bytes the diff write-backs copied
+static int wb_diff_on(void) {
+    if (s_wb_diff < 0) {
+        const char *e = getenv("XC2_SHADOW_WB");
+        s_wb_diff = !(e && !strcmp(e, "full"));
+        if (!s_wb_diff) rt_log("mem: shadow write-backs copy the whole range (XC2_SHADOW_WB=full)");
+    }
+    return s_wb_diff;
+}
+static uint64_t s_pend_n, s_pend_bytes, s_pend_max, s_skip_bytes, s_wb_n, s_cpu_pages, s_clob_bytes, s_wb_skipped;
+#define S_TOP 6
+static struct { uint64_t addr, size, clob, n; } s_top[S_TOP];
 
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_lo = addr & ~0xfffull;
@@ -962,6 +988,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
         if (spend[i].lo < b && spend[i].hi > a) {
             if (spend[i].lo > a) shadow_copy(r, a, spend[i].lo, i + 1);
             if (spend[i].hi < b) shadow_copy(r, spend[i].hi, b, i + 1);
+            s_skip_bytes += (spend[i].hi < b ? spend[i].hi : b) - (spend[i].lo > a ? spend[i].lo : a);
             return;
         }
     memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, b - a);
@@ -1023,11 +1050,70 @@ void vk_mem_shadow_sync(void) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+// shadow_lock held: the write-back of [addr, addr+size) with the diagnostics and/or the skip of pages the CPU wrote
+// since the GPU write was recorded (its spend entry's g).
+static void shadow_wb_checked(PoolRec *r, uint64_t addr, uint64_t size) {
+    uint32_t since = UINT32_MAX;
+    for (int i = 0; i < nspend; i++)
+        if (spend[i].lo == addr && spend[i].hi == addr + size) { since = spend[i].g; break; }
+    uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull, clob = 0;
+    plat_mutex_lock(&gen_lock);
+    if (since != UINT32_MAX) {
+        uint32_t g = ++gen_now;
+        for (uint64_t a = lo; a < hi;) {
+            uint64_t b = (a | ((1ull << REG_SHIFT) - 1)) + 1;
+            if (b > hi) b = hi;
+            if (!mem_frozen(a)) query_stamp(a, b, g);
+            a = b;
+        }
+    }
+    mem_thaw(addr, size);
+    for (uint64_t pg = lo; pg < hi; pg += 0x1000) {
+        uint64_t a = pg < addr ? addr : pg, b = pg + 0x1000 > addr + size ? addr + size : pg + 0x1000;
+        const uint32_t *st = since != UINT32_MAX ? gen_slot(pg, 0) : NULL;
+        int cpu = st && *st > since;
+        const uint8_t *src = r->smap + (a - r->import_lo);
+        uint8_t *dst = (uint8_t *)(uintptr_t)a;
+        if (cpu) {
+            s_cpu_pages++;
+            for (uint64_t k = 0; k < b - a; k++) clob += dst[k] != src[k];
+            if (s_wb_skip_cpu) { s_wb_skipped += b - a; continue; }
+        }
+        memcpy(dst, src, b - a);
+    }
+    plat_mutex_unlock(&gen_lock);
+    s_wb_n++, s_clob_bytes += clob;
+    int slot = -1;
+    for (int i = 0; i < S_TOP && slot < 0; i++)
+        if (s_top[i].addr == addr && s_top[i].size == size) slot = i;
+    if (slot < 0 && clob) {
+        slot = 0;
+        for (int i = 1; i < S_TOP; i++) if (s_top[i].clob < s_top[slot].clob) slot = i;
+        if (s_top[slot].clob >= clob) slot = -1;
+        else s_top[slot].addr = addr, s_top[slot].size = size, s_top[slot].clob = 0, s_top[slot].n = 0;
+    }
+    if (slot >= 0) s_top[slot].clob += clob, s_top[slot].n++;
+}
+
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
     if (!shadow_on || !size) return;
+    uint8_t *snap = NULL;
+    if (wb_diff_on()) {
+        plat_mutex_lock_shared(&pool_lock);
+        const pidx_ent *e = pidx_find(&pool_index, addr, size);
+        PoolRec *r = e ? e->buf : NULL;
+        if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (snap = malloc(size)))
+            memcpy(snap, r->smap + (addr - r->import_lo), size);
+        plat_mutex_unlock_shared(&pool_lock);
+    }
     plat_mutex_lock(&shadow_lock);
     if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
-    spend[nspend++] = (SRange){addr, addr + size};
+    plat_mutex_lock(&gen_lock);
+    uint32_t g = gen_now;
+    plat_mutex_unlock(&gen_lock);
+    spend[nspend++] = (SRange){addr, addr + size, g, snap};
+    s_pend_n++, s_pend_bytes += size;
+    if (size > s_pend_max) s_pend_max = size;
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -1038,12 +1124,39 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
         PoolRec *r = e ? e->buf : NULL;
         plat_mutex_lock(&shadow_lock);
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
-            mem_thaw(addr, size);
-            memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
+            if (s_diag < 0) {
+                const char *e = getenv("XC2_SHADOW_DIAG"), *k = getenv("XC2_SHADOW_WB_SKIP_CPU");
+                s_diag = e && !strcmp(e, "1");
+                s_wb_skip_cpu = k && !strcmp(k, "1");
+                if (s_diag || s_wb_skip_cpu)
+                    rt_log("mem: shadow diagnostics %s, write-backs %s", s_diag ? "on" : "off",
+                           s_wb_skip_cpu ? "leave out pages the CPU wrote in flight" : "copy the whole range");
+            }
+            const uint8_t *snap = NULL;
+            for (int i = 0; i < nspend && wb_diff_on(); i++)
+                if (spend[i].lo == addr && spend[i].hi == addr + size) { snap = spend[i].snap; break; }
+            if (snap) {
+                mem_thaw(addr, size);
+                const uint8_t *src = r->smap + (addr - r->import_lo);
+                uint8_t *dst = (uint8_t *)(uintptr_t)addr;
+                for (uint64_t k = 0; k < size;) {   // runs of changed bytes, 8 at a time where whole words match
+                    if (k + 8 <= size && !memcmp(src + k, snap + k, 8)) { k += 8; continue; }
+                    if (src[k] == snap[k]) { k++; continue; }
+                    uint64_t j = k;
+                    while (j < size && src[j] != snap[j]) j++;
+                    memcpy(dst + k, src + k, j - k);
+                    s_diff_bytes += j - k;
+                    k = j;
+                }
+            } else if (s_diag || s_wb_skip_cpu) shadow_wb_checked(r, addr, size);
+            else {
+                mem_thaw(addr, size);
+                memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
+            }
             s_wb_bytes += size;
         }
         for (int i = 0; i < nspend; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) { spend[i] = spend[--nspend]; break; }
+            if (spend[i].lo == addr && spend[i].hi == addr + size) { free(spend[i].snap); spend[i] = spend[--nspend]; break; }
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -1058,7 +1171,22 @@ static void shadow_log(uint64_t frame) {
            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
            qpc_ms(s_ticks), nspend);
+    if (s_wb_diff > 0) rt_log("mem: shadow diff write-backs: %.2f MiB changed by the GPU copied back", s_diff_bytes / 1048576.0);
+    s_diff_bytes = 0;
     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
+    if (s_diag > 0 || s_wb_skip_cpu > 0) {
+        rt_log("mem: shadow diag at frame %llu: GPU writes recorded %llu (%.1f MiB, largest %.2f MiB), CPU bytes left out "
+               "of syncs while pending %.1f MiB; write-backs %llu: pages the CPU wrote in flight %llu, bytes reverted %llu, "
+               "bytes left out %.2f MiB", (unsigned long long)frame, (unsigned long long)s_pend_n,
+               s_pend_bytes / 1048576.0, s_pend_max / 1048576.0, s_skip_bytes / 1048576.0, (unsigned long long)s_wb_n,
+               (unsigned long long)s_cpu_pages, (unsigned long long)s_clob_bytes, s_wb_skipped / 1048576.0);
+        for (int i = 0; i < S_TOP; i++)
+            if (s_top[i].clob)
+                rt_log("mem:   reverted %llu bytes in %llu write-backs of %#llx+%#llx", (unsigned long long)s_top[i].clob,
+                       (unsigned long long)s_top[i].n, (unsigned long long)s_top[i].addr, (unsigned long long)s_top[i].size);
+        s_pend_n = s_pend_bytes = s_pend_max = s_skip_bytes = s_wb_n = s_cpu_pages = s_clob_bytes = s_wb_skipped = 0;
+        memset(s_top, 0, sizeof s_top);
+    }
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -2436,6 +2564,7 @@ void vk_mem_shutdown(void) {
     pool_index.n = 0;
     nm = npend = nwbl = 0;   // mirrors went with their pools
     plat_mutex_lock(&shadow_lock);
+    for (int i = 0; i < nspend; i++) free(spend[i].snap);
     nstouch = nspend = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);
