@@ -1979,7 +1979,12 @@ static void keys_flush(void) {
         if (ok) ok = plat_file_sync(f);   // appended records on the disk before the next append
         if (f) ok = !fclose(f) && ok;
         if (ok) K.header_ok = 1;
-        else rt_log("vk_pipeline: cannot write %s", K.path);
+        else {
+            // A failed append may have left part of a record in the file. The next flush rewrites the file rather than
+            // appending after it, since keys_open only detects a torn tail, not one in the middle.
+            K.header_ok = 0;
+            rt_log("vk_pipeline: cannot write %s", K.path);
+        }
     }
     free(r);
     plat_mutex_unlock(&K.io);
