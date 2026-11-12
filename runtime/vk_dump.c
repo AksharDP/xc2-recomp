@@ -781,7 +781,7 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     else if (ex->alpha_ref)
         sp(&b, ", alpha ref %g (test off)", (double)ex->alpha_ref);
     sp(&b, "\n");
->    sp(&b, "    vertex input:");
+    sp(&b, "    vertex input:");
     for (int l = 0; l < 16; l++) {
         va_st va;
         memcpy(&va, &s->vattr[l], sizeof va);
