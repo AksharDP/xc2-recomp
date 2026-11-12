@@ -1168,8 +1168,18 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
     // planes, or names a multisampled image, is not a valid Vulkan copy and may take the driver down with it.
     uint64_t planes = g->is3d ? mip(e->pub.depth, g->level) : e->pub.layers;
     uint64_t z0 = (g->is3d ? 0 : g->layer0) + (uint64_t)r->zoffset;
-    if (e->pub.samples > 1 || (uint64_t)r->xoffset + w > mip(e->pub.width, g->level) ||
-        (uint64_t)r->yoffset + h > mip(e->pub.height, g->level) || z0 + (uint64_t)g->nz > planes) {
+    uint32_t lw = mip(e->pub.width, g->level), lh = mip(e->pub.height, g->level);
+    uint64_t x1 = (uint64_t)r->xoffset + w, y1 = (uint64_t)r->yoffset + h;
+    if (!e->f.astc_bw && !e->f.expand_rgb && (g->bw > 1 || g->bh > 1)) {
+        // An image that is block-compressed in Vulkan too. The game may give whole blocks past the edge of a small
+        // level (4x4 texels of a 2x2 one), as the storage path accepts (nvn_texels_box counts blocks); Vulkan takes
+        // that copy with its extent cut at the edge. The blocks, and so the rows of the buffer, stay the same.
+        uint64_t bx = ((uint64_t)lw + (uint32_t)g->bw - 1) / (uint32_t)g->bw * (uint32_t)g->bw;
+        uint64_t by = ((uint64_t)lh + (uint32_t)g->bh - 1) / (uint32_t)g->bh * (uint32_t)g->bh;
+        if (x1 > lw && x1 <= bx) w = lw - (uint32_t)r->xoffset, x1 = lw;
+        if (y1 > lh && y1 <= by) h = lh - (uint32_t)r->yoffset, y1 = lh;
+    }
+    if (e->pub.samples > 1 || x1 > lw || y1 > lh || z0 + (uint64_t)g->nz > planes) {
         log_limited(&n_out, "texels %d,%d,%d %ux%ux%d of level %u are outside texture %#llx (%ux%u, %u samples): not copied",
                     r->xoffset, r->yoffset, r->zoffset, w, h, g->nz, g->level, (unsigned long long)e->pub.addr,
                     e->pub.width, e->pub.height, e->pub.samples);
