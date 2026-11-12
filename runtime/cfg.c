@@ -104,7 +104,7 @@ static const CfgMeta metas[] = {
     {"FSR_VERSION", "auto", "auto|4|3", LIVE}, {"FRAME_GEN", "0", "0|1", LIVE},
     {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
     // Game
-    {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE},
+    {"FPS_LIMIT", "120", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE},
     {"CUTSCENE_30", "1", "1|mixed|0", RESTART},
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
