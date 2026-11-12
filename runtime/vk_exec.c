@@ -685,8 +685,12 @@ VkRect2D vk_exec_scissor(const VkExec *ex) {
 // image directly instead of opening a pass for it.
 static int whole_target(const VkExec *ex, const VkExecTarget *t) {
     // vkCmdClear*Image addresses a 3D level whole, not one depth plane: slices of a 3D target clear in a pass; it
-    // cannot clear a compressed image: views of BC blocks clear in a pass too
-    if (ex->in_pass || t->is3d || t->blocks || t->width != ex->pass_w || t->height != ex->pass_h) return 0;
+    // cannot clear a compressed image: views of BC blocks clear in a pass too. A stand-in of a 3D BC image (bc_target)
+    // clears in a pass as well: only the pass end copies a stand-in back to its BC image (bc_copy_back), so a clear
+    // of the stand-in directly would never reach the texture.
+    if (ex->in_pass || t->is3d || t->blocks || (t->img && t->img->image != t->image) || t->width != ex->pass_w ||
+        t->height != ex->pass_h)
+        return 0;
     if (!ex->has_scissor) return 1;
     const p_scissor *s = &ex->scissor;
     return s->x <= 0 && s->y <= 0 && (int64_t)s->x + s->w >= t->width && (int64_t)s->y + s->h >= t->height;
