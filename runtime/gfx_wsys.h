@@ -20,6 +20,7 @@ int wsys_probe_click(int where);
 void gfx_window_mark_dirty(void);          // the window changed size: the next present rebuilds the swapchain
 void gfx_window_focus_changed(int in);     // the window gained (1) or lost (0) the focus
 void gfx_window_closed(void);              // the player closed the window: saves, then ends the process
+void gfx_exit_saved(const char *why);      // saves and the profile are written, then the process ends (XC2_STOP_FRAME too)
 void gfx_window_set_refresh(double hz);    // the refresh rate of the window's monitor, 0 unknown
 int gfx_cfg_fullscreen(void);              // XC2_FULLSCREEN
 void gfx_cfg_window_size(int *w, int *h);  // XC2_WINDOW_SIZE, the default when unparsable or out of range

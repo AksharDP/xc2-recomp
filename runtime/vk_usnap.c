@@ -407,10 +407,13 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
+    if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: a uniform block read from the submit snapshot
     U.hits++;
     return 1;
 }
 
+// The bytes [addr, addr+n) as the submission's snapshot holds them, for the CPU to read; NULL when the snapshot does not
+// hold all of them (not captured, dropped by a GPU write, or outside the captured ranges).
 const void *vk_usnap_host(uint64_t addr, uint64_t n) {
     if (!U.on || !n) return NULL;
     int i = first_above(addr);
@@ -418,6 +421,14 @@ const void *vk_usnap_host(uint64_t addr, uint64_t n) {
     const Reg *r = &U.reg[i];
     if (r->dropped || addr < r->lo || addr + n > r->hi) return NULL;
     return U.arena->map + r->off + (addr - r->lo);
+}
+
+// The same bytes copied to dst; 0 when the snapshot lacks them.
+int vk_usnap_read(uint64_t addr, uint64_t n, void *dst) {
+    const void *p = vk_usnap_host(addr, n);
+    if (!p) return 0;
+    memcpy(dst, p, n);
+    return 1;
 }
 
 void vk_usnap_drop(uint64_t addr, uint64_t n) {

@@ -158,6 +158,13 @@ static const tex_t *tex_pin(const NVNtexture *nt) {
     return r;
 }
 
+void nvn_pins_each(void (*fn)(const tex_t *pin, void *ctx), void *ctx) {
+    plat_mutex_lock_shared(&pin_lock);
+    for (uint32_t i = 0; i < pins.cap; i++)
+        if (pins.vals[i]) fn(pins.vals[i], ctx);
+    plat_mutex_unlock_shared(&pin_lock);
+}
+
 // ---------- recording copies
 // A handle points just past a copy_prefix. Copies are indexed by the 64 KiB block of their control-memory position, so
 // adding control memory again releases the copies recorded there without walking every live copy. 4 KiB pages cost

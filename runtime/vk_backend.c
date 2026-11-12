@@ -25,6 +25,7 @@
 #include "cfg.h"
 #include "flight.h"
 #include "gfx.h"
+#include "gfx_wsys.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
@@ -32,6 +33,19 @@
 #include "platform/platform.h"
 
 #define WEAK __attribute__((weak))
+
+// XC2_STOP_FRAME=<n> (diagnostic): the process ends once frame n is the one being built, so a run stops at the frame a
+// check needs instead of after a fixed time. A dump of frame n needs the frames after it, whose copies are written then:
+// give the stop a few frames of margin past the dump frame.
+static void stop_at_frame(uint64_t presented) {
+    static uint64_t stop;   // 0: not read yet; ~0: off
+    if (!stop) {
+        const char *e = cfg_get("XC2_STOP_FRAME");
+        stop = e && *e ? strtoull(e, NULL, 10) : 0;
+        if (!stop) stop = ~0ull;
+    }
+    if (stop != ~0ull && presented + 1 >= stop) gfx_exit_saved("XC2_STOP_FRAME reached");
+}
 
 typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; VkFsrFrame fsr; } PresentJob;
 
@@ -229,6 +243,8 @@ static void replay_main(void *arg) {
             free((void *)it.tex);
         } else {
             uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
+            vk_capture_frame(frame);
+            stop_at_frame(frame);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
         }
         plat_mutex_lock(&rl);
@@ -337,6 +353,8 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     vk_sync_start();
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
+        vk_capture_frame(frame);
+        stop_at_frame(frame);
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
         present_image(t, crop, at_ns, kern_now_ns(), frame, 0);
         return;

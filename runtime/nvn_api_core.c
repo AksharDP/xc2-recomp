@@ -50,6 +50,11 @@ static int depth_minus_w;
 int nvn_depth_minus_w(void) { return __atomic_load_n(&depth_minus_w, __ATOMIC_RELAXED); }
 static int origin_upper_left;
 int nvn_origin_upper_left(void) { return __atomic_load_n(&origin_upper_left, __ATOMIC_RELAXED); }
+// The replay (replay.c, RR_NVN_STATE) sets the two modes the recorded preamble holds: the game's own calls are not replayed.
+void nvn_replay_state(int depth_minus_w_on, int origin_upper_left_on) {
+    __atomic_store_n(&depth_minus_w, depth_minus_w_on != 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&origin_upper_left, origin_upper_left_on != 0, __ATOMIC_RELAXED);
+}
 
 void nvn_guest_written(uint64_t addr, uint64_t size) {
     if (size) gfx_backend()->guest_written(addr, size);
