@@ -1039,8 +1039,14 @@ static DWORD WINAPI open_folder_main(void *arg) {
 }
 
 int plat_open_folder(const char *path) {
-    wchar_t *w = malloc(WPATH * sizeof *w);
-    if (!w || !widen(path, w, WPATH)) return free(w), 0;
+    // The shell does not parse a path with forward slashes, and the game joins its folders with "/" (the captures folder
+    // is "...\build\v301/captures"): it opens nothing, and the call would still report success. GetFullPathNameW turns
+    // every separator into a backslash and resolves a relative folder, so the shell gets the path Explorer shows.
+    wchar_t *in = malloc(WPATH * sizeof *in), *w = malloc(WPATH * sizeof *w);
+    if (!in || !w || !widen(path, in, WPATH)) return free(in), free(w), 0;
+    DWORD n = GetFullPathNameW(in, WPATH, w, NULL);
+    free(in);
+    if (n == 0 || n >= WPATH) return free(w), 0;
     DWORD a = GetFileAttributesW(w);
     if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return free(w), 0;
     // the shell can take a while to answer: not on the caller's thread (the present path)
