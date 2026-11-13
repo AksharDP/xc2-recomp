@@ -429,9 +429,8 @@ static void fb_vertices(const pool_t *pool) {
             for (int c = 0; c < 4; c++) vtx[(v * DR_ATTRS + a) * 4 + c] = a == 0 ? pos[v][c] : c == 3 ? 1.0f : 0.5f;
 }
 
-// The draw part's prefix into color, then six vertices drawn with every fragment-stage texture slot bound to texture id tex.
-static uint8_t *fb_draw(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *color, uint32_t tex) {
-    q = draw_prefix(q, prog, pool, color);
+// The six vertices drawn with every fragment-stage texture slot bound to texture id tex; no prefix and no end.
+static uint8_t *fb_draw_body(uint8_t *q, const pool_t *pool, uint32_t tex) {
     p_bind_vbuf vb;
     memset(&vb, 0, sizeof vb);
     vb.n = 1, vb.r[0].address = (uint64_t)(uintptr_t)pool->mem + 0x81000, vb.r[0].size = FB_VERTS * DR_STRIDE;
@@ -442,7 +441,13 @@ static uint8_t *fb_draw(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *col
     for (int i = 0; i < 8; i++) bt.h[i] = tex;   // no sampler id: the default sampler
     q = put(q, OP_BIND_TEX, &bt, sizeof bt);
     const p_draw d = {NVN_DRAW_PRIMITIVE_TRIANGLES, 0, FB_VERTS, 0, 0};
-    q = put(q, OP_DRAW, &d, sizeof d);
+    return put(q, OP_DRAW, &d, sizeof d);
+}
+
+// The draw part's prefix into color, then fb_draw_body, ended.
+static uint8_t *fb_draw(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *color, uint32_t tex) {
+    q = draw_prefix(q, prog, pool, color);
+    q = fb_draw_body(q, pool, tex);
     return put(q, OP_END, NULL, 0);
 }
 
@@ -564,6 +569,52 @@ static int test_feedback_inflight(const GfxBackend *b, uint8_t *guest, const poo
     return 0;
 }
 
+// Samples passed across a render pass restart. The same draw is counted alone, then twice with a clear of an unrelated
+// texture between the two draws: the clear ends the pass (as a snapshot copy does), so the first draw's occlusion query
+// closes and the second draw begins one of its own. Two draws of one program over one target must count twice one.
+#define SP_REPORT_OFF 0x3FF00u   // the report, in the output pool (FB_POOL_OUT) past the output target's 0x24000 bytes
+static int samples_run(const GfxBackend *b, uint8_t *guest, const pool_t *pool, prog_t *prog, tex_t *color, tex_t *other,
+                       int clear_between, uint64_t *count, uint64_t *passes) {
+    NVNcounterData *rep = (NVNcounterData *)(guest + FB_POOL_OUT + SP_REPORT_OFF);
+    memset(rep, 0, sizeof *rep);
+    const p_reset_counter rs = {NVN_COUNTER_TYPE_SAMPLES_PASSED};
+    uint8_t *q = put(fb_stream, OP_RESET_COUNTER, &rs, sizeof rs);
+    q = draw_prefix(q, prog, pool, color);
+    q = fb_draw_body(q, pool, FB_TEX_REF);
+    if (clear_between) {
+        p_clear_tex ct;
+        memset(&ct, 0, sizeof ct);
+        ct.tex = other, ct.r = (NVNcopyRegion){0, 0, 0, TEX_W, TEX_H, 1}, ct.mask = 0xf;
+        ct.c.f[0] = 0.5f, ct.c.f[1] = 0.5f, ct.c.f[2] = 0.5f, ct.c.f[3] = 1.0f;
+        q = put(q, OP_CLEAR_TEX, &ct, sizeof ct);
+        q = fb_draw_body(q, pool, FB_TEX_REF);
+    }
+    const p_report_counter rc = {NVN_COUNTER_TYPE_SAMPLES_PASSED, (uint64_t)(uintptr_t)rep};
+    q = put(q, OP_REPORT_COUNTER, &rc, sizeof rc);
+    put(q, OP_END, NULL, 0);
+    const uint64_t p0 = vk_exec_frame.passes;
+    int ok = fb_run(b);
+    *passes = vk_exec_frame.passes - p0;
+    *count = rep->counter;
+    return ok;
+}
+
+static int test_samples_restart(const GfxBackend *b, uint8_t *guest, const pool_t *pool, prog_t *prog, tex_t *color,
+                                tex_t *other) {
+    uint64_t alone = 0, pa = 0, twice = 0, pt = 0;
+    int ok = samples_run(b, guest, pool, prog, color, other, 0, &alone, &pa);
+    ok = samples_run(b, guest, pool, prog, color, other, 1, &twice, &pt) && ok;
+    CHECK(ok, "fence_wait of the samples-passed draws timed out");
+    CHECK(alone > 0, "one draw counted no samples passed");
+    CHECK(pt > pa, "the clear between the two draws began no render pass after the first (%llu passes with it, %llu without)",
+          (unsigned long long)pt, (unsigned long long)pa);
+    CHECK(twice == 2 * alone, "two draws across a pass restart counted %llu samples passed, expected %llu (twice one draw)",
+          (unsigned long long)twice, (unsigned long long)(2 * alone));
+    printf("probe-vkexec: samples-passed part passed (%llu samples for one draw, %llu for two draws across a pass restart)\n",
+           (unsigned long long)alone, (unsigned long long)twice);
+    return 0;
+}
+
 static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_t *color, const char *root,
                          const DrawEnt *e, int (*pairs)[2], int np) {
     static tex_t ref, out;
@@ -643,6 +694,7 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     CHECK(vk_exec_frame.snap_skipped == 0, "%llu feedback draws were skipped for lack of a copy",
           (unsigned long long)vk_exec_frame.snap_skipped);
     if (test_feedback_inflight(b, guest, pool, prog)) return 1;
+    if (test_samples_restart(b, guest, pool, prog, color, &out)) return 1;
     printf("probe-vkexec: feedback part passed (pair %d of %d tried: %llu copies in its draw, %d of %d texels equal the reference "
            "in both sync modes; with the copy off %d texels differ from it (0 where this GPU's live reads show no same-draw "
            "writes); 0 skipped)\n",
