@@ -401,6 +401,7 @@ int probe_cfg(void) {
     plat_setenv("XC2_FREE_CORES", NULL);
     plat_setenv("XC2_CORE_FLOAT", NULL);
     CHECK(cfg_bool("XC2_CORE_FLOAT") == 1, "core_float unset: on");
+    plat_setenv("XC2_STG_LAZY", NULL);
     CHECK(cfg_bool("XC2_STG_LAZY") == 1, "stg_lazy unset: on (a missing row would be fatal on an integrated GPU)");
     cfg_load("cfg-probe-missing.ini");
     int listed = 0;
