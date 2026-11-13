@@ -1386,8 +1386,12 @@ static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) 
     snap_imgs[nsn] = (typeof(snap_imgs[0])){image, alloc, img->format, img->width, img->height, slot, bytes, fence};
     nsn++, snap_total += bytes, snap_gen++;
     vk_exec_frame.snap_new++;
-    rt_log("vk: a draw samples a target it writes: it reads a copy (%ux%u format %d, target %u)", img->width, img->height,
-           (int)img->format, slot);
+    // Only the first eight copies are logged: a game that samples its targets creates a copy per draw, and the frame log
+    // (vk_exec_frame_log) counts them all in snap_new.
+    static volatile int32_t n_logged;
+    if (plat_inc32(&n_logged) <= 8)
+        rt_log("vk: a draw samples a target it writes: it reads a copy (%ux%u format %d, target %u)", img->width, img->height,
+               (int)img->format, slot);
     return image;
 }
 
