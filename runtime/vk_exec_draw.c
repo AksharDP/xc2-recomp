@@ -688,6 +688,13 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
     return img ? (uint8_t)gfx_type_of(img, &v, hv) : 0;
 }
 
+// The fixed-function alpha test a fragment shader bakes in: the colour state's function when it tests, else 0. Unset (0)
+// and ALWAYS stay off (docs/maxwell.md 5.7).
+static unsigned alpha_test_func(const VkExec *ex) {
+    unsigned f = ex->pipe.color.alpha_func;
+    return f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL ? f : 0;
+}
+
 // The answers of stage st for the slots in mask; the types of other slots stay zero.
 static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
@@ -695,9 +702,8 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     else if (st == NVN_STAGE_FS) {
         vk_pipeline_answers(&ex->pipe, NULL, a);
         // The fixed-function alpha test: the colour state's function against nvnCommandBufferSetAlphaRef's reference.
-        // Baked into the fragment shader as a discard (docs/maxwell.md 5.7); unset (0) and ALWAYS stay disabled.
-        unsigned f = ex->pipe.color.alpha_func;
-        if (f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL) a->alpha_func = (uint8_t)f;
+        // Baked into the fragment shader as a discard.
+        a->alpha_func = (uint8_t)alpha_test_func(ex);
         // Zero with the test off: a reference nothing tests must not split the shader cache (the input id hashes it).
         a->alpha_ref = a->alpha_func ? ex->alpha_ref : 0;
     }
@@ -2121,6 +2127,7 @@ typedef struct {
     uint32_t gen, tex_serial;
     uint64_t tex[2][32], img[2][32];
     VkPipeState pipe;
+    float alpha_ref;   // the reference the fragment shader tests: OP_ALPHA_REF while the alpha test is on, else 0
 } MemoKey;
 static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
 
@@ -2129,10 +2136,14 @@ static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
     memcpy(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]), memcpy(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]);
     memcpy(&k->pipe, &ex->pipe, sizeof k->pipe);
+    k->alpha_ref = alpha_test_func(ex) ? ex->alpha_ref : 0.0f;
 }
 
+// A shader compiled for another alpha reference is not reused: OP_ALPHA_REF changes no other part of the key.
 static int memo_match(const VkExec *ex, uint32_t gen, MemoKey *k) {
-    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe))
+    float ref = alpha_test_func(ex) ? ex->alpha_ref : 0.0f;
+    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe) ||
+        memcmp(&k->alpha_ref, &ref, sizeof ref))
         return 0;
     if (k->tex_serial == ex->tex_serial) return 1;
     if (memcmp(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]) || memcmp(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]) ||
