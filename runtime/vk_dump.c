@@ -267,7 +267,10 @@ static void write_images(const Job *j) {
         rt_write_png(path, out, pw, ph);
     }
     static int rawf = -1;
-    if (rawf < 0) rawf = cfg_bool("XC2_DUMP_RAWF");
+    if (rawf < 0) {   // cfg_get: the setting has no row in cfg.c's table, and cfg_bool needs one
+        const char *e = cfg_get("XC2_DUMP_RAWF");
+        rawf = e && *e && strcmp(e, "0");
+    }
     if (rawf && mode == M_FLOAT) {   // XC2_DUMP_RAWF=1: the decoded texels as float32 RGBA (NaN written as 0)
         char path[600];
         snprintf(path, sizeof path, "%s/%s.f32", dir, j->name);

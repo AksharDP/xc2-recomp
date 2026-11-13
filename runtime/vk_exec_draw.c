@@ -2406,6 +2406,16 @@ static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t i
     uint64_t vbase = ex->vbuf[va.stream].address;
     if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
         QS_NO("stride %u offset %u base %#llx gpu-only %d", q, pg, vs, (unsigned)va.offset, (unsigned long long)vbase, vbase ? nvn_gpu_only(vbase) : -1);
+    // The corners are read on the CPU: their bytes must be backed by CPU-visible memory and lie in the bound range, as
+    // bind_vertex_buffers resolves the stream (a device-local or unbacked stream keeps the normal path).
+    uint32_t maxc = 0;
+    for (uint32_t i = 0; i < 4 * q; i++)
+        if (corner[i] > maxc) maxc = corner[i];
+    uint64_t need = (uint64_t)maxc * vs + va.offset + 12, bound = ex->vbuf[va.stream].size;
+    VkMemSpan sp;
+    if (!vk_mem_resolve(vbase, need, &sp) || sp.alloc || sp.avail < need || (bound && bound < need))
+        QS_NO("corners up to %#llx bytes past %#llx are not in CPU-visible bound memory", q, pg, (unsigned long long)need,
+              (unsigned long long)vbase);
 #undef QS_NO
     uint32_t g = (uint32_t)split + 1, nv = q * g * g, ni = q * (uint32_t)split * (uint32_t)split * 6;
     VkBuffer vb, ib;
@@ -2524,8 +2534,6 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         if (!q) return;
         vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
         vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, 24ull * q);
-        uint32_t *ix = malloc(sizeof *ix * 6 * (size_t)q);
-        if (!ix) rt_fatal("vk: out of memory");
         const void *src = (const void *)(uintptr_t)d->ibuf;
         if (q <= 16) {
             uint32_t qc[64];
@@ -2535,6 +2543,8 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
                                                   : ((const uint32_t *)src)[i]);
             if (quad_split(ex, qc, q, d->instances > 0 ? (uint32_t)d->instances : 1, (uint32_t)d->base_instance)) return;
         }
+        uint32_t *ix = malloc(sizeof *ix * 6 * (size_t)q);   // after quad_split, which needs none
+        if (!ix) rt_fatal("vk: out of memory");
         for (uint32_t i = 0; i < q; i++) {
             static const uint8_t k[6] = {0, 1, 2, 0, 2, 3};
             for (int j = 0; j < 6; j++) {
