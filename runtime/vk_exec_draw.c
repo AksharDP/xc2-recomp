@@ -1323,6 +1323,7 @@ static void snap_drop(int i) {
     VkImage image = snap_imgs[i].image;
     VmaAllocation alloc = snap_imgs[i].alloc;
     snap_total -= snap_imgs[i].bytes;
+    if (snap_imgs[i].fence > vk_sync_fence_done()) vk_exec_frame.snap_evicted_busy++;   // its last submission may still run
     snap_imgs[i] = snap_imgs[--nsn];
     vk_texture_lock();
     vk_exec_image_gone(image);

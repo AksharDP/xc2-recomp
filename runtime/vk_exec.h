@@ -176,6 +176,7 @@ typedef struct {
     uint64_t fb_snaps;                                         // targets copied for the draw that samples them itself
     uint64_t fb_snap_draws;                                    // draws that copy at least one such target (each ends the pass)
     uint64_t snap_new, snap_evicted;                           // snapshot images created, and dropped to keep the pool in its budget
+    uint64_t snap_evicted_busy;                                // of those, dropped before the submission that last used them was known finished
     uint64_t snap_skipped;                                     // draws not made because their copy could not be had (never read live)
     uint64_t snap_live;                                        // such targets read live: a shape the copy path does not take
 } VkExecFrame;

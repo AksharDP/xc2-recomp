@@ -173,14 +173,15 @@ static uint8_t *put(uint8_t *p, uint32_t op, const void *payload, uint32_t n) {
     return p + h.size;
 }
 
-static void init_tex(tex_t *t, pool_t *pool, int64_t off, int format) {
+static void init_tex_wh(tex_t *t, pool_t *pool, int64_t off, int format, int w, int h) {
     memset(t, 0, sizeof *t);
     t->magic = NVN_TEX_MAGIC;
-    t->d.target = NVN_TEXTURE_TARGET_2D, t->d.format = format, t->d.width = TEX_W, t->d.height = TEX_H;
+    t->d.target = NVN_TEXTURE_TARGET_2D, t->d.format = format, t->d.width = w, t->d.height = h;
     t->d.depth = 1, t->d.levels = 1;
     nvn_tex_layout(&t->d, &t->L);
     t->pool = pool, t->off = off, t->mem = pool->mem + off, t->serial = 100 + (uint64_t)off;
 }
+static void init_tex(tex_t *t, pool_t *pool, int64_t off, int format) { init_tex_wh(t, pool, off, format, TEX_W, TEX_H); }
 
 // Pixel of the RGBA8 target after the stream: the scissored second clear inside the rectangle, the first elsewhere.
 #define SC_X 40
@@ -375,7 +376,7 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
     q = put(q, OP_CLEAR_COLOR, &c0, sizeof c0);
     p_viewports vp;
     memset(&vp, 0, sizeof vp);
-    vp.n = 1, vp.v[0][2] = TEX_W, vp.v[0][3] = TEX_H, vp.v[0][5] = 1.0f;
+    vp.n = 1, vp.v[0][2] = color->d.width, vp.v[0][3] = color->d.height, vp.v[0][5] = 1.0f;   // the target's own size
     q = put(q, OP_VIEWPORTS, &vp, sizeof vp);
     const p_bind_program bp = {prog, 3};
     q = put(q, OP_BIND_PROGRAM, &bp, sizeof bp);
@@ -459,6 +460,11 @@ static void fb_read(const GfxBackend *b, tex_t *t, uint32_t *px) {
     b->read_texels(t, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
 }
 
+static void fb_read_wh(const GfxBackend *b, tex_t *t, uint32_t *px, int w, int h) {
+    const NVNcopyRegion r = {0, 0, 0, (uint32_t)w, (uint32_t)h, 1};
+    b->read_texels(t, NULL, &r, (uint8_t *)px, (uint64_t)w * 4, (uint64_t)w * h * 4);
+}
+
 // The reference's sampled target is cleared to the draw part's colour (draw_prefix makes it) or to this one.
 static const float fb_c1[4] = {0.9f, 0.1f, 0.3f, 1.0f};
 
@@ -477,6 +483,78 @@ static int fb_differ(const uint32_t *a, const uint32_t *b) {
     int n = 0;
     for (int k = 0; k < TEX_W * TEX_H; k++) n += a[k] != b[k];
     return n;
+}
+
+// Feedback copies in flight: more keys than the pool holds (SNAP_MAX, vk_exec_draw.c), so the pool must drop entries that
+// submissions still in flight use (snap_drop defers their images until those submissions finish). EV_N targets of
+// different widths (each a key of its own) are drawn with the feedback draw of the pair found by test_feedback. First
+// each draw is run and waited for, which gives its reference; then all are submitted with no wait between them. Every
+// target must then read what its reference read.
+#define FB_TEX_EV 0x3F100u   // texture ids of these targets: FB_TEX_EV + k
+#define EV_N 40
+#define EV_BASE 0x1200000ull
+#define EV_POOL 0x800000ull
+#define EV_W(k) (32 + 4 * (k))   // widths 32 to 188
+static uint8_t ev_stream[EV_N][8192];
+
+static int test_feedback_inflight(const GfxBackend *b, uint8_t *guest, const pool_t *draw_pool, prog_t *prog) {
+    static tex_t tt[EV_N];
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + EV_BASE, .size = EV_POOL, .game_mem = guest + EV_BASE};
+    CHECK(b->pool_init(&pool), "pool_init of the in-flight feedback targets");
+    static uint32_t *evref[EV_N], *evout[EV_N];
+    int64_t off = 0;
+    for (int k = 0; k < EV_N; k++) {
+        init_tex_wh(&tt[k], &pool, off, NVN_FORMAT_RGBA8, EV_W(k), TEX_H);
+        off += (int64_t)((tt[k].L.size + 0xfffull) & ~0xfffull);
+        CHECK(off <= (int64_t)EV_POOL, "the in-flight feedback targets exceed their pool");
+        vk_texture_register(FB_TEX_EV + k, &tt[k], NULL);
+        evref[k] = calloc((size_t)EV_W(k) * TEX_H, 4), evout[k] = calloc((size_t)EV_W(k) * TEX_H, 4);
+        CHECK(evref[k] && evout[k], "out of memory for the in-flight feedback readbacks");
+        fb_draw(ev_stream[k], prog, draw_pool, &tt[k], FB_TEX_EV + (uint32_t)k);
+    }
+    // the reference: each draw alone, waited for
+    for (int k = 0; k < EV_N; k++) {
+        uint64_t h = (uint64_t)(uintptr_t)ev_stream[k];
+        uint64_t f = b->submit(&h, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of a reference feedback draw timed out");
+        fb_read_wh(b, &tt[k], evref[k], EV_W(k), TEX_H);
+    }
+    // all of them in flight
+    uint64_t ev0 = vk_exec_frame.snap_evicted, busy0 = vk_exec_frame.snap_evicted_busy, fs0 = vk_exec_frame.fb_snap_draws,
+             sk0 = vk_exec_frame.snap_skipped;
+    uint64_t last = 0;
+    for (int k = 0; k < EV_N; k++) {
+        uint64_t h = (uint64_t)(uintptr_t)ev_stream[k];
+        last = b->submit(&h, 1);
+    }
+    CHECK(b->fence_wait(last, 20000000000ull), "fence_wait of the in-flight feedback draws timed out");
+    uint64_t evicted = vk_exec_frame.snap_evicted - ev0, busy = vk_exec_frame.snap_evicted_busy - busy0,
+             draws = vk_exec_frame.fb_snap_draws - fs0, skipped = vk_exec_frame.snap_skipped - sk0;
+    int differ = 0, first = -1;
+    for (int k = 0; k < EV_N; k++) {
+        fb_read_wh(b, &tt[k], evout[k], EV_W(k), TEX_H);
+        for (int i = 0; i < EV_W(k) * TEX_H; i++)
+            if (evout[k][i] != evref[k][i]) {
+                if (first < 0) first = k;
+                differ++;
+            }
+    }
+    CHECK(skipped == 0, "%llu in-flight feedback draws were skipped for lack of a copy", (unsigned long long)skipped);
+    CHECK(draws == EV_N, "%llu of %d in-flight feedback draws copied their target", (unsigned long long)draws, EV_N);
+    CHECK(evicted > 0, "no copy was dropped by the %d in-flight feedback draws: the eviction path did not run", EV_N);
+    CHECK(!differ, "in-flight feedback draws differ from their waited references in %d texels (first target %d)", differ, first);
+    // busy counts the drops whose last submission the host had not seen finished: 0 means the GPU was done with each
+    // dropped copy before its drop, so the deferred destruction did not run (it needs a GPU that lags the submitter).
+    printf("probe-vkexec: in-flight feedback part passed (%d targets of %d to %d wide: %llu copies dropped, %llu of them "
+           "while their last submission was not known finished; every draw equal to its waited reference)\n", EV_N, EV_W(0),
+           EV_W(EV_N - 1), (unsigned long long)evicted, (unsigned long long)busy);
+    for (int k = 0; k < EV_N; k++) {
+        b->texture_release(&tt[k]);
+        free(evref[k]);
+        free(evout[k]);
+    }
+    b->pool_fini(&pool);
+    return 0;
 }
 
 static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_t *color, const char *root,
@@ -557,6 +635,7 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     CHECK(!narrow_full, "feedback draw: narrow and full sync differ in %d texels", narrow_full);
     CHECK(vk_exec_frame.snap_skipped == 0, "%llu feedback draws were skipped for lack of a copy",
           (unsigned long long)vk_exec_frame.snap_skipped);
+    if (test_feedback_inflight(b, guest, pool, prog)) return 1;
     printf("probe-vkexec: feedback part passed (pair %d of %d tried: %llu copies in its draw, %d of %d texels equal the reference "
            "in both sync modes; with the copy off %d texels differ from it (0 where this GPU's live reads show no same-draw "
            "writes); 0 skipped)\n",
