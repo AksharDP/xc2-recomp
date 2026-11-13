@@ -704,14 +704,16 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
 // A GPU write into a mirrored texture's image, recorded with fence (0: not in a submission): the storage no longer
 // holds the newest texels until write_back copies them there. Every path that makes an image the newest content goes
 // through here, so a CPU read of the storage always finds the dirty flag and the owned[] entry.
-static void mark_gpu_written(Tex *e, uint64_t fence) {
+static void mark_gpu_written_as(Tex *e, uint64_t fence, uint64_t seq) {
     e->gpu_dirty = 1;
     storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
-    e->gpu_seq = ++gpu_writes;
+    e->gpu_seq = seq;   // the write-back order: a newer one is written back last
     e->gpu_fence = fence;
     if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
     own_add(e);
 }
+
+static void mark_gpu_written(Tex *e, uint64_t fence) { mark_gpu_written_as(e, fence, ++gpu_writes); }
 
 // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
 static void make_fresh(Tex *e) {
@@ -854,7 +856,9 @@ static Tex *entry_of(const tex_t *t) {
                     e->pub.gpu_owned = 1;
                     uint64_t f = vk_exec_recording_fence();   // alias_copy recorded the copy into this submission
                     if (f > e->wr_fence) e->wr_fence = f;
-                    mark_gpu_written(e, f);
+                    // The copy holds src's content, so it keeps src's place in the write-back order: a newer write to
+                    // another alias still lands after it. A later render into the copy takes a new place as usual.
+                    mark_gpu_written_as(e, f, src->gpu_seq ? src->gpu_seq : ++gpu_writes);
                 }
             } else {
                 init_image(e, vk_upload_begin());
