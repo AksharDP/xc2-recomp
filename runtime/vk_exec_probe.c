@@ -365,15 +365,19 @@ static int layouts_equal;   // texels compared equal between the two layouts (0:
 static int ind_draw_texels, ind_dispatches;   // indirect draws' texels compared, indirect dispatches run
 
 // The draw part's stream up to the draw: target cleared, viewport, program, three RGBA32F vertices at 0x80000 of the
-// pool, identity uniforms at 0x90000.
-static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *color) {
+// pool, identity uniforms at 0x90000. color1 (NULL: none) is a second colour target, bound as target 1 and cleared too.
+static uint8_t *draw_prefix_rt(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *color, tex_t *color1) {
     q = put(q, OP_BEGIN, NULL, 0);
     p_set_rt rt;
     memset(&rt, 0, sizeof rt);
-    rt.n = 1, rt.color[0] = color;
+    rt.n = color1 ? 2 : 1, rt.color[0] = color, rt.color[1] = color1;
     q = put(q, OP_SET_RT, &rt, sizeof rt);
     const p_clear_color c0 = {0, 0xf, {0.2f, 0.4f, 0.6f, 1.0f}};
     q = put(q, OP_CLEAR_COLOR, &c0, sizeof c0);
+    if (color1) {
+        const p_clear_color c1 = {1, 0xf, {0.2f, 0.4f, 0.6f, 1.0f}};
+        q = put(q, OP_CLEAR_COLOR, &c1, sizeof c1);
+    }
     p_viewports vp;
     memset(&vp, 0, sizeof vp);
     vp.n = 1, vp.v[0][2] = color->d.width, vp.v[0][3] = color->d.height, vp.v[0][5] = 1.0f;   // the target's own size
@@ -402,6 +406,10 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
             q = put(q, OP_BIND_UBO, &bu, sizeof bu);
         }
     return q;
+}
+
+static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t *color) {
+    return draw_prefix_rt(q, prog, pool, color, NULL);
 }
 
 // ---- feedback part: a draw whose fragment shader samples the target it writes (vk_exec_draw.c feedback_snapshot).
@@ -706,6 +714,57 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     return 0;
 }
 
+// Two colour targets (MRT). The first census pair whose fragment shader writes the second target is drawn with both
+// targets bound and with the first alone: the first target must match the one-target draw texel for texel, and the
+// second must change from the clear, so its output reached it.
+static int test_mrt(const GfxBackend *b, pool_t *pool, tex_t *color, const char *root, const DrawEnt *e, int (*pairs)[2], int np) {
+    static tex_t color1;
+    static uint32_t m0[TEX_W * TEX_H], m0r[TEX_W * TEX_H], m1[TEX_W * TEX_H];
+    static uint8_t mstream[8192];
+    init_tex(&color1, pool, 0x40000, NVN_FORMAT_RGBA8);   // the draw part's pool, past its target at 0 and below its vertices
+    CHECK(color1.L.size <= 0x40000, "second colour target exceeds its pool slot");
+    const uint8_t clear_b[4] = {to_byte(0.2f), to_byte(0.4f), to_byte(0.6f), 255};
+    uint32_t clear_v;
+    memcpy(&clear_v, clear_b, 4);
+    const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
+    const p_draw d = {NVN_DRAW_PRIMITIVE_TRIANGLES, 0, 3, 0, 0};
+    int found = -1, tried = 0, changed1 = 0, differ = 0;
+    for (int t = 0; t < np && t < 150 && found < 0; t++) {
+        const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
+        if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
+        const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
+        prog_t *prog = dr_prog(root, both, 2);
+        CHECK(prog, "census code file of %.16s is missing", both[0]->key);
+        tried++;
+        uint8_t *q = draw_prefix_rt(mstream, prog, pool, color, &color1);
+        q = put(q, OP_DRAW, &d, sizeof d);
+        put(q, OP_END, NULL, 0);
+        uint64_t handle = (uint64_t)(uintptr_t)mstream;
+        uint64_t f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the two-target draw timed out");
+        b->read_texels(color, NULL, &r, (uint8_t *)m0, TEX_W * 4, TEX_W * TEX_H * 4);
+        b->read_texels(&color1, NULL, &r, (uint8_t *)m1, TEX_W * 4, TEX_W * TEX_H * 4);
+        changed1 = 0;
+        for (int k = 0; k < TEX_W * TEX_H; k++) changed1 += m1[k] != clear_v;
+        if (!changed1) continue;   // the pair writes no second target
+        q = draw_prefix(mstream, prog, pool, color);
+        q = put(q, OP_DRAW, &d, sizeof d);
+        put(q, OP_END, NULL, 0);
+        f = b->submit(&handle, 1);
+        CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the one-target draw timed out");
+        b->read_texels(color, NULL, &r, (uint8_t *)m0r, TEX_W * 4, TEX_W * TEX_H * 4);
+        differ = 0;
+        for (int k = 0; k < TEX_W * TEX_H; k++) differ += m0[k] != m0r[k];
+        found = t;
+    }
+    CHECK(found >= 0, "none of %d census pairs wrote a second colour target", tried);
+    CHECK(!differ, "two-target draw: %d of %d texels of the first target differ from the one-target draw", differ, TEX_W * TEX_H);
+    b->texture_release(&color1);
+    printf("probe-vkexec: mrt part passed (census pair %d of %d tried wrote %d of %d texels of the second colour target; the "
+           "first target equals the one-target draw texel for texel)\n", found, tried, changed1, TEX_W * TEX_H);
+    return 0;
+}
+
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs, int *n_alpha) {
     char root[PLAT_PATH_MAX * 2], path[PLAT_PATH_MAX * 2 + 64];
     CHECK(dr_root(root, sizeof root), GFX_CENSUS_DIR "/jobs.json not found");
@@ -919,6 +978,8 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
               pass ? "cleared target" : "direct draw");
         ind_draw_texels += TEX_W * TEX_H;
     }
+
+    if (test_mrt(b, &pool, &color, root, e, pairs, np)) return 1;
 
     // Compute: a few census compute shaders, one dispatch each, resources unbound (zero buffers and stand-in images).
     int dispatched = 0;
