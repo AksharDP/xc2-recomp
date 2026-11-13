@@ -1304,19 +1304,21 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 // writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target made
 // just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off.
 // The copies come from a pool: one image per format, size and slot, so that two targets of a draw never share one. An
-// image is kept while the submissions use it; past SNAP_MAX images or SNAP_BYTES (an estimate, 16 bytes a texel) the
+// image is kept while the submissions use it; past SNAP_MAX images or SNAP_BYTES (an estimate by texel size) the
 // least recently used one that the current submission has not used is dropped (snap_drop). When no image can be had,
-// the draw is skipped (FB_SKIP): reading the target itself is what this path exists to avoid. Replay thread.
+// the draw is skipped (FB_SKIP): reading the target itself is what this path exists to avoid. The budget counts each copy at
+// its format's texel size (vk_texel_bytes). It is soft: the images of the submission being recorded are never dropped, so
+// one submission may leave the pool above SNAP_BYTES until a later submission uses other keys. Replay thread.
 #define SNAP_MAX 32
 #define SNAP_BYTES ((uint64_t)384 << 20)
-#define SNAP_TEXEL_BYTES 16
 #define FB_SKIP 0xffffffffu   // feedback_prepare: the draw cannot be made with its copies
 static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w, h, slot; uint64_t bytes, fence; } snap_imgs[SNAP_MAX];
 static int nsn;
 static uint64_t snap_total;   // bytes the pool holds (estimate)
 static uint64_t snap_gen;     // bumps with every image the pool creates or drops: bind_sig keys on it
 
-// Drops entry i. Its views go now; its image is destroyed once the submissions that may still use it have finished.
+// Drops entry i. Its image and its views are both deferred (vk_exec_image_gone and vk_defer_image): each is destroyed once
+// the submissions that may still use it have finished, not at once.
 static void snap_drop(int i) {
     VkImage image = snap_imgs[i].image;
     VmaAllocation alloc = snap_imgs[i].alloc;
@@ -1347,7 +1349,7 @@ static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) 
             snap_imgs[i].fence = fence;
             return snap_imgs[i].image;
         }
-    uint64_t bytes = (uint64_t)img->width * img->height * SNAP_TEXEL_BYTES;
+    uint64_t bytes = (uint64_t)((double)img->width * img->height * vk_texel_bytes(img->format));
     while (nsn == SNAP_MAX || snap_total + bytes > SNAP_BYTES) {   // over budget: drop until it fits, or nothing else can go
         int v = snap_victim(fence);
         if (v < 0) break;
@@ -1389,10 +1391,12 @@ static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) 
 }
 
 static void snap_shutdown(void) {
+    vk_texture_lock();   // as snap_drop: vk_exec_image_gone reads the view tables under it
     for (int i = 0; i < nsn; i++) {
         vk_exec_image_gone(snap_imgs[i].image);
         vk_defer_image(snap_imgs[i].image, snap_imgs[i].alloc);
     }
+    vk_texture_unlock();
     nsn = 0, snap_total = 0, snap_gen++;
 }
 
@@ -1418,6 +1422,12 @@ void vk_exec_snap_mode(int on, int narrow) {
     snap_config();
     if (on >= 0) snap_on = on;
     if (narrow >= 0) snap_narrow = narrow;
+}
+
+void vk_exec_snap_mode_get(int *on, int *narrow) {
+    snap_config();
+    *on = snap_on;
+    *narrow = snap_narrow;
 }
 
 // A colour target the draw samples and writes that snap_fits does not take: it is read live, as before this path

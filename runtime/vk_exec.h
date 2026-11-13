@@ -134,6 +134,7 @@ void vk_exec_snap_copy(VkExec *ex, const VkExecSnap *s, int n, int narrow);
 // The probe's switches for the copy path (vk_exec_draw.c): on 1 or 0 (XC2_FEEDBACK_SNAP), narrow 1 or 0 (XC2_SNAP_SYNC); -1
 // keeps a setting.
 void vk_exec_snap_mode(int on, int narrow);
+void vk_exec_snap_mode_get(int *on, int *narrow);   // the settings in force, from the environment or vk_exec_snap_mode
 // vk_texture.c (XC2_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.

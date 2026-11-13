@@ -28,7 +28,8 @@ static CapTex *texs;
 static size_t ntexs, captexs;
 
 // Bytes per texel for the formats the dump logs show (the VkFormat numbers are those in the dump's rgba8(37) style).
-static double texel_bytes(VkFormat f) {
+// Shared with the snapshot pool (vk_exec_draw.c), which budgets its copies by it.
+double vk_texel_bytes(VkFormat f) {
     switch ((int)f) {
     case 131: case 132: case 133: case 134: case 139: case 140: return 0.5;   // BC1, BC4 (8 bytes per 4x4)
     case 135: case 136: case 137: case 138: case 141: case 142: case 143: case 144: case 145: case 146: return 1.0;   // BC2/3/5/6/7
@@ -64,7 +65,7 @@ void vk_capture_note(uint64_t addr, uint64_t size) {
 void vk_capture_texture(const VkTexImage *img) {
     if (!img) return;
     uint64_t texels = (uint64_t)img->width * img->height * (img->depth ? img->depth : 1) * (img->layers ? img->layers : 1);
-    double base = (double)texels * texel_bytes(img->format);
+    double base = (double)texels * vk_texel_bytes(img->format);
     uint64_t bytes = (uint64_t)(img->levels > 1 ? base * 4.0 / 3.0 : base);
     plat_mutex_lock(&cap_lock);
     if (ntexs == captexs) {

@@ -494,6 +494,11 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     vk_texture_register(FB_TEX_REF, &ref, NULL);
     fb_vertices(pool);
     static uint32_t px_f[TEX_W * TEX_H], px_r[TEX_W * TEX_H], px_c[TEX_W * TEX_H], px_o[TEX_W * TEX_H], px_s[TEX_W * TEX_H];
+    // The feedback draws are narrow whatever XC2_SNAP_SYNC says, so the narrow path is the one checked; the full run is made
+    // explicitly below, and the environment's setting is put back at the end.
+    int env_on, env_narrow;
+    vk_exec_snap_mode_get(&env_on, &env_narrow);
+    vk_exec_snap_mode(1, 1);
     int ok = 1, found = -1;
     uint64_t snapped = 0;
     prog_t *prog = NULL;
@@ -546,7 +551,7 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     fb_draw(fb_stream, prog, pool, color, FB_TEX_TARGET);
     ok = fb_run(b) && ok;
     fb_read(b, color, px_f);
-    vk_exec_snap_mode(1, 1);
+    vk_exec_snap_mode(env_on, env_narrow);
     CHECK(ok, "fence_wait of the feedback part's variants timed out");
     int narrow_full = fb_differ(px_c, px_f), no_copy = fb_differ(px_o, px_r);
     CHECK(!narrow_full, "feedback draw: narrow and full sync differ in %d texels", narrow_full);
