@@ -843,9 +843,17 @@ static Tex *entry_of(const tex_t *t) {
             nx = p->next_at;
             if (p->released) { destroy_tex(p); continue; }
             alias = 1;
-            if (tex_alias && (!src || (same_but_swizzle(&p->key, &k) && !same_but_swizzle(&src->key, &k))) &&
-                alias_compatible(e, p) && alias_has_gpu_content(p))
-                src = p;
+            if (tex_alias && alias_compatible(e, p) && alias_has_gpu_content(p)) {
+                // The source is the candidate with the newest GPU write to the storage range: the copy must not take older
+                // content (both mirrored: gpu_seq is the write order). Among equal candidates the first in the chain stays,
+                // and a swizzle-only difference still goes first.
+                int ps = same_but_swizzle(&p->key, &k);
+                if (!src) src = p;
+                else {
+                    int ss = same_but_swizzle(&src->key, &k);
+                    if ((ps && !ss) || (ps == ss && p->pub.mirrored && src->pub.mirrored && p->gpu_seq > src->gpu_seq)) src = p;
+                }
+            }
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
         if (tex_alias) {
