@@ -2369,8 +2369,14 @@ static void xfb_end(VkExec *ex, const VkMemSpan *sp, uint64_t bytes) {
     ex->xfb_written += bytes;
 }
 
-// The XC2_QUAD_SPLIT setting: the subdivision (2..64), or 0 when it is off. Read once.
-static int quad_split_n(void) {
+// XC2_QUAD_SPLIT=<n> (experiment, 2..64, default off): a quad draw of 4 to 16 quads whose vertex shader
+// reads only a float3 position at location 0 is drawn as an n x n grid of triangles per quad, the grid's positions
+// blended from the quad's corners (exact for a flat quad). XC2's cloud sea composite (prog of vs 3e88e05082ee22fc) draws
+// the whole sea surface as 6 such quads tens of thousands of units wide, partly behind the camera; on Mesa GPUs the
+// attributes interpolated across those triangles move with the game's sub-pixel camera jitter, and the sea's distance
+// and colour shimmer. corner holds the 4 * q vertex numbers (base vertex added). Returns 0 when the draw does not
+// qualify (the caller draws it as two triangles per quad).
+static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t inst, uint32_t base_instance) {
     static int split = -1;
     if (split < 0) {
         const char *e = cfg_get("XC2_QUAD_SPLIT");
@@ -2379,20 +2385,6 @@ static int quad_split_n(void) {
         if (split > 64) split = 64;
         if (split) rt_log("vk: XC2_QUAD_SPLIT=%d: small position-only quad draws are subdivided", split);
     }
-    return split;
-}
-
-// XC2_QUAD_SPLIT=<n> (experiment, 2..64, default off): a quad draw of 4 to 16 quads whose vertex shader
-// reads only a float3 position at location 0 is drawn as an n x n grid of triangles per quad, the grid's positions
-// blended from the quad's corners (exact for a flat quad). XC2's cloud sea composite (prog of vs 3e88e05082ee22fc) draws
-// the whole sea surface as 6 such quads tens of thousands of units wide, partly behind the camera; on Mesa GPUs the
-// attributes interpolated across those triangles move with the game's sub-pixel camera jitter, and the sea's distance
-// and colour shimmer. corner holds the 4 * q vertex numbers (base vertex added). Returns 0 when the draw does not
-// qualify (the caller draws it as two triangles per quad). The corner positions are read here, when the command buffer
-// is recorded, not when the GPU runs the draw: a position buffer the game rewrites between the record and the submit
-// gives the positions it held at record time, which is the same for the static sea this is for.
-static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t inst, uint32_t base_instance) {
-    int split = quad_split_n();
     if (!split || q < 4 || q > 16 || inst != 1) return 0;
     static int rej;
 #define QS_NO(...) do { if (q > 1 && rej < 12) rej++, rt_log("vk: quad split skips %u quads of prog %llu: " __VA_ARGS__); return 0; } while (0)
@@ -2403,17 +2395,13 @@ static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t i
     if (va.fmt != 0x22 || va.stream >= 16) QS_NO("format %#x stream %u", q, pg, (unsigned)va.fmt, (unsigned)va.stream);
     static const GfxShader *last_vs;   // the last vertex shader asked and its answer: the sea draws repeat each frame
     static uint32_t last_in;
-    static int last_sys;
     if (draw_vs != last_vs) {
         GfxShaderIo io[32];
         last_in = draw_vs ? gfx_shader_inputs(draw_vs, io) : 0;
-        last_sys = draw_vs ? gfx_shader_builtin_inputs(draw_vs) : 1;
         last_vs = draw_vs;
     }
     uint32_t in = last_in;
-    // A builtin input (VertexIndex and the like) has no Location, so the mask above does not show it: a shader that reads
-    // the vertex number would see different numbers on the grid's vertices, so such a draw keeps the normal path.
-    if (in != 1u || last_sys) QS_NO("inputs %#x%s", q, pg, in, last_sys ? " with a builtin input" : "");
+    if (in != 1u) QS_NO("inputs %#x", q, pg, in);
     uint32_t vs = ex->pipe.vstream[va.stream].stride;
     uint64_t vbase = ex->vbuf[va.stream].address;
     if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
@@ -2482,11 +2470,10 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         return;
     }
     uint32_t qc[64];
-    int split_try = d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4 && n / 4 <= 16 && quad_split_n();
-    if (split_try) {
+    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4 && n / 4 <= 16) {
         for (uint32_t i = 0; i < n / 4 * 4; i++) qc[i] = first + i;
     }
-    if (split_try && quad_split(ex, qc, n / 4, inst, (uint32_t)d->base_instance)) {
+    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4 && n / 4 <= 16 && quad_split(ex, qc, n / 4, inst, (uint32_t)d->base_instance)) {
     } else if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
@@ -2548,7 +2535,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
         vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, 24ull * q);
         const void *src = (const void *)(uintptr_t)d->ibuf;
-        if (q <= 16 && quad_split_n()) {
+        if (q <= 16) {
             uint32_t qc[64];
             for (uint32_t i = 0; i < 4 * q; i++)
                 qc[i] = (uint32_t)d->base_vertex + (d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE ? ((const uint8_t *)src)[i]
