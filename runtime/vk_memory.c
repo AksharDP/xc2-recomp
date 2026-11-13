@@ -1204,7 +1204,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
             const uint8_t *snap = NULL;
             for (int i = 0; i < nspend && wb_diff_on(); i++)
                 if (spend[i].lo == addr && spend[i].hi == addr + size) { snap = spend[i].snap; break; }
-            if (snap) {
+            if (snap && !s_wb_skip_cpu) {   // XC2_SHADOW_WB_SKIP_CPU takes the checked path below instead
                 mem_thaw(addr, size);
                 const uint8_t *src = r->smap + (addr - r->import_lo);
                 uint8_t *dst = (uint8_t *)(uintptr_t)addr;
@@ -1217,7 +1217,7 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
                     s_diff_bytes += j - k;
                     k = j;
                 }
-            } else if (s_diag || s_wb_skip_cpu) shadow_wb_checked(r, addr, size);
+            } else if (s_diag || s_wb_skip_cpu) shadow_wb_checked(r, addr, size);   // snap, if any, is released below
             else {
                 mem_thaw(addr, size);
                 memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
@@ -1230,8 +1230,15 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
                 __atomic_store_n(&s_wbseq, seq, __ATOMIC_RELEASE);
             }
         }
+        // The oldest matching entry goes, and the rest keep their order: the same range can be pending from several
+        // submissions, and each completion must take the snapshot of the write it completes.
         for (int i = 0; i < nspend; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) { snap_release(spend[i].snap); spend[i] = spend[--nspend]; break; }
+            if (spend[i].lo == addr && spend[i].hi == addr + size) {
+                snap_release(spend[i].snap);
+                memmove(&spend[i], &spend[i + 1], sizeof *spend * (size_t)(nspend - i - 1));
+                nspend--;
+                break;
+            }
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -1451,6 +1458,7 @@ typedef struct MCap {
     uint32_t gen;                      // every page write stamped up to this generation is in this or an earlier capture
     uint64_t done;                     // vk_sync_fence_done before the copy: later write-backs are not in its bytes
     uint64_t wbseq;                    // shadow: s_wbseq before the copy (the same for shadow write-backs)
+    int shadow;                        // taken over the shadows (apply_shadow), not the mirrors (apply_capture)
     StageArena *st;
     CRange *c;
     int n;
@@ -1598,6 +1606,10 @@ static void mirror_mode(int discrete) {
     // Freezing stays on by default; a capture holds it off while it runs (vk_mem_capture_hold).
     const char *sc = cfg_get("XC2_SHADOW_CAPTURE");
     shadow_cap = shadow_on && sc && *sc && strcmp(sc, "0");
+    if (shadow_cap && vk_mirror_on) {   // vk_mem_capture takes the mirrors then, and the shadows would get no CPU writes
+        rt_log("mem: XC2_SHADOW_CAPTURE is off with VRAM mirrors (%s): the shadows keep their per-part sync", why);
+        shadow_cap = 0;
+    }
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s; "
                           "%s", sh && *sh ? " (XC2_SHADOW)" : "",
                           shadow_cap ? "the CPU's writes are captured in the submit call (XC2_SHADOW_CAPTURE)"
@@ -1907,6 +1919,7 @@ void *vk_mem_capture(void) {
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
         cap->gen = gen_now;
     } else if (shadow_cap) {   // the same over the shadow pools, all of them: the replay has not resolved any yet
+        cap->shadow = 1;
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
         int have = 0;
         for (int i = 0; i < pool_index.n; i++) {
@@ -2241,6 +2254,13 @@ static void shadow_put(MCap *c, PoolRec *r, uint64_t lo, uint64_t hi, uint64_t s
 static void apply_shadow(VkCommandBuffer cb, MCap *c, uint64_t fence) {
     sapl_prune();
     int live = 0;
+    // A range without arena bytes (no arena, or one too small) is copied by the CPU straight into the shadow, which
+    // earlier submissions may still read: wait for them first (rare: the arena is sized to the capture).
+    for (int i = 0; i < c->n; i++)
+        if (c->c[i].src == CAP_LIVE) {
+            vk_sync_fence_wait(vk_sync_issued(), UINT64_MAX);   // every submission before this one
+            break;
+        }
     plat_mutex_lock(&shadow_lock);
     for (int i = 0; i < c->n;) {
         PoolRec *r = c->c[i].r;
@@ -2297,7 +2317,7 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
     if (cur) {
-        if (shadow_on) apply_shadow(cb, cur, fence);
+        if (cur->shadow) apply_shadow(cb, cur, fence);
         else apply_capture(cb, cur, fence);
         capture_free(cur), cur = NULL;
     }
@@ -2820,6 +2840,8 @@ void vk_mem_shutdown(void) {
     stg_pool = NULL;
     stg_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
+    for (int i = 0; i < nsar; i++) stage_done(sar[i].st);   // the shadow captures' arenas (apply_shadow): the device is idle
+    nsar = nsapl = 0;
     plat_mutex_lock(&stage_lock);   // the free arenas; one whose completion has not run yet stays to process exit
     for (StageArena *a = stage_free, *next; a; a = next) next = a->next, vmaDestroyBuffer(c->vma, a->buf, a->alloc), free(a);
     stage_free = NULL;

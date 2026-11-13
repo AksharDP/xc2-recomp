@@ -424,8 +424,7 @@ static void wait_site(void *ra, uint64_t ns) {
     if (!ws_t0) ws_t0 = now;
     if (now - ws_t0 > 2000000000ull) {
         for (int j = 0; j < WS_N && wsite[j].ra; j++)
-            rt_log("vk: fence waits from %p (exe+%#llx): %llu waits, %.1f ms in %.1f s", wsite[j].ra,
-                   (unsigned long long)((uintptr_t)wsite[j].ra - (uintptr_t)&vk_sync_fence_wait),
+            rt_log("vk: fence waits from %p: %llu waits, %.1f ms in %.1f s", wsite[j].ra,   // as nm prints it (no PIE)
                    (unsigned long long)wsite[j].n, wsite[j].ns / 1e6, (now - ws_t0) / 1e9);
         memset(wsite, 0, sizeof wsite);
         ws_t0 = now;

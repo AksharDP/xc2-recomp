@@ -31,6 +31,7 @@
 
 static struct { uint64_t rip, n; } tab[SLOTS];
 static volatile uint64_t nsamples, ndropped;
+static volatile int in_handler;   // on_sample running: prof_sampler_write waits for it after deleting the timer
 static int state;   // 0 off, 1 waiting for the first frame, 2 sampling, 3 written
 static uint64_t from = 1800, to = 3600;
 static int timer;   // the kernel's timer id (raw syscalls: the link's glibc keeps timer_* in librt)
@@ -43,8 +44,20 @@ static const char *path, *which;
 static struct { uint64_t rip, ret, req, n; } pairs[SLOTS];   // req: rsi when it looks like a DRM ioctl request
 static uint64_t exe_lo, exe_hi;   // the executable's code (set before sampling): the frame walk stops at the first return into it
 
+static void record(void *ctx);
+
 static void on_sample(int sig, siginfo_t *si, void *ctx) {
     (void)sig, (void)si;
+    __atomic_store_n(&in_handler, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&state, __ATOMIC_SEQ_CST) != 2) {   // the writer has started: leave the tables alone
+        __atomic_store_n(&in_handler, 0, __ATOMIC_RELEASE);
+        return;
+    }
+    record(ctx);
+    __atomic_store_n(&in_handler, 0, __ATOMIC_RELEASE);
+}
+
+static void record(void *ctx) {
     uint64_t rip = (uint64_t)((ucontext_t *)ctx)->uc_mcontext.gregs[REG_RIP];
     uint64_t ret = *(const uint64_t *)(uintptr_t)((ucontext_t *)ctx)->uc_mcontext.gregs[REG_RSP];
     // An ioctl's request stays in rsi across the syscall: DRM ones have type 'd' and a direction.
@@ -77,9 +90,16 @@ static void on_sample(int sig, siginfo_t *si, void *ctx) {
     ndropped++;
 }
 
-static uint32_t target(void) {
+static uint32_t target(uint64_t frame) {
     if (!strcmp(which, "render")) return prof_render_tid;
     if (!strcmp(which, "main")) return prof_main_tid;
+    // With a synchronous replay (XC2_REPLAY_ASYNC=0) there is no replay thread: the render thread records instead.
+    if (!prof_replay_tid && frame >= from + 600) {
+        rt_log("prof: no replay thread %llu presents after XC2_PROFILE_FROM: sampling the render thread, which replays",
+               (unsigned long long)(frame - from));
+        which = "render";
+        return prof_render_tid;
+    }
     return prof_replay_tid;
 }
 
@@ -104,8 +124,14 @@ static int cmp(const void *a, const void *b) {
 
 void prof_sampler_write(void) {
     if (state != 2) return;
-    state = 3;
+    __atomic_store_n(&state, 3, __ATOMIC_SEQ_CST);
     syscall(SYS_timer_delete, timer);
+    // A signal delivered before the delete may still be in its handler on the sampled thread; one that starts later
+    // sees state 3 and returns. Wait for the former before reading the tables.
+    while (__atomic_load_n(&in_handler, __ATOMIC_ACQUIRE)) {
+        struct timespec ts = {0, 100000};
+        nanosleep(&ts, NULL);
+    }
     FILE *o = fopen(path, "w");
     if (!o) { rt_log("prof: cannot write %s", path); return; }
     fprintf(o, "xc2-prof-linux 1\nthread %s %u\nperiod_us %d\nsamples %llu\ndropped %llu\n", which, tid, PERIOD_US,
@@ -135,8 +161,11 @@ void prof_sampler_write(void) {
 
 void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
     (void)now, (void)d;
-    if (state == 1 && frame >= from) {
-        tid = target();
+    if (state == 1 && frame >= to) {   // the thread never came up inside the window
+        rt_log("prof: no %s thread to sample before present %llu: no profile", which, (unsigned long long)to);
+        state = 0;
+    } else if (state == 1 && frame >= from) {
+        tid = target(frame);
         if (!tid) return;   // the thread is not up yet
         FILE *m = fopen("/proc/self/maps", "r");   // the executable's code: the mapping that holds this function
         char line[512];
@@ -153,7 +182,8 @@ void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
         sigaction(sig, &sa, NULL);
         struct sigevent ev = {.sigev_notify = SIGEV_THREAD_ID, .sigev_signo = sig};
         ev.sigev_notify_thread_id = (pid_t)tid;
-        clockid_t clk = (clockid_t)((~(clockid_t)tid << 3) | 6);   // the thread's CPU clock (CPUCLOCK_SCHED, per thread)
+        // The thread's CPU clock (the kernel's MAKE_THREAD_CPUCLOCK: CPUCLOCK_SCHED, per thread), shifted unsigned.
+        clockid_t clk = (clockid_t)((~(uint32_t)tid << 3) | 6u);
         if (syscall(SYS_timer_create, clk, &ev, &timer)) {
             rt_log("prof: timer_create on thread %u failed", tid);
             state = 0;
