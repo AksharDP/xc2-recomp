@@ -162,7 +162,7 @@ typedef struct {
     void *mcap, *ucap;  // RI_SUBMIT: the submit-time captures (vk_mem_capture, vk_usnap_capture)
     const void **progs; // RI_SUBMIT: the programs its replay may read (vk_usnap_programs, a copy); nprogs -1: any
     int nprogs;
-    const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
+    const tex_t *tex;   // RI_RELEASE, RI_PRESENT: a copy the item owns (the game may reuse the object's memory)
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
 enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
@@ -268,6 +268,7 @@ static void replay_main(void *arg) {
             vk_capture_frame(frame);
             stop_at_frame(frame);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
+            free((void *)it.tex);
         }
         plat_mutex_lock(&rl);
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
@@ -394,7 +395,13 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     uint64_t frame = ++game_frames;
     perf_present(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
-    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns()};
+    // A copy, as a release takes: the game may reuse the texture object's memory before the replay presents it. The texture
+    // table keys on the descriptor's fields and keeps its own copy of the descriptor (vk_texture.c make_key, entry_of), so the
+    // present names the image the game presented, and the replay frees the copy after the present.
+    tex_t *copy = malloc(sizeof *copy);
+    if (!copy) rt_fatal("vk: out of memory (replay queue)");
+    memcpy(copy, t, sizeof *copy);
+    ReplayItem it = {.kind = RI_PRESENT, .tex = copy, .at = at_ns, .queued = kern_now_ns()};
     if (crop) {
         it.has_crop = 1;
         for (int i = 0; i < 4; i++) it.crop[i] = crop[i];
