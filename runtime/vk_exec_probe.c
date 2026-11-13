@@ -488,13 +488,14 @@ static int fb_differ(const uint32_t *a, const uint32_t *b) {
 // Feedback copies in flight: more keys than the pool holds (SNAP_MAX, vk_exec_draw.c), so the pool must drop entries that
 // submissions still in flight use (snap_drop defers their images until those submissions finish). EV_N targets of
 // different widths (each a key of its own) are drawn with the feedback draw of the pair found by test_feedback. First
-// each draw is run and waited for, which gives its reference; then all are submitted with no wait between them. Every
-// target must then read what its reference read.
+// each draw is run and waited for, which gives its reference; then all are submitted, EV_GROUP targets at a time, with
+// no wait between submissions. Every target must then read what its reference read.
 #define FB_TEX_EV 0x3F100u   // texture ids of these targets: FB_TEX_EV + k
-#define EV_N 40
+#define EV_N 64
+#define EV_GROUP 32              // the snapshot cache holds 32 copies (SNAP_MAX): one submission draws at most this many
 #define EV_BASE 0x1200000ull
 #define EV_POOL 0x800000ull
-#define EV_W(k) (32 + 4 * (k))   // widths 32 to 188
+#define EV_W(k) (32 + 2 * (k))   // widths 32 to 158
 static uint8_t ev_stream[EV_N][8192];
 
 static int test_feedback_inflight(const GfxBackend *b, uint8_t *guest, const pool_t *draw_pool, prog_t *prog) {
@@ -519,13 +520,17 @@ static int test_feedback_inflight(const GfxBackend *b, uint8_t *guest, const poo
         CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of a reference feedback draw timed out");
         fb_read_wh(b, &tt[k], evref[k], EV_W(k), TEX_H);
     }
-    // all of them in flight
+    // all of them in flight, in submissions of EV_GROUP targets. The first draws the first group, which fills the cache
+    // with its copies. The second draws the next group, and every copy it needs evicts a copy of the first group: the
+    // least recently used ones, whose last submission the GPU may still be running (the flight bound allows that).
     uint64_t ev0 = vk_exec_frame.snap_evicted, busy0 = vk_exec_frame.snap_evicted_busy, fs0 = vk_exec_frame.fb_snap_draws,
              sk0 = vk_exec_frame.snap_skipped;
     uint64_t last = 0;
-    for (int k = 0; k < EV_N; k++) {
-        uint64_t h = (uint64_t)(uintptr_t)ev_stream[k];
-        last = b->submit(&h, 1);
+    for (int k0 = 0; k0 < EV_N; k0 += EV_GROUP) {
+        uint64_t hs[EV_GROUP];
+        int n = EV_N - k0 < EV_GROUP ? EV_N - k0 : EV_GROUP;
+        for (int i = 0; i < n; i++) hs[i] = (uint64_t)(uintptr_t)ev_stream[k0 + i];
+        last = b->submit(hs, n);
     }
     CHECK(b->fence_wait(last, 20000000000ull), "fence_wait of the in-flight feedback draws timed out");
     uint64_t evicted = vk_exec_frame.snap_evicted - ev0, busy = vk_exec_frame.snap_evicted_busy - busy0,
@@ -543,8 +548,10 @@ static int test_feedback_inflight(const GfxBackend *b, uint8_t *guest, const poo
     CHECK(draws == EV_N, "%llu of %d in-flight feedback draws copied their target", (unsigned long long)draws, EV_N);
     CHECK(evicted > 0, "no copy was dropped by the %d in-flight feedback draws: the eviction path did not run", EV_N);
     CHECK(!differ, "in-flight feedback draws differ from their waited references in %d texels (first target %d)", differ, first);
-    // busy counts the drops whose last submission the host had not seen finished: 0 means the GPU was done with each
-    // dropped copy before its drop, so the deferred destruction did not run (it needs a GPU that lags the submitter).
+    // busy counts the drops whose last submission the host had not seen finished: those images go through the deferred
+    // destruction (vk_defer_image) instead of being freed at once. The second group's submission drops the first group's
+    // copies right after the first was submitted, so on a GPU that is still running the first group, all of those drops
+    // count here. A GPU that has finished it gives 0, so the count is printed rather than checked.
     printf("probe-vkexec: in-flight feedback part passed (%d targets of %d to %d wide: %llu copies dropped, %llu of them "
            "while their last submission was not known finished; every draw equal to its waited reference)\n", EV_N, EV_W(0),
            EV_W(EV_N - 1), (unsigned long long)evicted, (unsigned long long)busy);
