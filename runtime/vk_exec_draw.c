@@ -2395,13 +2395,17 @@ static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t i
     if (va.fmt != 0x22 || va.stream >= 16) QS_NO("format %#x stream %u", q, pg, (unsigned)va.fmt, (unsigned)va.stream);
     static const GfxShader *last_vs;   // the last vertex shader asked and its answer: the sea draws repeat each frame
     static uint32_t last_in;
+    static int last_sys;
     if (draw_vs != last_vs) {
         GfxShaderIo io[32];
         last_in = draw_vs ? gfx_shader_inputs(draw_vs, io) : 0;
+        last_sys = draw_vs ? gfx_shader_builtin_inputs(draw_vs) : 1;
         last_vs = draw_vs;
     }
     uint32_t in = last_in;
-    if (in != 1u) QS_NO("inputs %#x", q, pg, in);
+    // A builtin input (VertexIndex and the like) has no Location, so the mask above does not show it: a shader that reads
+    // the vertex number would see different numbers on the grid's vertices, so such a draw keeps the normal path.
+    if (in != 1u || last_sys) QS_NO("inputs %#x%s", q, pg, in, last_sys ? " with a builtin input" : "");
     uint32_t vs = ex->pipe.vstream[va.stream].stride;
     uint64_t vbase = ex->vbuf[va.stream].address;
     if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
