@@ -38,7 +38,7 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CAPTURE", "CLOTH_REALTIME", "CORE_DIAG", "CORE_FLOAT", "CORE_MIGRATE", "CRIT","CRIT_OUT", "CUTSCENE_30", "DESC_TEMPLATE", "DEVICE_PROFILE", "DRAW_CALLERS", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DUMP_MESH", "DUMP_ONLY", "DUMP_PASS", "DUMP_PASS_ONLY", "DUMP_SKIP_RUNS", "DUMP_TEX", "DUMP_UBO",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CAPTURE", "CLOTH_REALTIME", "CORE_DIAG", "CORE_FLOAT", "CRIT","CRIT_OUT", "CUTSCENE_30", "DESC_TEMPLATE", "DEVICE_PROFILE", "DRAW_CALLERS", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DUMP_MESH", "DUMP_ONLY", "DUMP_PASS", "DUMP_PASS_ONLY", "DUMP_SKIP_RUNS", "DUMP_TEX", "DUMP_UBO",
     "EXEFS", "FEEDBACK", "FEEDBACK_SNAP", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "FPS60", "FPS_LIMIT", "FRAME_BOUND", "FRAME_GEN", "FRAME_GUARD","FREEZE_IDLE", "FREE_CORES", "FSR3", "FSR_VERSION", "FULLSCREEN", "GATHER_BIAS", "GLOW_AUDIT", "GLOW_FULL", "GLOW_ORTHO", "GPL", "GPL_DRAW_BUILD", "GPU",
     "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "HID_TRACE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "JOB_POLL", "LANG", "LIB_PREBUILD",
@@ -78,7 +78,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_LSTICK_RIGHT", "input"}, {"BIND_LSTICK_DOWN", "input"}, {"BIND_RSTICK_LEFT", "input"},
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"},
     {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"}, {"CORE_FLOAT", "performance"},
-    {"FRAME_BOUND", "performance"}, {"CORE_MIGRATE", "performance"},
+    {"FRAME_BOUND", "performance"},
     {"TIMER_1MS", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
@@ -125,7 +125,6 @@ static const CfgMeta metas[] = {
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"CORE_FLOAT", "1", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     {"FRAME_BOUND", "1", "0|1", RESTART},   // 1: the replay runs at most one present behind (docs/architecture.md)
-    {"CORE_MIGRATE", "1", "0|1", RESTART},  // 0: a waiter does not move a holder to another virtual core (kernel.c core_migrate)
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
     {"LIB_PREBUILD", "1", "0|1", RESTART}, {"LIB_PREBUILD_THREADS", "", "1..64", RESTART},

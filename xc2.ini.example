@@ -36,10 +36,6 @@
 # job workers there, and they queue while the game streams an area in (leaving or entering a town). 1 cuts the slowdown
 # when leaving Goldmouth's covered market from about 65 to 95 fps on an RTX 4070 Laptop. Takes effect after a restart.
 # core_float = 1
-# 1 (default): when a free virtual core could unblock a waiting thread, the holder of a core the waiter needs moves onto
-# the free one. 0 leaves every holder in place, so a waiter waits for a release. A game that reads its processor number
-# and keeps per-core state would see the move; this setting is for checking that. Takes effect after a restart.
-# core_migrate = 1
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
 
