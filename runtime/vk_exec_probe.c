@@ -447,11 +447,11 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     const uint8_t clear_b[4] = {to_byte(0.2f), to_byte(0.4f), to_byte(0.6f), 255};
     uint32_t clear_v;
     memcpy(&clear_v, clear_b, 4);
-    static uint32_t px[TEX_W * TEX_H];
+    static uint32_t px[TEX_W * TEX_H], pxh[TEX_W * TEX_H];   // pxh: the hit pair's pixels, kept for the indirect check
     static _Alignas(8) uint8_t stream[8192];
     int tries = 0, drawn = 0;
     prog_t *hit = NULL;
-    for (int t = 0; t < 150 && !drawn; t++) {
+    for (int t = 0; t < (np < 150 ? np : 150) && !drawn; t++) {
         const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
         if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
         const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
@@ -470,7 +470,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         b->read_texels(&color, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
         int diff = 0;
         for (int k = 0; k < TEX_W * TEX_H; k++) diff += px[k] != clear_v;
-        if (diff) drawn = diff, hit = prog;
+        if (diff) drawn = diff, hit = prog, memcpy(pxh, px, sizeof pxh);
         if (diff && vk_caps.gpl) {   // the same draw through the shared set 0 layout: texel-equal
             static uint32_t px2[TEX_W * TEX_H];
             int was = vk_pipeline_set_indep(0);
@@ -497,7 +497,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     geq = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_GEQUAL};
     int alpha_pairs = 0, alpha_ok = 0;
     static uint32_t pxa[TEX_W * TEX_H];
-    for (int t = 0; t < 150 && !alpha_ok; t++) {
+    for (int t = 0; t < (np < 150 ? np : 150) && !alpha_ok; t++) {
         const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
         if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
         const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
@@ -602,7 +602,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
         b->read_texels(&color, NULL, &r, (uint8_t *)pxi, TEX_W * 4, TEX_W * TEX_H * 4);
         int ne = 0;
-        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxi[k] != (pass ? clear_v : px[k]);
+        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxi[k] != (pass ? clear_v : pxh[k]);
         CHECK(!ne, "indirect draw with count %u: %d of %d texels differ from the %s", want[0], ne, TEX_W * TEX_H,
               pass ? "cleared target" : "direct draw");
         ind_draw_texels += TEX_W * TEX_H;
