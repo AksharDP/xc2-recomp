@@ -181,8 +181,19 @@ static int cp_enabled(void) {
     return on;
 }
 
+// The smallest copy that fans out: CP_MIN, or XC2_COPY_PAR_MIN (bytes) for experiments.
+static uint64_t cp_min(void) {
+    static uint64_t v;
+    if (!v) {
+        const char *s = cfg_get("XC2_COPY_PAR_MIN");
+        v = s && *s ? strtoull(s, NULL, 0) : CP_MIN;
+        if (!v) v = CP_MIN;
+    }
+    return v;
+}
+
 void mem_copy_par(void *dst, const void *src, uint64_t n) {
-    if (n < CP_MIN || !cp_enabled()) {
+    if (n < cp_min() || !cp_enabled()) {
         memcpy(dst, src, (size_t)n);
         return;
     }
