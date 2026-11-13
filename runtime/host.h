@@ -164,6 +164,8 @@ void mem_thaw(uint64_t a, uint64_t n);                     // makes the frozen r
                                                            // before a kernel write (file read) into guest memory
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
+void mem_copy_par(void *dst, const void *src, uint64_t n);   // memcpy into guest memory: a large copy into fresh pages is
+                                                           // split over helper threads, the same bytes at return
 void mem_kernel_free(void *p, uint64_t size);              // TLR/TLS reuse after thread exit
 
 // ---- modules (loader.c)

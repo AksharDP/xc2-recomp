@@ -214,7 +214,7 @@ NVN_API(nvnTextureInitialize) {
     if (s->pkg_data) {
         if (!o->mem || nvn_gpu_only((uintptr_t)o->mem))
             rt_fatal("nvn: packaged texture data without CPU-visible storage");
-        memcpy(o->mem, s->pkg_data, (size_t)o->L.size);
+        mem_copy_par(o->mem, s->pkg_data, o->L.size);   // the storage is fresh pool pages: a large copy fans out (memory.c)
         nvn_guest_written((uintptr_t)o->mem, o->L.size);
     }
     o->serial = nvn_new_serial();

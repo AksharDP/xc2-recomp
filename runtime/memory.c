@@ -122,6 +122,90 @@ void mem_thaw(uint64_t a, uint64_t n) {
     plat_mutex_unlock(&frz_lock);
 }
 
+// ---- copies into guest memory whose pages the kernel faults in
+// A copy into fresh pages pays for their faults (the zero fill, and the write-watch fault of a watched region). Those
+// faults run in parallel, so a fresh copy speeds up with the thread count, while a copy into pages already written stays
+// at memory speed whatever the count (a standalone benchmark: 3 GB/s fresh on one thread, 7.5 GB/s on four, 10 GB/s
+// written). mem_copy_par copies a large block with helper threads and returns when every slice is done, so the bytes
+// and the return point are those of a memcpy.
+// The helpers are host threads, not guest threads, and take no virtual core. One fan-out at a time: a second caller
+// copies on its own thread. XC2_COPY_PAR=0 turns it off.
+#define CP_MIN (1ull << 20)   // below this, waking the helpers costs about as much as the copy saves
+#define CP_HELPERS 3          // helper threads; the caller copies the first slice
+
+static struct {
+    PlatOnce once;
+    PlatMutex busy;           // held by the caller for the whole fan-out
+    PlatMutex lock;
+    PlatCond work, done;
+    int helpers;              // threads started
+    int parts;                // slices of the current copy: helpers + 1
+    uint64_t gen;             // bumped per copy; a helper copies its slice once per generation
+    int active;               // helpers that have not finished the current generation
+    uint8_t *dst;
+    const uint8_t *src;
+    uint64_t n;
+} CP = {PLAT_ONCE_INIT, .lock = PLAT_MUTEX_INIT, .work = PLAT_COND_INIT, .done = PLAT_COND_INIT};
+
+static void cp_helper(void *arg) {
+    int k = (int)(intptr_t)arg;   // slice number, 1 .. helpers
+    uint64_t seen = 0;
+    plat_mutex_lock(&CP.lock);
+    for (;;) {
+        while (CP.gen == seen) plat_cond_wait(&CP.work, &CP.lock);
+        seen = CP.gen;
+        uint8_t *dst = CP.dst;
+        const uint8_t *src = CP.src;
+        uint64_t n = CP.n;
+        int parts = CP.parts;
+        plat_mutex_unlock(&CP.lock);
+        uint64_t a = n * (uint64_t)k / (uint64_t)parts, b = n * (uint64_t)(k + 1) / (uint64_t)parts;
+        if (b > a) memcpy(dst + a, src + a, b - a);
+        plat_mutex_lock(&CP.lock);
+        if (!--CP.active) plat_cond_broadcast(&CP.done);
+    }
+}
+
+static void cp_init(void *arg) {
+    (void)arg;
+    for (int i = 0; i < CP_HELPERS; i++) {
+        if (!plat_thread_spawn(cp_helper, (void *)(intptr_t)(i + 1), "copy", 0)) break;
+        CP.helpers++;
+    }
+    rt_log("memory: %d copy helpers for large copies into guest memory", CP.helpers);
+}
+
+static int cp_enabled(void) {
+    static int on = -1;
+    if (on < 0) on = !(cfg_is_set("XC2_COPY_PAR") && !cfg_bool("XC2_COPY_PAR"));
+    return on;
+}
+
+void mem_copy_par(void *dst, const void *src, uint64_t n) {
+    if (n < CP_MIN || !cp_enabled()) {
+        memcpy(dst, src, (size_t)n);
+        return;
+    }
+    plat_once(&CP.once, cp_init, NULL);
+    if (!CP.helpers || !plat_mutex_trylock(&CP.busy)) {
+        memcpy(dst, src, (size_t)n);
+        return;
+    }
+    plat_mutex_lock(&CP.lock);
+    CP.dst = dst, CP.src = src, CP.n = n;
+    CP.parts = CP.helpers + 1;
+    CP.active = CP.helpers;
+    int parts = CP.parts;
+    CP.gen++;
+    plat_cond_broadcast(&CP.work);
+    plat_mutex_unlock(&CP.lock);
+    memcpy(dst, src, (size_t)(n / (uint64_t)parts));   // slice 0
+    plat_mutex_lock(&CP.lock);
+    while (CP.active) plat_cond_wait(&CP.done, &CP.lock);
+    plat_mutex_unlock(&CP.lock);
+    plat_mutex_unlock(&CP.busy);
+}
+
 // frz_lock held exclusively. Makes the committed pages of region r read-only when every one of them is read-write;
 // reserved holes (heap pages given back) stay as they are, and thaw_locked finds the read-only runs again.
 static int freeze_locked(uint64_t r) {
