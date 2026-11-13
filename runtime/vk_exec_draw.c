@@ -1294,7 +1294,13 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 // writes the sea's own distance into it. Where a fragment saw a distance the same draw had just written it faded to
 // almost nothing, and the sky showed through as thin flickering lines on AMD (issue 39), whose reads do see those
 // writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target made
-// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off.
+// just before it, which is what Maxwell gives it.
+// A copy stays in use while the only draws that write its target are draws that read the copy (VkExec.snap_keep): a run
+// of such draws shares one copy, made before the first, and none of them sees what the others wrote. That is the same
+// stale read (no barrier lies between them), and it bounds the cost: a copy per draw meant a pass restart and up to three
+// full-size target copies for each draw of a run, which took scenes with many such draws from 60 to 15-25 fps (issue
+// 112). A draw that writes the target without reading the copy, a clear and every pass begin other than the copy's own
+// make the next such draw copy again. XC2_FEEDBACK_SNAP=2 copies for every draw; 0 turns the copies off.
 #define SNAP_IMAGES 8
 static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w, h, slot; } snap_imgs[SNAP_IMAGES];
 static int nsn;
@@ -1354,9 +1360,9 @@ static int snap_fits(const VkExecTarget *t) {
 // Copies the colour targets among m that the draw with fragment shader fs writes itself; the draw's descriptors then
 // read the copies (tex_info_full). Returns the targets copied.
 static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
-    static int on = -1;
-    if (on < 0) on = cfg_bool("XC2_FEEDBACK_SNAP");
-    if (!on || !(m & 0xff)) return 0;
+    static int on = -1;   // 0 off, 1 a copy per run of such draws, 2 a copy per draw
+    if (on < 0) on = cfg_int("XC2_FEEDBACK_SNAP");
+    if (on <= 0 || !(m & 0xff)) return 0;
     VkPipeState s = ex->pipe;
     s.fs = fs;
     uint32_t c = 0;
@@ -1369,18 +1375,34 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
         if (!copy[i]) c &= ~(1u << i);
     }
     if (!c) return 0;
-    vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+    // The targets whose copy is not current: never made in this pass, made from another image, or written since by a
+    // draw that did not read it.
+    if (ex->snap_pass != ex->pass_serial) ex->snap_keep = 0;
+    uint32_t need = 0;
+    for (uint32_t i = 0; i < 8; i++)
+        if ((c >> i & 1) && (on >= 2 || !(ex->snap_keep >> i & 1) || ex->snap_src[i] != ex->color[i].image)) need |= 1u << i;
+    if (need) {
+        vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+        for (uint32_t i = 0; i < 8; i++) {
+            if (!(need >> i & 1)) continue;
+            const VkExecTarget *t = &ex->color[i];
+            VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .extent = {t->img->width, t->img->height, 1}};
+            vkCmdCopyImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, copy[i], VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            ex->recorded++;
+            ex->snap_src[i] = t->image;
+            vk_exec_frame.fb_snaps++;
+        }
+        vk_exec_pass_begin(ex);   // its barrier makes the copies visible to the draw
+        // The copies kept from the pass just ended stay current: nothing was drawn between its end and this begin.
+        ex->snap_keep |= need, ex->snap_pass = ex->pass_serial;
+    }
     for (uint32_t i = 0; i < 8; i++) {
         if (!(c >> i & 1)) continue;
-        const VkExecTarget *t = &ex->color[i];
-        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                          .extent = {t->img->width, t->img->height, 1}};
-        vkCmdCopyImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, copy[i], VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
-        ex->recorded++;
-        ex->snap_of[ex->nsnap] = t->image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
-        vk_exec_frame.fb_snaps++;
+        ex->snap_of[ex->nsnap] = ex->color[i].image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
+        if (!(need >> i & 1)) vk_exec_frame.fb_snap_reuse++;
     }
-    vk_exec_pass_begin(ex);   // its barrier makes the copies visible to the draw
+    ex->snap_now = c;
     return c;
 }
 
@@ -1388,7 +1410,7 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
 // sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
-    ex->nsnap = 0;
+    ex->nsnap = 0, ex->snap_now = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
     m &= ~feedback_snapshot(ex, fs, m);
@@ -1400,8 +1422,10 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
                 const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                 if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
             }
+        uint32_t before = ex->pass_serial;
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
+        if (ex->snap_pass == before) ex->snap_pass = ex->pass_serial;   // nothing was drawn in between: the copies stay current
         vk_exec_frame.fb_restarts++;
     }
     return mode == VK_FEEDBACK_LAYOUT ? m & ex->fbl_mask : 0;
@@ -1428,8 +1452,11 @@ static void feedback_barrier(VkExec *ex) {
 static void feedback_written(VkExec *ex, const VkPipeState *s) {
     if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
     if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
+    // A write by a draw that does not read the target's copy ends that copy's use (feedback_snapshot).
+    uint32_t stale = ex->snap_keep & ~ex->snap_now;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if (ex->color[i].image && !(ex->fb_dirty >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) ex->fb_dirty |= 1u << i;
+        if (ex->color[i].image && (!(ex->fb_dirty >> i & 1) || (stale >> i & 1)) && vk_pipeline_target_wmask(s, (int)i))
+            ex->fb_dirty |= 1u << i, ex->snap_keep &= ~(stale & 1u << i);
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
