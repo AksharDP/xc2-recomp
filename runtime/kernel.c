@@ -946,8 +946,19 @@ static void core_kick(void) {
 // threads running, so a pinned waiter never waits for a holder that is free to go elsewhere.
 static uint64_t g_mig_n, g_mig_depth;
 
+// XC2_CORE_MIGRATE (default 1, the performance settings of cfg.c): 0 leaves every holder where it is, so a waiter pinned
+// to a busy core waits for that holder to release a core. Read once, under the kernel lock.
+static int core_migrate_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = cfg_bool("XC2_CORE_MIGRATE");
+        rt_log("kernel: core migration %s (XC2_CORE_MIGRATE=%d)", on ? "on" : "off", on);
+    }
+    return on;
+}
+
 static void core_migrate(void) {
-    if (g_mig_depth) return;
+    if (g_mig_depth || !core_migrate_on()) return;
     for (int f = 0; f < NCORE; f++) {
         if (g_core_owner[f]) continue;
         for (int d = 0; d < NCORE; d++) {
