@@ -111,7 +111,7 @@ int prof_sampler_start(void) {
     const char *f = cfg_get("XC2_PROFILE_FROM"), *t = cfg_get("XC2_PROFILE_TO");
     if (f && *f) from = strtoull(f, NULL, 10);
     if (t && *t) to = strtoull(t, NULL, 10);
-    state = 1;
+    __atomic_store_n(&state, 1, __ATOMIC_SEQ_CST);
     rt_log("prof: sampling the %s thread's CPU time every %d us from present %llu to %llu into %s", which, PERIOD_US,
            (unsigned long long)from, (unsigned long long)to, path);
     return 1;
@@ -128,7 +128,7 @@ void prof_sampler_write(void) {
     syscall(SYS_timer_delete, timer);
     // A signal delivered before the delete may still be in its handler on the sampled thread; one that starts later
     // sees state 3 and returns. Wait for the former before reading the tables.
-    while (__atomic_load_n(&in_handler, __ATOMIC_ACQUIRE)) {
+    while (__atomic_load_n(&in_handler, __ATOMIC_SEQ_CST)) {
         struct timespec ts = {0, 100000};
         nanosleep(&ts, NULL);
     }
@@ -163,7 +163,7 @@ void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
     (void)now, (void)d;
     if (state == 1 && frame >= to) {   // the thread never came up inside the window
         rt_log("prof: no %s thread to sample before present %llu: no profile", which, (unsigned long long)to);
-        state = 0;
+        __atomic_store_n(&state, 0, __ATOMIC_SEQ_CST);
     } else if (state == 1 && frame >= from) {
         tid = target(frame);
         if (!tid) return;   // the thread is not up yet
@@ -186,12 +186,12 @@ void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
         clockid_t clk = (clockid_t)((~(uint32_t)tid << 3) | 6u);
         if (syscall(SYS_timer_create, clk, &ev, &timer)) {
             rt_log("prof: timer_create on thread %u failed", tid);
-            state = 0;
+            __atomic_store_n(&state, 0, __ATOMIC_SEQ_CST);
             return;
         }
         struct itimerspec it = {{0, PERIOD_US * 1000}, {0, PERIOD_US * 1000}};
         syscall(SYS_timer_settime, timer, 0, &it, NULL);
-        state = 2;
+        __atomic_store_n(&state, 2, __ATOMIC_SEQ_CST);   // the handler reads it
         rt_log("prof: sampling thread %u from present %llu", tid, (unsigned long long)frame);
     } else if (state == 2 && frame >= to) {
         prof_sampler_write();
