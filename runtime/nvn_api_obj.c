@@ -660,8 +660,32 @@ NVN_API(nvnWindowSetCrop) {
 // 2nd or 3rd tick would only add latency and 50 ms frames.
 #define VSYNC_HZ 60ull
 static uint64_t frame_fence;   // the newest submit at the last present (the frame guard)
+// XC2_PACE: grid (default) puts each present on the grid of the frame limit, and a frame that misses its slot goes out at
+// once. buffer lets a frame's work start at the slot of its image's previous present, not one period after it, and
+// reuses that image only once its blit is submitted (gfx_present_wait_blit, in the acquire). The grid period is then the
+// frame limit or the sustained work per frame with a margin, whichever is longer, so a scene that cannot hold the limit
+// is paced at the rate it does hold. The null backend has no present thread to submit blits, so buffer stays off there.
+static int pace_buffer(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *gpu = rt_config()->gpu;
+        on = !strcmp(cfg_value("XC2_PACE"), "buffer") && !(gpu && !strcmp(gpu, "null"));
+    }
+    return on;
+}
+static uint64_t present_no;   // the presents of all windows so far; the backend numbers its presents the same way
+static uint64_t work_start;   // when the frame's work began (acquire returned); 0 between a present and the next acquire
+static double work_ema_ns;    // the guest's work per frame (acquire to present): rises slowly and falls quickly, so a
+                              // load or a title's slow frames do not hold the grid after they end
+static double late_ema;       // the share of recent presents that missed their slot (about the last 60)
+static double margin = 0.05;  // the grid runs this far above the average work: raised while presents miss their slots
 static uint64_t present_period(const win_t *o) {
-    if (frame_step_realtime() || frame_rate_paced()) return frame_step_cap_ns();
+    if (frame_step_realtime() || frame_rate_paced()) {
+        uint64_t cap = frame_step_cap_ns();
+        if (!pace_buffer()) return cap;
+        uint64_t sustained = (uint64_t)(work_ema_ns * (1.0 + margin));
+        return sustained > cap ? sustained : cap;
+    }
     return (o->interval > 0 ? (uint64_t)o->interval : 1ull) * 1000000000ull / VSYNC_HZ;
 }
 
@@ -702,6 +726,8 @@ NVN_API(nvnWindowAcquireTexture) {
         sleep_until(at);
         perf_end(PERF_PACE, p0);
     }
+    // XC2_PACE=buffer: the image's previous present must be blitted before the game writes the image again
+    if (pace_buffer() && idx < 4 && o->ticket[idx]) gfx_present_wait_blit(o->ticket[idx]);
     // Frame guard: the next frame starts once the GPU has run the previous frame's submissions. NVN starts the GPU when
     // the submit returns; here the replay records first and the GPU reads vertex and storage data in pool memory when
     // it runs (vk_usnap.c copies only uniform blocks). XC2 rewrites that data for its next frame with no fence, so above
@@ -733,6 +759,7 @@ NVN_API(nvnWindowAcquireTexture) {
         s->fenced = 3;
         s->fence = 0;
     }
+    work_start = kern_now_ns();
     ret_x(c, NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
 }
 
@@ -747,14 +774,28 @@ NVN_API(nvnQueuePresentTexture) {
     NVN_BLOCKING();
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
+    if (work_start) {   // the frame's work ends here; the waits of the present call below are not work
+        double w = (double)(kern_now_ns() - work_start);
+        work_start = 0;
+        if (w < 1e8) {   // a frame over 100 ms is a load, not the scene's pace
+            if (work_ema_ns <= 0) work_ema_ns = w;
+            else work_ema_ns += (w - work_ema_ns) / (w > work_ema_ns ? 8 : 4);
+        }
+    }
     o->presents++;
     __atomic_store_n(&frame_fence, nvn_fence_last(), __ATOMIC_RELEASE);   // the frame guard in nvnWindowAcquireTexture
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
-    uint64_t slot = now + pace(&o->pace, now, period);
+    uint64_t wait = pace(&o->pace, now, period), slot = now + wait;
+    if (pace_buffer()) {   // a present with no wait missed its slot; the margin follows how often that happens
+        late_ema += ((wait == 0 ? 1.0 : 0.0) - late_ema) / 60;
+        if (late_ema > 0.10) margin += 0.004;
+        else if (late_ema < 0.03) margin -= 0.002;
+        margin = margin < 0 ? 0 : margin > 0.35 ? 0.35 : margin;
+    }
     gfx_backend()->present(t, o->crop, slot);
-    o->ticket[idx] = o->presents;
-    o->avail[idx] = slot + period;
+    o->ticket[idx] = ++present_no;   // the number vk_backend.c gives this present (gfx_present_wait_blit)
+    o->avail[idx] = pace_buffer() ? slot : slot + period;   // buffer: the next work on this image starts at this slot
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }
