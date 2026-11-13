@@ -750,6 +750,74 @@ static int test_xfer(const GfxBackend *b, uint8_t *guest, int *bytes) {
     return 0;
 }
 
+// Aliases (vk_texture.c entry_of, alias_copy): a texture a replay op creates over a live one's storage takes that texture's
+// GPU content, not the storage bytes, and of two GPU writes to the storage range the newer one is the copied one, even when
+// the older entry heads the chain. Copies are recorded only inside a submission, so this part runs one.
+static int test_alias(const GfxBackend *b, uint8_t *guest, int *bytes) {
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0x800000, .size = 0x100000,
+                   .game_mem = guest + 0x800000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the alias part");
+    uint8_t *m = pool.mem;
+    static tex_t ax, ay, bx1, bx2, bc;
+    // Storage at 0x40000 (ax, ay) and 0x60000 (bx1, bx2, bc) holds 0x5a, which no GPU write below produces.
+    memset(m + 0x40000, 0x5a, 0x10000), memset(m + 0x60000, 0x5a, 0x10000);
+    CHECK(xf_tex(&ax, &pool, 0x40000, 301) && xf_tex(&ay, &pool, 0x40000, 302) && xf_tex(&bx1, &pool, 0x60000, 303) &&
+              xf_tex(&bx2, &pool, 0x60000, 304) && xf_tex(&bc, &pool, 0x60000, 305),
+          "alias textures exceed their pool slots");
+    ay.d.swizzle_r = 2, bx2.d.swizzle_r = 2, bc.d.swizzle_r = 3;   // same storage, other descriptors
+    // Buffers: PA into ax, PB into bx2 (older write), PC into bx1 (newer write); read-backs RA, RB1, RB2, RC.
+    uint32_t *pa = (uint32_t *)(m + 0x10000), *pb = (uint32_t *)(m + 0x20000), *pc = (uint32_t *)(m + 0x30000);
+    for (int i = 0; i < XF_W * XF_H; i++) pa[i] = 0x01010101u * (uint32_t)(i & 0xff) ^ 0x11u * (uint32_t)(i >> 8),
+                                          pb[i] = pa[i] * 3u + 7u, pc[i] = pa[i] * 5u + 11u;
+    memset(m + 0x90000, 0, XF_BYTES), memset(m + 0xB0000, 0, XF_BYTES), memset(m + 0xC0000, 0, XF_BYTES),
+        memset(m + 0xD0000, 0, XF_BYTES);
+    uint32_t *ra = (uint32_t *)(m + 0x90000), *rc = (uint32_t *)(m + 0xD0000);
+
+    static _Alignas(8) uint8_t stream[4096];
+    uint8_t *p = stream;
+    const NVNcopyRegion r = {0, 0, 0, XF_W, XF_H, 1};
+    p = put(p, OP_BEGIN, NULL, 0);
+    // ax takes the GPU write of PA; ay is created by a read here: its content must be the copy of ax
+    p_copy_b2t up;
+    memset(&up, 0, sizeof up);
+    up.src = (uint64_t)(uintptr_t)(m + 0x10000), up.tex = &ax, up.r = r;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    p_copy_b2t dn = up;
+    dn.tex = &ay, dn.src = (uint64_t)(uintptr_t)(m + 0x90000);
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    // bx1 and bx2 are created by reads (no GPU content yet); bx2 is written first, bx1 after it; bc is created last
+    p_copy_b2t rd = up;
+    rd.tex = &bx1, rd.src = (uint64_t)(uintptr_t)(m + 0xB0000);
+    p = put(p, OP_COPY_T2B, &rd, sizeof rd);
+    rd.tex = &bx2, rd.src = (uint64_t)(uintptr_t)(m + 0xC0000);
+    p = put(p, OP_COPY_T2B, &rd, sizeof rd);
+    up.src = (uint64_t)(uintptr_t)(m + 0x20000), up.tex = &bx2;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    up.src = (uint64_t)(uintptr_t)(m + 0x30000), up.tex = &bx1;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    rd.tex = &bc, rd.src = (uint64_t)(uintptr_t)(m + 0xD0000);
+    p = put(p, OP_COPY_T2B, &rd, sizeof rd);
+    CHECK(p <= stream + sizeof stream - sizeof(op_hdr), "alias op stream overflow");
+    CHECK(xf_submit(b, stream, p), "fence_wait of the alias submission timed out");
+
+    for (int i = 0; i < XF_W * XF_H; i++)
+        CHECK(ra[i] == pa[i], "ay read in the submission is not the copy of ax at texel %d: %08x, expected %08x", i, ra[i], pa[i]);
+    for (int i = 0; i < XF_W * XF_H; i++)
+        CHECK(rc[i] == pc[i], "bc read in the submission is not the copy of the newest write (bx1) at texel %d: %08x, expected %08x",
+              i, rc[i], pc[i]);
+    b->texture_release(&ax);
+    b->texture_release(&ay);
+    b->texture_release(&bx1);
+    b->texture_release(&bx2);
+    b->texture_release(&bc);
+    b->pool_fini(&pool);
+    printf("probe-vkexec: alias part passed (a texture created in a submission copies its GPU-written source, not the storage "
+           "bytes; of two GPU writes to one range the newer one is copied, though the older entry heads the chain; 32768 texels "
+           "compared)\n");
+    *bytes = 4 * XF_BYTES;
+    return 0;
+}
+
 // c0 as vk_c0_fill builds it (CPU only): compute storage and uniform tables, dispatch size, unbound slots zero; the
 // vertex stage's point size clamp and base instance.
 static int test_c0(void) {
@@ -1082,6 +1150,8 @@ int probe_vkexec(void) {
     int draw_bad = 0, drawn = 0, tries = 0, dispatched = 0, alpha = 0;
     if (!bad) bad = draw_bad = vk_pipeline_selftest() || test_draw(b, guest, &drawn, &tries, &dispatched, &alpha);
     if (!bad) bad = test_xfer(b, guest, &xfer_bytes);
+    int alias_bytes = 0;
+    if (!bad) bad = test_alias(b, guest, &alias_bytes);
     int zero_bytes = 0;
     if (!bad) bad = test_c0() || test_zero(b, guest, &zero_bytes);
     int nvnx_bytes = 0, mirror_bytes = 0;
