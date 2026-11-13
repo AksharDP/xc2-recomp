@@ -795,12 +795,15 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     // and one everything passes must redraw it. A pair whose fragment shader writes no alpha (no target-0 alpha
     // component) passes neither: the scan moves on to the next pair.
     static color_st off, all, none, geq;
-    off = (color_st){0, NVN_LOGIC_OP_COPY, 0};
+    // off is the default colour state (nvnColorStateSetDefaults: alpha test ALWAYS). A different state would build a new
+    // pipeline here, and the indirect draw below (count 0x7fffffff, not a full-screen draw) is skipped while its pipeline builds.
+    off = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS};
     all = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_GREATER};
     none = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_NEVER};
     geq = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_GEQUAL};
     int alpha_pairs = 0, alpha_ok = 0;
-    static uint32_t pxa[TEX_W * TEX_H];
+    // pxp: the plain draw of the pair under test; px stays the direct draw of hit, which the indirect part compares with
+    static uint32_t pxa[TEX_W * TEX_H], pxp[TEX_W * TEX_H];
     for (int t = 0; t < 150 && !alpha_ok; t++) {
         const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
         if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
@@ -821,9 +824,9 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         uint64_t f = b->submit(&handle, 1);
         CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the plain draw timed out");
         const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
-        b->read_texels(&color, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
+        b->read_texels(&color, NULL, &r, (uint8_t *)pxp, TEX_W * 4, TEX_W * TEX_H * 4);
         int diff = 0;
-        for (int k = 0; k < TEX_W * TEX_H; k++) diff += px[k] != clear_v;
+        for (int k = 0; k < TEX_W * TEX_H; k++) diff += pxp[k] != clear_v;
         if (!diff) continue;   // the pair draws nothing: no alpha output to test
         // step 1: greater, ref 2: every fragment fails it (alpha is at most 1), the target stays cleared
         q = draw_prefix(stream, prog, &pool, &color);
@@ -850,7 +853,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         CHECK(b->fence_wait(f, 20000000000ull), "fence_wait of the gequal-0 draw timed out");
         b->read_texels(&color, NULL, &r, (uint8_t *)pxa, TEX_W * 4, TEX_W * TEX_H * 4);
         ne = 0;
-        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxa[k] != px[k];
+        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxa[k] != pxp[k];
         if (ne) continue;
         // step 3: never: nothing passes, the target stays cleared
         q = draw_prefix(stream, prog, &pool, &color);
@@ -891,6 +894,11 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         memcpy(args, want, sizeof want);
         memset(pool.mem + 0xA0200, 0, 20);
         uint8_t *q = draw_prefix(stream, hit, &pool, &color);
+        // The feedback part leaves its textures bound (fb_draw_body): unbind the fragment slots, as the first draw had them.
+        p_bind_handles nt;
+        memset(&nt, 0, sizeof nt);
+        nt.stage = 1, nt.first = 0, nt.n = 8;
+        q = put(q, OP_BIND_TEX, &nt, sizeof nt);
         const p_copy_b2b cp = {(uint64_t)(uintptr_t)args, (uint64_t)(uintptr_t)(pool.mem + 0xA0200), 20};
         q = put(q, OP_COPY_B2B, &cp, sizeof cp);
         const p_barrier bar = {0, 0};
