@@ -109,6 +109,8 @@ typedef struct VkExec {
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
     VkImage snap_of[8], snap[8];         // this draw's targets it samples itself and their copies (feedback_snapshot)
     int nsnap;
+    VkImage keep[8];                     // per colour slot: the copy of its target made in pass keep_pass, read by the
+    uint32_t keep_pass;                  // later draws of that pass too (0 or another pass_serial: none)
 
     int fsr3_armed;                      // VK_FSR3_*: what FSR 3.1 records when the open pass ends (vk_fsr3.c)
 } VkExec;

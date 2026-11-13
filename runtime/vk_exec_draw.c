@@ -1293,8 +1293,15 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 // is built on that: its composite (fs faf0281677134f56) reads the distance target to fade the sea against the scene and
 // writes the sea's own distance into it. Where a fragment saw a distance the same draw had just written it faded to
 // almost nothing, and the sky showed through as thin flickering lines on AMD (issue 39), whose reads do see those
-// writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target made
-// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off.
+// writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target.
+//
+// The copy is made before the first such draw of a pass and the later ones of that pass read it too (VkExec.keep):
+// the game put no barrier between them, so on the Switch none of them is promised the writes of the ones before it.
+// Fog and effect sprites are such draws, dozens to hundreds in a row, and with a copy of the whole target and a pass
+// restart before each one a view of fog fell from 60 fps to 15-25 (issues 78, 93, 112, 120). Whatever ends the pass
+// (a barrier of the game, other targets, a clear, copy or dispatch) drops the copies, and the next such draw copies
+// again. XC2_FEEDBACK_SNAP=draw copies before every such draw, as before; =0 makes no copies and the draws read the
+// target itself.
 #define SNAP_IMAGES 8
 static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w, h, slot; } snap_imgs[SNAP_IMAGES];
 static int nsn;
@@ -1351,36 +1358,56 @@ static int snap_fits(const VkExecTarget *t) {
            img->samples == 1 && img->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
-// Copies the colour targets among m that the draw with fragment shader fs writes itself; the draw's descriptors then
-// read the copies (tex_info_full). Returns the targets copied.
-static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
+// XC2_FEEDBACK_SNAP: 0 off, 1 one copy per pass (default), 2 (=draw) a copy before every draw.
+static int snap_mode(void) {
     static int on = -1;
-    if (on < 0) on = cfg_bool("XC2_FEEDBACK_SNAP");
-    if (!on || !(m & 0xff)) return 0;
+    if (on < 0) {
+        const char *e = cfg_value("XC2_FEEDBACK_SNAP");
+        on = !strcmp(e, "draw") ? 2 : strcmp(e, "0") != 0;
+    }
+    return on;
+}
+
+// The colour targets among m that the draw with fragment shader fs writes itself are read from copies
+// (tex_info_full): the ones this pass already made, or new ones. Returns the targets read from a copy.
+static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
+    int mode = snap_mode();
+    if (!mode || !(m & 0xff)) return 0;
     VkPipeState s = ex->pipe;
     s.fs = fs;
     uint32_t c = 0;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++)
         if ((m >> i & 1) && ex->color[i].image && snap_fits(&ex->color[i]) && vk_pipeline_target_wmask(&s, (int)i)) c |= 1u << i;
     if (!c) return 0;
+    // Copies of another pass are gone: a pass keeps its targets, so within one a slot's copy is of the slot's target.
+    if (mode == 2 || ex->keep_pass != ex->pass_serial) memset(ex->keep, 0, sizeof ex->keep);
     VkImage copy[8];
-    for (uint32_t i = 0; i < 8; i++) {
-        copy[i] = c >> i & 1 ? snap_image(&ex->color[i], i) : VK_NULL_HANDLE;
-        if (!copy[i]) c &= ~(1u << i);
-    }
-    if (!c) return 0;
-    vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+    uint32_t fresh = 0;   // the targets copied now
     for (uint32_t i = 0; i < 8; i++) {
         if (!(c >> i & 1)) continue;
-        const VkExecTarget *t = &ex->color[i];
-        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                          .extent = {t->img->width, t->img->height, 1}};
-        vkCmdCopyImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, copy[i], VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
-        ex->recorded++;
-        ex->snap_of[ex->nsnap] = t->image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
-        vk_exec_frame.fb_snaps++;
+        if (ex->keep[i]) { copy[i] = ex->keep[i]; continue; }
+        copy[i] = snap_image(&ex->color[i], i);
+        if (copy[i]) fresh |= 1u << i;
+        else c &= ~(1u << i);
     }
-    vk_exec_pass_begin(ex);   // its barrier makes the copies visible to the draw
+    if (!c) return 0;
+    if (fresh) {
+        vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+        for (uint32_t i = 0; i < 8; i++) {
+            if (!(fresh >> i & 1)) continue;
+            const VkExecTarget *t = &ex->color[i];
+            VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .extent = {t->img->width, t->img->height, 1}};
+            vkCmdCopyImage(ex->cb, t->image, VK_IMAGE_LAYOUT_GENERAL, copy[i], VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            ex->recorded++;
+            ex->keep[i] = copy[i];
+            vk_exec_frame.fb_snaps++;
+        }
+        vk_exec_pass_begin(ex);   // its barrier makes the copies visible to the draw
+        ex->keep_pass = ex->pass_serial;   // the restart is ours: the copies made before it in this pass stay
+    }
+    for (uint32_t i = 0; i < 8; i++)
+        if (c >> i & 1) ex->snap_of[ex->nsnap] = ex->color[i].image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
     return c;
 }
 
