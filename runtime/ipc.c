@@ -502,11 +502,11 @@ static void update_build(Update *u, int first) {
     memcpy(w, &sink, sizeof sink);
     u->out_total = (uint32_t)sizeof h + npools * sizeof(AudrenPoolOut) + (uint32_t)p->voice_count * sizeof(AudrenVoiceOut) +
                    (uint32_t)p->effect_count * 0x90u + (uint32_t)p->sink_count * sizeof(AudrenSinkOut) + 0x10 +
-                   AUDREN_BEHAVIOR_OUT + AUDREN_RENDER_INFO_OUT;
+                   AUDREN_BEHAVIOR_OUT;   // no render-info section: audren.c answers as XC2's REV3 SDK expects
     u->voices_out = (uint32_t)sizeof h + npools * sizeof(AudrenPoolOut);
 }
 
-static uint32_t request_update(Cpu *c, uint32_t ren, Update *u, uint64_t *frames, AudrenVoiceOut *voice0) {
+static uint32_t request_update(Cpu *c, uint32_t ren, Update *u, AudrenVoiceOut *voice0) {
     Msg q = {.type = T_REQUEST, .cmd = 4, .na = 1, .nb = 2};
     q.a[0] = (IpcBuffer){(uint64_t)(uintptr_t)u->in, u->in_size, 0};
     q.b[0] = (IpcBuffer){(uint64_t)(uintptr_t)u->out, 0x8000, 0};
@@ -516,8 +516,13 @@ static uint32_t request_update(Cpu *c, uint32_t ren, Update *u, uint64_t *frames
     if (k || r.result) return k ? k : r.result;
     AudrenHeader o;
     memcpy(&o, u->out, sizeof o);
-    if (o.revision != g_param.revision || o.total != u->out_total) return 0xFFFFFFFFu;
-    memcpy(frames, u->out + o.total - AUDREN_RENDER_INFO_OUT, 8);
+    if (o.revision != g_param.revision || o.total != u->out_total) {
+        static int said;
+        if (!said++)
+            printf("audren: update output header: revision %#x total %u, expected %#x and %u\n", o.revision, o.total,
+                   g_param.revision, u->out_total);
+        return 0xFFFFFFFFu;
+    }
     memcpy(voice0, u->out + u->voices_out, sizeof *voice0);
     return 0;
 }
@@ -561,11 +566,13 @@ static void probe_renderer(Cpu *c, uint32_t audren) {
     Update u = {mem_kernel_alloc(0x40000, 64), mem_kernel_alloc(0x8000, 64), mem_kernel_alloc(0x100, 64), 0, 0, 0,
                 mem_kernel_alloc(4800 * 2, 64)};
     for (int i = 0; i < 4800; i++) u.pcm[i] = (int16_t)(i * 7);
-    uint64_t frames = ~0ull;
-    AudrenVoiceOut v0 = {0};
+    // The update output has no render-info section (audren.c: as XC2's REV3 SDK expects), so rendering shows in the
+    // voice clock: nothing played before Start, the whole buffer after the render loop.
+    AudrenVoiceOut v0 = {.played_samples = ~0ull};
     update_build(&u, 1);
-    res = request_update(c, ren, &u, &frames, &v0);
-    CHECK(!res && frames == 0, "RequestUpdate before Start: %#x, %llu frames", res, (unsigned long long)frames);
+    res = request_update(c, ren, &u, &v0);
+    CHECK(!res && v0.played_samples == 0, "RequestUpdate before Start: %#x, %llu samples played", res,
+          (unsigned long long)v0.played_samples);
     update_build(&u, 0);
     CHECK(!cmd(c, ren, 5, NULL, 0, &r), "Start");
     uint32_t state = 1;
@@ -575,28 +582,24 @@ static void probe_renderer(Cpu *c, uint32_t audren) {
     // Every frame, as the game's audio thread does: wait for the event, clear it, RequestUpdate.
     uint32_t hs[1] = {ev};
     sv(c, 0x17, ev, 0, 0, 0);
-    uint64_t t0 = 0, t1 = 0, f0 = 0, f1 = 0, worst = 0, prev = 0;
+    uint64_t t0 = 0, t1 = 0, worst = 0, prev = 0;
     int waits_ok = 0, updates_ok = 0;
     for (int i = 0; i < PROBE_FRAMES; i++) {
         uint32_t w = sv(c, 0x18, 0, (uint64_t)(uintptr_t)hs, 1, 1000000000ull);
         uint64_t now = kern_now_ns();
         waits_ok += w == 0;
         sv(c, 0x17, ev, 0, 0, 0);
-        uint64_t f = 0;
-        updates_ok += request_update(c, ren, &u, &f, &v0) == 0;
-        if (i == 0) t0 = now, f0 = f;
+        updates_ok += request_update(c, ren, &u, &v0) == 0;
+        if (i == 0) t0 = now;
         if (i && now - prev > worst) worst = now - prev;
         prev = t1 = now;
-        f1 = f;
     }
     double period = (double)(t1 - t0) / (PROBE_FRAMES - 1) / 1e6, expect = 1e3 * g_param.sample_count / g_param.sample_rate;
-    double rendered = (double)(f1 - f0), elapsed = (double)(t1 - t0) / 1e6 / expect;
     printf("render tick: %d waits on the frame event (%d ok), %d RequestUpdate (%d ok); mean period %.3f ms (expect "
-           "%.3f), worst gap %.3f ms; frames rendered %llu over %.1f periods\n", PROBE_FRAMES, waits_ok, PROBE_FRAMES,
-           updates_ok, period, expect, (double)worst / 1e6, (unsigned long long)(f1 - f0), elapsed);
+           "%.3f), worst gap %.3f ms\n", PROBE_FRAMES, waits_ok, PROBE_FRAMES, updates_ok, period, expect,
+           (double)worst / 1e6);
     CHECK(waits_ok == PROBE_FRAMES && updates_ok == PROBE_FRAMES, "event waits / updates");
     CHECK(period > expect * 0.9 && period < expect * 1.1, "frame event period %.3f ms", period);
-    CHECK(rendered > elapsed - 3 && rendered < elapsed + 3, "frames rendered %.0f vs elapsed %.1f", rendered, elapsed);
     printf("voice 0 (PCM16, 4800 samples): played %llu, wave buffers consumed %u\n",
            (unsigned long long)v0.played_samples, v0.wave_buffers_consumed);
     CHECK(v0.played_samples == 4800 && v0.wave_buffers_consumed == 1, "voice clock with the null mixer");
@@ -772,7 +775,10 @@ static void probe_sdk_client(Cpu *c) {
 
 static void guest_main(Cpu *c) {
     probe_main(c);
-    probe_sdk_client(c);
+    // The SDK client part runs the lifted SDK's audio client, set up by hand for XCX's SDKs (sdk_prepare: constructor
+    // addresses, revision and session counts); XC2's SDK 3.5.0 has not been mapped for it, so XC2 runs the host part only
+    if (rt_game_version) probe_sdk_client(c);
+    else printf("sdk: lifted SDK audio client part skipped: set up for XCX's SDKs only (sdk_prepare)\n");
 }
 
 int probe_ipc(void) {
