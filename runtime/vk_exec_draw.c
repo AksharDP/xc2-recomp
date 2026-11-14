@@ -1358,7 +1358,8 @@ static int snap_fits(const VkExecTarget *t) {
 }
 
 // Copies the colour targets among m that the draw with fragment shader fs writes itself; the draw's descriptors then
-// read the copies (tex_info_full). Returns the targets copied.
+// read the copies (tex_info_full). Returns the sampled targets the copies cover: the copied ones, and any other sampled
+// slot holding the same image as a copied one (tex_info_full sends that slot to the copy too).
 static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
     static int on = -1;   // 0 off, 1 a copy per run of such draws, 2 a copy per draw
     if (on < 0) on = cfg_int("XC2_FEEDBACK_SNAP");
@@ -1411,7 +1412,13 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
         if (!(need >> i & 1)) vk_exec_frame.fb_snap_reuse++;
     }
     ex->snap_now = c;
-    return c;
+    // The sampled slots that the copies cover: every slot holding an image that a copy covers, not only the first. Their
+    // descriptors read the copy too (tex_info_full), so the draw's feedback processing must not see them as dirty.
+    uint32_t covered = 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+        for (uint32_t j = 0; j < 8; j++)
+            if ((c >> j & 1) && (m >> i & 1) && ex->color[i].image == ex->color[j].image) covered |= 1u << i;
+    return covered;
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
