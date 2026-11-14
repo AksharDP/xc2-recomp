@@ -1452,11 +1452,16 @@ static void feedback_barrier(VkExec *ex) {
 static void feedback_written(VkExec *ex, const VkPipeState *s) {
     if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
     if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
-    // A write by a draw that does not read the target's copy ends that copy's use (feedback_snapshot).
+    // A write by a draw that does not read the target's copy ends that copy's use (feedback_snapshot). The same image can
+    // be bound at two colour slots: a write through one slot also ends the copies of that image kept for the other slots,
+    // except the copies this draw reads (a run of draws that read and write the image shares them).
     uint32_t stale = ex->snap_keep & ~ex->snap_now;
-    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if (ex->color[i].image && (!(ex->fb_dirty >> i & 1) || (stale >> i & 1)) && vk_pipeline_target_wmask(s, (int)i))
-            ex->fb_dirty |= 1u << i, ex->snap_keep &= ~(stale & 1u << i);
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
+        if (!ex->color[i].image || !vk_pipeline_target_wmask(s, (int)i)) continue;
+        if (!(ex->fb_dirty >> i & 1) || (stale >> i & 1)) ex->fb_dirty |= 1u << i, ex->snap_keep &= ~(stale & 1u << i);
+        for (uint32_t j = 0; j < 8; j++)
+            if ((ex->snap_keep >> j & 1) && ex->snap_src[j] == ex->color[i].image && !(ex->snap_now >> j & 1)) ex->snap_keep &= ~(1u << j);
+    }
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,

@@ -700,7 +700,12 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
     vkCmdClearAttachments(ex->cb, 1, a, 1, &cr);
     ex->recorded++;
     ex->fb_dirty |= a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
-    if (a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) ex->snap_keep &= ~(1u << a->colorAttachment);   // its copy is stale
+    if ((a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && a->colorAttachment < 8) {
+        // Its copy is stale, and so is the copy of the same image at another colour slot (a clear reads no copy).
+        VkImage img = ex->color[a->colorAttachment].image;
+        for (uint32_t j = 0; j < 8; j++)
+            if ((ex->snap_keep >> j & 1) && (j == a->colorAttachment || (img && ex->snap_src[j] == img))) ex->snap_keep &= ~(1u << j);
+    }
 }
 
 static void clear_color(VkExec *ex, const p_clear_color *c) {
