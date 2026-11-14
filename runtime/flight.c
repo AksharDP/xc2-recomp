@@ -30,7 +30,8 @@
 //   why_us      the render thread's drain time per reason (PERF_WHY_*: frame bound, full replay queue, other drains)
 //   guest_us    the guest thread's own time in the interval: the interval less the render thread's waits and the mirror
 //               capture (the game's submit call runs it on the guest thread); the game's code and the submit's other work
-//   gpu_us      GPU busy time of the frame (timestamps, perf_gpu_busy); replay_us the replay time since the last present
+//   gpu_us      GPU busy time of the parts the frame submitted (timestamps, perf_gpu_frame_ns), nan if not yet read at
+//               the dump; replay_us the replay time since the last present
 //   n           the event counts, the exec counts of the frame and the PERF_CNT_* running totals' differences
 enum { C_SUBMITS, C_PASSES, C_DRAWS, C_DRAWS_SEEN, C_CLEARS, C_COPIES, C_DISPATCHES, C_XLATED, C_FB_SNAPS, C_FB_REUSE,
        C_FB_RESTARTS, C_FB_BARRIERS, C_PERF0, C_N = C_PERF0 + PERF_CNT_N };
@@ -53,6 +54,14 @@ typedef struct {
              replay_us, n[C_N];
 } Rec;
 
+#define GPU_PENDING UINT32_MAX   // gpu_us before the frame's GPU parts are all read; written as nan if still so at a dump
+#define GPU_FILL 16              // records looked at per present for it: the frames in flight and some
+
+static void gpu_fill(Rec *r) {
+    uint64_t ns;
+    if (r->gpu_us == GPU_PENDING && perf_gpu_frame_ns(r->frame, &ns)) r->gpu_us = (uint32_t)(ns / 1000);
+}
+
 typedef struct {
     int n;                      // records, oldest first
     uint64_t trig_frame, trig_interval_us;
@@ -71,7 +80,7 @@ static const char *trig_why;
 static uint64_t at_frames[16];
 static int n_at;
 static char base_dir[PLAT_PATH_MAX];
-static uint64_t prev_cnt[PERF_CNT_N], prev_xlated, prev_gpu_ns;
+static uint64_t prev_cnt[PERF_CNT_N], prev_xlated;
 static VkExecFrame prev_exec;
 static int exit_on = 1;                          // XC2_FLIGHT_EXIT: flight_exit writes the ring at exit
 static volatile uint64_t cost_ns, cost_max_ns;   // render-thread time in flight_frame, for the dump log line
@@ -303,7 +312,8 @@ static void dump_main(void *arg) {
         for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->rep_us[k] / 1000.0);
         for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%.2f", r->span_us[k] / 1000.0);
         for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%.2f", r->why_us[k] / 1000.0);
-        fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
+        if (r->gpu_us == GPU_PENDING) fprintf(f, "\tnan\t%.2f", r->replay_us / 1000.0);
+        else fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
         for (int k = 0; k < C_N; k++) fprintf(f, "\t%u", r->n[k]);
         fprintf(f, "\t%d\n", have ? have[i] : 0);
     }
@@ -360,8 +370,7 @@ void flight_exit(void) {
     j->trig_frame = last->frame;
     j->trig_interval_us = last->interval_us;
     j->why = "exit";
-    for (int i = 0; i < n; i++) j->r[i] = ring[(rec - (uint64_t)n + (uint64_t)i) % (uint64_t)ring_n];
-    struct tm st;
+    for (int i = 0; i < n; i++) j->r[i] = ring[(rec - (uint64_t)n + (uint64_t)i) % (uint64_t)ring_n], gpu_fill(&j->r[i]);    struct tm st;
     plat_local_time(&st);
     snprintf(j->dir, sizeof j->dir, "%s/%04d%02d%02d-%02d%02d%02d-f%llu", base_dir, st.tm_year + 1900, st.tm_mon + 1,
              st.tm_mday, st.tm_hour, st.tm_min, st.tm_sec, (unsigned long long)j->trig_frame);
@@ -393,10 +402,10 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const P
     uint64_t guest = waits + pf->span[PERF_SPAN_CAPTURE] < interval_ns ? interval_ns - waits - pf->span[PERF_SPAN_CAPTURE] : 0;
     r->guest_us = (uint32_t)(guest / 1000);
     r->replay_us = (uint32_t)(pf->replay_ns / 1000);
-    // GPU busy time since the previous present: the timestamps' running total (perf_gpu_busy, any thread)
-    uint64_t gpu = perf_gpu_busy_total();
-    r->gpu_us = (uint32_t)((gpu - prev_gpu_ns) / 1000);
-    prev_gpu_ns = gpu;
+    // GPU busy time of the parts this frame submitted (perf_gpu_frame_ns). Their timestamps are read a few presents later,
+    // so the record waits for it and the latest records are filled in as their frames finish.
+    r->gpu_us = GPU_PENDING;
+    for (uint64_t i = 0; i < GPU_FILL && i <= recorded; i++) gpu_fill(&ring[(recorded - i) % (uint64_t)ring_n]);
     // vk_exec_frame grows until vk_exec_frame_log resets it, which XC2_TRACE=gfx does right after this call
     const VkExecFrame *x = &vk_exec_frame;
     int reset = (rt_trace & RT_TRACE_GFX) != 0;
