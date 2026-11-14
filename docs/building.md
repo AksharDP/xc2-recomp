@@ -105,6 +105,9 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    ```
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
+   The generated C is linked with ThinLTO, so small lifted functions are inlined across files (a 6 % better 1 % low on
+   the issue 112 route). The first link takes about 100 s and 1.7 GiB on 20 threads; `build\<ver>\lto-cache` keeps its
+   results, so a relink after a runtime change takes a second. `--no-lto` links the old way, without that pass.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
 

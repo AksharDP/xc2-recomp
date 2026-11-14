@@ -116,6 +116,20 @@ else:
                   '"-Wl,-Map=$builddir/xc2.map"']
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+
+
+def use_lto(jobs):
+    """ThinLTO over the generated code (--no-lto turns it off). Each lifted function is its own C function, spread over
+    hundreds of files, so the compiler could not inline the small ones (SDK lock and unlock, getters, the scene walk's
+    helpers) into their callers in other files; at link time it can. The issue 112 route, 20 interleaved pairs, frames
+    pooled per arm (2026-11-14): 1% low 37.4 -> 39.5 fps, 0.1% low 28.8 -> 32.1 fps, mean 78.4 -> 79.7 fps; .text 67.6
+    -> 78.8 MiB. The runtime is compiled as before. The link runs the code generation of every module, jobs at once
+    (137 s and 1.7 GiB on 20 threads); the cache in the build directory keeps the modules whose bitcode and imports are
+    unchanged, so relinking after a runtime change costs only the final link."""
+    global GEN_FLAGS, LINK_FLAGS
+    GEN_FLAGS = GEN_FLAGS + ['-flto=thin']
+    LINK_FLAGS = LINK_FLAGS + ['-flto=thin', '-O2', f'-Wl,--thinlto-jobs={jobs}',
+                               '"-Wl,--thinlto-cache-dir=$builddir/lto-cache"']
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
 # into toolchain/vma: one MIT header (THIRD_PARTY_NOTICES.md), checked against its hash.
 VMA_FETCH = ('https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/v3.4.0/include/vk_mem_alloc.h',
@@ -998,6 +1012,9 @@ def main():
                          'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--no-lto', action='store_true',
+                    help='compile the generated C to machine code per file, without ThinLTO at the link (faster links, '
+                         'slower game: see use_lto)')
     ap.add_argument('--allow-stale-translator', action='store_true',
                     help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
@@ -1057,6 +1074,8 @@ def main():
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
+    if not args.no_lto:
+        use_lto(jobs)
     if args.make_runtime_lib:
         # The library reads nothing of the game (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX stand in for layout.h), so it
         # builds without generated/ or extracted files: CI builds the release from a bare checkout
