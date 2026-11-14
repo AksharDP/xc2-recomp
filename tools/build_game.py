@@ -565,21 +565,33 @@ def translator_id(d):
     return f.read_text(encoding='ascii').strip() if f.is_file() else ''
 
 
+def fallback_translator(exe_dir):
+    """The build/xlate the runtime uses when no translator sits beside xc2.exe: that of the nearest parent of exe_dir
+    holding build/xlate/xc2_xlate (gfx_shader.c, the repository root). None when there is none. A worktree has no
+    build/ of its own, so a build there into the main checkout's build/ falls back to the main checkout's translator."""
+    name = 'xc2_xlate' + ('.exe' if WIN else '')
+    for d in (exe_dir, *exe_dir.parents):
+        if (d / 'build' / 'xlate' / name).is_file():
+            return d / 'build' / 'xlate'
+    return None
+
+
 def check_translator(exe_dir, allow_stale):
     """Stops the build when the translator it will use was built from other sources than this checkout's: build/xlate's,
-    or without one exe_dir's, unless exe_dir already holds a matching one (a task build's own translator). A stale
+    or without one exe_dir's, or without either the one the runtime falls back to (fallback_translator), unless exe_dir
+    already holds a matching one (a task build's own translator). A stale
     translator fails nothing: the runtime asks it for what the current sources implement and it silently leaves that
     out. One from before transform feedback left the feedback
     outputs out of the shaders, so nothing wrote the animated vertices of the hanging foliage in Uraya: those draws read
     the bone matrices sharing that scratch memory as positions and came out as long black spikes. Checkouts without the
     translator's sources (an unpacked release) have nothing to compare with."""
     src = ROOT / 'build' / 'xlate'
-    used = src if translator_id(src) else exe_dir
-    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not translator_id(used):
+    used = src if translator_id(src) else exe_dir if translator_id(exe_dir) else fallback_translator(exe_dir)
+    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not used or not translator_id(used):
         return
     from build_xlate import identity
     want = identity()
-    if want in (translator_id(src), translator_id(exe_dir)):
+    if want in (translator_id(src), translator_id(exe_dir)) or used not in (src, exe_dir) and translator_id(used) == want:
         return
     what = f'{below_root(used)} is {translator_id(used)[:16]}, these sources are {want[:16]}'
     if allow_stale:
