@@ -108,6 +108,18 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    The generated C is linked with ThinLTO, so small lifted functions are inlined across files (a 6 % better 1 % low on
    the issue 112 route). The first link takes about 100 s and 1.7 GiB on 20 threads; `build\<ver>\lto-cache` keeps its
    results, so a relink after a runtime change takes a second. `--no-lto` links the old way, without that pass.
+   Profile-guided optimization (opt-in) takes two more builds and a training run. It gave 6.6 % more mean fps and a 9 %
+   better 1 % low on the play it was trained on, but about 2 % more mean fps on other play (see `use_pgo` in
+   `tools/build_game.py`). It needs the profile runtime: on MSYS2, `pacman -S mingw-w64-ucrt-x86_64-compiler-rt`.
+   ```
+   python tools\build_game.py --out build\pgo-gen --pgo-generate
+   python tools\run_game.py build\pgo-gen --script <route> --seconds <n> --env LLVM_PROFILE_FILE=<dir>\t-%p.profraw
+   C:\msys64\ucrt64\bin\llvm-profdata.exe merge -o build\v301.profdata <dir>\*.profraw
+   python tools\build_game.py --pgo-use build\v301.profdata
+   ```
+   Train on play that covers the scenes you care about (an `XC2_INPUT_RECORD` recording replays the same play); the
+   instrumented game runs at about half speed. After the generated C changes, train again: functions the old profile
+   does not know get no profile.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
 
