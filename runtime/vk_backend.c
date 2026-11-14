@@ -221,12 +221,34 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
     return vk_sync_submit(handles, n);
 }
 
+// XC2_WAIT_SITES=1 (diagnostics): the replay thread's busy time, by item kind, logged every 2 s.
+static void replay_busy(int kind, uint64_t t0, uint64_t t1) {
+    static int on = -1;
+    static uint64_t since, ns[3], n[3];
+    if (on < 0) on = getenv("XC2_WAIT_SITES") && !strcmp(getenv("XC2_WAIT_SITES"), "1");
+    if (!on) return;
+    int k = kind == RI_SUBMIT ? 0 : kind == RI_RELEASE ? 1 : 2;
+    ns[k] += t1 - t0, n[k]++;
+    if (!since) since = t0;
+    if (t1 - since > 2000000000ull) {
+        double span = (double)(t1 - since);
+        rt_log("vk: replay thread busy %.0f%% in %.1f s: submits %llu (%.0f%%, %.2f ms each), releases %llu (%.0f%%), "
+               "presents %llu (%.0f%%, %.2f ms each)", 100.0 * (ns[0] + ns[1] + ns[2]) / span, span / 1e9,
+               (unsigned long long)n[0], 100.0 * ns[0] / span, n[0] ? ns[0] / 1e6 / n[0] : 0.0,
+               (unsigned long long)n[1], 100.0 * ns[1] / span, (unsigned long long)n[2], 100.0 * ns[2] / span,
+               n[2] ? ns[2] / 1e6 / n[2] : 0.0);
+        memset(ns, 0, sizeof ns), memset(n, 0, sizeof n);
+        since = t1;
+    }
+}
+
 static void replay_main(void *arg) {
     (void)arg;
     perf_replay_thread();
     plat_mutex_lock(&rl);
     for (;;) {
         while (!rq_n) plat_cond_wait(&rcv, &rl);
+        uint64_t busy0 = kern_now_ns();
         ReplayItem it = rq[rq_head];
         rq_head = (rq_head + 1) % RQ_CAP;
         rq_n--;
@@ -251,6 +273,7 @@ static void replay_main(void *arg) {
             stop_at_frame(frame);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
         }
+        replay_busy(it.kind, busy0, kern_now_ns());
         plat_mutex_lock(&rl);
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
         else r_presents_done++;

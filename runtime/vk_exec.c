@@ -795,6 +795,10 @@ static uint64_t n_parts, n_subs;
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
         split_n = cfg_int("XC2_SPLIT_DRAWS");
+        // With shadow-storage captures the replay has a thread of its own, and each part is a submit ioctl on its
+        // time: on the Steam Deck (RADV) a quarter of the replay thread was in ioctl, and one part per submission gave
+        // 57.5 fps against 55.5 over a moving camera in town, with no worse frames. Set XC2_SPLIT_DRAWS to split anyway.
+        if (!cfg_is_set("XC2_SPLIT_DRAWS") && vk_mem_shadow_captures()) split_n = 0;
         if (split_n < 0) split_n = 0;
         int us = cfg_int("XC2_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;

@@ -749,6 +749,12 @@ uint32_t vk_mem_record_pages(uint32_t since, uint64_t lo, uint64_t hi, void (*pa
 #define SNAP_REGIONS (RT_ADDRESS_LIMIT >> SNAP_SHIFT)
 static uint32_t snap_at[SNAP_REGIONS];      // epoch of the region's last snapshot; 0 never
 static uint8_t snap_untracked[SNAP_REGIONS];
+// Shadow captures (gen_lock): the generation after the last submit-time capture that queried the region. A capture at
+// least as new as the submission being replayed (cur_gen) already stamped every write to it up to that submit call, so
+// the replay's own snapshot of the region would only repeat the query (a PAGEMAP_SCAN, a fifth of the replay thread
+// on the Steam Deck); writes after it are the next capture's.
+static uint32_t snap_capgen[SNAP_REGIONS];
+static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
 static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
 
 // gen_lock held exclusively. Queries the regions r0..r1 that were not snapped in epoch, one query per run of them;
@@ -759,6 +765,11 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
     uint64_t calls = 0;
     for (uint64_t r = r0; r <= r1;) {
         if (epoch && snap_at[r] == epoch) { r++; continue; }
+        if (epoch && cur_gen && snap_capgen[r] >= cur_gen) {   // the capture queried it (snap_capgen)
+            snap_at[r] = epoch;
+            r++;
+            continue;
+        }
         if (mem_frozen(r << SNAP_SHIFT)) {   // nothing in it changed since its freeze
             if (epoch) snap_at[r] = epoch;
             snap_untracked[r] = 0;
@@ -897,7 +908,16 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
 //   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
 // XC2_SHADOW=1/0 forces the mode on or off; the default is on for Linux.
-typedef struct { uint64_t lo, hi; } SRange;
+//
+// Submit-time captures (XC2_SHADOW_CAPTURE=1): instead of the per-part sync, the game's submit call copies the pages
+// written since each shadow's sgen into a staging arena (vk_mem_capture), and the replay's first prologue of that
+// submission copies the arena into the shadows on the GPU, in queue order (apply_shadow). The shadows then hold the
+// CPU's bytes as of the submit call, as the VRAM mirrors do, so vk_mem_snapshots is true: the replay runs on its own
+// thread and the frame guard goes. A GPU-ordered copy rather than a CPU one: the previous frame's draws may still read
+// the shadow, and XC2 rewrites its data for the next frame with no fence.
+typedef struct { uint64_t lo, hi; uint32_t g, sub; uint8_t *snap; } SRange;   // g: the page generation when the GPU
+                                     // write was recorded; sub: the replay's submission then (s_sub); snap: the
+                                     // shadow's bytes then (XC2_SHADOW_WB=diff)
 static PlatMutex shadow_lock = PLAT_MUTEX_INIT;   // after pool_lock; before gen_lock
 static PoolRec **stouch;                          // shadow_lock: pools resolved since the last sync
 static int nstouch, cstouch;
@@ -905,6 +925,70 @@ static SRange *spend;                             // shadow_lock: GPU writes rec
 static int nspend, cspend;
 static int64_t s_live_n, s_live_bytes;            // shadow_lock
 static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks;   // shadow_lock: since the last log
+// XC2_SHADOW_DIAG=1 (diagnostics, shadow_lock): what the fence write-backs do to bytes the CPU wrote while the GPU write
+// was in flight. pend: GPU-written ranges recorded (count, bytes, largest); skip: guest bytes a CPU->shadow sync left out
+// because a GPU write over them was pending; cpu_pages: write-back pages the CPU wrote in flight; clob: bytes of those the
+// write-back changed (the CPU's newer bytes reverted to the shadow's). XC2_SHADOW_WB_SKIP_CPU=1 leaves such pages out of
+// the write-back (the CPU's bytes win).
+static int s_diag = -1, s_wb_skip_cpu = -1;
+// Diff write-back (the default): a GPU-written range keeps a copy of its shadow bytes from record time, and the fence
+// write-back copies only the bytes the GPU changed. The recorded range is the whole bound storage range (often far more
+// than the shader writes), and the CPU keeps writing it for the next frame while the GPU runs: a whole-range copy put
+// the shadow's older bytes over those writes (about 2.3 KB a frame on the Steam Deck title screen). On the Deck the GPU
+// changes about 16 % of the bytes recorded (23 of 148 MiB per 60 frames), at no measurable frame cost.
+// XC2_SHADOW_WB=full copies the whole range back, as before.
+static int s_wb_diff = -1;
+static uint64_t s_diff_bytes;   // shadow_lock: bytes the diff write-backs copied
+static int wb_diff_on(void) {
+    if (s_wb_diff < 0) {
+        const char *e = getenv("XC2_SHADOW_WB");
+        s_wb_diff = !(e && !strcmp(e, "full"));
+        if (!s_wb_diff) rt_log("mem: shadow write-backs copy the whole range (XC2_SHADOW_WB=full)");
+    }
+    return s_wb_diff;
+}
+static int shadow_cap;              // XC2_SHADOW_CAPTURE: submit-time captures (above)
+static uint32_t s_sub;              // replay: its submission number, bumped in vk_mem_mirror_begin
+// Write-backs done (vk_gpu_written) that a capture taken before them may predate: its bytes there are older than the
+// GPU's and are left out when it is applied. seq counts write-backs; a capture keeps the count before its copy.
+typedef struct { uint64_t lo, hi, seq; } SDone;
+static SDone *sdone;                // shadow_lock
+static int nsdone, csdone;
+static volatile uint64_t s_wbseq;   // shadow_lock to write, atomic to read
+static void shadow_overlay(uint64_t addr, uint64_t size, uint8_t *snap);
+// Diff write-back snapshots come from size classes of powers of two that are kept for reuse: a fresh malloc of the
+// bound range (about 2.5 MiB a frame on the Deck, many blocks over glibc's mmap threshold) page-faulted on every first
+// write, 7 % of the asynchronous replay thread. A block's class is in the 16 bytes before it.
+#define SNAP_CLASSES 40
+static void *snap_free_list[SNAP_CLASSES];
+static PlatMutex snap_lock = PLAT_MUTEX_INIT;
+static uint8_t *snap_alloc(uint64_t size) {
+    int k = 4;
+    while ((1ull << k) < size) k++;
+    if (k >= SNAP_CLASSES) return NULL;
+    plat_mutex_lock(&snap_lock);
+    void *b = snap_free_list[k];
+    if (b) snap_free_list[k] = *(void **)((uint8_t *)b + 16);   // the link is in the data (snap_release)
+    plat_mutex_unlock(&snap_lock);
+    if (!b) {
+        if (!(b = malloc((1ull << k) + 16))) return NULL;
+        *(int *)b = k;
+    }
+    return (uint8_t *)b + 16;
+}
+static void snap_release(uint8_t *p) {
+    if (!p) return;
+    void *b = p - 16;
+    int k = *(int *)b;
+    plat_mutex_lock(&snap_lock);
+    *(void **)p = snap_free_list[k];   // the link lives in the block's data: the class header stays
+    snap_free_list[k] = p - 16;
+    plat_mutex_unlock(&snap_lock);
+}
+static void sapl_prune(void);
+static uint64_t s_pend_n, s_pend_bytes, s_pend_max, s_skip_bytes, s_wb_n, s_cpu_pages, s_clob_bytes, s_wb_skipped;
+#define S_TOP 6
+static struct { uint64_t addr, size, clob, n; } s_top[S_TOP];
 
 static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->import_lo = addr & ~0xfffull;
@@ -962,6 +1046,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
         if (spend[i].lo < b && spend[i].hi > a) {
             if (spend[i].lo > a) shadow_copy(r, a, spend[i].lo, i + 1);
             if (spend[i].hi < b) shadow_copy(r, spend[i].hi, b, i + 1);
+            s_skip_bytes += (spend[i].hi < b ? spend[i].hi : b) - (spend[i].lo > a ? spend[i].lo : a);
             return;
         }
     memcpy(r->smap + (a - r->import_lo), (const void *)(uintptr_t)a, b - a);
@@ -1012,6 +1097,12 @@ void vk_mem_shadow_sync(void) {
     if (!shadow_on) return;
     uint64_t t0 = qpc();
     plat_mutex_lock(&shadow_lock);
+    if (shadow_cap) {   // the submit-time capture brought the shadows up to date: forget the touched list
+        for (int i = 0; i < nstouch; i++) stouch[i]->stouched = 0;
+        nstouch = 0;
+        plat_mutex_unlock(&shadow_lock);
+        return;
+    }
     if (nstouch) {
         plat_mutex_lock(&gen_lock);
         for (int i = 0; i < nstouch; i++) shadow_sync_pool(stouch[i]), stouch[i]->stouched = 0;
@@ -1023,11 +1114,75 @@ void vk_mem_shadow_sync(void) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+// shadow_lock held: the write-back of [addr, addr+size) with the diagnostics and/or the skip of pages the CPU wrote
+// since the GPU write was recorded (its spend entry's g).
+static void shadow_wb_checked(PoolRec *r, uint64_t addr, uint64_t size) {
+    uint32_t since = UINT32_MAX;
+    for (int i = 0; i < nspend; i++)
+        if (spend[i].lo == addr && spend[i].hi == addr + size) { since = spend[i].g; break; }
+    uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull, clob = 0;
+    plat_mutex_lock(&gen_lock);
+    if (since != UINT32_MAX) {
+        uint32_t g = ++gen_now;
+        for (uint64_t a = lo; a < hi;) {
+            uint64_t b = (a | ((1ull << REG_SHIFT) - 1)) + 1;
+            if (b > hi) b = hi;
+            if (!mem_frozen(a)) query_stamp(a, b, g);
+            a = b;
+        }
+    }
+    mem_thaw(addr, size);
+    for (uint64_t pg = lo; pg < hi; pg += 0x1000) {
+        uint64_t a = pg < addr ? addr : pg, b = pg + 0x1000 > addr + size ? addr + size : pg + 0x1000;
+        const uint32_t *st = since != UINT32_MAX ? gen_slot(pg, 0) : NULL;
+        int cpu = st && *st > since;
+        const uint8_t *src = r->smap + (a - r->import_lo);
+        uint8_t *dst = (uint8_t *)(uintptr_t)a;
+        if (cpu) {
+            s_cpu_pages++;
+            for (uint64_t k = 0; k < b - a; k++) clob += dst[k] != src[k];
+            if (s_wb_skip_cpu) { s_wb_skipped += b - a; continue; }
+        }
+        memcpy(dst, src, b - a);
+    }
+    plat_mutex_unlock(&gen_lock);
+    s_wb_n++, s_clob_bytes += clob;
+    int slot = -1;
+    for (int i = 0; i < S_TOP && slot < 0; i++)
+        if (s_top[i].addr == addr && s_top[i].size == size) slot = i;
+    if (slot < 0 && clob) {
+        slot = 0;
+        for (int i = 1; i < S_TOP; i++) if (s_top[i].clob < s_top[slot].clob) slot = i;
+        if (s_top[slot].clob >= clob) slot = -1;
+        else s_top[slot].addr = addr, s_top[slot].size = size, s_top[slot].clob = 0, s_top[slot].n = 0;
+    }
+    if (slot >= 0) s_top[slot].clob += clob, s_top[slot].n++;
+}
+
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
     if (!shadow_on || !size) return;
+    uint8_t *snap = NULL;
+    if (wb_diff_on()) {
+        // With captures, the shadow may still lack copies the GPU has not run yet: those are laid over the snapshot,
+        // after the pruning, so that a copy the GPU ran between the two is not lost from both.
+        if (shadow_cap) sapl_prune();
+        plat_mutex_lock_shared(&pool_lock);
+        const pidx_ent *e = pidx_find(&pool_index, addr, size);
+        PoolRec *r = e ? e->buf : NULL;
+        if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (snap = snap_alloc(size))) {
+            memcpy(snap, r->smap + (addr - r->import_lo), size);
+            if (shadow_cap) shadow_overlay(addr, size, snap);
+        }
+        plat_mutex_unlock_shared(&pool_lock);
+    }
     plat_mutex_lock(&shadow_lock);
     if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
-    spend[nspend++] = (SRange){addr, addr + size};
+    plat_mutex_lock(&gen_lock);
+    uint32_t g = gen_now;
+    plat_mutex_unlock(&gen_lock);
+    spend[nspend++] = (SRange){addr, addr + size, g, s_sub, snap};
+    s_pend_n++, s_pend_bytes += size;
+    if (size > s_pend_max) s_pend_max = size;
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -1038,12 +1193,52 @@ void vk_gpu_written(uint64_t addr, uint64_t size) {
         PoolRec *r = e ? e->buf : NULL;
         plat_mutex_lock(&shadow_lock);
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
-            mem_thaw(addr, size);
-            memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
+            if (s_diag < 0) {
+                const char *e = getenv("XC2_SHADOW_DIAG"), *k = getenv("XC2_SHADOW_WB_SKIP_CPU");
+                s_diag = e && !strcmp(e, "1");
+                s_wb_skip_cpu = k && !strcmp(k, "1");
+                if (s_diag || s_wb_skip_cpu)
+                    rt_log("mem: shadow diagnostics %s, write-backs %s", s_diag ? "on" : "off",
+                           s_wb_skip_cpu ? "leave out pages the CPU wrote in flight" : "copy the whole range");
+            }
+            const uint8_t *snap = NULL;
+            for (int i = 0; i < nspend && wb_diff_on(); i++)
+                if (spend[i].lo == addr && spend[i].hi == addr + size) { snap = spend[i].snap; break; }
+            if (snap && !s_wb_skip_cpu) {   // XC2_SHADOW_WB_SKIP_CPU takes the checked path below instead
+                mem_thaw(addr, size);
+                const uint8_t *src = r->smap + (addr - r->import_lo);
+                uint8_t *dst = (uint8_t *)(uintptr_t)addr;
+                for (uint64_t k = 0; k < size;) {   // runs of changed bytes, 8 at a time where whole words match
+                    if (k + 8 <= size && !memcmp(src + k, snap + k, 8)) { k += 8; continue; }
+                    if (src[k] == snap[k]) { k++; continue; }
+                    uint64_t j = k;
+                    while (j < size && src[j] != snap[j]) j++;
+                    memcpy(dst + k, src + k, j - k);
+                    s_diff_bytes += j - k;
+                    k = j;
+                }
+            } else if (s_diag || s_wb_skip_cpu) shadow_wb_checked(r, addr, size);   // snap, if any, is released below
+            else {
+                mem_thaw(addr, size);
+                memcpy((void *)(uintptr_t)addr, r->smap + (addr - r->import_lo), size);
+            }
             s_wb_bytes += size;
+            if (shadow_cap) {
+                if (nsdone == csdone) grow((void **)&sdone, &csdone, sizeof *sdone);
+                uint64_t seq = s_wbseq + 1;
+                sdone[nsdone++] = (SDone){addr, addr + size, seq};
+                __atomic_store_n(&s_wbseq, seq, __ATOMIC_RELEASE);
+            }
         }
+        // The oldest matching entry goes, and the rest keep their order: the same range can be pending from several
+        // submissions, and each completion must take the snapshot of the write it completes.
         for (int i = 0; i < nspend; i++)
-            if (spend[i].lo == addr && spend[i].hi == addr + size) { spend[i] = spend[--nspend]; break; }
+            if (spend[i].lo == addr && spend[i].hi == addr + size) {
+                snap_release(spend[i].snap);
+                memmove(&spend[i], &spend[i + 1], sizeof *spend * (size_t)(nspend - i - 1));
+                nspend--;
+                break;
+            }
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -1058,12 +1253,30 @@ static void shadow_log(uint64_t frame) {
            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
            qpc_ms(s_ticks), nspend);
+    if (s_wb_diff > 0) rt_log("mem: shadow diff write-backs: %.2f MiB changed by the GPU copied back", s_diff_bytes / 1048576.0);
+    s_diff_bytes = 0;
     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = 0;
+    if (s_diag > 0 || s_wb_skip_cpu > 0) {
+        rt_log("mem: shadow diag at frame %llu: GPU writes recorded %llu (%.1f MiB, largest %.2f MiB), CPU bytes left out "
+               "of syncs while pending %.1f MiB; write-backs %llu: pages the CPU wrote in flight %llu, bytes reverted %llu, "
+               "bytes left out %.2f MiB", (unsigned long long)frame, (unsigned long long)s_pend_n,
+               s_pend_bytes / 1048576.0, s_pend_max / 1048576.0, s_skip_bytes / 1048576.0, (unsigned long long)s_wb_n,
+               (unsigned long long)s_cpu_pages, (unsigned long long)s_clob_bytes, s_wb_skipped / 1048576.0);
+        for (int i = 0; i < S_TOP; i++)
+            if (s_top[i].clob)
+                rt_log("mem:   reverted %llu bytes in %llu write-backs of %#llx+%#llx", (unsigned long long)s_top[i].clob,
+                       (unsigned long long)s_top[i].n, (unsigned long long)s_top[i].addr, (unsigned long long)s_top[i].size);
+        s_pend_n = s_pend_bytes = s_pend_max = s_skip_bytes = s_wb_n = s_cpu_pages = s_clob_bytes = s_wb_skipped = 0;
+        memset(s_top, 0, sizeof s_top);
+    }
     plat_mutex_unlock(&shadow_lock);
 }
 
 void vk_mem_dirty_submit(void) {
-    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on) return;   // the mirror's own line replaces the census
+    // The mirror's own line replaces the census, and so does the shadow line with captures: the census's write-watch
+    // queries at every submit were a fifth of the replay thread on the Steam Deck, under XC2_TRACE=perf only, so the
+    // benchmark ran slower than play.
+    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on || shadow_cap) return;
     uint64_t t0 = kern_now_ns();
     uint32_t prev = dirty_sub;   // the submit whose replay noted the bindings
     dirty_sub = prev + 1 ? prev + 1 : 1;
@@ -1244,12 +1457,13 @@ typedef struct StageArena StageArena;
 typedef struct MCap {
     uint32_t gen;                      // every page write stamped up to this generation is in this or an earlier capture
     uint64_t done;                     // vk_sync_fence_done before the copy: later write-backs are not in its bytes
+    uint64_t wbseq;                    // shadow: s_wbseq before the copy (the same for shadow write-backs)
+    int shadow;                        // taken over the shadows (apply_shadow), not the mirrors (apply_capture)
     StageArena *st;
     CRange *c;
     int n;
 } MCap;
 static MCap *cur;                      // replay: the capture of the submission being recorded, until its prologue
-static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
 static int cur_have;
 static volatile uint64_t m_live_fence; // the newest submission that read guest memory for a mirror after its submit call
 static PlatMutex cap_lock = PLAT_MUTEX_INIT;   // vk_mem_capture's range list
@@ -1309,8 +1523,10 @@ static StageArena *stage_get(uint64_t need) {
     a->size = need < STAGE_MIN ? STAGE_MIN : (need + STAGE_MIN - 1) & ~(STAGE_MIN - 1);
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = a->size,
                              .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    // Shadow captures are read back on the CPU too (shadow_overlay): cached memory there.
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                  .flags = (shadow_on ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                                                      : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT) |
                                            VMA_ALLOCATION_CREATE_MAPPED_BIT};
     VmaAllocationInfo info;
     if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &a->buf, &a->alloc, &info) != VK_SUCCESS) {
@@ -1388,8 +1604,16 @@ static void mirror_mode(int discrete) {
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
     // Freezing stays on by default; a capture holds it off while it runs (vk_mem_capture_hold).
-    if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
-                          sh && *sh ? " (XC2_SHADOW)" : "");
+    const char *sc = cfg_get("XC2_SHADOW_CAPTURE");
+    shadow_cap = shadow_on && sc && *sc && strcmp(sc, "0");
+    if (shadow_cap && vk_mirror_on) {   // vk_mem_capture takes the mirrors then, and the shadows would get no CPU writes
+        rt_log("mem: XC2_SHADOW_CAPTURE is off with VRAM mirrors (%s): the shadows keep their per-part sync", why);
+        shadow_cap = 0;
+    }
+    if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s; "
+                          "%s", sh && *sh ? " (XC2_SHADOW)" : "",
+                          shadow_cap ? "the CPU's writes are captured in the submit call (XC2_SHADOW_CAPTURE)"
+                                     : "the CPU's writes are copied in before each part");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
 }
@@ -1632,6 +1856,37 @@ static int capture_pool(PoolRec *r) {
     return ncr > n0;
 }
 
+// Submitting thread, gen_lock held exclusively, after the queries: queues into cr the pages of r's shadow stamped after
+// its sgen. Returns 1 when it queued any.
+static int shadow_capture_pool(PoolRec *r) {
+    uint64_t lo = r->import_lo, hi = r->import_hi;
+    uint32_t since = r->sgen;
+    int n0 = ncr;
+    uint64_t run = 0;
+    for (uint64_t k = lo >> SNAP_SHIFT; k <= (hi - 1) >> SNAP_SHIFT; k++) {
+        uint64_t a = k << SNAP_SHIFT, b = a + (1ull << SNAP_SHIFT);
+        if (a < lo) a = lo;
+        if (b > hi) b = hi;
+        const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];   // a 2 MiB region lies in one chunk
+        if (snap_untracked[k]) {   // nothing tells which pages changed: all of them
+            if (!run) run = a;
+            continue;
+        }
+        if (reg_max[k] <= since || !ch) {
+            if (run) range_add(&cr, &ncr, &ccr, r, run - lo, a - run), run = 0;
+            continue;
+        }
+        for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT) {
+            int dirty = ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since;
+            if (dirty && !run) run = x;
+            else if (!dirty && run) range_add(&cr, &ncr, &ccr, r, run - lo, x - run), run = 0;
+        }
+    }
+    if (run) range_add(&cr, &ncr, &ccr, r, run - lo, hi - run);
+    r->sgen = gen_now;
+    return ncr > n0;
+}
+
 void *vk_mem_capture(void) {
     MCap *cap = calloc(1, sizeof *cap);
     if (!cap) rt_fatal("vk: out of memory (mirror capture)");
@@ -1663,6 +1918,35 @@ void *vk_mem_capture(void) {
         qb = ww_bytes - b0;
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
         cap->gen = gen_now;
+    } else if (shadow_cap) {   // the same over the shadow pools, all of them: the replay has not resolved any yet
+        cap->shadow = 1;
+        uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
+        int have = 0;
+        for (int i = 0; i < pool_index.n; i++) {
+            const PoolRec *r = pool_index.e[i].buf;
+            if (r->kind != POOL_IMPORT || !r->smap || r->import_hi <= r->import_lo) continue;
+            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+            if (b >= SNAP_REGIONS) continue;
+            if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {
+                if (b > run1) run1 = b;
+                continue;
+            }
+            if (have) q += snap_regions(run0, run1, 0);
+            run0 = a, run1 = b, have = 1;
+        }
+        if (have) q += snap_regions(run0, run1, 0);
+        qb = ww_bytes - b0;
+        for (int i = 0; i < pool_index.n; i++) {
+            PoolRec *r = pool_index.e[i].buf;
+            if (r->kind == POOL_IMPORT && r->smap && r->import_hi > r->import_lo) pools += (uint64_t)shadow_capture_pool(r);
+        }
+        cap->gen = gen_now;
+        for (int i = 0; i < pool_index.n; i++) {   // the regions just queried (frozen ones count: nothing wrote them)
+            const PoolRec *r = pool_index.e[i].buf;
+            if (r->kind != POOL_IMPORT || !r->smap || r->import_hi <= r->import_lo) continue;
+            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+            for (uint64_t k = a; k <= b && k < SNAP_REGIONS; k++) snap_capgen[k] = cap->gen;
+        }
     }
     if (freeze_idle) freeze_pass();
     plat_mutex_unlock(&gen_lock);
@@ -1670,6 +1954,8 @@ void *vk_mem_capture(void) {
     // The records stay: vk_be_pool_fini holds the back end's capture lock while it drains the replay and finalizes.
     // The bytes are copied after the queries: a page written since keeps its write-watch bit for the next capture.
     cap->done = vk_sync_fence_done();
+    cap->wbseq = __atomic_load_n(&s_wbseq, __ATOMIC_ACQUIRE);
+    uint64_t staged_all = 0;
     if (ncr) {
         qsort(cr, (size_t)ncr, sizeof *cr, range_cmp);
         int m = 0;   // merged: a flushed range may overlap the pages
@@ -1684,7 +1970,7 @@ void *vk_mem_capture(void) {
         ncr = m;
         uint64_t need = 0;
         for (int i = 0; i < ncr; i++) need += (cr[i].size + 15) & ~15ull;
-        if (need > STAGE_MAX) need = STAGE_MAX;
+        if (need > STAGE_MAX && !shadow_cap) need = STAGE_MAX;   // a shadow has no GPU path from guest memory
         cap->st = mirror_stage ? stage_get(need) : NULL;
         if (!(cap->c = malloc(sizeof *cap->c * (size_t)ncr))) rt_fatal("vk: out of memory (mirror capture)");
         uint64_t used = 0, staged = 0;
@@ -1701,8 +1987,14 @@ void *vk_mem_capture(void) {
         }
         if (cap->st) vmaFlushAllocation(vk_ctx()->vma, cap->st->alloc, 0, used);   // a no-op on coherent memory
         plat_add64(&m_stage_bytes, (int64_t)staged);
+        staged_all = staged;
     }
     plat_mutex_unlock(&cap_lock);
+    if (shadow_cap) {
+        plat_mutex_lock(&shadow_lock);
+        s_syncs += pools, s_queries += q, s_copied += staged_all, s_ticks += qpc() - t0;
+        plat_mutex_unlock(&shadow_lock);
+    }
     plat_mutex_lock(&mirror_stat_lock);
     macc.captures++, macc.cap_pools += pools, macc.cap_queries += q, macc.cap_qbytes += qb, macc.cap_t += qpc() - t0;
     plat_mutex_unlock(&mirror_stat_lock);
@@ -1781,6 +2073,16 @@ static void freeze_pass(void) {
 // the first prologue copies it into the mirrors.
 void vk_mem_mirror_begin(void *cap) {
     if (cur) capture_free(cur);   // a submission recorded without a prologue (none in vk_sync.c)
+    s_sub++;
+    if (shadow_cap && cap) {   // captures apply in queue order: later ones were taken after these write-backs
+        uint64_t seq = ((MCap *)cap)->wbseq;
+        plat_mutex_lock(&shadow_lock);
+        int n = 0;
+        for (int i = 0; i < nsdone; i++)
+            if (sdone[i].seq > seq) sdone[n++] = sdone[i];
+        nsdone = n;
+        plat_mutex_unlock(&shadow_lock);
+    }
     cur = cap;
     cur_have = cur != NULL;
     cur_gen = cur ? cur->gen : 0;
@@ -1798,7 +2100,10 @@ int vk_mem_mirror_pending(void) { return npend || cur; }
 
 // The GPU reads every buffer of the mirrors as of the submit call: no pool stays imported, the captures are staged,
 // and no submission that read guest memory later (a first use, a capture past STAGE_MAX) may still run.
-int vk_mem_snapshots(void) { return vk_mirror_on && mirror_stage && !shadow_on; }
+int vk_mem_shadow_captures(void) { return shadow_on && shadow_cap; }
+
+// Shadow storage with submit-time captures gives the same (apply_shadow).
+int vk_mem_snapshots(void) { return mirror_stage && (shadow_on ? shadow_cap : vk_mirror_on); }
 
 int nvn_reads_snapshot(void) {
     if (!vk_mem_snapshots()) return 0;
@@ -1874,6 +2179,111 @@ static void apply_capture(VkCommandBuffer cb, MCap *c, uint64_t fence) {
     if (c->st) vk_completion_add(fence, stage_done, c->st), c->st = NULL;
 }
 
+// ---- shadow captures, replay side
+// Copies apply_shadow recorded that the GPU may not have run yet, oldest first (the source stays in its arena until
+// then), and the arenas with the fence of the submission that reads them. The replay hands an arena back itself
+// (sapl_prune), not the completion thread: shadow_overlay reads arenas too, and a returned one may be refilled at once.
+typedef struct { uint64_t lo, hi, fence; const uint8_t *src; } SApplied;
+typedef struct { StageArena *st; uint64_t fence; } SArena;
+static SApplied *sapl;   // replay
+static int nsapl, csapl;
+static SArena *sar;      // replay
+static int nsar, csar;
+
+static void sapl_prune(void) {
+    uint64_t done = vk_sync_fence_done();
+    int n = 0;
+    for (int i = 0; i < nsapl; i++)
+        if (sapl[i].fence > done) sapl[n++] = sapl[i];
+    nsapl = n, n = 0;
+    for (int i = 0; i < nsar; i++)
+        if (sar[i].fence > done) sar[n++] = sar[i];
+        else stage_done(sar[i].st);
+    nsar = n;
+}
+
+// Replay, after sapl_prune and a copy of the shadow's [addr, addr+size) into snap: the bytes the GPU will find there
+// once the copies queued so far have run.
+static void shadow_overlay(uint64_t addr, uint64_t size, uint8_t *snap) {
+    for (int i = 0; i < nsapl; i++) {   // oldest first: a later copy of the same bytes wins
+        uint64_t a = sapl[i].lo > addr ? sapl[i].lo : addr, b = sapl[i].hi < addr + size ? sapl[i].hi : addr + size;
+        if (a < b) memcpy(snap + (a - addr), sapl[i].src + (a - sapl[i].lo), b - a);
+    }
+}
+
+// shadow_lock held: records the copy of guest [lo, hi) of r's shadow from the capture's arena at src, leaving out the
+// bytes of GPU writes still in flight from earlier submissions (spend entries of another s_sub) and of write-backs done
+// after the capture's copy (sdone, pruned in vk_mem_mirror_begin); from index i of the two lists on.
+static void shadow_put(MCap *c, PoolRec *r, uint64_t lo, uint64_t hi, uint64_t src, int i, int *k, uint64_t fence,
+                       int *live) {
+    for (; i < nspend + nsdone; i++) {
+        uint64_t elo, ehi;
+        if (i < nspend) {
+            if (spend[i].sub == s_sub) continue;   // recorded in this submission: runs after the copy
+            elo = spend[i].lo, ehi = spend[i].hi;
+        } else elo = sdone[i - nspend].lo, ehi = sdone[i - nspend].hi;
+        if (elo < hi && ehi > lo) {
+            if (elo > lo) shadow_put(c, r, lo, elo, src, i + 1, k, fence, live);
+            if (ehi < hi) shadow_put(c, r, ehi, hi, src == CAP_LIVE ? CAP_LIVE : src + (ehi - lo), i + 1, k, fence, live);
+            s_skip_bytes += (ehi < hi ? ehi : hi) - (elo > lo ? elo : lo);
+            return;
+        }
+    }
+    const uint8_t *bytes;
+    if (src == CAP_LIVE) {   // no arena: a CPU copy now, which the GPU may see before the submission (live_read)
+        memcpy(r->smap + (lo - r->import_lo), (const void *)(uintptr_t)lo, hi - lo);
+        bytes = r->smap + (lo - r->import_lo);
+        *live = 1;
+    } else {
+        if (*k == csregions) grow((void **)&sregions, &csregions, sizeof *sregions);
+        sregions[(*k)++] = (VkBufferCopy){src, lo - r->import_lo, hi - lo};
+        bytes = c->st->map + src;
+        if (nsapl == csapl) grow((void **)&sapl, &csapl, sizeof *sapl);
+        sapl[nsapl++] = (SApplied){lo, hi, fence, bytes};
+    }
+    // This submission's GPU writes recorded before the copy (its first part) took their snapshots without it.
+    for (int j = 0; j < nspend; j++)
+        if (spend[j].sub == s_sub && spend[j].snap && spend[j].lo < hi && spend[j].hi > lo) {
+            uint64_t a = spend[j].lo > lo ? spend[j].lo : lo, b = spend[j].hi < hi ? spend[j].hi : hi;
+            memcpy(spend[j].snap + (a - spend[j].lo), bytes + (a - lo), b - a);
+        }
+}
+
+// The first prologue of a submission: records the copies of its capture into the shadows (shadow storage's
+// apply_capture).
+static void apply_shadow(VkCommandBuffer cb, MCap *c, uint64_t fence) {
+    sapl_prune();
+    int live = 0;
+    // A range without arena bytes (no arena, or one too small) is copied by the CPU straight into the shadow, which
+    // earlier submissions may still read: wait for them first (rare: the arena is sized to the capture).
+    for (int i = 0; i < c->n; i++)
+        if (c->c[i].src == CAP_LIVE) {
+            vk_sync_fence_wait(vk_sync_issued(), UINT64_MAX);   // every submission before this one
+            break;
+        }
+    plat_mutex_lock(&shadow_lock);
+    for (int i = 0; i < c->n;) {
+        PoolRec *r = c->c[i].r;
+        int k = 0;
+        for (; i < c->n && c->c[i].r == r; i++) {
+            uint64_t lo = r->import_lo + c->c[i].off;
+            shadow_put(c, r, lo, lo + c->c[i].size, c->c[i].src, 0, &k, fence, &live);
+        }
+        if (k) vkCmdCopyBuffer(cb, c->st->buf, r->buf, (uint32_t)k, sregions);
+    }
+    plat_mutex_unlock(&shadow_lock);
+    if (live) {
+        static int warned;
+        if (!warned++) rt_log("mem: a shadow capture did not fit a staging arena: copied live (the frame guard waits)");
+        live_read(fence);
+    }
+    if (c->st) {
+        if (nsar == csar) grow((void **)&sar, &csar, sizeof *sar);
+        sar[nsar++] = (SArena){c->st, fence};
+        c->st = NULL;
+    }
+}
+
 void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
     if (!npend && !cur) return;
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -1906,7 +2316,11 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
             mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    if (cur) apply_capture(cb, cur, fence), capture_free(cur), cur = NULL;
+    if (cur) {
+        if (cur->shadow) apply_shadow(cb, cur, fence);
+        else apply_capture(cb, cur, fence);
+        capture_free(cur), cur = NULL;
+    }
     mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     mrep.prologues++;
@@ -2430,6 +2844,8 @@ void vk_mem_shutdown(void) {
     stg_pool = NULL;
     stg_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
+    for (int i = 0; i < nsar; i++) stage_done(sar[i].st);   // the shadow captures' arenas (apply_shadow): the device is idle
+    nsar = nsapl = 0;
     plat_mutex_lock(&stage_lock);   // the free arenas; one whose completion has not run yet stays to process exit
     for (StageArena *a = stage_free, *next; a; a = next) next = a->next, vmaDestroyBuffer(c->vma, a->buf, a->alloc), free(a);
     stage_free = NULL;
@@ -2440,6 +2856,7 @@ void vk_mem_shutdown(void) {
     pool_index.n = 0;
     nm = npend = nwbl = 0;   // mirrors went with their pools
     plat_mutex_lock(&shadow_lock);
+    for (int i = 0; i < nspend; i++) snap_release(spend[i].snap);
     nstouch = nspend = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);
