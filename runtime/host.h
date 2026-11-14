@@ -88,7 +88,7 @@ static inline void ret_d(Cpu *c, double d) { uint64_t b; memcpy(&b, &d, 8); c->v
 // Every host function is a GuestFn at a synthetic address RT_HOSTFN_BASE + 16*i. It runs on the calling guest thread,
 // may clobber x0-x18, v0-v7, v16-v31, must preserve x19-x29, sp, v8-v15, tpidr, and returns to the guest BL site with
 // a C return. On entry c->pc holds the function's own synthetic address.
-typedef struct { const char *name; GuestFn fn; } RtHostEntry;
+typedef struct { const char *name; GuestFn fn; int game; } RtHostEntry;   // game: 0 for every build, else the rt_game_version it is for
 #define RT_CAT2(a, b) a##b
 #define RT_CAT(a, b) RT_CAT2(a, b)
 // File-scope declarations; fn must be declared before. The loader binds them by symbol name. The entries of every
@@ -104,6 +104,8 @@ typedef struct { const char *name; GuestFn fn; } RtHostEntry;
     __attribute__((used, RT_HOST_SECTION(ovr))) static const RtHostEntry RT_CAT(rt_ovr_, __COUNTER__) = {sym, fn}
 #define HOST_OBSERVER(sym, fn) /* JUMP_SLOT only; fn calls rt_original(c) */                                    \
     __attribute__((used, RT_HOST_SECTION(obs))) static const RtHostEntry RT_CAT(rt_obs_, __COUNTER__) = {sym, fn}
+#define HOST_OBSERVER_GAME(sym, fn, gv) /* HOST_OBSERVER installed only in the build whose rt_game_version is gv */ \
+    __attribute__((used, RT_HOST_SECTION(obs))) static const RtHostEntry RT_CAT(rt_obs_, __COUNTER__) = {sym, fn, gv}
 uint64_t hostfn_register(const char *name, GuestFn fn);    // synthetic address; before hostfn_seal only. The same
                                                            // (name, fn) pair returns the same address
 GuestFn hostfn_override(const char *name);                 // NULL if none

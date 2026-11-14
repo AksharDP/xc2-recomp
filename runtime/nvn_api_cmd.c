@@ -1041,10 +1041,20 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
     }
 }
 
+// The walk over a copy's deferred binds, skipped once the copy is known to hold none. The number of binds is fixed when
+// the recording is made (their sources and sizes are recorded; only the handles they read change), so the first walk's
+// answer holds for every later submit of the same copy: copy_prefix.deferred is 1 (none) or 2 (some) after that walk.
+static void resolve_copy(uint64_t handle) {
+    copy_prefix *pf = (copy_prefix *)(uintptr_t)handle - 1;
+    if (pf->deferred == 1) return;
+    int nd = resolve_deferred((const uint8_t *)(uintptr_t)handle, 0);
+    pf->deferred = nd ? 2 : 1;
+}
+
 void nvn_submit_prepare(const uint64_t *handles, int n) {
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
     for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands");
-    for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
+    for (int i = 0; i < n; i++) resolve_copy(handles[i]);
 }
 
 // Asynchronous replay. A copy a queued submission still reads keeps that submission's deferred binds: when it holds
@@ -1078,10 +1088,7 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
         }
     }
     plat_mutex_unlock(&copy_lock);
-    for (int i = 0; i < n; i++) {
-        int nd = resolve_deferred((const uint8_t *)(uintptr_t)out[i], 0);
-        if (out[i] == handles[i]) ((copy_prefix *)(uintptr_t)out[i] - 1)->deferred = nd ? 2 : 1;
-    }
+    for (int i = 0; i < n; i++) resolve_copy(out[i]);
     if (now % 7200 == 0)
         rt_log("nvn: asynchronous replay at submit %llu: %llu recording clones so far, %u copies waiting for the replay",
                (unsigned long long)now, (unsigned long long)__atomic_load_n(&n_clones, __ATOMIC_RELAXED), nzombies);

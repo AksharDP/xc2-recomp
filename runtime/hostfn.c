@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "host.h"
+#include "platform/platform.h"
 
 #define MAX_HOSTFN 4096   // dispatch.c holds HOST_CAP / 2 host functions
 #define MAX_ADDED 64
@@ -44,10 +45,35 @@ static RtHostEntry added[MAX_ADDED];
 static int nadded;
 static int sealed;
 
+// Host-function calls are counted per guest thread. Each thread adds to its own cell with a plain store: one counter
+// shared by all threads moved its cache line between their cores on every call. hostfn_calls sums the cells. A cell is
+// never freed (16 bytes a thread), so the sum stays exact after the threads have exited, which kernel_probe relies on.
+// The per-slot counts, kept for XC2_TRACE=host, still take a locked add.
+typedef struct CallCell { uint64_t n; struct CallCell *next; } CallCell;
+static CallCell *cells;   // every cell made so far, under cells_lock
+static PlatMutex cells_lock = PLAT_MUTEX_INIT;
+static _Thread_local CallCell *my_cell;
+
+static CallCell *cell_new(void) {
+    CallCell *c = calloc(1, sizeof *c);
+    if (!c) rt_fatal("hostfn: no memory for a call counter");
+    plat_mutex_lock(&cells_lock);
+    c->next = cells, cells = c;
+    plat_mutex_unlock(&cells_lock);
+    return c;
+}
+
+static inline void count_call(void) {
+    CallCell *c = my_cell;
+    if (__builtin_expect(!c, 0)) c = my_cell = cell_new();
+    __atomic_store_n(&c->n, __atomic_load_n(&c->n, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
+}
+
+// A table entry applies to every game build (game 0) or only to the build whose rt_game_version it names.
 static GuestFn table_find(const RtHostEntry *start, const RtHostEntry *stop, const char *name) {
     __asm__("" : "+r"(start), "+r"(stop));   // separate objects: keep the compiler from reasoning about them
     for (const RtHostEntry *p = start; p < stop; p++)
-        if (p->name && !strcmp(p->name, name)) return p->fn;
+        if (p->name && !strcmp(p->name, name) && (!p->game || p->game == rt_game_version)) return p->fn;
     return NULL;
 }
 
@@ -146,10 +172,13 @@ static void hostfn_entry(Cpu *c) {
     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
     if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
     Slot *s = &slots[i];
-    uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
-    if (__builtin_expect(!n && (rt_trace & RT_TRACE_HOSTCALL), 0)) {
-        char lr[96];
-        rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
+    count_call();
+    if (__builtin_expect(rt_trace & RT_TRACE_HOSTCALL, 0)) {
+        uint64_t n = __atomic_fetch_add(&s->calls, 1, __ATOMIC_RELAXED);
+        if (!n) {
+            char lr[96];
+            rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
+        }
     }
     if (s->blocking) {
         hostfn_blocking(c, s->fn);
@@ -179,7 +208,9 @@ void hostfn_seal(void) {
 
 uint64_t hostfn_calls(void) {
     uint64_t n = 0;
-    for (int i = 0; i < nslots; i++) n += __atomic_load_n(&slots[i].calls, __ATOMIC_RELAXED);
+    plat_mutex_lock(&cells_lock);
+    for (CallCell *c = cells; c; c = c->next) n += __atomic_load_n(&c->n, __ATOMIC_RELAXED);
+    plat_mutex_unlock(&cells_lock);
     return n;
 }
 

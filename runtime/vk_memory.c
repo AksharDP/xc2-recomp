@@ -1277,6 +1277,7 @@ static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mism
 #define STAGE_MAX (64ull << 20)    // bytes of one prologue that go through a CPU copy; the rest is copied by the GPU
 #define STAGE_MIN (1ull << 20)     // smallest arena
 #define STAGE_RANGE (8ull << 20)   // a larger merged range (a pool's first use) is copied by the GPU
+#define STAGE_KEEP 16              // free arenas kept for reuse; the rest are destroyed as they come back (as vk_usnap's)
 struct StageArena {
     struct StageArena *next;
     VkBuffer buf;
@@ -1287,6 +1288,7 @@ struct StageArena {
 typedef struct { PoolRec *r; uint64_t lo, hi, fence; } WbFlight;
 static int mirror_stage = 1;
 static StageArena *stage_free;         // stage_lock: arenas the GPU is done with
+static int stage_nfree;                // stage_lock: arenas on stage_free
 static PlatMutex stage_lock = PLAT_MUTEX_INIT;
 static WbFlight *wbf;                  // replay: write-backs of submissions not known to be complete
 static int nwbf, cwbf;
@@ -1297,12 +1299,10 @@ static volatile int64_t m_stage_arena_n, m_stage_arena_bytes;   // arenas made s
 
 static StageArena *stage_get(uint64_t need) {
     plat_mutex_lock(&stage_lock);
-    StageArena **pp = &stage_free, *a = NULL;
-    for (; *pp; pp = &(*pp)->next)
-        if ((*pp)->size >= need) {
-            a = *pp, *pp = a->next;
-            break;
-        }
+    StageArena **best = NULL, *a = NULL;   // the smallest free arena that fits, so a small capture leaves the big ones
+    for (StageArena **pp = &stage_free; *pp; pp = &(*pp)->next)
+        if ((*pp)->size >= need && (!best || (*pp)->size < (*best)->size)) best = pp;
+    if (best) a = *best, *best = a->next, stage_nfree--;
     plat_mutex_unlock(&stage_lock);
     if (a) return a;
     if (!(a = calloc(1, sizeof *a))) return NULL;
@@ -1329,8 +1329,10 @@ static StageArena *stage_get(uint64_t need) {
 static void stage_done(void *arg) {   // completion thread: the prologue that read it has run
     StageArena *a = arg;
     plat_mutex_lock(&stage_lock);
-    a->next = stage_free, stage_free = a;
+    int keep = stage_nfree < STAGE_KEEP;
+    if (keep) a->next = stage_free, stage_free = a, stage_nfree++;
     plat_mutex_unlock(&stage_lock);
+    if (!keep) vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a);
 }
 
 // A write-back of a submission that is not done touches [lo, hi) of r's mirror.
@@ -2428,7 +2430,7 @@ void vk_mem_shutdown(void) {
     plat_rmutex_unlock(&cmd_lock);
     plat_mutex_lock(&stage_lock);   // the free arenas; one whose completion has not run yet stays to process exit
     for (StageArena *a = stage_free, *next; a; a = next) next = a->next, vmaDestroyBuffer(c->vma, a->buf, a->alloc), free(a);
-    stage_free = NULL;
+    stage_free = NULL, stage_nfree = 0;
     plat_mutex_unlock(&stage_lock);
     nwbf = 0;
     plat_mutex_lock(&pool_lock);
