@@ -20,11 +20,15 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      # The tag, or the branch of a manual run, names the zip and the artifact (a branch has slashes).
+      # The tag, or the branch of a manual run, names the zip and the artifact. Any character outside A-Za-z0-9._- becomes
+      # "-": a branch has slashes, and a pipe or a quote is refused by the artifact upload or by NTFS. The ref goes in
+      # through env, so Bash never parses its text.
       - name: Name the build
         id: name
         shell: bash
-        run: echo "name=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "name=$(printf '%s' "$REF_NAME" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -59,11 +63,14 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     steps:
-      # The tag, or the branch of a manual run, names the AppImage and the artifact (a branch has slashes).
+      # The tag, or the branch of a manual run, names the AppImage and the artifact. The same normalization as the
+      # windows job's name step: the ref goes in through env, and characters outside A-Za-z0-9._- become "-".
       - name: Name the build
         id: name
         shell: bash
-        run: echo "name=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "name=$(printf '%s' "$REF_NAME" | LC_ALL=C tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
       - name: Free disk space   # the LLVM release and the sniper SDK sysroot unpack to several GB
         run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
