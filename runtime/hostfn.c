@@ -69,10 +69,11 @@ static inline void count_call(void) {
     __atomic_store_n(&c->n, __atomic_load_n(&c->n, __ATOMIC_RELAXED) + 1, __ATOMIC_RELAXED);
 }
 
+// A table entry applies to every game build (game 0) or only to the build whose rt_game_version it names.
 static GuestFn table_find(const RtHostEntry *start, const RtHostEntry *stop, const char *name) {
     __asm__("" : "+r"(start), "+r"(stop));   // separate objects: keep the compiler from reasoning about them
     for (const RtHostEntry *p = start; p < stop; p++)
-        if (p->name && !strcmp(p->name, name)) return p->fn;
+        if (p->name && !strcmp(p->name, name) && (!p->game || p->game == rt_game_version)) return p->fn;
     return NULL;
 }
 

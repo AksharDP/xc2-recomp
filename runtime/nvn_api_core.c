@@ -640,6 +640,8 @@ NVN_API(nvnQueueSubmitCommands) {
 
 // The producer (1.2.1 main f_70008c6460) releases the read lock on obj+0x538 at lr 0x70008c70c8; when
 // [obj+0x529] == [obj+0x528] (x19 = obj) it goes on to rewrite the back half. Waits off the core, at most ~400 ms.
+// Only the 1.2.1 build installs this observer (HOST_OBSERVER_GAME): XC2's lifted code ends below 0x70008c70c8, so the
+// address test never passes there, and the wrapper would cost a dispatch on every ReleaseReadLock for nothing.
 static void obs_release_read(Cpu *c) {
     uint64_t lr = c->x[30], obj = c->x[19];
     rt_original(c);
@@ -656,4 +658,4 @@ static void obs_release_read(Cpu *c) {
     uint64_t f = __atomic_load_n(&lod_fence[e % LOD_RING], __ATOMIC_RELAXED);
     if (gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 200000000ull);
 }
-HOST_OBSERVER("_ZN2nn2os15ReleaseReadLockEPNS0_20ReaderWriterLockTypeE", obs_release_read);
+HOST_OBSERVER_GAME("_ZN2nn2os15ReleaseReadLockEPNS0_20ReaderWriterLockTypeE", obs_release_read, 121);
