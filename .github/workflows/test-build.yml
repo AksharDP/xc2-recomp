@@ -1,8 +1,8 @@
 name: Test build
 
-# A test tag (test-*) or a manual run builds the Windows setup the way release.yml's windows job does and keeps it as
-# a workflow artifact, for one person to install and try. It never publishes a release: release.yml does that, from a
-# v* tag that matches VERSION. The steps below are that job's, so change the two together.
+# A test tag (test-*) or a manual run builds the Windows and Linux setups the way release.yml's windows and linux jobs
+# do, and keeps each as a workflow artifact, for one person to install and try. It never publishes a release:
+# release.yml does that, from a v* tag that matches VERSION. The steps below are those jobs', so change the two together.
 
 on:
   push:
@@ -55,3 +55,45 @@ jobs:
           path: build/release/XC2-Setup-${{ steps.name.outputs.name }}-windows.zip
           if-no-files-found: error
           compression-level: 0   # already a zip
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      # The tag, or the branch of a manual run, names the AppImage and the artifact (a branch has slashes).
+      - name: Name the build
+        id: name
+        shell: bash
+        run: echo "name=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+      - name: Free disk space   # the LLVM release and the sniper SDK sysroot unpack to several GB
+        run: sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends make pkg-config xvfb xauth fonts-dejavu-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Pillow   # make_release_linux.py turns xc2.ico into the window's PNG
+        run: python -m pip install pillow==12.3.0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Cache pinned downloads
+        uses: actions/cache@v4
+        with:
+          path: toolchain/release-dl
+          key: release-dl-linux-${{ hashFiles('tools/make_release.py', 'tools/make_release_linux.py', 'tools/build_game.py') }}
+          restore-keys: release-dl-linux-
+      - name: Check content
+        run: python tools/check_content.py
+      # Tk needs a display for the bundle check and the window's --selftest
+      - name: Build the release folder and AppImage
+        env:
+          APPIMAGE: build/release/XC2-Setup-${{ steps.name.outputs.name }}-linux.AppImage
+        run: xvfb-run -a python tools/make_release_linux.py --out build/release/XC2-Setup-linux --appimage "$APPIMAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XC2-Setup-${{ steps.name.outputs.name }}-linux
+          path: build/release/XC2-Setup-${{ steps.name.outputs.name }}-linux.AppImage
+          if-no-files-found: error
