@@ -130,6 +130,45 @@ def use_lto(jobs):
     GEN_FLAGS = GEN_FLAGS + ['-flto=thin']
     LINK_FLAGS = LINK_FLAGS + ['-flto=thin', '-O2', f'-Wl,--thinlto-jobs={jobs}',
                                '"-Wl,--thinlto-cache-dir=$builddir/lto-cache"']
+
+
+def use_pgo(generate, profdata):
+    """Profile-guided optimization of the generated code, in two builds. --pgo-generate instruments the generated code
+    and links the profile runtime; the game writes LLVM_PROFILE_FILE (default default_%m.profraw in the working
+    directory) when it exits (plat_exit). llvm-profdata merge turns the runs' files into one .profdata, and --pgo-use
+    builds with it: the compiler lays out hot and cold code, inlines and unrolls by the measured counts. The runtime is
+    compiled as before. Profile from 3 replays of a recording on a second save, interleaved runs, frames pooled per arm
+    (2026-11-14): on that recording (8 rounds) mean 85.0 -> 90.6 fps, 1% low 35.8 -> 39.1, frames over 10 ms 49.7 -> 37.1 %
+    (fewer in 8 of 8); on the issue 112 recording (8 rounds) mean 83.1 -> 84.8 fps, frames over 10 ms 51.5 -> 46.0 % (7 of
+    8), 1% low unchanged; on a third recording no profile saw (6 rounds) mean 97.2 -> 99.3 fps, over 10 ms 24.3 -> 22.3 %.
+    So most of the gain on the trained play does not carry over: about 2 % elsewhere. A profile of two recordings was no
+    better on the third. The profile's hash goes into the flags, so a new profile recompiles the generated code and the
+    object cache does not mix objects of two profiles."""
+    global GEN_FLAGS, LINK_FLAGS, RT_FLAGS
+    if generate:
+        lib = pgo_runtime()
+        if not lib:
+            sys.exit('--pgo-generate: the profile runtime (libclang_rt.profile) of this clang is missing; on MSYS2 '
+                     'install mingw-w64-ucrt-x86_64-compiler-rt (docs/building.md)')
+        GEN_FLAGS = GEN_FLAGS + ['-fprofile-generate']
+        LINK_FLAGS = LINK_FLAGS + ['-fprofile-generate']
+        RT_FLAGS = RT_FLAGS + ['-DXC2_PGO_GENERATE']
+    else:
+        if not profdata.is_file():
+            sys.exit(f'--pgo-use: {flag_path(profdata)} not found')
+        digest = hashlib.sha256(profdata.read_bytes()).hexdigest()[:16]
+        # Functions the training never ran and a profile from older generated C are expected, not worth a warning each
+        GEN_FLAGS = GEN_FLAGS + [f'-fprofile-use={cmd_path(profdata)}', f'-DXC2_PGO_PROFILE={digest}',
+                                 '-Wno-profile-instr-unprofiled', '-Wno-profile-instr-out-of-date', '-Wno-backend-plugin']
+
+
+def pgo_runtime():
+    """The profile runtime library of CLANG, or None."""
+    r = subprocess.run([str(CLANG), '-print-resource-dir'], capture_output=True, text=True)
+    lib = Path(r.stdout.strip()) / 'lib'
+    return next(iter(sorted(lib.glob('**/libclang_rt.profile*.a'))), None) if r.returncode == 0 and lib.is_dir() else None
+
+
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
 # into toolchain/vma: one MIT header (THIRD_PARTY_NOTICES.md), checked against its hash.
 VMA_FETCH = ('https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/v3.4.0/include/vk_mem_alloc.h',
@@ -1015,6 +1054,12 @@ def main():
     ap.add_argument('--no-lto', action='store_true',
                     help='compile the generated C to machine code per file, without ThinLTO at the link (faster links, '
                          'slower game: see use_lto)')
+    pgo = ap.add_mutually_exclusive_group()
+    pgo.add_argument('--pgo-generate', action='store_true',
+                     help='instrument the generated C for profile-guided optimization; the game writes LLVM_PROFILE_FILE '
+                          'at exit (see use_pgo)')
+    pgo.add_argument('--pgo-use', type=Path, metavar='PROFDATA',
+                     help='compile the generated C with this profile (llvm-profdata merge of --pgo-generate runs)')
     ap.add_argument('--allow-stale-translator', action='store_true',
                     help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
@@ -1076,6 +1121,11 @@ def main():
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
     if not args.no_lto:
         use_lto(jobs)
+    if args.pgo_generate and args.runtime_lib:
+        # The prebuilt library was compiled without XC2_PGO_GENERATE, so plat_exit would never write the profile
+        sys.exit('--pgo-generate needs the runtime compiled here, not --runtime-lib')
+    if args.pgo_generate or args.pgo_use:
+        use_pgo(args.pgo_generate, args.pgo_use.resolve() if args.pgo_use else None)
     if args.make_runtime_lib:
         # The library reads nothing of the game (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX stand in for layout.h), so it
         # builds without generated/ or extracted files: CI builds the release from a bare checkout

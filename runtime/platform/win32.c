@@ -616,7 +616,15 @@ void plat_aligned_free(void *p) { _aligned_free(p); }
 
 // ---- process
 
+#ifdef XC2_PGO_GENERATE
+int __llvm_profile_write_file(void);
+#endif
+
 void plat_exit(int code) {
+#ifdef XC2_PGO_GENERATE
+    // build_game.py --pgo-generate: ExitProcess skips the profile runtime's atexit hook, so the counters are written here
+    __llvm_profile_write_file();
+#endif
     fflush(stdout);
     fflush(stderr);
     ExitProcess((UINT)code);
