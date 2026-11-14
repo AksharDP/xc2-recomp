@@ -74,13 +74,14 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu; targets%s",
+           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu reused %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
-           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps, list);
+           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps,
+           (unsigned long long)f->fb_snap_reuse, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }
@@ -703,6 +704,12 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
     vkCmdClearAttachments(ex->cb, 1, a, 1, &cr);
     ex->recorded++;
     ex->fb_dirty |= a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
+    if ((a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && a->colorAttachment < 8) {
+        // Its copy is stale, and so is the copy of the same image at another colour slot (a clear reads no copy).
+        VkImage img = ex->color[a->colorAttachment].image;
+        for (uint32_t j = 0; j < 8; j++)
+            if ((ex->snap_keep >> j & 1) && (j == a->colorAttachment || (img && ex->snap_src[j] == img))) ex->snap_keep &= ~(1u << j);
+    }
 }
 
 static void clear_color(VkExec *ex, const p_clear_color *c) {
