@@ -818,6 +818,111 @@ static int test_alias(const GfxBackend *b, uint8_t *guest, int *bytes) {
     return 0;
 }
 
+// Stale sources (vk_texture.c stale_copy): a texture of another shape created over the storage of a GPU-written one takes
+// that render where the two overlap and the storage bytes elsewhere. Linear textures: the source is 64x8 (rows of 256
+// bytes), the new one 32x32 (rows of 128) over the same 4 KiB, so its first 16 rows are the source's bytes and the last 16
+// the storage's. A CPU write to the storage after the render makes the render no content: the new texture reads the bytes.
+static int lin_tex(tex_t *t, pool_t *pool, int64_t off, uint32_t w, uint32_t h, uint64_t serial) {
+    init_tex(t, pool, off, NVN_FORMAT_RGBA8);
+    t->d.width = w, t->d.height = h;
+    t->d.flags = 0x10;   // LINEAR: pitch storage, the stride aligned to 32 bytes
+    nvn_tex_layout(&t->d, &t->L);
+    t->serial = serial;
+    return t->L.size <= 0x20000;
+}
+
+static int test_stale_copy(const GfxBackend *b, uint8_t *guest, int *bytes) {
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0x800000, .size = 0x100000,
+                   .game_mem = guest + 0x800000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the stale part");
+    uint8_t *m = pool.mem;
+    static tex_t ss, sn, ss2, sn2;
+    CHECK(lin_tex(&ss, &pool, 0x70000, 64, 8, 501) && lin_tex(&sn, &pool, 0x70000, 32, 32, 502) &&
+              lin_tex(&ss2, &pool, 0x74000, 64, 8, 503) && lin_tex(&sn2, &pool, 0x74000, 32, 32, 504),
+          "stale textures exceed their pool slots");
+    CHECK(ss.L.size == 2048 && sn.L.size == 4096, "linear layouts are %llu and %llu bytes, expected 2048 and 4096",
+          (unsigned long long)ss.L.size, (unsigned long long)sn.L.size);
+    const NVNcopyRegion rs = {0, 0, 0, 64, 8, 1}, rn = {0, 0, 0, 32, 32, 1};
+    static _Alignas(8) uint8_t stream[4096];
+    uint8_t *p;
+    p_copy_b2t up;
+    memset(&up, 0, sizeof up);
+
+    // Part 1: ss takes a render (its storage not written back); sn, created by a read in the same submission, must hold
+    // the render's bytes in rows 0-15 and the storage's (0x5a) in rows 16-31.
+    memset(m + 0x70000, 0x5a, 0x1000);
+    uint32_t *pa = (uint32_t *)(m + 0xE8000);
+    for (int i = 0; i < 64 * 8; i++) pa[i] = 0x9e3779b9u * (uint32_t)(i + 1) ^ 0x5a5a0000u;
+    static uint8_t exp[0x1000];
+    memcpy(exp, pa, 2048), memset(exp + 2048, 0x5a, 2048);
+    memset(m + 0xE9000, 0, 0x1000);
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    up.src = (uint64_t)(uintptr_t)(m + 0xE8000), up.tex = &ss, up.r = rs;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    p_copy_b2t dn = up;
+    dn.tex = &sn, dn.src = (uint64_t)(uintptr_t)(m + 0xE9000), dn.r = rn;
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    CHECK(p <= stream + sizeof stream - sizeof(op_hdr), "stale op stream overflow");
+    CHECK(xf_submit(b, stream, p), "fence_wait of the stale submission timed out");
+    int bad_at = -1;
+    for (int i = 0; i < 0x1000 && bad_at < 0; i++)
+        if (m[0xE9000 + i] != exp[i]) bad_at = i;
+    CHECK(bad_at < 0, "stale texture byte %d is %02x, expected %02x (the render over rows 0-15, storage elsewhere)", bad_at,
+          bad_at >= 0 ? m[0xE9000 + bad_at] : 0, bad_at >= 0 ? exp[bad_at] : 0);
+
+    // Part 3: the copy is an ordinary texture, not GPU-written. After a CPU write to the storage, sn reads the storage again
+    // (the render of ss is not in the storage yet, so the expected bytes are the storage with the CPU write).
+    static uint8_t exp3[0x1000];
+    memset(exp3, 0x5a, sizeof exp3), memset(exp3 + 1024, 0x33, 64);
+    memset(m + 0x70000 + 1024, 0x33, 64);
+    memset(m + 0xE9000, 0, 0x1000);
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the third stale-part submission timed out");
+    bad_at = -1;
+    for (int i = 0; i < 0x1000 && bad_at < 0; i++)
+        if (m[0xE9000 + i] != exp3[i]) bad_at = i;
+    CHECK(bad_at < 0, "stale texture after a CPU write to its storage: byte %d is %02x, expected %02x", bad_at,
+          bad_at >= 0 ? m[0xE9000 + bad_at] : 0, bad_at >= 0 ? exp3[bad_at] : 0);
+
+    // Part 2: ss2 takes a render, then the CPU rewrites the storage; a texture created over it reads the CPU bytes.
+    uint32_t *pa2 = (uint32_t *)(m + 0xEA000);
+    for (int i = 0; i < 64 * 8; i++) pa2[i] = pa[i] ^ 0x00ff00ffu;
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    up.src = (uint64_t)(uintptr_t)(m + 0xEA000), up.tex = &ss2, up.r = rs;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    CHECK(p <= stream + sizeof stream - sizeof(op_hdr), "stale op stream overflow");
+    CHECK(xf_submit(b, stream, p), "fence_wait of the first stale-part render timed out");
+    for (int i = 0; i < 0x1000; i++) m[0x74000 + i] = (uint8_t)(i * 13 + 7);
+    static uint8_t cpu[0x1000];
+    memcpy(cpu, m + 0x74000, 0x1000);
+    memset(m + 0xEB000, 0, 0x1000);
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    dn.tex = &sn2, dn.src = (uint64_t)(uintptr_t)(m + 0xEB000), dn.r = rn;
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the second stale-part submission timed out");
+    bad_at = -1;
+    for (int i = 0; i < 0x1000 && bad_at < 0; i++)
+        if (m[0xEB000 + i] != cpu[i]) bad_at = i;
+    CHECK(bad_at < 0, "texture over a CPU-rewritten storage byte %d is %02x, expected the CPU byte %02x", bad_at,
+          bad_at >= 0 ? m[0xEB000 + bad_at] : 0, bad_at >= 0 ? cpu[bad_at] : 0);
+
+    b->texture_release(&ss);
+    b->texture_release(&sn);
+    b->texture_release(&ss2);
+    b->texture_release(&sn2);
+    b->pool_fini(&pool);
+    printf("probe-vkexec: stale part passed (a texture created in a submission over a GPU-written texture of another shape "
+           "takes the render where they overlap and the storage elsewhere; that copy reads the storage again after a CPU "
+           "write; a CPU rewrite after the render leaves the storage bytes; 12288 bytes compared)\n");
+    *bytes = 3 * 0x1000;
+    return 0;
+}
+
 // c0 as vk_c0_fill builds it (CPU only): compute storage and uniform tables, dispatch size, unbound slots zero; the
 // vertex stage's point size clamp and base instance.
 static int test_c0(void) {
@@ -1152,6 +1257,8 @@ int probe_vkexec(void) {
     if (!bad) bad = test_xfer(b, guest, &xfer_bytes);
     int alias_bytes = 0;
     if (!bad) bad = test_alias(b, guest, &alias_bytes);
+    int stale_bytes = 0;
+    if (!bad) bad = test_stale_copy(b, guest, &stale_bytes);
     int zero_bytes = 0;
     if (!bad) bad = test_c0() || test_zero(b, guest, &zero_bytes);
     int nvnx_bytes = 0, mirror_bytes = 0;
