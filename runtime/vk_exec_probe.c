@@ -511,6 +511,19 @@ static int fb_differ(const uint32_t *a, const uint32_t *b) {
 #define EV_W(k) (32 + 2 * (k))   // widths 32 to 158
 static uint8_t ev_stream[EV_N][8192];
 
+// Binds nothing to the eight fragment slots (as the draw part's first draw has them) and waits. fb_draw_body leaves FB_TEX_REF
+// bound, and a later draw that resolved it after its pool was finalized would read freed memory.
+static int fb_unbind(const GfxBackend *b) {
+    uint8_t *q = fb_stream;
+    p_bind_handles nt;
+    memset(&nt, 0, sizeof nt);
+    nt.stage = 1, nt.first = 0, nt.n = 8;
+    q = put(q, OP_BIND_TEX, &nt, sizeof nt);
+    put(q, OP_END, NULL, 0);
+    uint64_t handle = (uint64_t)(uintptr_t)fb_stream;
+    uint64_t f = b->submit(&handle, 1);
+    return b->fence_wait(f, 20000000000ull);
+}
 static int test_feedback_inflight(const GfxBackend *b, uint8_t *guest, const pool_t *draw_pool, prog_t *prog) {
     static tex_t tt[EV_N];
     pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + EV_BASE, .size = EV_POOL, .game_mem = guest + EV_BASE};
@@ -696,7 +709,6 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     fb_draw(fb_stream, prog, pool, color, FB_TEX_TARGET);
     ok = fb_run(b) && ok;
     fb_read(b, color, px_f);
-    vk_exec_snap_mode(env_on, env_narrow);
     CHECK(ok, "fence_wait of the feedback part's variants timed out");
     int narrow_full = fb_differ(px_c, px_f), no_copy = fb_differ(px_o, px_r);
     CHECK(!narrow_full, "feedback draw: narrow and full sync differ in %d texels", narrow_full);
@@ -704,6 +716,8 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
           (unsigned long long)vk_exec_frame.snap_skipped);
     if (test_feedback_inflight(b, guest, pool, prog)) return 1;
     if (test_samples_restart(b, guest, pool, prog, color, &out)) return 1;
+    vk_exec_snap_mode(env_on, env_narrow);
+    CHECK(fb_unbind(b), "fence_wait of the unbind of the feedback part's textures timed out");
     printf("probe-vkexec: feedback part passed (pair %d of %d tried: %llu copies in its draw, %d of %d texels equal the reference "
            "in both sync modes; with the copy off %d texels differ from it (0 where this GPU's live reads show no same-draw "
            "writes); 0 skipped)\n",

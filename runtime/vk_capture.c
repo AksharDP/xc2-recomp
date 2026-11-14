@@ -34,8 +34,9 @@ double vk_texel_bytes(VkFormat f) {
     case 131: case 132: case 133: case 134: case 139: case 140: return 0.5;   // BC1, BC4 (8 bytes per 4x4)
     case 135: case 136: case 137: case 138: case 141: case 142: case 143: case 144: case 145: case 146: return 1.0;   // BC2/3/5/6/7
     case 124: return 2.0;                                                // D16
-    case 97: case 130: return 8.0;                                       // R16G16B16A16_SFLOAT, D32S8 (padded)
-    case 109: return 16.0;                                               // R32G32B32A32_SFLOAT
+    case 91: case 92: case 93: case 94: case 95: case 96: case 97: case 101: case 102: case 103: case 130: return 8.0;   // RGBA16 and RG32 (8 bytes), D32S8 (padded)
+    case 104: case 105: case 106: return 12.0;                           // RGB32
+    case 107: case 108: case 109: return 16.0;                           // RGBA32
     default: return 4.0;                                                 // RGBA8, RGB10A2, R11G11B10F, R32F, D32
     }
 }
