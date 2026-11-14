@@ -69,6 +69,13 @@ static uint64_t wait_ns[PERF_N], frame_ns[PERF_N], worst_ns[PERF_N];   // window
 // threads' waits, so the two overlap; the flight recorder writes them apart.
 static uint64_t rep_frame_ns[PERF_N];
 static uint64_t span_ns[PERF_SPAN_N];
+// The render thread's drain time per reason since the previous present (perf_why); perf_present takes and clears it.
+static uint64_t why_ns[PERF_WHY_N];
+
+void perf_why(int why, uint64_t d) {
+    if (plat_thread_id() != prof_render_tid) return;   // the other threads' drains are not the frame's
+    __atomic_fetch_add(&why_ns[why], d, __ATOMIC_RELAXED);
+}
 
 uint64_t perf_begin(void) { return kern_now_ns(); }
 
@@ -322,6 +329,9 @@ void perf_present(uint64_t frame) {
     uint64_t now = kern_now_ns(), d = last ? now - last : 0;
     prof_sampler_frame(frame, now, last ? d : 0);
     uint64_t rep = ft_frame(frame, now, d);   // d is 0 on the first present: it only starts the period
+    // Taken on every present, flight recorder or not, so the reasons of one frame never add up into the next
+    uint64_t why[PERF_WHY_N];
+    for (int k = 0; k < PERF_WHY_N; k++) why[k] = __atomic_exchange_n(&why_ns[k], 0, __ATOMIC_RELAXED);
     ab_b += rt_ab();
     cpu_placement();
     if (__atomic_load_n(&overlay, __ATOMIC_RELAXED))   // the overlay's only cost while it is off: this branch
@@ -331,6 +341,7 @@ void perf_present(uint64_t frame) {
         PerfFrame pf;
         for (int k = 0; k < PERF_N; k++) pf.blocked[k] = frame_ns[k], pf.replay_blocked[k] = rep_frame_ns[k];
         for (int k = 0; k < PERF_SPAN_N; k++) pf.span[k] = __atomic_exchange_n(&span_ns[k], 0, __ATOMIC_RELAXED);
+        for (int k = 0; k < PERF_WHY_N; k++) pf.why[k] = why[k];
         pf.replay_ns = rep;
         flight_frame(frame, now, d, &pf, counts);
     }

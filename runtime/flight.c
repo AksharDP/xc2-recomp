@@ -27,6 +27,9 @@
 //   blocked_us  the render thread's and the replay thread's waits per PERF_* kind (both threads, so they can overlap)
 //   rep_us      the replay thread's share of those waits
 //   span_us     PERF_SPAN_* spans: the mirror capture, the present thread's fence and swapchain waits
+//   why_us      the render thread's drain time per reason (PERF_WHY_*: frame bound, full replay queue, other drains)
+//   guest_us    the guest thread's own time in the interval: the interval less the render thread's waits and the mirror
+//               capture (the game's submit call runs it on the guest thread); the game's code and the submit's other work
 //   gpu_us      GPU busy time of the frame (timestamps, perf_gpu_busy); replay_us the replay time since the last present
 //   n           the event counts, the exec counts of the frame and the PERF_CNT_* running totals' differences
 enum { C_SUBMITS, C_PASSES, C_DRAWS, C_DRAWS_SEEN, C_CLEARS, C_COPIES, C_DISPATCHES, C_XLATED, C_FB_SNAPS, C_FB_REUSE,
@@ -35,6 +38,7 @@ static const char *const blocked_names[PERF_N] = {"pace_ms", "fence_ms", "drain_
 static const char *const rep_names[PERF_N] = {"rep_pace_ms", "rep_fence_ms", "rep_drain_ms", "rep_pipe_ms", "rep_xlate_ms",
                                               "rep_tex_ms", "rep_astc_ms"};
 static const char *const span_names[PERF_SPAN_N] = {"capture_ms", "pres_fence_ms", "pres_acq_ms"};
+static const char *const why_names[PERF_WHY_N] = {"drain_frame_ms", "drain_full_ms", "drain_other_ms"};
 static const char *const count_names[C_N] = {
     "submits", "passes", "draws", "draws_seen", "clears", "copies", "dispatches", "shaders_xlated",
     "fb_snaps", "fb_snap_reuse", "fb_restarts", "fb_barriers",
@@ -45,7 +49,8 @@ _Static_assert(PERF_CNT_N == 14, "count_names follows the PERF_CNT_* list");
 
 typedef struct {
     uint64_t frame, t_ns;
-    uint32_t interval_us, blocked_us[PERF_N], rep_us[PERF_N], span_us[PERF_SPAN_N], gpu_us, replay_us, n[C_N];
+    uint32_t interval_us, guest_us, blocked_us[PERF_N], rep_us[PERF_N], span_us[PERF_SPAN_N], why_us[PERF_WHY_N], gpu_us,
+             replay_us, n[C_N];
 } Rec;
 
 typedef struct {
@@ -282,19 +287,22 @@ static void dump_main(void *arg) {
     }
     fprintf(f, "# xc2 flight dump: %s at frame %llu, interval %.1f ms\n", j->why, (unsigned long long)j->trig_frame,
             j->trig_interval_us / 1000.0);
-    fprintf(f, "frame\tt_ms\tinterval_ms");
+    fprintf(f, "frame\tt_ms\tinterval_ms\tguest_ms");
     for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", blocked_names[k]);
     for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", rep_names[k]);
     for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%s", span_names[k]);
+    for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%s", why_names[k]);
     fprintf(f, "\tgpu_ms\treplay_ms");
     for (int k = 0; k < C_N; k++) fprintf(f, "\t%s", count_names[k]);
     fprintf(f, "\tthumb\n");
     for (int i = 0; i < j->n; i++) {
         const Rec *r = &j->r[i];
-        fprintf(f, "%llu\t%.1f\t%.2f", (unsigned long long)r->frame, r->t_ns / 1e6, r->interval_us / 1000.0);
+        fprintf(f, "%llu\t%.1f\t%.2f\t%.2f", (unsigned long long)r->frame, r->t_ns / 1e6, r->interval_us / 1000.0,
+                r->guest_us / 1000.0);
         for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->blocked_us[k] / 1000.0);
         for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->rep_us[k] / 1000.0);
         for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%.2f", r->span_us[k] / 1000.0);
+        for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%.2f", r->why_us[k] / 1000.0);
         fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
         for (int k = 0; k < C_N; k++) fprintf(f, "\t%u", r->n[k]);
         fprintf(f, "\t%d\n", have ? have[i] : 0);
@@ -371,6 +379,15 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const P
         r->rep_us[k] = (uint32_t)(pf->replay_blocked[k] / 1000);
     }
     for (int k = 0; k < PERF_SPAN_N; k++) r->span_us[k] = (uint32_t)(pf->span[k] / 1000);
+    for (int k = 0; k < PERF_WHY_N; k++) r->why_us[k] = (uint32_t)(pf->why[k] / 1000);
+    // The guest thread's own time: the interval less the render thread's waits (blocked includes the replay thread's,
+    // which rep_frame_ns holds apart) and less the mirror capture, which the submit call runs on the guest thread
+    // The two counters are read apart, so the replay thread may have added to the second since the first: clamp at 0.
+    uint64_t waits = 0;
+    for (int k = 0; k < PERF_N; k++)
+        if (pf->blocked[k] > pf->replay_blocked[k]) waits += pf->blocked[k] - pf->replay_blocked[k];
+    uint64_t guest = waits + pf->span[PERF_SPAN_CAPTURE] < interval_ns ? interval_ns - waits - pf->span[PERF_SPAN_CAPTURE] : 0;
+    r->guest_us = (uint32_t)(guest / 1000);
     r->replay_us = (uint32_t)(pf->replay_ns / 1000);
     // GPU busy time since the previous present: the timestamps' running total (perf_gpu_busy, any thread)
     uint64_t gpu = perf_gpu_busy_total();

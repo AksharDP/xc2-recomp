@@ -32,16 +32,21 @@ enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_
 // Spans of work the waits above do not count, any thread (perf_span): the mirror capture of a submission (vk_memory.c,
 // on the guest thread) and the present thread's own waits for its fence and for a swapchain image (gfx_present.c).
 enum { PERF_SPAN_CAPTURE, PERF_SPAN_PRES_FENCE, PERF_SPAN_PRES_ACQUIRE, PERF_SPAN_N };
+// Why the render thread waited in a drain (vk_backend.c wait_counted): the frame bound and a full replay queue are the
+// waits a present itself makes; every other drain is OTHER. Taken per present with the waits, so they split PERF_DRAIN.
+enum { PERF_WHY_FRAME, PERF_WHY_FULL, PERF_WHY_OTHER, PERF_WHY_N };
 // One present's timing as the flight recorder takes it (perf_present): the waits per kind with both threads' share,
-// the replay thread's share of the waits, the spans since the previous present, and the replay time since then.
+// the replay thread's share of the waits, the spans since the previous present, the replay time since then, and the
+// render thread's drain time per reason.
 typedef struct {
-    uint64_t blocked[PERF_N], replay_blocked[PERF_N], span[PERF_SPAN_N], replay_ns;
+    uint64_t blocked[PERF_N], replay_blocked[PERF_N], span[PERF_SPAN_N], replay_ns, why[PERF_WHY_N];
 } PerfFrame;
 void prof_start(void);
 void prof_write(void);                          // idempotent; boot.c calls it before _exit
 uint64_t perf_begin(void);                      // start time of a wait or a span; pair with perf_end or perf_span
 void perf_end(int kind, uint64_t t0);           // counts render-thread time only
 void perf_span(int kind, uint64_t t0);          // adds the time since t0 to this frame's span of the kind (any thread)
+void perf_why(int why, uint64_t d);             // a drain of d ns ended: counts it under the reason when the render thread waited
 void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recording) time on any thread, waits inside it included
 void perf_replay_thread(void);                  // the calling thread replays for the render thread: perf_end counts its waits
 void perf_main_thread(void);                    // the calling thread is the guest main thread (XC2_PROFILE_MAIN)
