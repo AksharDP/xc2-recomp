@@ -1121,6 +1121,9 @@ def main():
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
     if not args.no_lto:
         use_lto(jobs)
+    if args.pgo_generate and args.runtime_lib:
+        # The prebuilt library was compiled without XC2_PGO_GENERATE, so plat_exit would never write the profile
+        sys.exit('--pgo-generate needs the runtime compiled here, not --runtime-lib')
     if args.pgo_generate or args.pgo_use:
         use_pgo(args.pgo_generate, args.pgo_use.resolve() if args.pgo_use else None)
     if args.make_runtime_lib:
