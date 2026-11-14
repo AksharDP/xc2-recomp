@@ -85,7 +85,7 @@
 # lod_guard = 1
 # A draw that samples a target it also writes reads a copy made just before it, as on the Switch: stops the thin lines
 # that flicker in the cloud sea on AMD GPUs. 1 makes one copy for a run of such draws, 2 one copy for every draw (much
-# slower in scenes with many of them), 0 none.
+# slower in scenes with many of them), 0 none. Unset: 0 on NVIDIA GPUs, 1 elsewhere.
 # feedback_snap = 1
 # How those copies are ordered against the rest of the frame: narrow (the default) orders only the copies' reads and
 # writes; full uses the whole-frame barriers the copies had before, for comparison. Only matters while feedback_snap is 1 or 2.
