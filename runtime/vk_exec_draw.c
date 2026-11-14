@@ -2168,6 +2168,8 @@ static int pipe_memo_on(void) {
     return PM.on;
 }
 
+static const GfxShader *draw_vs;   // the vertex shader of the draw prepare_draw last set up (quad_split)
+
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     glow_prim = prim;
@@ -2242,6 +2244,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
+    draw_vs = vs;
     s.feedback = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0));
     s.prim = (uint8_t)prim;
     s.depth_minus_w = (uint8_t)(nvn_depth_minus_w() != 0);
@@ -2389,6 +2392,92 @@ static void xfb_end(VkExec *ex, const VkMemSpan *sp, uint64_t bytes) {
     ex->xfb_written += bytes;
 }
 
+// XC2_QUAD_SPLIT=<n> (experiment, 2..64, default off): a quad draw of 4 to 16 quads whose vertex shader
+// reads only a float3 position at location 0 is drawn as an n x n grid of triangles per quad, the grid's positions
+// blended from the quad's corners (exact for a flat quad). XC2's cloud sea composite (prog of vs 3e88e05082ee22fc) draws
+// the whole sea surface as 6 such quads tens of thousands of units wide, partly behind the camera; on Mesa GPUs the
+// attributes interpolated across those triangles move with the game's sub-pixel camera jitter, and the sea's distance
+// and colour shimmer. corner holds the 4 * q vertex numbers (base vertex added). Returns 0 when the draw does not
+// qualify (the caller draws it as two triangles per quad).
+static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t inst, uint32_t base_instance) {
+    static int split = -1;
+    if (split < 0) {
+        const char *e = cfg_get("XC2_QUAD_SPLIT");
+        split = e ? atoi(e) : 0;
+        if (split < 2) split = 0;
+        if (split > 64) split = 64;
+        if (split) rt_log("vk: XC2_QUAD_SPLIT=%d: small position-only quad draws are subdivided", split);
+    }
+    if (!split || q < 4 || q > 16 || inst != 1) return 0;
+    static int rej;
+#define QS_NO(...) do { if (q > 1 && rej < 12) rej++, rt_log("vk: quad split skips %u quads of prog %llu: " __VA_ARGS__); return 0; } while (0)
+    // The vertex format first: it is a load, and most quad draws (the UI's) fail it; the shader's inputs are a walk.
+    unsigned long long pg = ex->prog ? ex->prog->serial : 0;
+    va_st va;
+    memcpy(&va, &ex->pipe.vattr[0], sizeof va);
+    if (va.fmt != 0x22 || va.stream >= 16) QS_NO("format %#x stream %u", q, pg, (unsigned)va.fmt, (unsigned)va.stream);
+    static const GfxShader *last_vs;   // the last vertex shader asked and its answer: the sea draws repeat each frame
+    static uint32_t last_in;
+    if (draw_vs != last_vs) {
+        GfxShaderIo io[32];
+        last_in = draw_vs ? gfx_shader_inputs(draw_vs, io) : 0;
+        last_vs = draw_vs;
+    }
+    uint32_t in = last_in;
+    if (in != 1u) QS_NO("inputs %#x", q, pg, in);
+    uint32_t vs = ex->pipe.vstream[va.stream].stride;
+    uint64_t vbase = ex->vbuf[va.stream].address;
+    if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
+        QS_NO("stride %u offset %u base %#llx gpu-only %d", q, pg, vs, (unsigned)va.offset, (unsigned long long)vbase, vbase ? nvn_gpu_only(vbase) : -1);
+    // The corners are read on the CPU: their bytes must be backed by CPU-visible memory and lie in the bound range, as
+    // bind_vertex_buffers resolves the stream (a device-local or unbacked stream keeps the normal path).
+    uint32_t maxc = 0;
+    for (uint32_t i = 0; i < 4 * q; i++)
+        if (corner[i] > maxc) maxc = corner[i];
+    uint64_t need = (uint64_t)maxc * vs + va.offset + 12, bound = ex->vbuf[va.stream].size;
+    VkMemSpan sp;
+    if (!vk_mem_resolve(vbase, need, &sp) || sp.alloc || sp.avail < need || (bound && bound < need))
+        QS_NO("corners up to %#llx bytes past %#llx are not in CPU-visible bound memory", q, pg, (unsigned long long)need,
+              (unsigned long long)vbase);
+#undef QS_NO
+    uint32_t g = (uint32_t)split + 1, nv = q * g * g, ni = q * (uint32_t)split * (uint32_t)split * 6;
+    VkBuffer vb, ib;
+    VkDeviceSize vo, io_;
+    uint8_t *v = scratch(ex, (uint64_t)nv * vs, &vb, &vo);
+    memset(v, 0, (size_t)nv * vs);
+    for (uint32_t k = 0; k < q; k++) {
+        float c[4][3];
+        for (int j = 0; j < 4; j++)
+            memcpy(c[j], (const void *)(uintptr_t)(vbase + (uint64_t)corner[4 * k + (uint32_t)j] * vs + va.offset), 12);
+        for (uint32_t y = 0; y < g; y++)
+            for (uint32_t x = 0; x < g; x++) {   // u from corner 0 to 1, w from 1 to 2 (corners 0, 1, 2, 3 in order)
+                double u = (double)x / split, w = (double)y / split;
+                float p[3];
+                for (int a = 0; a < 3; a++)
+                    p[a] = (float)((1 - u) * (1 - w) * c[0][a] + u * (1 - w) * c[1][a] + u * w * c[2][a] + (1 - u) * w * c[3][a]);
+                memcpy(v + (size_t)(k * g * g + y * g + x) * vs + va.offset, p, 12);
+            }
+    }
+    uint32_t *ix = (uint32_t *)scratch(ex, (uint64_t)ni * 4, &ib, &io_);
+    uint32_t m = 0;
+    for (uint32_t k = 0; k < q; k++)
+        for (uint32_t y = 0; y < (uint32_t)split; y++)
+            for (uint32_t x = 0; x < (uint32_t)split; x++) {   // the winding of (0, 1, 2), (0, 2, 3)
+                uint32_t a = k * g * g + y * g + x, b = a + 1, cc = a + g + 1, dd = a + g;
+                ix[m++] = a, ix[m++] = b, ix[m++] = cc, ix[m++] = a, ix[m++] = cc, ix[m++] = dd;
+            }
+    VkDeviceSize sz = (VkDeviceSize)nv * vs, st = vs;
+    vkCmdBindVertexBuffers2(ex->cb, va.stream, 1, &vb, &vo, &sz, vk_pipeline_vertex_input_dynamic() ? NULL : &st);
+    vkCmdBindIndexBuffer(ex->cb, ib, io_, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(ex->cb, ni, 1, 0, 0, base_instance);
+    ex->recorded += 3;
+    B.vb_valid = 0;   // the next draw binds the game's vertex buffers again
+    static int told;
+    if (told < 8) told++, rt_log("vk: quad split: %u quads of prog %llu into %u triangles", q,
+                                 (unsigned long long)(ex->prog ? ex->prog->serial : 0), ni / 3);
+    return 1;
+}
+
 static void op_draw(VkExec *ex, const p_draw *d) {
     c0_binst = (uint32_t)d->base_instance;
     if (d->count <= 0 || (ex->xfb_active && !xfb_draw_ok(d->prim, 0)) || !prepare_draw(ex, d->prim, d->count, 0)) return;
@@ -2403,7 +2492,12 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         xfb_end(ex, &sp, bytes);
         return;
     }
-    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
+    uint32_t qc[64];
+    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4 && n / 4 <= 16) {
+        for (uint32_t i = 0; i < n / 4 * 4; i++) qc[i] = first + i;
+    }
+    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4 && n / 4 <= 16 && quad_split(ex, qc, n / 4, inst, (uint32_t)d->base_instance)) {
+    } else if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
         if (!ix) rt_fatal("vk: out of memory");
@@ -2463,9 +2557,17 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         if (!q) return;
         vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
         vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, 24ull * q);
-        uint32_t *ix = malloc(sizeof *ix * 6 * (size_t)q);
-        if (!ix) rt_fatal("vk: out of memory");
         const void *src = (const void *)(uintptr_t)d->ibuf;
+        if (q <= 16) {
+            uint32_t qc[64];
+            for (uint32_t i = 0; i < 4 * q; i++)
+                qc[i] = (uint32_t)d->base_vertex + (d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE ? ((const uint8_t *)src)[i]
+                                                  : d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)src)[i]
+                                                  : ((const uint32_t *)src)[i]);
+            if (quad_split(ex, qc, q, d->instances > 0 ? (uint32_t)d->instances : 1, (uint32_t)d->base_instance)) return;
+        }
+        uint32_t *ix = malloc(sizeof *ix * 6 * (size_t)q);   // after quad_split, which needs none
+        if (!ix) rt_fatal("vk: out of memory");
         for (uint32_t i = 0; i < q; i++) {
             static const uint8_t k[6] = {0, 1, 2, 0, 2, 3};
             for (int j = 0; j < 6; j++) {
