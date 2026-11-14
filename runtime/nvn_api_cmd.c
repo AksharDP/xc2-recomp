@@ -298,13 +298,9 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
     return bytes;
 }
 
-// The recording [p, p + n), OP_BEGIN to OP_END (the recording buffer is one block: recording emits no OP_JUMP), copied
-// into one host block of its exact size. One allocation and one copy: growing the copy record by record cost the
-// game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
-static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
-    uint8_t *out = (uint8_t *)copy_alloc(n);
-    memcpy(out + sizeof(copy_prefix), p, n);
-    for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
+// Checks the recording [p, p + n), OP_BEGIN to OP_END: a corrupt record stops here, not in the replay.
+static void check_recording(const uint8_t *p, size_t n) {
+    for (size_t at = 0;;) {
         op_hdr h;
         memcpy(&h, p + at, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_ || h.op == OP_JUMP || h.op == OP_CALL || at + h.size > n ||
@@ -316,7 +312,34 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
             break;
         }
     }
-    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0, 0, ((copy_prefix *)out)->cap};
+}
+
+// The finished recording of o (OP_BEGIN to OP_END; the recording buffer is one block: recording emits no OP_JUMP) as a
+// copy block, returned as its handle. A recording that fills at least half of its buffer takes the buffer itself: the
+// buffer keeps room for a copy_prefix in front of the records (nvnCommandBufferBeginRecording), so the handle needs no
+// copy, and the command buffer records on in a block of the same size from the copy cache. The scene's large
+// recordings (hundreds of KiB a frame) were copied once more here, about 5 % of the presenting thread in frames over
+// 10 ms (2026-11-14). A smaller recording is copied into a block of its size, so that the many small handles a frame
+// keeps alive do not each hold a large buffer. One allocation and one copy: growing the copy record by record cost the
+// game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
+static uint8_t *flatten_recording(cmd_t *o) {
+    const uint8_t *p = o->seg + sizeof(copy_prefix);
+    size_t n = (size_t)(o->cur - p), cap = (size_t)(o->end - o->seg);
+    check_recording(p, n);
+    uint8_t *out;
+    if (copy_cache_on() && 2 * (n + sizeof(copy_prefix)) >= cap && cap <= FL_MAX_BYTES) {
+        out = o->seg;
+        copy_prefix *next = copy_alloc(cap - sizeof(copy_prefix));
+        size_t got = (size_t)next->cap;
+        o->seg = (uint8_t *)next;
+        o->cur = o->seg + sizeof(copy_prefix);
+        o->end = o->seg + got;
+    } else {
+        out = (uint8_t *)copy_alloc(n);
+        memcpy(out + sizeof(copy_prefix), p, n);
+        cap = (size_t)((copy_prefix *)out)->cap;
+    }
+    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0, 0, cap};
     return out + sizeof(copy_prefix);
 }
 
@@ -448,7 +471,11 @@ NVN_API(nvnCommandBufferBeginRecording) {
     cmd_t *o = cmd_of(c);
     if (o->recording) rt_log("nvn: BeginRecording on command buffer %p while it records", (void *)o);
     o->recording = 1;
-    o->cur = o->seg;   // the previous recording was copied at EndRecording
+    // The previous recording was copied or handed over at EndRecording. The records start past room for a copy_prefix,
+    // so that flatten_recording can hand the buffer over as the handle's block.
+    o->cur = o->seg;
+    cmd_reserve(o, sizeof(copy_prefix));
+    o->cur = o->seg + sizeof(copy_prefix);
     o->rec_start = o->cmd_used;
     put_hdr(cmd_alloc(o, 8), OP_BEGIN, 8);
     o->hw_used -= 8;   // BEGIN and END have no hardware equivalent
@@ -463,7 +490,8 @@ NVN_API(nvnCommandBufferEndRecording) {
     put_hdr(cmd_alloc(o, 8), OP_END, 8);
     o->hw_used -= 8;
     o->recording = 0;
-    uint8_t *copy = flatten_recording(o->seg, (size_t)(o->cur - o->seg));
+    size_t rec_bytes = (size_t)(o->cur - o->seg) - sizeof(copy_prefix);
+    uint8_t *copy = flatten_recording(o);
     // Finalizing the recorder does not retire its handle; only reusing the control memory it was recorded in does.
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
@@ -471,7 +499,7 @@ NVN_API(nvnCommandBufferEndRecording) {
     copy_add(lo, hi, copy);
     if (nvn_callers_on())
         rt_log("draw callers: EndRecording cmd %p -> handle %p (%zu bytes), lr %#llx", (void *)o, (void *)copy,
-               (size_t)(o->cur - o->seg), (unsigned long long)c->x[30]);
+               rec_bytes, (unsigned long long)c->x[30]);
     ret_x(c, (uintptr_t)copy);
 }
 // NVNboolean nvnCommandBufferIsRecording(const NVNcommandBuffer *cmd)
