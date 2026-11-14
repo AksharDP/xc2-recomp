@@ -92,7 +92,10 @@ static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
 // XC2_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
 // live image that the GPU wrote gets that image's content (alias_copy). Counts since the last log line.
 static int tex_alias = -1;
-static uint64_t n_alias_copied, n_alias_upload, n_alias_uninit;
+static uint64_t n_alias_copied, n_alias_upload, n_alias_uninit, n_alias_stale, n_alias_stale_copied;
+// n_stale_total: GPU-written sources of another shape that were neither copied from nor written back, since start
+// (entry_of; vk_texture_stale_refusals). Unlike n_alias_stale it is not reset by the perf line.
+static uint64_t n_stale_total;
 static uint32_t submit_epoch = 1;   // bumped per queue submit: draw bindings check a texture's storage once per submit
 // Mirrored textures the GPU wrote into, sorted by address (vk_texture_cpu_stale, vk_texture_write_back). Changed under
 // tex_lock and owned_lock; read under either.
@@ -824,6 +827,120 @@ static int alias_copy(Tex *e, const Tex *src) {
     return 1;
 }
 
+// ---- stale sources (entry_of): a GPU-written mirrored texture of another shape over the storage of a new texture.
+// Only linear textures are copied (one level, layer and slice, colour, image texels equal to their storage bytes): row y
+// of a linear texture starts at addr + y * pitch, so a piece where a row of the new texture meets a row of the source
+// holds the same storage bytes in both. Those pieces are copied from the source's image, copied out tight, into the new
+// texture after its storage upload. Other shapes keep the storage upload and count as refused.
+#define STALE_MAX 4              // GPU-written sources one new texture takes
+#define STALE_REGIONS 65536u     // buffer-to-image regions per source
+#define STALE_BYTES (16u << 20)  // copy-out buffer bytes per source
+
+static int stale_linear(const Tex *t, int *bpb) {
+    if (t->f.depth || t->f.stencil || t->f.astc_bw || t->f.expand_rgb || t->pub.samples > 1) return 0;
+    if (!t->pub.mirrored || t->pub.type != VK_IMAGE_TYPE_2D || t->pub.levels != 1 || t->pub.layers != 1 || t->pub.depth != 1)
+        return 0;
+    if (!nvn_tex_is_linear(&t->t.d)) return 0;
+    int bw, bh, b = img_block(t, &bw, &bh);
+    if (bw != 1 || bh != 1 || b < 4 || b > 16 || b % 4) return 0;   // a texel of 4, 8 or 16 bytes, the same in image and storage
+    *bpb = b;
+    return 1;
+}
+
+// Copy regions for the texels of e that src's storage holds, with src's image copied out tight (texel (x, y) at
+// (y * width + x) texels in the buffer). rg NULL: count only. The count is taken first and checked against the cap, so a
+// fill never writes past the array the caller sized from it.
+static uint32_t stale_regions(const Tex *e, const Tex *src, int bpb, VkBufferImageCopy *rg) {
+    const int64_t pe = (int64_t)e->pub.addr, ps = (int64_t)src->pub.addr, rb = bpb;
+    const int64_t pitch_e = nvn_tex_linear_stride(&e->t.d), pitch_s = nvn_tex_linear_stride(&src->t.d);
+    const int64_t we = e->pub.width, he = e->pub.height, ws = src->pub.width, hs = src->pub.height;
+    uint32_t n = 0;
+    for (int64_t y = 0; y < he; y++) {
+        const int64_t b0 = pe + y * pitch_e, b1 = b0 + we * rb;
+        int64_t lo = (b0 - ps) / pitch_s - 2, hi = (b1 - ps) / pitch_s + 2;   // the rows of src that can reach [b0, b1)
+        if (lo < 0) lo = 0;
+        if (hi > hs - 1) hi = hs - 1;
+        for (int64_t ys = lo; ys <= hi; ys++) {
+            const int64_t s0 = ps + ys * pitch_s, s1 = s0 + ws * rb;   // texel bytes of src's row (the pitch padding is not)
+            const int64_t i0 = b0 > s0 ? b0 : s0, i1 = b1 < s1 ? b1 : s1;
+            if (i0 >= i1) continue;
+            if (rg) rg[n] = (VkBufferImageCopy){.bufferOffset = (VkDeviceSize)((ys * ws + (i0 - s0) / rb) * rb),
+                                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                                .imageOffset = {(int32_t)((i0 - b0) / rb), (int32_t)y, 0},
+                                                .imageExtent = {(uint32_t)((i1 - i0) / rb), 1, 1}};
+            if (++n > STALE_REGIONS) return n;
+        }
+    }
+    return n;
+}
+
+// Takes the GPU content of the stale sources into e, oldest write first so the newest lands last. e gets its storage
+// upload (recorded in the upload batch, which the submission flushes ahead of this replay part), then each source's
+// pieces are copied over it at the replay's current position. e stays an ordinary mirrored texture, not GPU-written:
+// the storage stays the reference, and when a source is written back its storage changes, so make_fresh uploads e again
+// with the render. Nothing is recorded before the checks pass: 0 leaves e to the plain storage upload.
+static int stale_copy(Tex *e, Tex **srcs, int n) {
+    int bpb = 0, sbpb = 0;
+    if (!stale_linear(e, &bpb)) return 0;
+    for (int i = 1; i < n; i++)
+        for (int j = i; j > 0 && srcs[j - 1]->gpu_seq > srcs[j]->gpu_seq; j--) {
+            Tex *t = srcs[j - 1];
+            srcs[j - 1] = srcs[j], srcs[j] = t;
+        }
+    uint32_t nr[STALE_MAX];
+    VkDeviceSize sz[STALE_MAX];
+    uint32_t total = 0;
+    for (int i = 0; i < n; i++) {
+        if (!stale_linear(srcs[i], &sbpb) || sbpb != bpb) return 0;
+        nr[i] = stale_regions(e, srcs[i], bpb, NULL);
+        if (nr[i] > STALE_REGIONS) return 0;
+        sz[i] = (VkDeviceSize)srcs[i]->pub.width * srcs[i]->pub.height * bpb;
+        if (nr[i] && sz[i] > STALE_BYTES) return 0;
+        total += nr[i];
+    }
+    if (!total) return 0;
+    int reopen;
+    VkCommandBuffer cb = vk_exec_inline_begin(&reopen);
+    if (!cb) return 0;
+    VkBuffer buf[STALE_MAX] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    for (int i = 0; i < n; i++) {
+        if (!nr[i]) continue;
+        buf[i] = vk_exec_inline_buffer(sz[i]);
+        if (!buf[i]) {
+            vk_exec_inline_end(reopen);
+            return 0;
+        }
+    }
+    // make_fresh's first upload, with the write bits reset before the storage is read; init_image's UNDEFINED -> GENERAL
+    // comes first in the same batch
+    vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
+    init_image(e, vk_upload_begin());
+    vk_upload_end();
+    upload(e);
+    if (!e->uploaded) {
+        vk_exec_inline_end(reopen);
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        if (!nr[i]) continue;
+        const Tex *s = srcs[i];
+        VkBufferImageCopy whole = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                   .imageExtent = {s->pub.width, s->pub.height, 1}};
+        VkBufferImageCopy *rg = calloc(nr[i], sizeof *rg);
+        if (!rg) rt_fatal("vk: out of memory for a stale copy");
+        stale_regions(e, s, bpb, rg);
+        barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        vkCmdCopyImageToBuffer(cb, s->pub.image, VK_IMAGE_LAYOUT_GENERAL, buf[i], 1, &whole);
+        barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+        vkCmdCopyBufferToImage(cb, buf[i], e->pub.image, VK_IMAGE_LAYOUT_GENERAL, nr[i], rg);
+        barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+        free(rg);
+    }
+    vk_exec_inline_end(reopen);
+    return 1;
+}
+
 static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
@@ -837,13 +954,21 @@ static Tex *entry_of(const tex_t *t) {
         perf_count(PERF_CNT_TEX_NEW);
         // released entries of another descriptor at this address are replaced by the new one; a live one holding
         // GPU-written content is the alias source, preferring the one that differs only in swizzle (same_but_swizzle)
-        int alias = 0;
-        Tex *src = NULL;
+        int alias = 0, nstale = 0, stale_over = 0;
+        Tex *src = NULL, *stale[STALE_MAX];
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr), *nx; p; p = nx) {
             nx = p->next_at;
             if (p->released) { destroy_tex(p); continue; }
             alias = 1;
-            if (tex_alias && alias_compatible(e, p) && alias_has_gpu_content(p)) {
+            if (tex_alias && !alias_compatible(e, p)) {
+                // A GPU-written mirrored texture of another shape is no copy source: stale_copy takes its render into e when
+                // both are linear; otherwise e uploads storage bytes that may lack the render. alias_has_gpu_content is the
+                // exact test (the storage was not rewritten since the render), the one the compatible path uses too.
+                if (p->pub.mirrored && alias_has_gpu_content(p)) {
+                    if (nstale < STALE_MAX) stale[nstale++] = p;
+                    else stale_over = 1;
+                }
+            } else if (tex_alias && alias_has_gpu_content(p)) {
                 // The source is the candidate with the newest GPU write to the storage range: the copy must not take older
                 // content (both mirrored: gpu_seq is the write order). Among equal candidates the first in the chain stays,
                 // and a swizzle-only difference still goes first.
@@ -869,12 +994,22 @@ static Tex *entry_of(const tex_t *t) {
                     // another alias still lands after it. A later render into the copy takes a new place as usual.
                     mark_gpu_written_as(e, f, src->gpu_seq ? src->gpu_seq : ++gpu_writes);
                 }
+            } else if (!src && nstale && !stale_over && stale_copy(e, stale, nstale)) {
+                n_alias_stale_copied++;
             } else {
                 init_image(e, vk_upload_begin());
                 vk_upload_end();
                 if (alias) {
                     if (e->pub.mirrored) n_alias_upload++;
                     else n_alias_uninit++;
+                }
+                if (nstale) {
+                    n_alias_stale++, n_stale_total++;
+                    static volatile int32_t n_stale_log;
+                    log_limited(&n_stale_log, "texture %#llx (%ux%u, format %#x): its storage is shared with a GPU-written "
+                                "texture of another shape that is not written back yet; the new texture uploads the storage "
+                                "bytes, which may be older than that render", (unsigned long long)e->pub.addr, e->pub.width,
+                                e->pub.height, e->t.d.format);
                 }
             }
         }
@@ -1106,10 +1241,11 @@ void vk_texture_new_submit(void) {
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
     if ((rt_trace & RT_TRACE_PERF) && f != log_at && tex_alias > 0) {
         log_at = f;
-        rt_log("perf: frame %llu: texture aliases: content copied %llu, filled from storage %llu, left uninitialised %llu",
-               (unsigned long long)f * 60, (unsigned long long)n_alias_copied, (unsigned long long)n_alias_upload,
-               (unsigned long long)n_alias_uninit);
-        n_alias_copied = n_alias_upload = n_alias_uninit = 0;
+        rt_log("perf: frame %llu: texture aliases: content copied %llu, filled from storage %llu, left uninitialised %llu, "
+               "stale source %llu refused, %llu copied", (unsigned long long)f * 60, (unsigned long long)n_alias_copied,
+               (unsigned long long)n_alias_upload, (unsigned long long)n_alias_uninit, (unsigned long long)n_alias_stale,
+               (unsigned long long)n_alias_stale_copied);
+        n_alias_copied = n_alias_upload = n_alias_uninit = n_alias_stale = n_alias_stale_copied = 0;
         rt_log("perf: frame %llu: texture re-uploads %llu (%.1f MiB, %.2f ms), after WriteTexels %llu (%.1f MiB, %.2f ms)",
                (unsigned long long)f * 60, (unsigned long long)ru_n, ru_bytes / 1048576.0, ru_ns / 1e6,
                (unsigned long long)ru_wt_n, ru_wt_bytes / 1048576.0, ru_wt_ns / 1e6);
@@ -1473,6 +1609,13 @@ size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegio
     Region g;
     if (!region_of(t, v, r, row, img, &g)) return 0;
     return (size_t)(g.nz - 1) * g.img + (g.hb - 1) * g.row + g.wb;
+}
+
+uint64_t vk_texture_stale_refusals(void) {
+    lock();
+    uint64_t n = n_stale_total;
+    unlock();
+    return n;
 }
 
 int vk_texture_cpu_stale(uint64_t addr, uint64_t size) {
