@@ -29,10 +29,19 @@ extern unsigned rt_trace;                       // from XC2_TRACE=svc,host,ipc,f
 // prof_win.c: XC2_PROFILE=<path> sampling profiler; XC2_TRACE=perf frame timing (waits of the render thread)
 // PERF_TEX: texture uploads on the render thread (deswizzle, decode, staging), PERF_ASTC included
 enum { PERF_PACE, PERF_FENCE, PERF_DRAIN, PERF_PIPE, PERF_XLATE, PERF_TEX, PERF_ASTC, PERF_N };
+// Spans of work the waits above do not count, any thread (perf_span): the mirror capture of a submission (vk_memory.c,
+// on the guest thread) and the present thread's own waits for its fence and for a swapchain image (gfx_present.c).
+enum { PERF_SPAN_CAPTURE, PERF_SPAN_PRES_FENCE, PERF_SPAN_PRES_ACQUIRE, PERF_SPAN_N };
+// One present's timing as the flight recorder takes it (perf_present): the waits per kind with both threads' share,
+// the replay thread's share of the waits, the spans since the previous present, and the replay time since then.
+typedef struct {
+    uint64_t blocked[PERF_N], replay_blocked[PERF_N], span[PERF_SPAN_N], replay_ns;
+} PerfFrame;
 void prof_start(void);
 void prof_write(void);                          // idempotent; boot.c calls it before _exit
-uint64_t perf_begin(void);                      // start time of a wait; pair with perf_end
+uint64_t perf_begin(void);                      // start time of a wait or a span; pair with perf_end or perf_span
 void perf_end(int kind, uint64_t t0);           // counts render-thread time only
+void perf_span(int kind, uint64_t t0);          // adds the time since t0 to this frame's span of the kind (any thread)
 void perf_replay(uint64_t t0);                  // replay (NVN -> Vulkan recording) time on any thread, waits inside it included
 void perf_replay_thread(void);                  // the calling thread replays for the render thread: perf_end counts its waits
 void perf_main_thread(void);                    // the calling thread is the guest main thread (XC2_PROFILE_MAIN)
@@ -45,8 +54,12 @@ void perf_main_thread(void);                    // the calling thread is the gue
 // rewrote the storage after the GPU render (vk_texture.c vk_texture_write_back).
 enum { PERF_CNT_PIPE_ASYNC, PERF_CNT_PIPE_SKIP, PERF_CNT_TEX_UP, PERF_CNT_TEX_REUP, PERF_CNT_SHADER_SKIP,
        PERF_CNT_PIPE_WAIT, PERF_CNT_ONESHOT_WAIT, PERF_CNT_PIPE_BUILT, PERF_CNT_TEX_NEW, PERF_CNT_TEX_ALIAS,
-       PERF_CNT_WB, PERF_CNT_WB_SKIP, PERF_CNT_N };
+       PERF_CNT_WB, PERF_CNT_WB_SKIP,
+       // The mirror capture (vk_memory.c vk_mem_capture), in KiB: the write-watch range it queried and the bytes it copied
+       // into the staging arenas. Taken with perf_count_by, so the flight recorder shows them per frame.
+       PERF_CNT_MIRROR_KB, PERF_CNT_STAGE_KB, PERF_CNT_N };
 void perf_count(int kind);
+void perf_count_by(int kind, uint64_t n);
 void perf_present(uint64_t frame);
 void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit); the 60 s lines come from perf_present
 void gfx_exit_log(void);                        // back end's lines for the exit summary (weak no-op in prof_win.c)
@@ -162,6 +175,10 @@ int mem_frozen(uint64_t a);                                // the 2 MiB region o
                                                            // since its freeze
 void mem_thaw(uint64_t a, uint64_t n);                     // makes the frozen regions over [a, a+n) writable again;
                                                            // before a kernel write (file read) into guest memory
+// The buffer of a read: begin before the kernel writes it, end after the call returned. The regions stay writable (not
+// frozen) between the two; see memory.c.
+void mem_read_begin(uint64_t a, uint64_t n);
+void mem_read_end(uint64_t a, uint64_t n);
 void mem_freeze_stats(uint64_t *frozen, uint64_t *freezes, uint64_t *fault_thaws, uint64_t *other_thaws);
                                                            // regions frozen now; freezes and thaws since the last call
 void mem_copy_par(void *dst, const void *src, uint64_t n);   // memcpy into guest memory: a large copy into fresh pages is

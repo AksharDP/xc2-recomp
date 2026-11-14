@@ -26,13 +26,17 @@ __attribute__((weak)) void prof_sampler_frame(uint64_t frame, uint64_t now, uint
 // (frame-time summary). perf_base: the part fixed at start.
 static int perf_on, perf_base;
 static int overlay;   // performance overlay mode (perf_set_overlay): 0 off, 1 fps, 2 full
+static uint64_t ftg_frame, ftg_world_us;   // XC2_FT_FROM_FRAME / XC2_FT_FROM_WORLD (see ftg_add): 0 off
 
 void perf_set_overlay(int mode) {
     __atomic_store_n(&overlay, mode, __ATOMIC_RELAXED);
     __atomic_store_n(&perf_on, perf_base || mode == 2, __ATOMIC_RELAXED);
 }
 
-int perf_gpu_timing(void) { return (rt_trace & RT_TRACE_PERF) || __atomic_load_n(&overlay, __ATOMIC_RELAXED) == 2; }
+// The flight recorder takes the GPU busy time per frame too, so its timestamps are on with it.
+int perf_gpu_timing(void) {
+    return (rt_trace & RT_TRACE_PERF) || __atomic_load_n(&overlay, __ATOMIC_RELAXED) == 2 || flight_on;
+}
 
 static volatile int64_t gpu_busy_total;
 
@@ -45,17 +49,26 @@ void prof_start(void) {
     atexit(perf_summary_flush);   // boot.c's _exit path goes through prof_write instead
     perf_base = (rt_trace & RT_TRACE_PERF) || flight_on;
     perf_on = perf_base || overlay == 2;
+    const char *e = cfg_get("XC2_FT_FROM_FRAME");
+    ftg_frame = e && *e ? strtoull(e, NULL, 10) : 0;
+    e = cfg_get("XC2_FT_FROM_WORLD");
+    ftg_world_us = e && *e && atof(e) > 0 ? (uint64_t)(atof(e) * 1e6) : 0;
     if (prof_sampler_start()) atexit(prof_write);   // a --seconds run ends in _exit: boot.c calls prof_write itself first
 }
 
 void prof_write(void) {
     perf_summary_flush();
+    flight_exit();
     prof_sampler_write();
 }
 
 // ---- XC2_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
 // flight recorder (XC2_FLIGHT=1, flight.c) takes the same numbers per frame.
 static uint64_t wait_ns[PERF_N], frame_ns[PERF_N], worst_ns[PERF_N];   // window totals, this frame, the slowest frame
+// This frame's waits of the replay thread alone, and this frame's spans (perf_span, any thread). frame_ns holds both
+// threads' waits, so the two overlap; the flight recorder writes them apart.
+static uint64_t rep_frame_ns[PERF_N];
+static uint64_t span_ns[PERF_SPAN_N];
 
 uint64_t perf_begin(void) { return kern_now_ns(); }
 
@@ -74,6 +87,12 @@ void perf_end(int kind, uint64_t t0) {
     }
     __atomic_fetch_add(&wait_ns[kind], d, __ATOMIC_RELAXED);
     __atomic_fetch_add(&frame_ns[kind], d, __ATOMIC_RELAXED);
+    if (tid == prof_replay_tid) __atomic_fetch_add(&rep_frame_ns[kind], d, __ATOMIC_RELAXED);
+}
+
+void perf_span(int kind, uint64_t t0) {
+    if (!t0) return;
+    __atomic_fetch_add(&span_ns[kind], kern_now_ns() - t0, __ATOMIC_RELAXED);
 }
 
 static volatile int64_t other_wait_ns;     // perf_gpu_wait on threads other than the render thread, over the window
@@ -102,6 +121,10 @@ void perf_count(int kind) {
     if (__atomic_load_n(&perf_on, __ATOMIC_RELAXED)) plat_inc64(&counts[kind]);
 }
 
+void perf_count_by(int kind, uint64_t n) {
+    if (__atomic_load_n(&perf_on, __ATOMIC_RELAXED)) plat_add64(&counts[kind], (int64_t)n);
+}
+
 // ---- Frame-time summary, always on: every 60 s of play and at exit one line of frame count, mean fps, 1% low and the
 // frames over 25/50/100 ms, then the worst frames of the period with the render thread's waits in them. Per frame: a
 // histogram increment, the compare against the worst list, a memset of the wait array. No allocation.
@@ -117,13 +140,19 @@ static struct {
 } ft;
 static uint64_t summary_t0;   // start of the current period (0: not started)
 
+// The frame time of the slowest 1% of frames (the bin's upper edge, ns), 0 without frames.
+static uint64_t ft_low_ns(const uint32_t *hist, uint64_t frames) {
+    uint64_t cut = (frames + 99) / 100, acc = 0;
+    for (int b = FT_BINS - 1; b >= 0; b--) {
+        acc += hist[b];
+        if (acc >= cut) return (uint64_t)(b + 1) * 250000ull;
+    }
+    return 0;
+}
+
 static void ft_report(uint64_t now, const char *tag) {
     if (ft.frames && ft.sum) {
-        uint64_t cut = (ft.frames + 99) / 100, acc = 0, low = 0;   // the slowest 1% of frames
-        for (int b = FT_BINS - 1; b >= 0; b--) {
-            acc += ft.hist[b];
-            if (acc >= cut) { low = (uint64_t)(b + 1) * 250000ull; break; }   // upper edge of the bin
-        }
+        uint64_t low = ft_low_ns(ft.hist, ft.frames);
         rt_log("frametime: %s: %llu frames in %.1f s, mean %.1f fps, 1%% low %.1f fps, over 25 ms %llu, 50 ms %llu, 100 ms %llu",
                tag, (unsigned long long)ft.frames, (now - ft.t0) / 1e9, ft.frames * 1e9 / ft.sum, low ? 1e9 / low : 0.0,
                (unsigned long long)ft.over25, (unsigned long long)ft.over50, (unsigned long long)ft.over100);
@@ -139,11 +168,46 @@ static void ft_report(uint64_t now, const char *tag) {
     ft.t0 = now;
 }
 
+// XC2_FT_FROM_FRAME=<n> or XC2_FT_FROM_WORLD=<s> (world clock): one more summary at exit, over the presents from that
+// frame, or from that world time, on. A short run's 1% low is set by its first frames (boot, the title screen), so the
+// play alone is reported separately. The window starts at the first present at or after the start point.
+static struct {
+    uint64_t t0, frames, sum, over25, over50, over100, first;
+    uint32_t hist[FT_BINS];
+} ftg;
+
+static void ftg_add(uint64_t frame, uint64_t d) {
+    if (!ftg_frame && !ftg_world_us) return;
+    if (!ftg.frames) {   // the window has not started: its first present is the one at or after the start point
+        int64_t w = ftg_world_us ? frame_step_world_us() : -1;
+        int go = (ftg_frame && frame >= ftg_frame) || (ftg_world_us && w >= (int64_t)ftg_world_us);
+        if (!go) return;
+        ftg.first = frame, ftg.t0 = kern_now_ns();
+    }
+    ftg.frames++;
+    ftg.sum += d;
+    uint64_t b = d / 250000ull;
+    ftg.hist[b < FT_BINS ? b : FT_BINS - 1]++;
+    if (d > 25000000ull) ftg.over25++;
+    if (d > 50000000ull) ftg.over50++;
+    if (d > 100000000ull) ftg.over100++;
+}
+
+static void ftg_report(uint64_t now) {
+    if (!ftg.frames || !ftg.sum) return;
+    uint64_t low = ft_low_ns(ftg.hist, ftg.frames);
+    rt_log("frametime: from frame %llu (%s): %llu frames in %.1f s, mean %.1f fps, 1%% low %.1f fps, over 25 ms %llu, 50 ms %llu, 100 ms %llu",
+           (unsigned long long)ftg.first, ftg_frame ? "XC2_FT_FROM_FRAME" : "XC2_FT_FROM_WORLD",
+           (unsigned long long)ftg.frames, (now - ftg.t0) / 1e9, ftg.frames * 1e9 / ftg.sum, low ? 1e9 / low : 0.0,
+           (unsigned long long)ftg.over25, (unsigned long long)ftg.over50, (unsigned long long)ftg.over100);
+}
+
 __attribute__((weak)) void gfx_exit_log(void) {}
 
 void perf_summary_flush(void) {   // at exit (prof_write)
     if (summary_t0) {
         ft_report(kern_now_ns(), "exit");
+        ftg_report(kern_now_ns());
         gfx_exit_log();
     }
     summary_t0 = 0;
@@ -157,6 +221,7 @@ static uint64_t ft_frame(uint64_t frame, uint64_t now, uint64_t d) {
         ft.t0 = now;
         return (uint64_t)rep;
     }
+    ftg_add(frame, d);
     ft.frames++;
     ft.sum += d;
     uint64_t b = d / 250000ull;
@@ -262,9 +327,17 @@ void perf_present(uint64_t frame) {
     if (__atomic_load_n(&overlay, __ATOMIC_RELAXED))   // the overlay's only cost while it is off: this branch
         perfmon_frame(now, d, frame_ns, rep, __atomic_load_n(&counts[PERF_CNT_TEX_UP], __ATOMIC_RELAXED));
     kern_core_diag_frame(frame, d);
-    if (flight_on) flight_frame(frame, now, d, frame_ns, counts);
+    if (flight_on) {
+        PerfFrame pf;
+        for (int k = 0; k < PERF_N; k++) pf.blocked[k] = frame_ns[k], pf.replay_blocked[k] = rep_frame_ns[k];
+        for (int k = 0; k < PERF_SPAN_N; k++) pf.span[k] = __atomic_exchange_n(&span_ns[k], 0, __ATOMIC_RELAXED);
+        pf.replay_ns = rep;
+        flight_frame(frame, now, d, &pf, counts);
+    }
     if (!(rt_trace & RT_TRACE_PERF)) {
         memset(frame_ns, 0, sizeof frame_ns);
+        memset(rep_frame_ns, 0, sizeof rep_frame_ns);
+        for (int k = 0; k < PERF_SPAN_N; k++) __atomic_store_n(&span_ns[k], 0, __ATOMIC_RELAXED);
         last = now;
         return;
     }
@@ -284,6 +357,8 @@ void perf_present(uint64_t frame) {
                    frame_ns[PERF_PACE] / 1e6);
     }
     memset(frame_ns, 0, sizeof frame_ns);
+    memset(rep_frame_ns, 0, sizeof rep_frame_ns);
+    for (int k = 0; k < PERF_SPAN_N; k++) __atomic_store_n(&span_ns[k], 0, __ATOMIC_RELAXED);
     last = now;
     if (!win_start) win_start = now;
     if (frame % 60) return;
