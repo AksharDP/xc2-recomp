@@ -663,6 +663,23 @@ static void stamp_range(uint64_t lo, uint64_t hi, uint32_t g) {
     for (uint64_t a = lo; a < hi; a += 1ull << GEN_PAGE_SHIFT) stamp_page(a, g);
 }
 
+// Write-watch query of [lo, hi), stamping its written pages with g (gen_lock held exclusively). One query returns at most
+// as many pages as gen_pages holds, and every call walks its whole range again. A range with more written pages than
+// that was walked once per gen_pages-full of them, so a load that wrote tens of thousands of pages in one range (the
+// title and load stalls of the mirror capture, 40-60 ms a frame) walked it dozens of times. The range goes in pieces of
+// QUERY_PIECE bytes instead: a piece holds at most 1024 pages, one call answers it, and nothing is walked twice.
+// 0 when the range is not write-watched.
+#define QUERY_PIECE (4ull << 20)
+static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
+    for (uint64_t c = lo; c < hi; c += QUERY_PIECE) {
+        uint64_t e = c + QUERY_PIECE < hi ? c + QUERY_PIECE : hi;
+        uint64_t n = ww_query(c, e - c);
+        if (n == UINT64_MAX) return 0;
+        for (uint64_t k = 0; k < n; k++) stamp_page(gen_pages[k], g);
+    }
+    return 1;
+}
+
 void vk_guest_written(uint64_t addr, uint64_t size) {
     if (!size || nvn_gpu_only(addr)) return;
     uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
@@ -678,12 +695,7 @@ int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) 
     uint32_t g = ++gen_now;
     int tracked = 1, frozen = 1;
     for (uint64_t a = lo & ~((1ull << REG_SHIFT) - 1); a < hi && frozen; a += 1ull << REG_SHIFT) frozen = mem_frozen(a);
-    while (!frozen) {
-        uint64_t n = ww_query(lo, hi - lo);
-        if (n == UINT64_MAX) { tracked = 0; break; }
-        for (uint64_t k = 0; k < n; k++) stamp_page(gen_pages[k], g);
-        if (n < sizeof gen_pages / sizeof *gen_pages) break;   // a full answer may have left pages for the next call
-    }
+    if (!frozen) tracked = query_stamp(lo, hi, g);
     int changed = 0;
     for (uint64_t a = lo; tracked && a < hi && !changed; a += 1ull << GEN_PAGE_SHIFT) {
         uint32_t *s = gen_slot(a, 0);
@@ -768,14 +780,8 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         uint64_t k = r;   // one query over a run of regions not seen in this epoch
         while (k + 1 <= r1 && (!epoch || snap_at[k + 1] != epoch) && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
         uint64_t a = r << SNAP_SHIFT, b = (k + 1) << SNAP_SHIFT;
-        int tracked = 1;
         if (!g) g = ++gen_now;
-        for (;;) {
-            uint64_t n = ww_query(a, b - a);
-            if (n == UINT64_MAX) { tracked = 0; break; }
-            for (uint64_t j = 0; j < n; j++) stamp_page(gen_pages[j], g);
-            if (n < sizeof gen_pages / sizeof *gen_pages) break;
-        }
+        int tracked = query_stamp(a, b, g);
         calls++;
         for (uint64_t j = r; j <= k; j++) {
             if (epoch) snap_at[j] = epoch;
@@ -876,16 +882,6 @@ void vk_mem_bound_note(void *pool) {
 
 static uint64_t page_lo(const PoolRec *r) { return r->lo & ~0xfffull; }
 static uint64_t page_hi(const PoolRec *r) { return (r->lo + r->size + 0xfff) & ~0xfffull; }
-
-// gen_lock held exclusively. 0: the range is not write-watched.
-static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
-    for (;;) {
-        uint64_t n = ww_query(lo, hi - lo);
-        if (n == UINT64_MAX) return 0;
-        for (uint64_t k = 0; k < n; k++) stamp_page(gen_pages[k], g);
-        if (n < sizeof gen_pages / sizeof *gen_pages) return 1;
-    }
-}
 
 // ---------------------------------------------------------------- shadow storage
 // Where importing guest memory costs too much (Linux: re-protecting pages that amdgpu imported as a userptr
@@ -1635,6 +1631,7 @@ static int capture_pool(PoolRec *r) {
 void *vk_mem_capture(void) {
     MCap *cap = calloc(1, sizeof *cap);
     if (!cap) rt_fatal("vk: out of memory (mirror capture)");
+    uint64_t span0 = perf_begin();   // the submitting thread's time here: the flight recorder's capture_ms
     uint64_t t0 = qpc(), q = 0, qb = 0, pools = 0;
     plat_mutex_lock(&cap_lock);
     ncr = 0;
@@ -1661,6 +1658,21 @@ void *vk_mem_capture(void) {
         }
         if (have) q += snap_regions(run0, run1, 0);
         qb = ww_bytes - b0;
+        perf_count_by(PERF_CNT_MIRROR_KB, qb >> 10);
+        // A capture that queries a large part of the pools (a load, a title screen): say how large, a few times a run.
+        if (qb >= (256ull << 20)) {
+            static int32_t logged;
+            if (plat_inc32(&logged) <= 6) {
+                uint64_t big = 0;
+                for (int i = 0; i < pool_index.n; i++) {
+                    const PoolRec *r = pool_index.e[i].buf;
+                    if (r->kind == POOL_IMPORT && r->import_hi > r->import_lo && r->import_hi - r->import_lo > big)
+                        big = r->import_hi - r->import_lo;
+                }
+                rt_log("mem: mirror capture queried %llu MiB in %d pools (largest import %llu MiB)",
+                       (unsigned long long)(qb >> 20), (int)pool_index.n, (unsigned long long)(big >> 20));
+            }
+        }
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
         cap->gen = gen_now;
     }
@@ -1691,7 +1703,8 @@ void *vk_mem_capture(void) {
         for (int i = 0; i < ncr; i++) {
             CRange c = {cr[i].r, cr[i].off, cr[i].size, CAP_LIVE};
             if (cap->st && c.size <= cap->st->size - used) {
-                memcpy(cap->st->map + used, (const void *)(uintptr_t)(c.r->import_lo + c.off), c.size);
+                const void *from = (const void *)(uintptr_t)(c.r->import_lo + c.off);
+                memcpy(cap->st->map + used, from, c.size);
                 c.src = used;
                 staged += c.size;
                 used += (c.size + 15) & ~15ull;   // keeps the next source offset aligned for the copy engine
@@ -1701,11 +1714,13 @@ void *vk_mem_capture(void) {
         }
         if (cap->st) vmaFlushAllocation(vk_ctx()->vma, cap->st->alloc, 0, used);   // a no-op on coherent memory
         plat_add64(&m_stage_bytes, (int64_t)staged);
+        perf_count_by(PERF_CNT_STAGE_KB, staged >> 10);
     }
     plat_mutex_unlock(&cap_lock);
     plat_mutex_lock(&mirror_stat_lock);
     macc.captures++, macc.cap_pools += pools, macc.cap_queries += q, macc.cap_qbytes += qb, macc.cap_t += qpc() - t0;
     plat_mutex_unlock(&mirror_stat_lock);
+    perf_span(PERF_SPAN_CAPTURE, span0);
     return cap;
 }
 

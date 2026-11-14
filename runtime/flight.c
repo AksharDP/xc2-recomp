@@ -23,19 +23,29 @@
 #define FLIGHT_POST 30                 // presents recorded after the trigger before the dump starts
 #define FLIGHT_SPIKE_GAP_NS 10000000000ull
 
-// Record columns after frame, time and interval: blocked time per PERF_* kind (us), then the counts.
-enum { C_SUBMITS, C_PASSES, C_DRAWS, C_DRAWS_SEEN, C_CLEARS, C_COPIES, C_DISPATCHES, C_XLATED, C_PERF0, C_N = C_PERF0 + PERF_CNT_N };
+// Record columns after frame, time and interval, in this order (the names are the header's):
+//   blocked_us  the render thread's and the replay thread's waits per PERF_* kind (both threads, so they can overlap)
+//   rep_us      the replay thread's share of those waits
+//   span_us     PERF_SPAN_* spans: the mirror capture, the present thread's fence and swapchain waits
+//   gpu_us      GPU busy time of the frame (timestamps, perf_gpu_busy); replay_us the replay time since the last present
+//   n           the event counts, the exec counts of the frame and the PERF_CNT_* running totals' differences
+enum { C_SUBMITS, C_PASSES, C_DRAWS, C_DRAWS_SEEN, C_CLEARS, C_COPIES, C_DISPATCHES, C_XLATED, C_FB_SNAPS, C_FB_REUSE,
+       C_FB_RESTARTS, C_FB_BARRIERS, C_PERF0, C_N = C_PERF0 + PERF_CNT_N };
 static const char *const blocked_names[PERF_N] = {"pace_ms", "fence_ms", "drain_ms", "pipe_ms", "xlate_ms", "tex_ms", "astc_ms"};
+static const char *const rep_names[PERF_N] = {"rep_pace_ms", "rep_fence_ms", "rep_drain_ms", "rep_pipe_ms", "rep_xlate_ms",
+                                              "rep_tex_ms", "rep_astc_ms"};
+static const char *const span_names[PERF_SPAN_N] = {"capture_ms", "pres_fence_ms", "pres_acq_ms"};
 static const char *const count_names[C_N] = {
     "submits", "passes", "draws", "draws_seen", "clears", "copies", "dispatches", "shaders_xlated",
+    "fb_snaps", "fb_snap_reuse", "fb_restarts", "fb_barriers",
     // PERF_CNT_* order (host.h)
     "pipe_bg_used", "draws_skip_pipe", "tex_up", "tex_reup", "draws_skip_shader", "pipe_waited", "oneshot_waited",
-    "pipe_built", "tex_new", "tex_alias", "wb_done", "wb_skip"};
-_Static_assert(PERF_CNT_N == 12, "count_names follows the PERF_CNT_* list");
+    "pipe_built", "tex_new", "tex_alias", "wb_done", "wb_skip", "mirror_kb", "stage_kb"};
+_Static_assert(PERF_CNT_N == 14, "count_names follows the PERF_CNT_* list");
 
 typedef struct {
     uint64_t frame, t_ns;
-    uint32_t interval_us, blocked_us[PERF_N], n[C_N];
+    uint32_t interval_us, blocked_us[PERF_N], rep_us[PERF_N], span_us[PERF_SPAN_N], gpu_us, replay_us, n[C_N];
 } Rec;
 
 typedef struct {
@@ -56,8 +66,9 @@ static const char *trig_why;
 static uint64_t at_frames[16];
 static int n_at;
 static char base_dir[PLAT_PATH_MAX];
-static uint64_t prev_cnt[PERF_CNT_N], prev_xlated;
+static uint64_t prev_cnt[PERF_CNT_N], prev_xlated, prev_gpu_ns;
 static VkExecFrame prev_exec;
+static int exit_on = 1;                          // XC2_FLIGHT_EXIT: flight_exit writes the ring at exit
 static volatile uint64_t cost_ns, cost_max_ns;   // render-thread time in flight_frame, for the dump log line
 
 static unsigned env_u(const char *name, unsigned def) {
@@ -89,6 +100,7 @@ void flight_init(void) {
     }
     if (!plat_full_path(tmp, base_dir, sizeof base_dir)) snprintf(base_dir, sizeof base_dir, "%s", tmp);
     thumbs_on = env_u("XC2_FLIGHT_THUMBS", 1) != 0;
+    exit_on = env_u("XC2_FLIGHT_EXIT", 1) != 0;
     if (thumbs_on) vk_thumbs_enable(ring_n);
     flight_on = 1;
     rt_log("flight: on: last %d frames, %s; dump on F8, on a frame over %llu ms (one per 10 s)%s, to %s", ring_n,
@@ -272,12 +284,18 @@ static void dump_main(void *arg) {
             j->trig_interval_us / 1000.0);
     fprintf(f, "frame\tt_ms\tinterval_ms");
     for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", blocked_names[k]);
+    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", rep_names[k]);
+    for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%s", span_names[k]);
+    fprintf(f, "\tgpu_ms\treplay_ms");
     for (int k = 0; k < C_N; k++) fprintf(f, "\t%s", count_names[k]);
     fprintf(f, "\tthumb\n");
     for (int i = 0; i < j->n; i++) {
         const Rec *r = &j->r[i];
         fprintf(f, "%llu\t%.1f\t%.2f", (unsigned long long)r->frame, r->t_ns / 1e6, r->interval_us / 1000.0);
         for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->blocked_us[k] / 1000.0);
+        for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->rep_us[k] / 1000.0);
+        for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%.2f", r->span_us[k] / 1000.0);
+        fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
         for (int k = 0; k < C_N; k++) fprintf(f, "\t%u", r->n[k]);
         fprintf(f, "\t%d\n", have ? have[i] : 0);
     }
@@ -316,8 +334,31 @@ static void trigger(uint64_t frame, uint64_t interval_ns, const char *why) {
     dump_at = frame + (FLIGHT_POST < ring_n / 4 ? FLIGHT_POST : (uint64_t)ring_n / 4);
 }
 
+// At exit (prof_write, on the exit path's thread): the ring as it stands, written here and now, without thumbnails
+// (the device is going away with the process). Once per run.
+void flight_exit(void) {
+    static int done;
+    if (!flight_on || !exit_on || done || !recorded) return;
+    done = 1;
+    int n = recorded < (uint64_t)ring_n ? (int)recorded : ring_n;
+    DumpJob *j = malloc(sizeof *j + sizeof(Rec) * (size_t)n);
+    if (!j) return;
+    j->n = n;
+    const Rec *last = &ring[(recorded - 1) % (uint64_t)ring_n];
+    j->trig_frame = last->frame;
+    j->trig_interval_us = last->interval_us;
+    j->why = "exit";
+    for (int i = 0; i < n; i++) j->r[i] = ring[(recorded - (uint64_t)n + (uint64_t)i) % (uint64_t)ring_n];
+    struct tm st;
+    plat_local_time(&st);
+    snprintf(j->dir, sizeof j->dir, "%s/%04d%02d%02d-%02d%02d%02d-f%llu", base_dir, st.tm_year + 1900, st.tm_mon + 1,
+             st.tm_mday, st.tm_hour, st.tm_min, st.tm_sec, (unsigned long long)j->trig_frame);
+    thumbs_on = 0;
+    dump_main(j);
+}
+
 // ---------------------------------------------------------------- per frame (render thread)
-void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const uint64_t blocked_ns[],
+void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const PerfFrame *pf,
                   const volatile int64_t counts[]) {
     uint64_t c0 = kern_now_ns();
     if (!t0_ns) t0_ns = now_ns;
@@ -325,7 +366,16 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
     r->frame = frame;
     r->t_ns = now_ns - t0_ns;
     r->interval_us = (uint32_t)(interval_ns / 1000);
-    for (int k = 0; k < PERF_N; k++) r->blocked_us[k] = (uint32_t)(blocked_ns[k] / 1000);
+    for (int k = 0; k < PERF_N; k++) {
+        r->blocked_us[k] = (uint32_t)(pf->blocked[k] / 1000);
+        r->rep_us[k] = (uint32_t)(pf->replay_blocked[k] / 1000);
+    }
+    for (int k = 0; k < PERF_SPAN_N; k++) r->span_us[k] = (uint32_t)(pf->span[k] / 1000);
+    r->replay_us = (uint32_t)(pf->replay_ns / 1000);
+    // GPU busy time since the previous present: the timestamps' running total (perf_gpu_busy, any thread)
+    uint64_t gpu = perf_gpu_busy_total();
+    r->gpu_us = (uint32_t)((gpu - prev_gpu_ns) / 1000);
+    prev_gpu_ns = gpu;
     // vk_exec_frame grows until vk_exec_frame_log resets it, which XC2_TRACE=gfx does right after this call
     const VkExecFrame *x = &vk_exec_frame;
     int reset = (rt_trace & RT_TRACE_GFX) != 0;
@@ -336,6 +386,10 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
     r->n[C_CLEARS] = (uint32_t)(x->clears - (reset ? 0 : prev_exec.clears));
     r->n[C_COPIES] = (uint32_t)(x->copies - (reset ? 0 : prev_exec.copies));
     r->n[C_DISPATCHES] = (uint32_t)(x->dispatches - (reset ? 0 : prev_exec.dispatches));
+    r->n[C_FB_SNAPS] = (uint32_t)(x->fb_snaps - (reset ? 0 : prev_exec.fb_snaps));
+    r->n[C_FB_REUSE] = (uint32_t)(x->fb_snap_reuse - (reset ? 0 : prev_exec.fb_snap_reuse));
+    r->n[C_FB_RESTARTS] = (uint32_t)(x->fb_restarts - (reset ? 0 : prev_exec.fb_restarts));
+    r->n[C_FB_BARRIERS] = (uint32_t)(x->fb_barriers - (reset ? 0 : prev_exec.fb_barriers));
     prev_exec = *x;
     uint64_t keys, xlated;
     gfx_shader_counts(&keys, &xlated);

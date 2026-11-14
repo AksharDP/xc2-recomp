@@ -49,6 +49,20 @@ static uint64_t now_ns(void) { return plat_now_ns(); }
 
 static void exec_packet(uint32_t op, void *p);
 
+// How long the recorder spins on an empty ring before it sleeps on wake_ev, in pauses. A part that is open may publish
+// its next packet at any moment, and a sleep costs the scheduler's wake-up latency, so the spin stays long while a part
+// is open (XC2_REC_SPIN, default 4096). Between parts the recorder has nothing to wait for, and XC2_REC_SPIN_IDLE
+// (default 4096, as before) lowers the spin there: a 4096-pause spin is a fraction of a millisecond of a core.
+static int spin_open = 4096, spin_idle = 4096;
+static volatile int32_t part_open;   // 1 from rec_begin of a recorded part until its end (rec_end, rec_end_cb)
+
+static void spin_knobs(void) {
+    const char *e = cfg_get("XC2_REC_SPIN");
+    if (e && *e) spin_open = atoi(e);
+    e = cfg_get("XC2_REC_SPIN_IDLE");
+    if (e && *e) spin_idle = atoi(e);
+}
+
 static void rec_main(void *arg) {
     (void)arg;
     plat_thread_priority(rec_prio);
@@ -56,7 +70,8 @@ static void rec_main(void *arg) {
     for (;;) {
         uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
         if (t == h) {
-            for (int i = 0; i < 4096 && t == h; i++) _mm_pause(), h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
+            int spin = __atomic_load_n(&part_open, __ATOMIC_RELAXED) ? spin_open : spin_idle;
+            for (int i = 0; i < spin && t == h; i++) _mm_pause(), h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
             if (t == h) {
                 __atomic_store_n(&sleeping, 1, __ATOMIC_SEQ_CST);
                 h = __atomic_load_n(&head, __ATOMIC_SEQ_CST);
@@ -138,6 +153,7 @@ void rec_begin(VkCommandBuffer cb) {
         if (!mode && vk_caps.amd && !(set && *set))
             rt_log("vk_rec: no recorder thread on AMD GPUs (XC2_VK_RECORDER=1 turns it on)");
         if (mode) {
+            spin_knobs();
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();
             rec_thread = plat_thread_new(rec_main, NULL, "vk recorder");
@@ -155,12 +171,14 @@ void rec_begin(VkCommandBuffer cb) {
     RS_.parts_on++;
     rec_cb = cb;   // the recorder is idle: rec_end drained it
     rec_live = 1;
+    __atomic_store_n(&part_open, 1, __ATOMIC_RELAXED);
 }
 
 void rec_end(void) {
     if (!rec_live) return;
     rec_drain();
     rec_live = 0;
+    __atomic_store_n(&part_open, 0, __ATOMIC_RELAXED);
 }
 
 // XC2_REC_END (default 1): the thread that recorded the part also ends it, after the breadcrumb crumb (kind 0: none)
@@ -186,6 +204,7 @@ int rec_end_cb(VkCommandBuffer cb, int crumb, uint64_t n) {
     pub();
     rec_drain();
     rec_live = 0;
+    __atomic_store_n(&part_open, 0, __ATOMIC_RELAXED);
     return 1;
 }
 
