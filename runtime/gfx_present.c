@@ -586,6 +586,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     } else {
         VkResult fw = vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull);
         if (fw != VK_SUCCESS) {
+            perf_span(PERF_SPAN_PRES_FENCE, fw0);   // the timed-out wait is the stall the column is there to show
             vk_device_fault_report(fw);
             g_fence_stuck = 1;
             rt_log("gfx: present fence wait timed out (%d); presents skip frames until the GPU signals it", (int)fw);
@@ -598,7 +599,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkResult r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
-        if (!create_swapchain()) goto out;
+        if (!create_swapchain()) {
+            perf_span(PERF_SPAN_PRES_ACQUIRE, aq0);
+            goto out;
+        }
         r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
     perf_span(PERF_SPAN_PRES_ACQUIRE, aq0);

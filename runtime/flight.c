@@ -346,17 +346,21 @@ static void trigger(uint64_t frame, uint64_t interval_ns, const char *why) {
 // (the device is going away with the process). Once per run.
 void flight_exit(void) {
     static int done;
-    if (!flight_on || !exit_on || done || !recorded) return;
+    // The render thread may still record while this copies: one read of the count fixes which records are copied, and
+    // the oldest slot, the one the next record overwrites, is left out of a full ring.
+    uint64_t rec = __atomic_load_n(&recorded, __ATOMIC_ACQUIRE);
+    if (!flight_on || !exit_on || done || !rec) return;
     done = 1;
-    int n = recorded < (uint64_t)ring_n ? (int)recorded : ring_n;
+    int n = rec < (uint64_t)ring_n ? (int)rec : ring_n - 1;
+    if (n <= 0) return;
     DumpJob *j = malloc(sizeof *j + sizeof(Rec) * (size_t)n);
     if (!j) return;
     j->n = n;
-    const Rec *last = &ring[(recorded - 1) % (uint64_t)ring_n];
+    const Rec *last = &ring[(rec - 1) % (uint64_t)ring_n];
     j->trig_frame = last->frame;
     j->trig_interval_us = last->interval_us;
     j->why = "exit";
-    for (int i = 0; i < n; i++) j->r[i] = ring[(recorded - (uint64_t)n + (uint64_t)i) % (uint64_t)ring_n];
+    for (int i = 0; i < n; i++) j->r[i] = ring[(rec - (uint64_t)n + (uint64_t)i) % (uint64_t)ring_n];
     struct tm st;
     plat_local_time(&st);
     snprintf(j->dir, sizeof j->dir, "%s/%04d%02d%02d-%02d%02d%02d-f%llu", base_dir, st.tm_year + 1900, st.tm_mon + 1,
