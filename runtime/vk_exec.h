@@ -111,8 +111,14 @@ typedef struct VkExec {
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
     VkImage snap_of[8], snap[8];         // this draw's targets it samples itself and their copies (feedback_snapshot)
     int nsnap;
+    // Copies that still hold what their target held before the draws that sample it began (feedback_snapshot): bit i of
+    // snap_keep says the copy of colour target i was made from snap_src[i] in the pass numbered snap_pass and that only
+    // draws reading that copy wrote the target since. snap_now: the targets the current draw reads from copies.
+    VkImage snap_src[8];
+    uint32_t snap_keep, snap_pass, snap_now;
+    uint64_t snap_seen;   // snap_drops (vk_exec_draw.c) when snap_keep was last checked
 
-    int fsr3_armed;                      // VK_FSR3_*: what FSR 3.1 records when the open pass ends (vk_fsr3.c)
+    int fsr3_armed;                     // VK_FSR3_*: what FSR 3.1 records when the open pass ends (vk_fsr3.c)
 } VkExec;
 
 // Begins dynamic rendering with the current targets unless a pass is open (a full memory barrier precedes it). Call
@@ -131,7 +137,7 @@ typedef struct { VkImage src, dst; uint32_t w, h; } VkExecSnap;
 // feedback layout. Otherwise (XC2_SNAP_SYNC=full, or the learned set is not the one the open pass has) the full barrier
 // of vk_exec_barrier and of vk_exec_pass_begin. Both leave the same images in the same layouts.
 void vk_exec_snap_copy(VkExec *ex, const VkExecSnap *s, int n, int narrow);
-// The probe's switches for the copy path (vk_exec_draw.c): on 1 or 0 (XC2_FEEDBACK_SNAP), narrow 1 or 0 (XC2_SNAP_SYNC); -1
+// The probe's switches for the copy path (vk_exec_draw.c): on 0, 1 or 2 (XC2_FEEDBACK_SNAP), narrow 1 or 0 (XC2_SNAP_SYNC); -1
 // keeps a setting.
 void vk_exec_snap_mode(int on, int narrow);
 void vk_exec_snap_mode_get(int *on, int *narrow);   // the settings in force, from the environment or vk_exec_snap_mode
@@ -179,6 +185,7 @@ typedef struct {
     uint64_t snap_evicted_busy;                                // of those, dropped before the submission that last used them was known finished
     uint64_t snap_skipped;                                     // draws not made because their copy could not be had (never read live)
     uint64_t snap_live;                                        // such targets read live: a shape the copy path does not take
+    uint64_t fb_snap_reuse;                                    // targets such a draw read from the copy an earlier draw made
 } VkExecFrame;
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into

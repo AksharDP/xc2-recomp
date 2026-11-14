@@ -105,7 +105,8 @@ static class SwshXlate
                     alphaOp = (AlphaTestOp)opv;
                 if (at["ref"] is JsonValue arf) arf.TryGetValue<float>(out alphaRef);
             }
-            return new GpuGraphicsState(earlyZ, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            // Early depth tests would write depth for fragments the alpha test then discards, so they stay off while it tests.
+            return new GpuGraphicsState(earlyZ && alphaOp == AlphaTestOp.Always, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
                 a2c, a2c, false, depthMinusW, false, 1f, alphaOp, alphaRef, attr, false, fout, false,
                 false /* 不做 Y 取反 | no Y flip */, true /* 原点左上 | origin upper-left */, false);
         }

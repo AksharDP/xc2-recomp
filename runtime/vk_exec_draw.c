@@ -688,6 +688,13 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
     return img ? (uint8_t)gfx_type_of(img, &v, hv) : 0;
 }
 
+// The fixed-function alpha test a fragment shader bakes in: the colour state's function when it tests, else 0. Unset (0)
+// and ALWAYS stay off (docs/maxwell.md 5.7).
+static unsigned alpha_test_func(const VkExec *ex) {
+    unsigned f = ex->pipe.color.alpha_func;
+    return f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL ? f : 0;
+}
+
 // The answers of stage st for the slots in mask; the types of other slots stay zero.
 static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
@@ -695,9 +702,8 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     else if (st == NVN_STAGE_FS) {
         vk_pipeline_answers(&ex->pipe, NULL, a);
         // The fixed-function alpha test: the colour state's function against nvnCommandBufferSetAlphaRef's reference.
-        // Baked into the fragment shader as a discard (docs/maxwell.md 5.7); unset (0) and ALWAYS stay disabled.
-        unsigned f = ex->pipe.color.alpha_func;
-        if (f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL) a->alpha_func = (uint8_t)f;
+        // Baked into the fragment shader as a discard.
+        a->alpha_func = (uint8_t)alpha_test_func(ex);
         // Zero with the test off: a reference nothing tests must not split the shader cache (the input id hashes it).
         a->alpha_ref = a->alpha_func ? ex->alpha_ref : 0;
     }
@@ -1302,13 +1308,20 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 // writes the sea's own distance into it. Where a fragment saw a distance the same draw had just written it faded to
 // almost nothing, and the sky showed through as thin flickering lines on AMD (issue 39), whose reads do see those
 // writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target made
-// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off.
+// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off, and 2 copies for every draw.
+// A copy stays in use while the only draws that write its target are draws that read the copy (VkExec.snap_keep): a run
+// of such draws shares one copy, made before the first, and none of them sees what the others wrote. That is the same
+// stale read (no barrier lies between them), and it bounds the cost: a copy per draw meant a pass restart and up to three
+// full-size target copies for each draw of a run, which took scenes with many such draws from 60 to 15-25 fps (issue
+// 112). A draw that writes the target without reading the copy, a clear and every pass begin other than the copy's own
+// make the next such draw copy again.
 // The copies come from a pool: one image per format, size and slot, so that two targets of a draw never share one. An
-// image is kept while the submissions use it; past SNAP_MAX images or SNAP_BYTES (an estimate by texel size) the
-// least recently used one that the current submission has not used is dropped (snap_drop). When no image can be had,
-// the draw is skipped (FB_SKIP): reading the target itself is what this path exists to avoid. The budget counts each copy at
-// its format's texel size (vk_texel_bytes). It is soft: the images of the submission being recorded are never dropped, so
-// one submission may leave the pool above SNAP_BYTES until a later submission uses other keys. Replay thread.
+// image is kept while the submissions use it; past SNAP_MAX images or SNAP_BYTES (an estimate by texel size) the least
+// recently used one that the current submission has not used is dropped (snap_drop), and every drop ends the kept copies
+// (snap_drops). When no image can be had, the draw is skipped (FB_SKIP): reading the target itself is what this path
+// exists to avoid. The budget counts each copy at its format's texel size (vk_texel_bytes). It is soft: the images of the
+// submission being recorded are never dropped, so one submission may leave the pool above SNAP_BYTES until a later
+// submission uses other keys. Replay thread.
 #define SNAP_MAX 32
 #define SNAP_BYTES ((uint64_t)384 << 20)
 #define FB_SKIP 0xffffffffu   // feedback_prepare: the draw cannot be made with its copies
@@ -1316,6 +1329,7 @@ static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w,
 static int nsn;
 static uint64_t snap_total;   // bytes the pool holds (estimate)
 static uint64_t snap_gen;     // bumps with every image the pool creates or drops: bind_sig keys on it
+static uint64_t snap_drops;   // bumps with every image the pool drops: a kept copy may be one of them (feedback_snapshot)
 
 // Drops entry i. Its image and its views are both deferred (vk_exec_image_gone and vk_defer_image): each is destroyed once
 // the submissions that may still use it have finished, not at once.
@@ -1329,7 +1343,7 @@ static void snap_drop(int i) {
     vk_exec_image_gone(image);
     vk_texture_unlock();
     vk_defer_image(image, alloc);
-    snap_gen++;
+    snap_gen++, snap_drops++;
     vk_exec_frame.snap_evicted++;
 }
 
@@ -1402,7 +1416,7 @@ static void snap_shutdown(void) {
         vk_defer_image(snap_imgs[i].image, snap_imgs[i].alloc);
     }
     vk_texture_unlock();
-    nsn = 0, snap_total = 0, snap_gen++;
+    nsn = 0, snap_total = 0, snap_gen++, snap_drops++;
 }
 
 // A target whose whole content is one 2D image, which is what snap_image copies.
@@ -1412,11 +1426,11 @@ static int snap_fits(const VkExecTarget *t) {
            img->samples == 1 && img->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
-// The copy path's switches: XC2_FEEDBACK_SNAP (on) and XC2_SNAP_SYNC (narrow unless it is full). vk_exec_snap_mode sets them
-// for the probe.
+// The copy path's switches: XC2_FEEDBACK_SNAP (0 off, 1 a copy per run of draws that share one, 2 a copy per draw) and
+// XC2_SNAP_SYNC (narrow unless it is full). vk_exec_snap_mode sets them for the probe.
 static int snap_on = -1, snap_narrow = -1;
 static void snap_config(void) {
-    if (snap_on < 0) snap_on = cfg_bool("XC2_FEEDBACK_SNAP");
+    if (snap_on < 0) snap_on = cfg_int("XC2_FEEDBACK_SNAP");
     if (snap_narrow < 0) {
         const char *e = cfg_get("XC2_SNAP_SYNC");
         snap_narrow = !(e && !strcmp(e, "full"));
@@ -1449,42 +1463,80 @@ static void snap_live_note(const VkExecTarget *t, uint32_t slot) {
 }
 
 // Copies the colour targets among m that the draw with fragment shader fs writes itself; the draw's descriptors then
-// read the copies (tex_info_full). Returns the targets copied, or FB_SKIP when a copy could not be had: the draw is then
-// not made, rather than read from the target it writes.
+// read the copies (tex_info_full). Returns the sampled targets the copies cover: the copied ones, and any other sampled
+// slot holding the same image as a copied one (tex_info_full sends that slot to the copy too). Returns FB_SKIP when a
+// copy could not be had: the draw is then not made, rather than read from the target it writes.
 static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
     snap_config();
-    if (!snap_on || !(m & 0xff)) return 0;
+    if (snap_on <= 0 || !(m & 0xff)) return 0;
     VkPipeState s = ex->pipe;
     s.fs = fs;
+    // One copy per source image. A colour slot that holds an image an earlier slot of c already holds is the same target:
+    // tex_info_full sends the draw's descriptors to the first copy of an image, so a second copy would be marked as read
+    // and kept current without ever being read.
     uint32_t c = 0;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
         if (!(m >> i & 1) || !ex->color[i].image || !vk_pipeline_target_wmask(&s, (int)i)) continue;
-        if (snap_fits(&ex->color[i])) c |= 1u << i;
-        else snap_live_note(&ex->color[i], i);
+        if (!snap_fits(&ex->color[i])) {
+            snap_live_note(&ex->color[i], i);
+            continue;
+        }
+        int same = 0;
+        for (uint32_t j = 0; j < i; j++)
+            if ((c >> j & 1) && ex->color[j].image == ex->color[i].image) same = 1;
+        if (!same) c |= 1u << i;
     }
     if (!c) return 0;
-    VkExecSnap sn[8];
-    int n = 0;
+    // Every copy is acquired before anything is recorded: an acquire can drop an image that a kept copy lives in, and a
+    // draw that cannot get all of its copies is skipped with nothing to undo.
+    VkImage copy[8];
     for (uint32_t i = 0; i < 8; i++) {
         if (!(c >> i & 1)) continue;
-        VkImage copy = snap_image(ex->fence, &ex->color[i], i);
-        if (!copy) return FB_SKIP;   // nothing recorded yet
-        sn[n++] = (VkExecSnap){ex->color[i].image, copy, ex->color[i].img->width, ex->color[i].img->height};
+        copy[i] = snap_image(ex->fence, &ex->color[i], i);
+        if (!copy[i]) return FB_SKIP;   // no image for this copy: the draw is not made
     }
-    vk_exec_snap_copy(ex, sn, n, snap_narrow);   // ends the pass, copies, resumes it
-    for (int k = 0; k < n; k++) {
-        ex->snap_of[ex->nsnap] = sn[k].src, ex->snap[ex->nsnap] = sn[k].dst, ex->nsnap++;
-        vk_exec_frame.fb_snaps++;
+    // The copies kept from before stay current while their pass is the open one and the pool has dropped no image since
+    // snap_keep was last checked (snap_seen). A target whose copy is kept and whose image is unchanged is not copied again,
+    // unless XC2_FEEDBACK_SNAP=2.
+    if (ex->snap_pass != ex->pass_serial || ex->snap_seen != snap_drops) ex->snap_keep = 0;
+    ex->snap_seen = snap_drops;
+    uint32_t need = 0;
+    for (uint32_t i = 0; i < 8; i++)
+        if ((c >> i & 1) && (snap_on >= 2 || !(ex->snap_keep >> i & 1) || ex->snap_src[i] != ex->color[i].image)) need |= 1u << i;
+    if (need) {
+        // The copies kept from the pass just ended stay current: nothing was drawn between its end and this resume.
+        VkExecSnap sn[8];
+        int n = 0;
+        for (uint32_t i = 0; i < 8; i++) {
+            if (!(need >> i & 1)) continue;
+            sn[n++] = (VkExecSnap){ex->color[i].image, copy[i], ex->color[i].img->width, ex->color[i].img->height};
+        }
+        vk_exec_snap_copy(ex, sn, n, snap_narrow);   // ends the pass, copies, resumes it (a new pass serial)
+        for (uint32_t i = 0; i < 8; i++)
+            if (need >> i & 1) ex->snap_src[i] = ex->color[i].image, vk_exec_frame.fb_snaps++;
+        ex->snap_keep |= need, ex->snap_pass = ex->pass_serial;
+        vk_exec_frame.fb_snap_draws++;
     }
-    vk_exec_frame.fb_snap_draws++;
-    return c;
+    for (uint32_t i = 0; i < 8; i++) {
+        if (!(c >> i & 1)) continue;
+        ex->snap_of[ex->nsnap] = ex->color[i].image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
+        if (!(need >> i & 1)) vk_exec_frame.fb_snap_reuse++;
+    }
+    ex->snap_now = c;
+    // The sampled slots that the copies cover: every slot holding an image that a copy covers, not only the first. Their
+    // descriptors read the copy too (tex_info_full), so the draw's feedback processing must not see them as dirty.
+    uint32_t covered = 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+        for (uint32_t j = 0; j < 8; j++)
+            if ((c >> j & 1) && (m >> i & 1) && ex->color[i].image == ex->color[j].image) covered |= 1u << i;
+    return covered;
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
 // sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier), or FB_SKIP.
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
-    ex->nsnap = 0;
+    ex->nsnap = 0, ex->snap_now = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
     uint32_t dirty = m & ex->fb_dirty;   // read before the snapshot, whose pass restart clears fb_dirty
@@ -1502,8 +1554,10 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
                 const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
                 if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
             }
+        uint32_t before = ex->pass_serial;
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
+        if (ex->snap_pass == before) ex->snap_pass = ex->pass_serial;   // nothing was drawn in between: the copies stay current
         vk_exec_frame.fb_restarts++;
     }
     return mode == VK_FEEDBACK_LAYOUT ? m & ex->fbl_mask : 0;
@@ -1530,8 +1584,16 @@ static void feedback_barrier(VkExec *ex) {
 static void feedback_written(VkExec *ex, const VkPipeState *s) {
     if (vk_ctx()->feedback == VK_FEEDBACK_OFF) return;
     if (ex->depth.image && !(ex->fb_dirty & 0x100) && ((s->ds.dt && s->ds.dw) || s->ds.st)) ex->fb_dirty |= 0x100;
-    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if (ex->color[i].image && !(ex->fb_dirty >> i & 1) && vk_pipeline_target_wmask(s, (int)i)) ex->fb_dirty |= 1u << i;
+    // A write by a draw that does not read the target's copy ends that copy's use (feedback_snapshot). The same image can
+    // be bound at two colour slots: a write through one slot also ends the copies of that image kept for the other slots,
+    // except the copies this draw reads (a run of draws that read and write the image shares them).
+    uint32_t stale = ex->snap_keep & ~ex->snap_now;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
+        if (!ex->color[i].image || !vk_pipeline_target_wmask(s, (int)i)) continue;
+        if (!(ex->fb_dirty >> i & 1) || (stale >> i & 1)) ex->fb_dirty |= 1u << i, ex->snap_keep &= ~(stale & 1u << i);
+        for (uint32_t j = 0; j < 8; j++)
+            if ((ex->snap_keep >> j & 1) && ex->snap_src[j] == ex->color[i].image && !(ex->snap_now >> j & 1)) ex->snap_keep &= ~(1u << j);
+    }
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
@@ -2212,6 +2274,7 @@ typedef struct {
     uint32_t gen, tex_serial;
     uint64_t tex[2][32], img[2][32];
     VkPipeState pipe;
+    float alpha_ref;   // the reference the fragment shader tests: OP_ALPHA_REF while the alpha test is on, else 0
 } MemoKey;
 static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
 
@@ -2220,10 +2283,14 @@ static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
     memcpy(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]), memcpy(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]);
     memcpy(&k->pipe, &ex->pipe, sizeof k->pipe);
+    k->alpha_ref = alpha_test_func(ex) ? ex->alpha_ref : 0.0f;
 }
 
+// A shader compiled for another alpha reference is not reused: OP_ALPHA_REF changes no other part of the key.
 static int memo_match(const VkExec *ex, uint32_t gen, MemoKey *k) {
-    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe))
+    float ref = alpha_test_func(ex) ? ex->alpha_ref : 0.0f;
+    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe) ||
+        memcmp(&k->alpha_ref, &ref, sizeof ref))
         return 0;
     if (k->tex_serial == ex->tex_serial) return 1;
     if (memcmp(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]) || memcmp(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]) ||

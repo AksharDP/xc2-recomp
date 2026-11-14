@@ -29,6 +29,13 @@
 # one before it, at most one frame ahead. 0 counts texture releases too, so the bound stops holding after the first release
 # and the game may run ahead by up to XC2_FLIGHT_MAX values (about three frames) and the replay queue. Takes effect after a restart.
 # frame_bound = 1
+# Presentation pacing. grid (default): each frame goes out at its slot of the frame limit, and a frame that misses its slot
+# goes out at once. buffer: the game may work on a frame two periods before its slot (one frame more latency), so a frame
+# that runs long still lands on the grid; the grid period follows the game's average work per frame when the scene cannot
+# hold the frame limit. Issue 112 save, camera-turn route, 120 fps, four grid and four buffer runs: still play 1 % low
+# 40-62 fps with grid, 55-77 with buffer; camera turns 1 % low 19-25 fps with grid, 17-35 with buffer, no gain shown;
+# buffer averages about 3 fps less.
+# pace = grid
 # 1 lifts the virtual core gate: guest threads run without the console's limit of one thread per core, and core_float
 # has no effect. The menu's Virtual core gate row shows the gate itself: On is free_cores = 0.
 # free_cores = 0
@@ -77,11 +84,11 @@
 # wrong place and a flat far field for a frame.
 # lod_guard = 1
 # A draw that samples a target it also writes reads a copy made just before it, as on the Switch: stops the thin lines
-# that flicker in the cloud sea on AMD GPUs. The copies cost about 0.1 ms a frame in the beginning-port save (RTX 4070
-# Laptop). Some reporters found 0 cleared frame drops in Torna DLC scenes, and the cloud sea flicker may return on AMD.
+# that flicker in the cloud sea on AMD GPUs. 1 makes one copy for a run of such draws, 2 one copy for every draw (much
+# slower in scenes with many of them), 0 none.
 # feedback_snap = 1
 # How those copies are ordered against the rest of the frame: narrow (the default) orders only the copies' reads and
-# writes; full uses the whole-frame barriers the copies had before, for comparison. Only matters while feedback_snap is 1.
+# writes; full uses the whole-frame barriers the copies had before, for comparison. Only matters while feedback_snap is 1 or 2.
 # snap_sync = narrow
 # Start each frame only once the GPU has drawn the one before it: stops props sliding and flickering above 30 fps.
 # auto waits only where the GPU reads live game memory (memory = import, or a pool too large for the memory budget);

@@ -639,10 +639,11 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     fb_vertices(pool);
     static uint32_t px_f[TEX_W * TEX_H], px_r[TEX_W * TEX_H], px_c[TEX_W * TEX_H], px_o[TEX_W * TEX_H], px_s[TEX_W * TEX_H];
     // The feedback draws are narrow whatever XC2_SNAP_SYNC says, so the narrow path is the one checked; the full run is made
-    // explicitly below, and the environment's setting is put back at the end.
+    // explicitly below, and the environment's setting is put back at the end. They are checked one copy per draw (mode 2):
+    // mode 1 shares a copy among a run of draws, and each draw here is submitted alone.
     int env_on, env_narrow;
     vk_exec_snap_mode_get(&env_on, &env_narrow);
-    vk_exec_snap_mode(1, 1);
+    vk_exec_snap_mode(2, 1);
     int ok = 1, found = -1;
     uint64_t snapped = 0;
     prog_t *prog = NULL;
@@ -682,7 +683,7 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
         vk_exec_snap_mode(0, -1);
         fb_draw(fb_stream, p, pool, color, FB_TEX_TARGET);
         ok = fb_run(b) && ok;
-        vk_exec_snap_mode(1, -1);
+        vk_exec_snap_mode(2, -1);
         fb_read(b, color, px_o);
         found = t, snapped = n, prog = p;
     }
@@ -691,7 +692,7 @@ static int test_feedback(const GfxBackend *b, uint8_t *guest, pool_t *pool, tex_
     CHECK(!differ, "feedback draw of pair %d: %d of %d texels differ from the reference (the draw did not read the target as it was before the draw)",
           found, differ, TEX_W * TEX_H);
     // the same draw with the full barrier (px_o holds the copy-off draw of this pair, from the search)
-    vk_exec_snap_mode(1, 0);
+    vk_exec_snap_mode(2, 0);
     fb_draw(fb_stream, prog, pool, color, FB_TEX_TARGET);
     ok = fb_run(b) && ok;
     fb_read(b, color, px_f);
@@ -809,11 +810,11 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     const uint8_t clear_b[4] = {to_byte(0.2f), to_byte(0.4f), to_byte(0.6f), 255};
     uint32_t clear_v;
     memcpy(&clear_v, clear_b, 4);
-    static uint32_t px[TEX_W * TEX_H];
+    static uint32_t px[TEX_W * TEX_H], pxh[TEX_W * TEX_H];   // pxh: the hit pair's pixels, kept for the indirect check
     static _Alignas(8) uint8_t stream[8192];
     int tries = 0, drawn = 0;
     prog_t *hit = NULL;
-    for (int t = 0; t < 150 && !drawn; t++) {
+    for (int t = 0; t < (np < 150 ? np : 150) && !drawn; t++) {
         const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
         if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
         const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
@@ -832,7 +833,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         b->read_texels(&color, NULL, &r, (uint8_t *)px, TEX_W * 4, TEX_W * TEX_H * 4);
         int diff = 0;
         for (int k = 0; k < TEX_W * TEX_H; k++) diff += px[k] != clear_v;
-        if (diff) drawn = diff, hit = prog;
+        if (diff) drawn = diff, hit = prog, memcpy(pxh, px, sizeof pxh);
         if (diff && vk_caps.gpl) {   // the same draw through the shared set 0 layout: texel-equal
             static uint32_t px2[TEX_W * TEX_H];
             int was = vk_pipeline_set_indep(0);
@@ -863,7 +864,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
     int alpha_pairs = 0, alpha_ok = 0;
     // pxp: the plain draw of the pair under test; px stays the direct draw of hit, which the indirect part compares with
     static uint32_t pxa[TEX_W * TEX_H], pxp[TEX_W * TEX_H];
-    for (int t = 0; t < 150 && !alpha_ok; t++) {
+    for (int t = 0; t < (np < 150 ? np : 150) && !alpha_ok; t++) {
         const int *pr = pairs[(long long)t * np / (np < 150 ? np : 150)];
         if (t && pr == pairs[(long long)(t - 1) * np / (np < 150 ? np : 150)]) continue;
         const DrawEnt *both[2] = {&e[pr[0]], &e[pr[1]]};
@@ -973,7 +974,7 @@ static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_t
         const NVNcopyRegion r = {0, 0, 0, TEX_W, TEX_H, 1};
         b->read_texels(&color, NULL, &r, (uint8_t *)pxi, TEX_W * 4, TEX_W * TEX_H * 4);
         int ne = 0;
-        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxi[k] != (pass ? clear_v : px[k]);
+        for (int k = 0; k < TEX_W * TEX_H; k++) ne += pxi[k] != (pass ? clear_v : pxh[k]);
         CHECK(!ne, "indirect draw with count %u: %d of %d texels differ from the %s", want[0], ne, TEX_W * TEX_H,
               pass ? "cleared target" : "direct draw");
         ind_draw_texels += TEX_W * TEX_H;
@@ -1120,6 +1121,179 @@ static int test_xfer(const GfxBackend *b, uint8_t *guest, int *bytes) {
     b->texture_release(&tc);
     b->pool_fini(&pool);
     *bytes = 4096 + 2 * XF_BYTES;
+    return 0;
+}
+
+// Aliases (vk_texture.c entry_of, alias_copy): a texture a replay op creates over a live one's storage takes that texture's
+// GPU content, not the storage bytes, and of two GPU writes to the storage range the newer one is the copied one, even when
+// the older entry heads the chain. Copies are recorded only inside a submission, so this part runs one.
+static int test_alias(const GfxBackend *b, uint8_t *guest, int *bytes) {
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0x800000, .size = 0x100000,
+                   .game_mem = guest + 0x800000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the alias part");
+    uint8_t *m = pool.mem;
+    static tex_t ax, ay, bx1, bx2, bc;
+    // Storage at 0x40000 (ax, ay) and 0x60000 (bx1, bx2, bc) holds 0x5a, which no GPU write below produces.
+    memset(m + 0x40000, 0x5a, 0x10000), memset(m + 0x60000, 0x5a, 0x10000);
+    CHECK(xf_tex(&ax, &pool, 0x40000, 301) && xf_tex(&ay, &pool, 0x40000, 302) && xf_tex(&bx1, &pool, 0x60000, 303) &&
+              xf_tex(&bx2, &pool, 0x60000, 304) && xf_tex(&bc, &pool, 0x60000, 305),
+          "alias textures exceed their pool slots");
+    ay.d.swizzle_r = 2, bx2.d.swizzle_r = 2, bc.d.swizzle_r = 3;   // same storage, other descriptors
+    // Buffers: PA into ax, PB into bx2 (older write), PC into bx1 (newer write); read-backs RA, RB1, RB2, RC.
+    uint32_t *pa = (uint32_t *)(m + 0x10000), *pb = (uint32_t *)(m + 0x20000), *pc = (uint32_t *)(m + 0x30000);
+    for (int i = 0; i < XF_W * XF_H; i++) pa[i] = 0x01010101u * (uint32_t)(i & 0xff) ^ 0x11u * (uint32_t)(i >> 8),
+                                          pb[i] = pa[i] * 3u + 7u, pc[i] = pa[i] * 5u + 11u;
+    memset(m + 0x90000, 0, XF_BYTES), memset(m + 0xB0000, 0, XF_BYTES), memset(m + 0xC0000, 0, XF_BYTES),
+        memset(m + 0xD0000, 0, XF_BYTES);
+    uint32_t *ra = (uint32_t *)(m + 0x90000), *rc = (uint32_t *)(m + 0xD0000);
+
+    static _Alignas(8) uint8_t stream[4096];
+    uint8_t *p = stream;
+    const NVNcopyRegion r = {0, 0, 0, XF_W, XF_H, 1};
+    p = put(p, OP_BEGIN, NULL, 0);
+    // ax takes the GPU write of PA; ay is created by a read here: its content must be the copy of ax
+    p_copy_b2t up;
+    memset(&up, 0, sizeof up);
+    up.src = (uint64_t)(uintptr_t)(m + 0x10000), up.tex = &ax, up.r = r;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    p_copy_b2t dn = up;
+    dn.tex = &ay, dn.src = (uint64_t)(uintptr_t)(m + 0x90000);
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    // bx1 and bx2 are created by reads (no GPU content yet); bx2 is written first, bx1 after it; bc is created last
+    p_copy_b2t rd = up;
+    rd.tex = &bx1, rd.src = (uint64_t)(uintptr_t)(m + 0xB0000);
+    p = put(p, OP_COPY_T2B, &rd, sizeof rd);
+    rd.tex = &bx2, rd.src = (uint64_t)(uintptr_t)(m + 0xC0000);
+    p = put(p, OP_COPY_T2B, &rd, sizeof rd);
+    up.src = (uint64_t)(uintptr_t)(m + 0x20000), up.tex = &bx2;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    up.src = (uint64_t)(uintptr_t)(m + 0x30000), up.tex = &bx1;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    rd.tex = &bc, rd.src = (uint64_t)(uintptr_t)(m + 0xD0000);
+    p = put(p, OP_COPY_T2B, &rd, sizeof rd);
+    CHECK(p <= stream + sizeof stream - sizeof(op_hdr), "alias op stream overflow");
+    CHECK(xf_submit(b, stream, p), "fence_wait of the alias submission timed out");
+
+    for (int i = 0; i < XF_W * XF_H; i++)
+        CHECK(ra[i] == pa[i], "ay read in the submission is not the copy of ax at texel %d: %08x, expected %08x", i, ra[i], pa[i]);
+    for (int i = 0; i < XF_W * XF_H; i++)
+        CHECK(rc[i] == pc[i], "bc read in the submission is not the copy of the newest write (bx1) at texel %d: %08x, expected %08x",
+              i, rc[i], pc[i]);
+    b->texture_release(&ax);
+    b->texture_release(&ay);
+    b->texture_release(&bx1);
+    b->texture_release(&bx2);
+    b->texture_release(&bc);
+    b->pool_fini(&pool);
+    printf("probe-vkexec: alias part passed (a texture created in a submission copies its GPU-written source, not the storage "
+           "bytes; of two GPU writes to one range the newer one is copied, though the older entry heads the chain; 32768 texels "
+           "compared)\n");
+    *bytes = 4 * XF_BYTES;
+    return 0;
+}
+
+// Stale sources (vk_texture.c stale_copy): a texture of another shape created over the storage of a GPU-written one takes
+// that render where the two overlap and the storage bytes elsewhere. Linear textures: the source is 64x8 (rows of 256
+// bytes), the new one 32x32 (rows of 128) over the same 4 KiB, so its first 16 rows are the source's bytes and the last 16
+// the storage's. A CPU write to the storage after the render makes the render no content: the new texture reads the bytes.
+static int lin_tex(tex_t *t, pool_t *pool, int64_t off, uint32_t w, uint32_t h, uint64_t serial) {
+    init_tex(t, pool, off, NVN_FORMAT_RGBA8);
+    t->d.width = w, t->d.height = h;
+    t->d.flags = 0x10;   // LINEAR: pitch storage, the stride aligned to 32 bytes
+    nvn_tex_layout(&t->d, &t->L);
+    t->serial = serial;
+    return t->L.size <= 0x20000;
+}
+
+static int test_stale_copy(const GfxBackend *b, uint8_t *guest, int *bytes) {
+    pool_t pool = {.magic = NVN_POOL_MAGIC, .flags = 0x22, .mem = guest + 0x800000, .size = 0x100000,
+                   .game_mem = guest + 0x800000};
+    CHECK(b->pool_init(&pool), "pool_init of a CPU-visible pool for the stale part");
+    uint8_t *m = pool.mem;
+    static tex_t ss, sn, ss2, sn2;
+    CHECK(lin_tex(&ss, &pool, 0x70000, 64, 8, 501) && lin_tex(&sn, &pool, 0x70000, 32, 32, 502) &&
+              lin_tex(&ss2, &pool, 0x74000, 64, 8, 503) && lin_tex(&sn2, &pool, 0x74000, 32, 32, 504),
+          "stale textures exceed their pool slots");
+    CHECK(ss.L.size == 2048 && sn.L.size == 4096, "linear layouts are %llu and %llu bytes, expected 2048 and 4096",
+          (unsigned long long)ss.L.size, (unsigned long long)sn.L.size);
+    const NVNcopyRegion rs = {0, 0, 0, 64, 8, 1}, rn = {0, 0, 0, 32, 32, 1};
+    static _Alignas(8) uint8_t stream[4096];
+    uint8_t *p;
+    p_copy_b2t up;
+    memset(&up, 0, sizeof up);
+
+    // Part 1: ss takes a render (its storage not written back); sn, created by a read in the same submission, must hold
+    // the render's bytes in rows 0-15 and the storage's (0x5a) in rows 16-31.
+    memset(m + 0x70000, 0x5a, 0x1000);
+    uint32_t *pa = (uint32_t *)(m + 0xE8000);
+    for (int i = 0; i < 64 * 8; i++) pa[i] = 0x9e3779b9u * (uint32_t)(i + 1) ^ 0x5a5a0000u;
+    static uint8_t exp[0x1000];
+    memcpy(exp, pa, 2048), memset(exp + 2048, 0x5a, 2048);
+    memset(m + 0xE9000, 0, 0x1000);
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    up.src = (uint64_t)(uintptr_t)(m + 0xE8000), up.tex = &ss, up.r = rs;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    p_copy_b2t dn = up;
+    dn.tex = &sn, dn.src = (uint64_t)(uintptr_t)(m + 0xE9000), dn.r = rn;
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    CHECK(p <= stream + sizeof stream - sizeof(op_hdr), "stale op stream overflow");
+    CHECK(xf_submit(b, stream, p), "fence_wait of the stale submission timed out");
+    int bad_at = -1;
+    for (int i = 0; i < 0x1000 && bad_at < 0; i++)
+        if (m[0xE9000 + i] != exp[i]) bad_at = i;
+    CHECK(bad_at < 0, "stale texture byte %d is %02x, expected %02x (the render over rows 0-15, storage elsewhere)", bad_at,
+          bad_at >= 0 ? m[0xE9000 + bad_at] : 0, bad_at >= 0 ? exp[bad_at] : 0);
+
+    // Part 3: the copy is an ordinary texture, not GPU-written. After a CPU write to the storage, sn reads the storage again
+    // (the render of ss is not in the storage yet, so the expected bytes are the storage with the CPU write).
+    static uint8_t exp3[0x1000];
+    memset(exp3, 0x5a, sizeof exp3), memset(exp3 + 1024, 0x33, 64);
+    memset(m + 0x70000 + 1024, 0x33, 64);
+    memset(m + 0xE9000, 0, 0x1000);
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the third stale-part submission timed out");
+    bad_at = -1;
+    for (int i = 0; i < 0x1000 && bad_at < 0; i++)
+        if (m[0xE9000 + i] != exp3[i]) bad_at = i;
+    CHECK(bad_at < 0, "stale texture after a CPU write to its storage: byte %d is %02x, expected %02x", bad_at,
+          bad_at >= 0 ? m[0xE9000 + bad_at] : 0, bad_at >= 0 ? exp3[bad_at] : 0);
+
+    // Part 2: ss2 takes a render, then the CPU rewrites the storage; a texture created over it reads the CPU bytes.
+    uint32_t *pa2 = (uint32_t *)(m + 0xEA000);
+    for (int i = 0; i < 64 * 8; i++) pa2[i] = pa[i] ^ 0x00ff00ffu;
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    up.src = (uint64_t)(uintptr_t)(m + 0xEA000), up.tex = &ss2, up.r = rs;
+    p = put(p, OP_COPY_B2T, &up, sizeof up);
+    CHECK(p <= stream + sizeof stream - sizeof(op_hdr), "stale op stream overflow");
+    CHECK(xf_submit(b, stream, p), "fence_wait of the first stale-part render timed out");
+    for (int i = 0; i < 0x1000; i++) m[0x74000 + i] = (uint8_t)(i * 13 + 7);
+    static uint8_t cpu[0x1000];
+    memcpy(cpu, m + 0x74000, 0x1000);
+    memset(m + 0xEB000, 0, 0x1000);
+    p = stream;
+    p = put(p, OP_BEGIN, NULL, 0);
+    dn.tex = &sn2, dn.src = (uint64_t)(uintptr_t)(m + 0xEB000), dn.r = rn;
+    p = put(p, OP_COPY_T2B, &dn, sizeof dn);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the second stale-part submission timed out");
+    bad_at = -1;
+    for (int i = 0; i < 0x1000 && bad_at < 0; i++)
+        if (m[0xEB000 + i] != cpu[i]) bad_at = i;
+    CHECK(bad_at < 0, "texture over a CPU-rewritten storage byte %d is %02x, expected the CPU byte %02x", bad_at,
+          bad_at >= 0 ? m[0xEB000 + bad_at] : 0, bad_at >= 0 ? cpu[bad_at] : 0);
+
+    b->texture_release(&ss);
+    b->texture_release(&sn);
+    b->texture_release(&ss2);
+    b->texture_release(&sn2);
+    b->pool_fini(&pool);
+    printf("probe-vkexec: stale part passed (a texture created in a submission over a GPU-written texture of another shape "
+           "takes the render where they overlap and the storage elsewhere; that copy reads the storage again after a CPU "
+           "write; a CPU rewrite after the render leaves the storage bytes; 12288 bytes compared)\n");
+    *bytes = 3 * 0x1000;
     return 0;
 }
 
@@ -1455,6 +1629,10 @@ int probe_vkexec(void) {
     int draw_bad = 0, drawn = 0, tries = 0, dispatched = 0, alpha = 0;
     if (!bad) bad = draw_bad = vk_pipeline_selftest() || test_draw(b, guest, &drawn, &tries, &dispatched, &alpha);
     if (!bad) bad = test_xfer(b, guest, &xfer_bytes);
+    int alias_bytes = 0;
+    if (!bad) bad = test_alias(b, guest, &alias_bytes);
+    int stale_bytes = 0;
+    if (!bad) bad = test_stale_copy(b, guest, &stale_bytes);
     int zero_bytes = 0;
     if (!bad) bad = test_c0() || test_zero(b, guest, &zero_bytes);
     int nvnx_bytes = 0, mirror_bytes = 0;

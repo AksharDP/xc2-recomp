@@ -733,18 +733,9 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     uint32_t dr[2];
     memcpy(dr, ex->depth_range, sizeof dr);
     th = (th ^ ((uint64_t)dr[0] << 32 | dr[1])) * 0x100000001b3ull;
-    for (int i = 0; i < nents; i++)
-        if (ents[i].p == p && ents[i].th == th) {
-            ents[i].draws++;
-            goto out;
-        }
-    if (nents == MAX_ENTS) {
-        ents_over++;
-        goto out;
-    }
-    Str b = {0};
     // The blend and alpha-test state rides in dynamic state here (P.dyn_blend_en), so one pipeline carries several:
-    // draws that differ only there get entries of their own, and each entry's blend: line is the whole truth.
+    // draws that differ only there get entries of their own, and each entry's blend: line is the whole truth. The hash
+    // takes them before the lookup, which compares against the hashes stored with the entries.
     for (int i = 0; i < 8; i++) {
         uint64_t bw;
         memcpy(&bw, &s->blend[i], sizeof bw);
@@ -755,6 +746,16 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     th = (th ^ s->chmask.mask) * 0x100000001b3ull;
     th = (th ^ cst) * 0x100000001b3ull;
     th = (th ^ memcpy_bits(ex->alpha_ref)) * 0x100000001b3ull;
+    for (int i = 0; i < nents; i++)
+        if (ents[i].p == p && ents[i].th == th) {
+            ents[i].draws++;
+            goto out;
+        }
+    if (nents == MAX_ENTS) {
+        ents_over++;
+        goto out;
+    }
+    Str b = {0};
     sp(&b, "vs %016llx fs %016llx prog %llu prim %d\n", (unsigned long long)shader_hash(s->vs),
        (unsigned long long)shader_hash(s->fs), (unsigned long long)(ex->prog ? ex->prog->serial : 0), s->prim);
     sp(&b, "    fixed: depth range %g..%g, vp0 %g,%g %gx%g%s, minus_w %d clamp %d, depth test %d write %d func %d, "
@@ -766,8 +767,8 @@ void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeIn
     if (ex->has_scissor) sp(&b, "    scissor %d,%d %dx%d\n", (int)ex->scissor.x, (int)ex->scissor.y, (int)ex->scissor.w, (int)ex->scissor.h);
     else sp(&b, "    scissor none\n");
     sp(&b, "    blend: chmask");
-    for (int i = 0; i < 8 && s->color_fmt[i]; i++)
-        sp(&b, " t%d=%#x", i, s->chmask.mask >> (4 * i) & 0xf);
+    for (int i = 0; i < 8; i++)   // every bound target: an empty slot before one does not end the list
+        if (s->color_fmt[i]) sp(&b, " t%d=%#x", i, s->chmask.mask >> (4 * i) & 0xf);
     sp(&b, ", a2c %d, logic op %#x", (int)s->ms.a2c, (unsigned)s->color.logic_op);
     for (int i = 0; i < 8; i++)
         if (s->color.blend_en >> i & 1 && s->color_fmt[i]) {

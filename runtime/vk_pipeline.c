@@ -1962,7 +1962,25 @@ static void keys_note(const VkPipeState *s) {
     K.pend[K.pend_n++] = r;
 }
 
+// Puts n records back on the pending list, after any queued since (keys_flush, after a failed write). Takes ownership of r.
+static void keys_requeue(KeyRec *r, uint32_t n) {
+    plat_mutex_lock(&P.lock);
+    uint32_t need = K.pend_n + n;
+    if (need > K.pend_cap) {
+        KeyRec *t = realloc(K.pend, need * sizeof *t);
+        if (t) K.pend = t, K.pend_cap = need;
+    }
+    if (need <= K.pend_cap) memcpy(K.pend + K.pend_n, r, n * sizeof *r), K.pend_n = need;
+    else rt_log("vk_pipeline: %u key records dropped: out of memory", (unsigned)n);
+    plat_mutex_unlock(&P.lock);
+    free(r);
+}
+
 // Appends the pending records (present thread or exit; never the render thread).
+// A failed append is undone. The file is cut back to the length the last flush left it, so every record already in it
+// stays, and the batch goes back to the pending list for the next flush. A file that cannot be cut back stops key writes
+// for this run instead of being rewritten without its records. A file being created or replaced has no such records,
+// so its batch is only requeued.
 static void keys_flush(void) {
     if (!K.path[0]) return;
     plat_mutex_lock(&K.io);
@@ -1972,6 +1990,7 @@ static void keys_flush(void) {
     K.pend = NULL, K.pend_n = K.pend_cap = 0;
     plat_mutex_unlock(&P.lock);
     if (n) {
+        int64_t before = K.header_ok ? plat_file_size(K.path) : -1;
         FILE *f = fopen(K.path, K.header_ok ? "ab" : "wb");
         int ok = f != NULL;
         if (ok && !K.header_ok) {
@@ -1981,15 +2000,24 @@ static void keys_flush(void) {
         if (ok) ok = fwrite(r, sizeof *r, n, f) == n;
         if (ok) ok = plat_file_sync(f);   // appended records on the disk before the next append
         if (f) ok = !fclose(f) && ok;
-        if (ok) K.header_ok = 1;
-        else {
-            // A failed append may have left part of a record in the file. The next flush rewrites the file rather than
-            // appending after it, since keys_open only detects a torn tail, not one in the middle.
-            K.header_ok = 0;
+        if (ok) {
+            K.header_ok = 1;
+            free(r);
+        } else {
             rt_log("vk_pipeline: cannot write %s", K.path);
+            if (K.header_ok && f && (before < 0 || !plat_file_truncate(K.path, (uint64_t)before))) {
+                rt_log("vk_pipeline: cannot cut %s back after the failed write: key writes stop for this run", K.path);
+                plat_mutex_lock(&P.lock);   // keys_note reads the path under this lock
+                K.path[0] = 0;
+                plat_mutex_unlock(&P.lock);
+                free(r);
+            } else {
+                keys_requeue(r, n);   // ownership moves to the pending list
+            }
         }
+    } else {
+        free(r);
     }
-    free(r);
     plat_mutex_unlock(&K.io);
 }
 

@@ -49,12 +49,16 @@ static void stop_at_frame(uint64_t presented) {
     if (stop != ~0ull && presented + 1 >= stop) gfx_exit_saved("XC2_STOP_FRAME reached");
 }
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; VkFsrFrame fsr; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, seq; VkFsrFrame fsr; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
 static PresentJob job;
 static int pending, busy, present_thread;
+// Presents are numbered in the order present_image takes them (p_seq, under pl; a skipped present takes a number too).
+// blit_seq is the newest number whose blit the present thread has submitted: the game's image of that present may be
+// written again from then on (vk_present_wait_blit).
+static uint64_t p_seq, blit_seq;
 
 // Sleeps on a high-resolution timer to 1 ms before at, then yields until at: the timer alone wakes up to ~0.5 ms late.
 static void wait_until(uint64_t at) {
@@ -77,6 +81,10 @@ static void present_main(void *arg) {
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_fsr3_frame_show(&j.fsr);
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        plat_mutex_lock(&pl);
+        blit_seq = j.seq;   // the game's image of this present is free to write once its blit is queued
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
@@ -112,6 +120,14 @@ void vk_present_drain(void) {
     perf_end(PERF_DRAIN, p0);
 }
 
+// Waits until the present thread has submitted the blit of present number seq (see p_seq), so the game image that
+// present showed can be written again: the next submission that writes it is queued after the blit.
+void gfx_present_wait_blit(uint64_t seq) {
+    plat_mutex_lock(&pl);
+    while (blit_seq < seq) plat_cond_wait(&pcv, &pl);
+    plat_mutex_unlock(&pl);
+}
+
 // The present after the frame count: resolves the image and hands the blit to the present thread. queued: when the game
 // presented; value: the timeline value queued for this present (asynchronous replay), 0 for the next one (synchronous).
 static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uint64_t queued, uint64_t frame,
@@ -125,11 +141,15 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
         if (plat_inc32(&n_skipped) <= 8)
             rt_log("vk: present of texture %p (format %#x) skipped: no colour image", (const void *)t, t ? t->d.format : 0);
+        vk_present_drain();   // the blits of the presents before this one are submitted (blit_seq then counts this one)
         if (value) {   // the queued value is still signalled, in order
-            vk_present_drain();
             uint64_t f = vk_sync_submit(NULL, 0);
             if (f != value) rt_fatal("vk: skipped present signalled %llu, queued as %llu", (unsigned long long)f, (unsigned long long)value);
         }
+        plat_mutex_lock(&pl);
+        blit_seq = ++p_seq;
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
@@ -146,6 +166,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         present_thread = 1;
     }
     while (pending) plat_cond_wait(&pcv, &pl);   // one present in waiting at most
+    j.seq = ++p_seq;
     job = j;
     pending = 1;
     plat_cond_broadcast(&pcv);

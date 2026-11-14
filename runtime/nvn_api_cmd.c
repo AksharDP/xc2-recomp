@@ -170,7 +170,7 @@ void nvn_pins_each(void (*fn)(const tex_t *pin, void *ctx), void *ctx) {
 // adding control memory again releases the copies recorded there without walking every live copy. 4 KiB pages cost
 // about 500 lookups per AddControlMemory under the exclusive lock (1.4.3 field: 53 calls a frame, 2 MiB ranges, 3.7
 // copies per page), and the recording threads waited on it.
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred; } copy_prefix;   // deferred: 0 unknown, 1 none, 2 some
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, cap; } copy_prefix;   // deferred: 0 unknown, 1 none, 2 some; cap: the block size copy_alloc gave
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -192,10 +192,74 @@ static void zombie_add(copy_prefix *pf) {   // copy_lock held
     zombies[nzombies++] = pf;
 }
 
+// Recording copies come from a cache of freed blocks as well as malloc. A fresh block is paid for on its first write (the
+// kernel zero-fills it), and that first write was about 40% of the flatten copy (XC2 probes, 2026-11-13); a cached block
+// has its pages already. A block is sized in whole FL_STEP units from its byte count, so a freed block fits the next
+// copy of about its size (cap at most twice the need). The cache keeps at most FL_MAX_BYTES. XC2_COPY_CACHE=0 turns it
+// off. Lock order: copy_lock, then fl_lock; fl_lock is never held while taking copy_lock.
+#define FL_STEP (64u << 10)
+#define FL_MAX_BYTES (96ull << 20)
+#define FL_SLOTS 32
+static struct { void *p; size_t cap; } fl[FL_SLOTS];
+static int fl_n;
+static uint64_t fl_bytes;
+static PlatMutex fl_lock = PLAT_MUTEX_INIT;
+
+static int copy_cache_on(void) {
+    static int on = -1;
+    if (on < 0) on = !(cfg_is_set("XC2_COPY_CACHE") && !cfg_bool("XC2_COPY_CACHE"));
+    return on;
+}
+
+static size_t copy_block_size(uint64_t bytes) { return (size_t)((sizeof(copy_prefix) + bytes + FL_STEP - 1) / FL_STEP) * FL_STEP; }
+
+// A block for a recording copy of bytes bytes (its prefix included); freed with copy_free.
+static copy_prefix *copy_alloc(uint64_t bytes) {
+    size_t need = copy_block_size(bytes), got = need;
+    void *p = NULL;
+    if (copy_cache_on()) {
+        plat_mutex_lock(&fl_lock);
+        int best = -1;
+        for (int i = 0; i < fl_n; i++)
+            if (fl[i].cap >= need && fl[i].cap <= 2 * need && (best < 0 || fl[i].cap < fl[best].cap)) best = i;
+        if (best >= 0) {
+            p = fl[best].p;
+            got = fl[best].cap;
+            fl_bytes -= fl[best].cap;
+            fl[best] = fl[--fl_n];
+        }
+        plat_mutex_unlock(&fl_lock);
+    }
+    if (!p) p = malloc(need);
+    if (!p) rt_fatal("nvn: out of memory (recording copy, %zu bytes)", need);
+    ((copy_prefix *)p)->cap = got;   // a reused block can be up to twice the need: copy_free caches it at this size
+    return p;
+}
+
+// Frees a block from copy_alloc (its prefix holds the block size it was given) into the cache, evicting
+// the oldest blocks when the cache is full: the copies' sizes change with the scene, and a cache that refused new blocks
+// stayed full of sizes nothing asked for again (zero hits for the rest of a burst).
+static void copy_free(copy_prefix *pf) {
+    size_t cap = pf->cap;   // the real block size, not the payload
+    if (!copy_cache_on() || cap > FL_MAX_BYTES) {
+        free(pf);
+        return;
+    }
+    plat_mutex_lock(&fl_lock);
+    while (fl_n && (fl_n == FL_SLOTS || fl_bytes + cap > FL_MAX_BYTES)) {
+        free(fl[0].p);
+        fl_bytes -= fl[0].cap;
+        memmove(&fl[0], &fl[1], sizeof fl[0] * (size_t)(--fl_n));
+    }
+    fl[fl_n].p = pf, fl[fl_n].cap = cap;
+    fl_n++, fl_bytes += cap;
+    plat_mutex_unlock(&fl_lock);
+}
+
 static void zombie_sweep(uint64_t replayed) {   // copy_lock held
     for (uint32_t i = 0; i < nzombies;) {
         if (zombies[i]->used_at <= replayed) {
-            free(zombies[i]);
+            copy_free(zombies[i]);
             zombies[i] = zombies[--nzombies];
         } else {
             i++;
@@ -238,8 +302,7 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
 // into one host block of its exact size. One allocation and one copy: growing the copy record by record cost the
 // game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
 static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
-    uint8_t *out = malloc(sizeof(copy_prefix) + n);
-    if (!out) rt_fatal("nvn: command copy allocation");
+    uint8_t *out = (uint8_t *)copy_alloc(n);
     memcpy(out + sizeof(copy_prefix), p, n);
     for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
         op_hdr h;
@@ -253,7 +316,7 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
             break;
         }
     }
-    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0};
+    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0, 0, ((copy_prefix *)out)->cap};
     return out + sizeof(copy_prefix);
 }
 
@@ -303,7 +366,7 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
             copy_bytes -= pf->bytes;
             pf->magic = 0;
             if (pf->used_at > replayed) zombie_add(pf);   // a queued submission still reads it
-            else free(pf);
+            else copy_free(pf);
             b->v[i] = b->v[--b->n];
         }
         if (!b->n) {
@@ -1014,9 +1077,10 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
         out[i] = handles[i];
         if (pf->used_at > replayed && pf->used_at != now && pf->deferred != 1) {
             size_t sz = sizeof *pf + pf->bytes;
-            copy_prefix *cl = malloc(sz);
-            if (!cl) rt_fatal("nvn: out of memory (recording clone, %zu bytes)", sz);
+            copy_prefix *cl = copy_alloc(pf->bytes);   // freed by copy_free with the other zombies
+            const uint64_t clcap = cl->cap;
             memcpy(cl, pf, sz);
+            cl->cap = clcap;   // the clone
             cl->magic = 0;   // not a live handle: the game never sees it
             cl->used_at = now;
             zombie_add(cl);

@@ -128,6 +128,11 @@ with that release's `--toolchain` and `--ninja`.
 - stdout: one JSON event per line, types `start`, `plan`, `step` (started, done, skipped), `progress` (step, phase,
   done/total/unit), `space` (bytes needed and free on the install disk and the temp disk), `warning`, `error`, `end` (`installer/events.py`). Messages are ids with parameters;
   `installer/text/en.json` holds their English text. The human-readable log goes to `<temp>/logs/`.
+- `--progress-lines` (`events.LauncherReporter`): stdout carries `progress <0 to 1> <text>` lines instead of JSON, the
+  format of RecompLauncher's setup step (`recomplauncher.json`, `prepare`), and an error is one line on stderr. A first
+  install without `--lang` gets en-US; an update keeps the recorded language. `--dlc` may be repeated
+  (`--dlc=FILE` once per add-on). In the AppImage, `AppRun -m installer ...` runs the module with the bundled Python
+  and no window, the same arguments as `python\python.exe -m installer ...` in the Windows release.
 - Exit codes: 0 done, 1 failed, 2 bad command line, 3 cancelled. The window cancels with Ctrl+Break to the
   installer's process group.
 - Each step records a key over its inputs (runner.py). A step with the recorded key and intact output is skipped, so
@@ -206,6 +211,22 @@ bin/                  xc2_xlate, ninja, libSDL3.so.0
   `runtime/dispatch.h` (`RT_MAIN_BASE`, `RT_MODULES_MAX`) instead of the generated `layout.h`, and each install's
   `modules.c` checks them against its layout. `.github/workflows/release.yml` builds both releases from a bare
   checkout when a `v<VERSION>` tag is pushed. Only `--prove` reads `generated/v301` and `build/extracted/v301`.
+
+## RecompLauncher
+
+[RecompLauncher](https://recomplauncher.com) installs this setup from the GitHub release and runs it for the player.
+`recomplauncher.json` sits at the top of the zip and at the root of the AppImage (`tools/make_release.py`
+`build_sources`). It asks the player for the base game, the update, the add-on content and `prod.keys` (the launcher
+keeps its own copy of the keys), then runs the setup without a window:
+
+```
+python\python.exe -m installer --progress-lines --base=... --update=... --keys=... --dlc=... --dest=<release folder>\game
+```
+
+On Linux the same arguments go to the AppImage (`AppRun -m installer ...`). The game lands in `game/` next to the
+setup, so an update of the release leaves it in place and the launcher runs the setup again on it. Play starts
+`game/xc2.exe` (`game/xc2` on Linux), and the launcher's settings page edits `game/xc2.ini`. The setup window and the
+command line work as before.
 
 ## Constraints
 

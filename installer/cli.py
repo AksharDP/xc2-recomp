@@ -1,5 +1,5 @@
 """Command line: python -m installer --base FILE --update FILE --keys FILE [--dlc FILE ...] --lang CODE --dest DIR
-                                     [--root DIR] [--temp DIR] [--verify]
+                                     [--root DIR] [--temp DIR] [--verify] [--progress-lines]
 
 A first install needs every option. On a folder with xc2-install.json (resume after a cancel or failure, or update
 with a newer release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed
@@ -15,11 +15,12 @@ from pathlib import Path
 
 from . import layout as layouts
 from . import state as statefile
-from .events import Reporter
+from .events import LauncherReporter, Reporter
 from .runner import Context, run_steps
 from .steps import all_steps
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
+DEFAULT_LANG = 'en-US'
 
 
 class Parser(argparse.ArgumentParser):
@@ -47,7 +48,8 @@ def main(argv=None):
     ap = Parser(prog='python -m installer', description=__doc__.splitlines()[0])
     ap.add_argument('--base', type=Path, help='base game, XCI or NSP')
     ap.add_argument('--update', type=Path, help='3.0.1 update NSP')
-    ap.add_argument('--dlc', type=Path, nargs='*', help='add-on content NSPs (optional)')
+    # extend: RecompLauncher passes one --dlc=FILE per add-on it was given; the plain form takes them all in one option
+    ap.add_argument('--dlc', type=Path, nargs='*', action='extend', help='add-on content NSPs (optional)')
     ap.add_argument('--keys', type=Path, help='prod.keys')
     ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, ru, ...)')
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
@@ -56,6 +58,8 @@ def main(argv=None):
                                               'the install folder on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made (an update otherwise keeps the RomFS by its '
                               'recorded size and time)')
+    ap.add_argument('--progress-lines', action='store_true', help='print "progress <0 to 1> <text>" lines instead of JSON '
+                                                                  'events (RecompLauncher), and default --lang to en-US')
     args = ap.parse_args(argv)
 
     # The window cancels with Ctrl+Break to the installer's process group (CREATE_NEW_PROCESS_GROUP), which also reaches
@@ -68,7 +72,7 @@ def main(argv=None):
     base = args.temp or layout.temp
     temp = temp_folder(base.resolve(), dest) if base else dest / TEMP_IN_DEST
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
-    rep = Reporter(log_path=log)
+    rep = (LauncherReporter if args.progress_lines else Reporter)(log_path=log)
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)
@@ -76,6 +80,9 @@ def main(argv=None):
         rep.error(e.id, {'path': str(e.path)})
         rep.emit('end', result='failed', seconds=0)
         return 1
+    # The launcher has no language field: a first install gets English, and an update keeps the recorded language
+    if args.progress_lines and not args.lang and not (state or {}).get('lang'):
+        args.lang = DEFAULT_LANG
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
