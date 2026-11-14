@@ -7,7 +7,7 @@
 # Frame rate limit: 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 360, or display (the refresh rate of the
 # window's monitor). The game steps the time each frame took, so it runs at the same speed at any rate. Changes while
 # the game runs take effect at once.
-# fps_limit = 60
+# fps_limit = 120
 # Older key, read only while fps_limit is unset: fps60 = 0 means a limit of 30.
 # fps60 = 1
 # Cutscenes and movies at 30 fps, as on the console (1), or at the limit (0). Read at start.

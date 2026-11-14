@@ -94,7 +94,7 @@ NVN_API(nvnTextureBuilderGetLevels) { ret_x(c, tb_of(c)->d.levels); }
 NVN_API(nvnTextureBuilderGetFormat) { ret_x(c, (uint32_t)tb_of(c)->d.format); }
 NVN_API(nvnTextureBuilderGetSamples) { ret_x(c, (uint32_t)tb_of(c)->d.samples); }
 NVN_API(nvnTextureBuilderGetSwizzle) { get_swizzle(c, &tb_of(c)->d); }
-NVN_API(nvnTextureBuilderGetDepthStencilMode) { ret_x(c, NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH); }
+NVN_API(nvnTextureBuilderGetDepthStencilMode) { ret_x(c, tb_of(c)->d.dsmode); }
 NVN_API(nvnTextureBuilderGetStride) { ret_x(c, tb_of(c)->d.stride); }
 NVN_API(nvnTextureBuilderGetMemoryPool) { ret_x(c, (uintptr_t)tb_of(c)->pool); }
 NVN_API(nvnTextureBuilderGetMemoryOffset) { ret_x(c, (uint64_t)tb_of(c)->off); }
@@ -103,7 +103,7 @@ NVN_API(nvnTextureGetLevels) { ret_x(c, tex_of(c)->d.levels); }
 NVN_API(nvnTextureGetFormat) { ret_x(c, (uint32_t)tex_of(c)->d.format); }
 NVN_API(nvnTextureGetSamples) { ret_x(c, (uint32_t)tex_of(c)->d.samples); }
 NVN_API(nvnTextureGetSwizzle) { get_swizzle(c, &tex_of(c)->d); }
-NVN_API(nvnTextureGetDepthStencilMode) { ret_x(c, NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH); }
+NVN_API(nvnTextureGetDepthStencilMode) { ret_x(c, tex_of(c)->d.dsmode); }
 NVN_API(nvnTextureGetStride) { ret_x(c, tex_of(c)->d.stride); }
 NVN_API(nvnTextureGetTextureAddress) { ret_x(c, (uintptr_t)tex_of(c)->mem); }
 NVN_API(nvnTextureGetMemoryPool) { ret_x(c, (uintptr_t)tex_of(c)->pool); }
@@ -279,8 +279,8 @@ NVN_API(nvnSamplerCompare) { ret_x(c, !memcmp(sp_of(c), &((const samp_t *)arg_p(
 // uint64_t nvnSamplerGetDebugID(const NVNsampler *s)
 NVN_API(nvnSamplerGetDebugID) { ret_x(c, arg_x(c, 0)); }
 
-// ---------- fixed-function state objects: setters without a host equivalent store the value (the replay reports any
-// non-default use); getters return what was set
+// ---------- fixed-function state objects: setters without a host equivalent store the value, and the non-default uses the
+// replay cannot apply are reported once (ONCE / MS_ONCE calls where a setter notices them); getters return what was set
 #define ST(T) ((T *)arg_p(c, 0))
 // void nvnColorStateSetLogicOp(NVNcolorState *s, NVNlogicOp op) / SetAlphaTest(NVNcolorState *s, NVNalphaFunc f)
 NVN_API(nvnColorStateSetLogicOp) {
@@ -291,6 +291,19 @@ NVN_API(nvnColorStateSetLogicOp) {
 NVN_API(nvnColorStateSetAlphaTest) {
     unsigned f = (unsigned)arg_x(c, 1);
     if (f > 15) rt_fatal("nvn: alpha func %u", f);
+    // The function the fixed-function alpha test applies to the fragment's alpha against nvnCommandBufferSetAlphaRef
+    // (0 unset and ALWAYS both mean disabled). Every distinct enabled value is logged: a state object that carries one
+    // marks the draws bound to it as alpha-tested (docs/maxwell.md 5.7).
+    if (f && f != NVN_ALPHA_FUNC_ALWAYS) {
+        static _Thread_local unsigned logged;
+        if (f != logged) {
+            logged = f;
+            rt_log("nvn: colour state alpha test func %u (%s)", f, f == NVN_ALPHA_FUNC_NEVER ? "never" :
+                   f == NVN_ALPHA_FUNC_LESS ? "less" : f == NVN_ALPHA_FUNC_EQUAL ? "equal" :
+                   f == NVN_ALPHA_FUNC_LEQUAL ? "lequal" : f == NVN_ALPHA_FUNC_GREATER ? "greater" :
+                   f == NVN_ALPHA_FUNC_NOTEQUAL ? "notequal" : "gequal");
+        }
+    }
     ST(color_st)->alpha_func = f;
 }
 // NVNboolean nvnColorStateGetBlendEnable(const NVNcolorState *s, int index)
@@ -338,6 +351,11 @@ NVN_API(nvnMultisampleStateSetRasterSamples) {
     int n = (int)arg_x(c, 1);
     if (n < 0 || n > 16) rt_fatal("nvn: raster samples %d", n);
     ST(ms_st)->raster_samples = (uint8_t)n;
+    if (n > 1) {
+        // The replay rasterises at the pass's own sample count (vk_exec.c, pass_samples); the stored value is not read.
+        static int once_;
+        if (!once_++) rt_log("nvn: MultisampleState raster samples %d: stored, not applied (the replay rasterises at the pass's sample count)", n);
+    }
 }
 // void nvnMultisampleStateSetAlphaToCoverageDither(NVNmultisampleState *s, NVNboolean enable)
 NVN_API(nvnMultisampleStateSetAlphaToCoverageDither) { ST(ms_st)->a2c_dither = nvn_arg_bool(c, 1) != 0; }
@@ -394,9 +412,6 @@ NVN_API(nvnCommandBufferSetSampleMask) {
     int m = (int)arg_x(c, 1);
     if ((m & 0xffff) != 0xffff) ONCE("SetSampleMask %#x: fixed-function sample mask not applied", m);
 }
-// void nvnCommandBufferSetAlphaRef(NVNcommandBuffer *cmd, float ref): used only with the alpha test, which the replay
-// reports
-NVN_API(nvnCommandBufferSetAlphaRef) { (void)c; }
 // void nvnCommandBufferSetDepthBounds(NVNcommandBuffer *cmd, NVNboolean enable, float min, float max): disabling is
 // exact; an enabled range is drawn without the test and reported
 NVN_API(nvnCommandBufferSetDepthBounds) {

@@ -93,7 +93,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "Off by default.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
-    [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. Above 60 is "
+    [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. The default is 120. Above 60 is "
                                "experimental.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
@@ -419,7 +419,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                "частоты экрана. По умолчанию выключено.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
-    [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду; часы игры идут по нему. Выше 60 — экспериментальный "
+    [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду; часы игры идут по нему. По умолчанию 120. Выше 60 — экспериментальный "
                                "режим.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",

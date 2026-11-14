@@ -463,9 +463,20 @@ void vk_sync_shutdown(void) {
         plat_mutex_unlock(&st_lock);
         plat_thread_join(completion_thread);
         completion_thread = NULL;
+        // The callbacks still queued run now, in order, while the device and the command pool exist. Their values were
+        // issued but not reached, or never submitted; each owns a staging block, a view or an inline buffer that would
+        // otherwise leak, and none of them waits on the GPU, which vk_sync_finish has already idled.
         plat_mutex_lock(&st_lock);
-        qhead = qn = 0;   // callbacks of values never submitted
+        int nleft = qn;
+        Pending *left = NULL;
+        if (nleft) {
+            if (!(left = malloc(sizeof *left * (size_t)nleft))) rt_fatal("vk: out of memory (completion queue)");
+            memcpy(left, queue + qhead, sizeof *left * (size_t)nleft);
+        }
+        qhead = qn = 0;
         plat_mutex_unlock(&st_lock);
+        for (int i = 0; i < nleft; i++) left[i].fn(left[i].arg);
+        free(left);
         plat_mutex_lock(&sub_lock);
         VkCtx *c = vk_ctx();
         if (c && cmd_pool) vkDestroyCommandPool(c->device, cmd_pool, NULL);

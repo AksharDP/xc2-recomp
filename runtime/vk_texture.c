@@ -101,6 +101,10 @@ static Tex **owned;
 static int nowned, cowned;
 static uint64_t max_owned;   // largest storage size in owned[]
 static uint64_t gpu_writes;  // GPU writes into mirrored textures so far: Tex.gpu_seq
+// Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
+// dirty.
+enum { WB_SMALL = 64 << 10 };
+static int small_pending;
 // Bumped whenever the entry a slot resolves to can change: an entry created or destroyed, released or taken back into
 // use (the slot lookup and the follow of a finalized slot read only by_key, by_addr and the released flags).
 static uint32_t tex_gen = 1;
@@ -697,6 +701,20 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
     return vk_mem_changed(lo, hi - lo, since, now);
 }
 
+// A GPU write into a mirrored texture's image, recorded with fence (0: not in a submission): the storage no longer
+// holds the newest texels until write_back copies them there. Every path that makes an image the newest content goes
+// through here, so a CPU read of the storage always finds the dirty flag and the owned[] entry.
+static void mark_gpu_written_as(Tex *e, uint64_t fence, uint64_t seq) {
+    e->gpu_dirty = 1;
+    storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
+    e->gpu_seq = seq;   // the write-back order: a newer one is written back last
+    e->gpu_fence = fence;
+    if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
+    own_add(e);
+}
+
+static void mark_gpu_written(Tex *e, uint64_t fence) { mark_gpu_written_as(e, fence, ++gpu_writes); }
+
 // A mirrored texture is uploaded on first use and again when its storage pages carry a newer write generation.
 static void make_fresh(Tex *e) {
     if (!e->pub.mirrored || e->pub.gpu_owned) return;
@@ -737,12 +755,13 @@ static int img_block(const Tex *e, int *bw, int *bh) {
     return e->f.vk == e->f.ideal ? b : 0;
 }
 
-// The new entry e can take src's content texel for texel: colour, one sample, the same shape and storage layout, and
-// image formats of one block size.
+// The new entry e can take src's content texel for texel: colour, one sample, the same shape (type, size, mip levels and
+// layers) and storage layout, and image formats of one block size.
 static int alias_compatible(const Tex *e, const Tex *src) {
     const VkTexImage *p = &e->pub, *q = &src->pub;
     if (e->f.depth || e->f.stencil || src->f.depth || src->f.stencil || p->samples > 1 || q->samples > 1) return 0;
     if (p->type != q->type || p->width != q->width || p->height != q->height || p->depth != q->depth) return 0;
+    if (p->levels != q->levels || p->layers != q->layers) return 0;   // the mip chain and the layers must line up byte for byte
     if (e->t.L.size != src->t.L.size || nvn_tex_is_linear(&e->t.d) != nvn_tex_is_linear(&src->t.d)) return 0;
     int ew, eh, sw, sh, eb = img_block(e, &ew, &eh), sb = img_block(src, &sw, &sh);
     return eb && eb == sb && ew == sw && eh == sh;
@@ -824,9 +843,17 @@ static Tex *entry_of(const tex_t *t) {
             nx = p->next_at;
             if (p->released) { destroy_tex(p); continue; }
             alias = 1;
-            if (tex_alias && (!src || (same_but_swizzle(&p->key, &k) && !same_but_swizzle(&src->key, &k))) &&
-                alias_compatible(e, p) && alias_has_gpu_content(p))
-                src = p;
+            if (tex_alias && alias_compatible(e, p) && alias_has_gpu_content(p)) {
+                // The source is the candidate with the newest GPU write to the storage range: the copy must not take older
+                // content (both mirrored: gpu_seq is the write order). Among equal candidates the first in the chain stays,
+                // and a swizzle-only difference still goes first.
+                int ps = same_but_swizzle(&p->key, &k);
+                if (!src) src = p;
+                else {
+                    int ss = same_but_swizzle(&src->key, &k);
+                    if ((ps && !ss) || (ps == ss && p->pub.mirrored && src->pub.mirrored && p->gpu_seq > src->gpu_seq)) src = p;
+                }
+            }
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
         if (tex_alias) {
@@ -836,6 +863,11 @@ static Tex *entry_of(const tex_t *t) {
                     vk_mem_changed(e->pub.addr, e->t.L.size, 0, &e->wgen);
                     e->uploaded = 1;
                     e->pub.gpu_owned = 1;
+                    uint64_t f = vk_exec_recording_fence();   // alias_copy recorded the copy into this submission
+                    if (f > e->wr_fence) e->wr_fence = f;
+                    // The copy holds src's content, so it keeps src's place in the write-back order: a newer write to
+                    // another alias still lands after it. A later render into the copy takes a new place as usual.
+                    mark_gpu_written_as(e, f, src->gpu_seq ? src->gpu_seq : ++gpu_writes);
                 }
             } else {
                 init_image(e, vk_upload_begin());
@@ -877,11 +909,6 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
     return e ? &e->pub : NULL;
 }
 
-// Small render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be
-// dirty.
-enum { WB_SMALL = 64 << 10 };
-static int small_pending;
-
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
     vk_exec_frame_written(t);
@@ -892,14 +919,7 @@ void vk_texture_gpu_written(const tex_t *t) {
         e->pub.gpu_owned = 1;
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
-        if (e->pub.mirrored) {
-            e->gpu_dirty = 1;
-            storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
-            e->gpu_seq = ++gpu_writes;
-            e->gpu_fence = vk_exec_recording_fence();
-            if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
-            own_add(e);
-        }
+        if (e->pub.mirrored) mark_gpu_written(e, f);
     }
     unlock();
 }
@@ -1334,14 +1354,7 @@ int vk_texture_restore(const tex_t *t, const view_t *v, const NVNcopyRegion *r, 
         if (owned && !e->pub.gpu_owned) {
             make_fresh(e);   // the parts the record could not read keep what the storage holds
             e->pub.gpu_owned = 1;
-            if (e->pub.mirrored) {
-                e->gpu_dirty = 1;
-                storage_rewritten(e, 0, &e->gpu_gen);
-                e->gpu_seq = ++gpu_writes;
-                e->gpu_fence = 0;
-                if (e->t.L.size <= WB_SMALL) __atomic_store_n(&small_pending, 1, __ATOMIC_RELEASE);
-                own_add(e);
-            }
+            if (e->pub.mirrored) mark_gpu_written(e, 0);   // the replay writes the image outside a submission
         }
         ok = image_texels(e, &g, r, (uint8_t *)src, 1);
     }
@@ -1399,9 +1412,12 @@ void vk_write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, co
 // A mirrored texture the GPU rendered into holds its texels in its image only; its storage keeps what the CPU last put
 // there. The game may still read that storage with the CPU: XCX moves its generated grass maps between pools with
 // memcpy once the GPU is done, and the copy then carried zeros. Such a read writes the image back first.
+// The dirty flag is cleared even when a copy fails. Every failure of image_texels is a property of the texture or the
+// region (ASTC read back as RGBA8, packed depth-stencil, a region outside the level), not a passing one, so a retry
+// would fail the same way and keep the texture stale on every guest read. The failure is logged instead.
 static void write_back(Tex *e) {
     const nvn_texdesc *d = &e->t.d;
-    int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D;
+    int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D, ok = 1;
     uint32_t levels = linear ? 1 : e->pub.levels, layers = linear || is3d ? 1 : e->pub.layers;
     for (uint32_t lv = 0; lv < levels; lv++)
         for (uint32_t ly = 0; ly < layers; ly++) {
@@ -1413,9 +1429,14 @@ static void write_back(Tex *e) {
             if (!region_of(&e->t, &v, &r, 0, 0, &g)) continue;
             uint8_t *buf = malloc(g.img * (size_t)g.nz);
             if (!buf) rt_fatal("vk: out of memory for a texture write-back");
-            if (image_texels(e, &g, &r, buf, 0)) storage_texels(&e->t, &g, &r, buf, 1);
+            if (!image_texels(e, &g, &r, buf, 0) || !storage_texels(&e->t, &g, &r, buf, 1)) ok = 0;
             free(buf);
         }
+    if (!ok) {
+        static volatile int32_t n_fail;
+        log_limited(&n_fail, "write-back of GPU-written texture %#llx (format %#x) to its storage failed: CPU reads of "
+                    "that storage see texels from before the GPU's render", (unsigned long long)e->pub.addr, d->format);
+    }
     e->gpu_dirty = 0;
 }
 

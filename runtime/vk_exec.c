@@ -685,8 +685,12 @@ VkRect2D vk_exec_scissor(const VkExec *ex) {
 // image directly instead of opening a pass for it.
 static int whole_target(const VkExec *ex, const VkExecTarget *t) {
     // vkCmdClear*Image addresses a 3D level whole, not one depth plane: slices of a 3D target clear in a pass; it
-    // cannot clear a compressed image: views of BC blocks clear in a pass too
-    if (ex->in_pass || t->is3d || t->blocks || t->width != ex->pass_w || t->height != ex->pass_h) return 0;
+    // cannot clear a compressed image: views of BC blocks clear in a pass too. A stand-in of a 3D BC image (bc_target)
+    // clears in a pass as well: only the pass end copies a stand-in back to its BC image (bc_copy_back), so a clear
+    // of the stand-in directly would never reach the texture.
+    if (ex->in_pass || t->is3d || t->blocks || (t->img && t->img->image != t->image) || t->width != ex->pass_w ||
+        t->height != ex->pass_h)
+        return 0;
     if (!ex->has_scissor) return 1;
     const p_scissor *s = &ex->scissor;
     return s->x <= 0 && s->y <= 0 && (int64_t)s->x + s->w >= t->width && (int64_t)s->y + s->h >= t->height;
@@ -707,13 +711,17 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
     resolve_rt(ex);
     int i = c->index;
     if (i < 0 || i >= (int)ex->pass_ncolor || !ex->color[i].image) {
-        warn_once(W_CLEAR_TARGET, "colour clear of target %d, which is not bound or not renderable: skipped", i);
+        // Every skip is logged (not once): the second and later targets matter when a stale buffer feeds a decal (H3)
+        rt_log("vk: colour clear of target %d, which is not bound or not renderable: skipped", i);
         return;
     }
     uint32_t mask = (uint32_t)c->mask & 0xf;
     if (!mask) return;
     if (mask != 0xf) {   // vkCmdClearAttachments ignores write masks; a masked clear needs a draw (vk_exec_draw.c)
-        warn_once(W_CLEAR_MASK, "colour clear with channel mask %#x is not replayed: skipped", mask);
+        // Every skip is logged (not once): which targets skip matters when a stale alpha or mask buffer is what a
+        // decal composites against (issue 22 hypothesis H3)
+        rt_log("vk: colour clear of target %d (nvn fmt %d) with channel mask %#x is not replayed: skipped",
+               i, ex->color[i].nvn_format, mask);
         return;
     }
     const VkExecTarget *t = &ex->color[i];
@@ -742,7 +750,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     uint32_t sm = (uint32_t)c->stencil_mask & 0xff;
     if (sm && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) {
         if (sm == 0xff) asp |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        else warn_once(W_STENCIL_MASK, "stencil clear with mask %#x is not replayed: skipped", sm);
+        else rt_log("vk: stencil clear with mask %#x is not replayed: skipped", sm);   // every skip, not once (H3)
     }
     if (!asp) return;
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
@@ -865,6 +873,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
             memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
             ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
             break;
+        case OP_ALPHA_REF: ex->alpha_ref = ((const p_alpha_ref *)a)->ref; break;
         case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
         case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
         case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;

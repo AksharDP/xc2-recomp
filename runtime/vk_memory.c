@@ -2287,13 +2287,17 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
         plat_rmutex_lock(&cmd_lock);
         if (!stg_pool_tried) {
             uint32_t type;
-            VmaPoolCreateInfo pi = {.blockSize = STG_BLOCK, .minBlockCount = STG_MIN_BLOCKS};
+            // On an integrated GPU the pool starts without blocks (XC2_STG_LAZY=0 restores the two made at start).
+            // Those two are 128 MiB of the memory the game and the headroom thread share; issue #83's Intel HD 520 crash
+            // came right after they were made. Not tested on that GPU.
+            int lazy = c->props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && cfg_bool("XC2_STG_LAZY");
+            VmaPoolCreateInfo pi = {.blockSize = STG_BLOCK, .minBlockCount = lazy ? 0 : STG_MIN_BLOCKS};
             if (vmaFindMemoryTypeIndexForBufferInfo(c->vma, &bi, &aci, &type) == VK_SUCCESS) {
                 pi.memoryTypeIndex = type;
                 if (vmaCreatePool(c->vma, &pi, &stg_pool) != VK_SUCCESS) stg_pool = NULL;
             }
-            rt_log("vk: staging pool %s (%d blocks of %llu MiB kept)", stg_pool ? "created" : "unavailable: default pool",
-                   STG_MIN_BLOCKS, (unsigned long long)(STG_BLOCK >> 20));
+            rt_log("vk: staging pool %s (%u blocks of %llu MiB kept at start)", stg_pool ? "created" : "unavailable: default pool",
+                   (unsigned)pi.minBlockCount, (unsigned long long)(STG_BLOCK >> 20));
             __atomic_store_n(&stg_pool_tried, 1, __ATOMIC_RELEASE);
         }
         plat_rmutex_unlock(&cmd_lock);

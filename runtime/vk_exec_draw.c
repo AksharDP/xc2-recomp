@@ -688,11 +688,25 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
     return img ? (uint8_t)gfx_type_of(img, &v, hv) : 0;
 }
 
+// The fixed-function alpha test a fragment shader bakes in: the colour state's function when it tests, else 0. Unset (0)
+// and ALWAYS stay off (docs/maxwell.md 5.7).
+static unsigned alpha_test_func(const VkExec *ex) {
+    unsigned f = ex->pipe.color.alpha_func;
+    return f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL ? f : 0;
+}
+
 // The answers of stage st for the slots in mask; the types of other slots stay zero.
 static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
     if (st == NVN_STAGE_VS) vk_pipeline_answers(&ex->pipe, a, NULL);
-    else if (st == NVN_STAGE_FS) vk_pipeline_answers(&ex->pipe, NULL, a);
+    else if (st == NVN_STAGE_FS) {
+        vk_pipeline_answers(&ex->pipe, NULL, a);
+        // The fixed-function alpha test: the colour state's function against nvnCommandBufferSetAlphaRef's reference.
+        // Baked into the fragment shader as a discard.
+        a->alpha_func = (uint8_t)alpha_test_func(ex);
+        // Zero with the test off: a reference nothing tests must not split the shader cache (the input id hashes it).
+        a->alpha_ref = a->alpha_func ? ex->alpha_ref : 0;
+    }
     else
         for (int k = 0; k < 3; k++) {
             uint32_t l;
@@ -1391,8 +1405,12 @@ static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     ex->nsnap = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
-    m &= ~feedback_snapshot(ex, fs, m);
-    uint32_t d = m & ex->fb_dirty;
+    uint32_t dirty = m & ex->fb_dirty;   // read before the snapshot, whose pass restart clears fb_dirty
+    uint32_t snapped = feedback_snapshot(ex, fs, m);
+    m &= ~snapped;
+    // A snapshot ends the pass behind a full barrier, which makes every earlier write visible, so RESTART mode has nothing
+    // left to do. LAYOUT mode still learns the sampled targets it did not copy, or they stay attached in GENERAL.
+    uint32_t d = !snapped ? dirty : mode == VK_FEEDBACK_LAYOUT ? dirty & ~snapped : 0;
     if (d) vk_exec_frame.fb_draws++;
     if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
         if (mode == VK_FEEDBACK_LAYOUT)
@@ -2109,6 +2127,7 @@ typedef struct {
     uint32_t gen, tex_serial;
     uint64_t tex[2][32], img[2][32];
     VkPipeState pipe;
+    float alpha_ref;   // the reference the fragment shader tests: OP_ALPHA_REF while the alpha test is on, else 0
 } MemoKey;
 static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
 
@@ -2117,10 +2136,14 @@ static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
     memcpy(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]), memcpy(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]);
     memcpy(&k->pipe, &ex->pipe, sizeof k->pipe);
+    k->alpha_ref = alpha_test_func(ex) ? ex->alpha_ref : 0.0f;
 }
 
+// A shader compiled for another alpha reference is not reused: OP_ALPHA_REF changes no other part of the key.
 static int memo_match(const VkExec *ex, uint32_t gen, MemoKey *k) {
-    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe))
+    float ref = alpha_test_func(ex) ? ex->alpha_ref : 0.0f;
+    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe) ||
+        memcmp(&k->alpha_ref, &ref, sizeof ref))
         return 0;
     if (k->tex_serial == ex->tex_serial) return 1;
     if (memcmp(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]) || memcmp(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]) ||
@@ -2689,6 +2712,30 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
             cb_res(ex);
             vk_exec_barrier(ex);   // earlier draws finished with the old records
             ex->xfb_written = 0;
+            // One line per program that stores records: its record layout (gfx_shader_xfb reads the control section)
+            // against the vertex input of the draws that consume it. A layout whose words miss a component the consumer
+            // reads is exactly the "alpha is 1" class of fault (issue 22 hypothesis H5).
+            static uint64_t logged_serial;
+            uint64_t serial = ex->prog ? ex->prog->serial : 0;
+            if (serial && serial != logged_serial) {
+                logged_serial = serial;
+                const uint8_t *ctl, *code;
+                uint32_t len;
+                if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len)) {
+                    uint8_t words[GFX_XFB_WORDS] = {0};
+                    uint32_t stride = gfx_shader_xfb(ctl, words);
+                    char w[5 * GFX_XFB_WORDS + 8], *o = w;
+                    for (uint32_t i = 0; i < GFX_XFB_WORDS && words[i]; i++)
+                        o += snprintf(o, (size_t)(w + sizeof w - o), "%s%u", i ? "," : "", words[i]);
+                    if (stride)
+                        rt_log("vk_exec: program %llu stores transform feedback records of %u bytes: words %s",
+                               (unsigned long long)serial, stride, w);
+                    else
+                        rt_log("vk_exec: program %llu begins transform feedback but its vertex shader declares no record "
+                               "layout the replay understands",
+                               (unsigned long long)serial);
+                }
+            }
         }
         break;
     case OP_BIND_STATE: {

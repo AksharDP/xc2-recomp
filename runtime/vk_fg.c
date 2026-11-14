@@ -263,6 +263,26 @@ static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fa
     return 1;
 }
 
+// The frame generation context must not be destroyed under a present still in flight, and nothing may reference the
+// HUD-less images while one is: configure with frame generation off, wait for the presents, then destroy the context.
+// Shutdown and a resize both start here.
+static void fg_drain(void) {
+    if (G.fg) {
+        struct ffxConfigureDescFrameGeneration cfg;
+        memset(&cfg, 0, sizeof cfg);
+        cfg.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+        cfg.swapChain = G.swapchain;
+        cfg.frameGenerationEnabled = false;
+        G.configure(&G.fg, &cfg.header);
+    }
+    struct ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK wait;
+    memset(&wait, 0, sizeof wait);
+    wait.header.type = FFX_API_DISPATCH_DESC_TYPE_FGSWAPCHAIN_WAIT_FOR_PRESENTS_VK;
+    G.dispatch(&G.sc, &wait.header);
+    if (G.fg) G.destroy(&G.fg, NULL);
+    G.fg = NULL;
+}
+
 // Setup failed after the library replaced *sc: the context goes first, then its swapchain, which would otherwise keep the
 // surface and stop the plain swapchain the caller makes next. destroy is NULL when the library did not offer it.
 static void abandon_swapchain(VkCtx *c, VkSwapchainKHR *sc, PFN_vkDestroySwapchainFFXAPI destroy) {
@@ -339,6 +359,8 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
     // A new swapchain for a resize, a present-mode change or a fullscreen switch: the library rebuilds it in place. Its
     // context argument is the frame generation swapchain, not the swapchain context. That handle is no Vulkan swapchain,
     // so the old swapchain in the create info stays empty: the driver fails on it.
+    // Presents in flight read the HUD-less images and the old context; both go before the library rebuilds in place.
+    fg_drain();
     VkSwapchainCreateInfoKHR next = *ci;
     next.oldSwapchain = VK_NULL_HANDLE;
     VkResult r = G.sc_create(c->device, &next, NULL, sc, G.swapchain);
@@ -354,7 +376,15 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
     G.h = ci->imageExtent.height;
     G.fmt = ci->imageFormat;
     free_hudless(c);
-    make_hudless(c);
+    // The frame generation context keeps the display and render sizes it was made with, so it is made again at the new
+    // size. Failing here leaves the swapchain the library gave us with nothing to present through: shut it down and let
+    // the caller make a plain one (-1, as for the failure above).
+    if (!make_fg_context(c, G.w, G.h, G.fmt) || !make_hudless(c)) {
+        rt_log("vk: frame generation off: its contexts could not be made for %ux%u", G.w, G.h);
+        vk_fg_shutdown(c);
+        G.failed = 1;
+        return -1;
+    }
     return 1;
 }
 
@@ -395,23 +425,10 @@ void vk_fg_shutdown(VkCtx *c) {
         G.on = 0;
         return;
     }
-    if (G.fg) {
-        struct ffxConfigureDescFrameGeneration cfg;
-        memset(&cfg, 0, sizeof cfg);
-        cfg.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
-        cfg.swapChain = G.swapchain;
-        cfg.frameGenerationEnabled = false;
-        G.configure(&G.fg, &cfg.header);
-    }
-    struct ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK wait;
-    memset(&wait, 0, sizeof wait);
-    wait.header.type = FFX_API_DISPATCH_DESC_TYPE_FGSWAPCHAIN_WAIT_FOR_PRESENTS_VK;
-    G.dispatch(&G.sc, &wait.header);
+    fg_drain();
     if (G.sc_count && G.swapchain)
         rt_log("vk: frame generation presented %llu frames for %llu drawn", (unsigned long long)G.sc_count(G.swapchain),
                (unsigned long long)G.frame_id);
-    if (G.fg) G.destroy(&G.fg, NULL);
-    G.fg = NULL;
     G.destroy(&G.sc, NULL);
     G.sc = NULL;
     G.on = 0;
