@@ -237,3 +237,36 @@ site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 
 # bit is clear and they are unchanged.
 set xc2kill XC2_CHEAT_INSTA_KILL 0
 site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b
+
+# xc2qte (XC2_QTE_FIX, on): the QTE ring counts the frame time twice. Issue 48: a Blade Special's QTE ring closes
+# late against the special's animation. The update (main+0x1d0bc, the challenge layout) loads the frame message's
+# step ([x21,#4], seconds per frame: XC2_UIPROBE=1 shows it tracking the frame time, 0.016667 at 60 fps) and turns
+# it into frames of 1/30 s by 30 (main+0x1d0c0); the ring then multiplies that by the object the lookup
+# main+0x7b4b0 returns (main+0x1d108 to main+0x1d114, the product of [x0,#0xcd8] and [x0,#0xec8], the frame time
+# again), so at 60 fps the factor is 0.5 and the ring advances at half speed. The replacement writes 1.0, which is
+# what the game's own product is at 30 fps: at 30 fps nothing changes, and at any other frame rate the advance is
+# the frame time alone, where the game's own product runs the ring behind the special above 30 fps and ahead of it
+# below. s8 is the factor's own register and no flag is written. masagrator's FPSLocker 3.0.1 set (BID
+# 4F5C96E2D97F45AC) patches the same word to the same value for the same reason.
+set xc2qte XC2_QTE_FIX 1
+site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008
+
+# xc2glow (XC2_GLOW_FIX, on): the "Just Range" element symbol over the arts cross grew until it covered the screen
+# at 60 fps (issue 48's second symptom; reproduced with a wind blade in a battle, and it kept growing after the
+# battle ended). This per-frame branch of the battle UI effect update (main+0x1778ac, gated by the event flag byte
+# at +0x2fd6 of the scene object x27) copies the word [x20,#8] of its message into the scene's +0x358, and that
+# word is the time step of the UI effect engine's animation tracks in frames of 1/30 s — the same convention the
+# QTE ring's frame message uses (main+0x1d0c0). The engine's track phase accumulates it (f_7000850520: the object's
+# +0x94/+0x98/+0x9c += the track velocity times the delta at +0x130), and the symbol's scale pair (+0x144/+0x148 of
+# the effect object, init 1.0/1.0 by f_7000831d78, the element's RGB at +0x160) is sampled from the tracks. At 60
+# fps the word is 0.5, so the scale ran at 30 times the console's rate and reached 35x in one battle. The
+# replacement divides the word by 30 (as float: s8 and s9 are dead here, main+0x842cf0 and the accessor
+# main+0x83df04 touch no float registers, and the next original instruction, str w8, [x27, #0x358], takes the
+# result from w8), which turns frames of 1/30 s back into seconds and is exact at every frame rate. An earlier
+# patch on this site multiplied the word by the page's +0x54 instead — it made the symbol START large and still
+# grow, because the value is already in 1/30 s frames and halving it left 16 times the console's rate.
+set xc2glow XC2_GLOW_FIX 1
+site xc2glow main 17794c sha:ad620a8e151ef3d2 bd400a88 1e27d009 1e291908 1e260108
+
+
+
