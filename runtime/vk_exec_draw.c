@@ -1365,9 +1365,17 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
     if (on <= 0 || !(m & 0xff)) return 0;
     VkPipeState s = ex->pipe;
     s.fs = fs;
+    // One copy per source image. A colour slot that holds an image an earlier slot of c already holds is the same target:
+    // tex_info_full sends the draw's descriptors to the first copy of an image, so a second copy would be marked as read
+    // and kept current without ever being read.
     uint32_t c = 0;
-    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
-        if ((m >> i & 1) && ex->color[i].image && snap_fits(&ex->color[i]) && vk_pipeline_target_wmask(&s, (int)i)) c |= 1u << i;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
+        if (!((m >> i & 1) && ex->color[i].image && snap_fits(&ex->color[i]) && vk_pipeline_target_wmask(&s, (int)i))) continue;
+        int same = 0;
+        for (uint32_t j = 0; j < i; j++)
+            if ((c >> j & 1) && ex->color[j].image == ex->color[i].image) same = 1;
+        if (!same) c |= 1u << i;
+    }
     if (!c) return 0;
     VkImage copy[8];
     for (uint32_t i = 0; i < 8; i++) {
