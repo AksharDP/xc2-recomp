@@ -422,6 +422,7 @@ void frame_step_present(uint64_t display_ns, int interval) {
     }
     last_ns = display_ns;
     if (xc2_game && xc2_words) xc2_steps_store(step_now);
+    res_lyt_diag();
     // The game clock of untimed script lines: what the game stepped this frame, the patch page's step with the
     // real-time step (kept through a reset), whole vsyncs without it.
     double game = step_word || xc2_words ? step_now : (interval > 0 ? interval : 1) / 60.0;

@@ -204,6 +204,52 @@ void res_init(void) {
     rt_log("resolution: %ux%u (handheld %ux%u)", want[0], want[1], want[2], want[3]);
 }
 
+// XC2_LYTDUMP=1 (diagnostic, issue 47): once the interface system's global exists (the pointer variable at
+// main+0xb84720), log the sizes and unit scales its math works with, five times 600 presents apart. The layout runs
+// in its authored 1280x720 while the screen follows the frame; the dump shows whether each scale follows the layout's
+// size or the screen's. The pointer variable's object carries the game's step floats at +0x78..0x80 (frame_rate.c
+// xc2_steps_store); the layout's own fields live on the objects it points to: [lyt] and [lyt+0x58] are screens and
+// systems, and [[lyt]+0x58] holds the sizes (+0x530/0x534), the unit scales (+0x540..0x54c), the design size
+// (+0x550/0x554) and the fit (+0x558..0x560).
+// Reads exactly n floats at addr, which must be readable, and logs them four to a line.
+static void dump_floats(const char *what, uint64_t addr, unsigned n) {
+    float v[32];
+    if (n > 32 || !plat_mem_read(addr, v, n * 4)) {
+        rt_log("lytdump: %s @%llx unreadable", what, (unsigned long long)addr);
+        return;
+    }
+    for (unsigned i = 0; i < n; i += 4) {
+        char line[128] = "";
+        size_t len = 0;
+        for (unsigned j = i; j < n && j < i + 4; j++)
+            len += (size_t)snprintf(line + len, sizeof line - len, " %.4g", (double)v[j]);
+        rt_log("lytdump: %s[%u..%u] =%s", what, i, i + 4 < n ? i + 3 : n - 1, line);
+    }
+}
+
+void res_lyt_diag(void) {
+    static int dumps, presents;
+    static int enabled = -1;   // XC2_LYTDUMP is a restart setting: read once, not on every present
+    if (enabled < 0) enabled = cfg_bool("XC2_LYTDUMP");
+    if (!enabled || dumps >= 5) return;
+    uint64_t lyt = 0;
+    if (!plat_mem_read(RT_MAIN_BASE + 0xb84720, &lyt, 8) || !lyt || !plat_mem_readable(lyt + 0xb0, 4)) return;
+    if (++presents % 600) return;
+    dumps++;
+    rt_log("lytdump: lyt @%llx", (unsigned long long)lyt);
+    dump_floats("lyt+88", lyt + 0x88, 6);            // +0x88..0x94 unit scales, +0x9c mode
+    uint64_t root = 0;
+    if (plat_mem_read(lyt, &root, 8) && root) {
+        rt_log("lytdump: root @%llx", (unsigned long long)root);
+        uint64_t screen = 0;
+        if (plat_mem_read(root + 0x58, &screen, 8) && screen) {
+            rt_log("lytdump: root+58 -> @%llx", (unsigned long long)screen);
+            dump_floats("screen+530", screen + 0x530, 18);   // sizes, units, design size, fit
+        }
+    }
+    if (dumps == 5) rt_log("lytdump: done");
+}
+
 // One side of the scene at this scale, as main+0x9dc9f4 sizes it: up to a multiple of 8. The patch page holds 0 until
 // the first frame.
 static unsigned scene_side(unsigned side, float scale) {
