@@ -92,7 +92,10 @@ static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
 // XC2_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
 // live image that the GPU wrote gets that image's content (alias_copy). Counts since the last log line.
 static int tex_alias = -1;
-static uint64_t n_alias_copied, n_alias_upload, n_alias_uninit;
+static uint64_t n_alias_copied, n_alias_upload, n_alias_uninit, n_alias_stale;
+// n_stale_total: GPU-written sources of another shape that were not copied from and not yet written back, since start
+// (entry_of; vk_texture_stale_refusals). Unlike n_alias_stale it is not reset by the perf line.
+static uint64_t n_stale_total;
 static uint32_t submit_epoch = 1;   // bumped per queue submit: draw bindings check a texture's storage once per submit
 // Mirrored textures the GPU wrote into, sorted by address (vk_texture_cpu_stale, vk_texture_write_back). Changed under
 // tex_lock and owned_lock; read under either.
@@ -837,13 +840,17 @@ static Tex *entry_of(const tex_t *t) {
         perf_count(PERF_CNT_TEX_NEW);
         // released entries of another descriptor at this address are replaced by the new one; a live one holding
         // GPU-written content is the alias source, preferring the one that differs only in swizzle (same_but_swizzle)
-        int alias = 0;
+        int alias = 0, stale = 0;
         Tex *src = NULL;
         for (Tex *p = nvn_hm_get(&by_addr, &k.addr), *nx; p; p = nx) {
             nx = p->next_at;
             if (p->released) { destroy_tex(p); continue; }
             alias = 1;
-            if (tex_alias && alias_compatible(e, p) && alias_has_gpu_content(p)) {
+            if (tex_alias && !alias_compatible(e, p)) {
+                // A GPU-written texture of another shape is no copy source, so the new texture uploads storage bytes that may
+                // lack its render. Only the dirty flag is read here: vk_mem_changed would change the write-watch state.
+                if (p->pub.gpu_owned && p->pub.mirrored && p->gpu_dirty) stale = 1;
+            } else if (tex_alias && alias_has_gpu_content(p)) {
                 // The source is the candidate with the newest GPU write to the storage range: the copy must not take older
                 // content (both mirrored: gpu_seq is the write order). Among equal candidates the first in the chain stays,
                 // and a swizzle-only difference still goes first.
@@ -875,6 +882,14 @@ static Tex *entry_of(const tex_t *t) {
                 if (alias) {
                     if (e->pub.mirrored) n_alias_upload++;
                     else n_alias_uninit++;
+                }
+                if (stale) {
+                    n_alias_stale++, n_stale_total++;
+                    static volatile int32_t n_stale_log;
+                    log_limited(&n_stale_log, "texture %#llx (%ux%u, format %#x): its storage is shared with a GPU-written "
+                                "texture of another shape that is not written back yet; the new texture uploads the storage "
+                                "bytes, which may be older than that render", (unsigned long long)e->pub.addr, e->pub.width,
+                                e->pub.height, e->t.d.format);
                 }
             }
         }
@@ -1106,10 +1121,10 @@ void vk_texture_new_submit(void) {
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) / 60;
     if ((rt_trace & RT_TRACE_PERF) && f != log_at && tex_alias > 0) {
         log_at = f;
-        rt_log("perf: frame %llu: texture aliases: content copied %llu, filled from storage %llu, left uninitialised %llu",
-               (unsigned long long)f * 60, (unsigned long long)n_alias_copied, (unsigned long long)n_alias_upload,
-               (unsigned long long)n_alias_uninit);
-        n_alias_copied = n_alias_upload = n_alias_uninit = 0;
+        rt_log("perf: frame %llu: texture aliases: content copied %llu, filled from storage %llu, left uninitialised %llu, "
+               "stale source %llu", (unsigned long long)f * 60, (unsigned long long)n_alias_copied,
+               (unsigned long long)n_alias_upload, (unsigned long long)n_alias_uninit, (unsigned long long)n_alias_stale);
+        n_alias_copied = n_alias_upload = n_alias_uninit = n_alias_stale = 0;
         rt_log("perf: frame %llu: texture re-uploads %llu (%.1f MiB, %.2f ms), after WriteTexels %llu (%.1f MiB, %.2f ms)",
                (unsigned long long)f * 60, (unsigned long long)ru_n, ru_bytes / 1048576.0, ru_ns / 1e6,
                (unsigned long long)ru_wt_n, ru_wt_bytes / 1048576.0, ru_wt_ns / 1e6);
@@ -1473,6 +1488,13 @@ size_t vk_texture_texel_span(const tex_t *t, const view_t *v, const NVNcopyRegio
     Region g;
     if (!region_of(t, v, r, row, img, &g)) return 0;
     return (size_t)(g.nz - 1) * g.img + (g.hb - 1) * g.row + g.wb;
+}
+
+uint64_t vk_texture_stale_refusals(void) {
+    lock();
+    uint64_t n = n_stale_total;
+    unlock();
+    return n;
 }
 
 int vk_texture_cpu_stale(uint64_t addr, uint64_t size) {
