@@ -170,7 +170,7 @@ void nvn_pins_each(void (*fn)(const tex_t *pin, void *ctx), void *ctx) {
 // adding control memory again releases the copies recorded there without walking every live copy. 4 KiB pages cost
 // about 500 lookups per AddControlMemory under the exclusive lock (1.4.3 field: 53 calls a frame, 2 MiB ranges, 3.7
 // copies per page), and the recording threads waited on it.
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred; } copy_prefix;   // deferred: 0 unknown, 1 none, 2 some
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, cap; } copy_prefix;   // deferred: 0 unknown, 1 none, 2 some; cap: the block size copy_alloc gave
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -215,7 +215,7 @@ static size_t copy_block_size(uint64_t bytes) { return (size_t)((sizeof(copy_pre
 
 // A block for a recording copy of bytes bytes (its prefix included); freed with copy_free.
 static copy_prefix *copy_alloc(uint64_t bytes) {
-    size_t need = copy_block_size(bytes);
+    size_t need = copy_block_size(bytes), got = need;
     void *p = NULL;
     if (copy_cache_on()) {
         plat_mutex_lock(&fl_lock);
@@ -224,6 +224,7 @@ static copy_prefix *copy_alloc(uint64_t bytes) {
             if (fl[i].cap >= need && fl[i].cap <= 2 * need && (best < 0 || fl[i].cap < fl[best].cap)) best = i;
         if (best >= 0) {
             p = fl[best].p;
+            got = fl[best].cap;
             fl_bytes -= fl[best].cap;
             fl[best] = fl[--fl_n];
         }
@@ -231,14 +232,15 @@ static copy_prefix *copy_alloc(uint64_t bytes) {
     }
     if (!p) p = malloc(need);
     if (!p) rt_fatal("nvn: out of memory (recording copy, %zu bytes)", need);
+    ((copy_prefix *)p)->cap = got;   // a reused block can be up to twice the need: copy_free caches it at this size
     return p;
 }
 
-// Frees a block from copy_alloc (its prefix still holds the byte count it was allocated for) into the cache, evicting
+// Frees a block from copy_alloc (its prefix holds the block size it was given) into the cache, evicting
 // the oldest blocks when the cache is full: the copies' sizes change with the scene, and a cache that refused new blocks
 // stayed full of sizes nothing asked for again (zero hits for the rest of a burst).
 static void copy_free(copy_prefix *pf) {
-    size_t cap = copy_block_size(pf->bytes);
+    size_t cap = pf->cap;   // the real block size, not the payload
     if (!copy_cache_on() || cap > FL_MAX_BYTES) {
         free(pf);
         return;
@@ -314,7 +316,7 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
             break;
         }
     }
-    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0};
+    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0, 0, ((copy_prefix *)out)->cap};
     return out + sizeof(copy_prefix);
 }
 
@@ -1063,7 +1065,9 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
         if (pf->used_at > replayed && pf->used_at != now && pf->deferred != 1) {
             size_t sz = sizeof *pf + pf->bytes;
             copy_prefix *cl = copy_alloc(pf->bytes);   // freed by copy_free with the other zombies
+            const uint64_t clcap = cl->cap;
             memcpy(cl, pf, sz);
+            cl->cap = clcap;   // the clone
             cl->magic = 0;   // not a live handle: the game never sees it
             cl->used_at = now;
             zombie_add(cl);
