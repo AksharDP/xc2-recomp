@@ -66,6 +66,15 @@ site xc2fps main 888cdc sha:dcf467223d4a419b 1e21c084 0e1c3c49 12010129 1e26008a
 # x10, x11 and s7 are free.
 site xc2fps main 88d7a4 sha:0e0f3924fef8c1b5 @page:x10 1e19e0cb 1200216b 9110014a bc6b5947 1e263926 1e2728c6
 
+# xc2lod (XC2_LOD, off): Fl4sh's Level of detail mod (2.1.0, read for behaviour only) clears the -0.125 the post
+# process shader gets as its depth bias. The pass builds the gDepVal constant {bias, a, b, 0} for the shader, taking
+# the bias from a flag byte: -0.125 when it is clear, -1 when it is set. 3.0.1 builds the same constant in two passes,
+# the frame's U_POST (s2 at main+0x785710) and the ray-trace shadow pass (s1 at main+0x78662c); the mod's site is the
+# -0.125 case, cleared to 0 here in both, so the passes agree.
+set xc2lod XC2_LOD 0
+site xc2lod main 785710 sha:d10f8a22e5537126 1e2703e2
+site xc2lod main 78662c sha:6af7c9ecdcec934b 1e2703e1
+
 # The cloud sea with the camera at its surface. Next to a dock that lies at the sea's height the player camera dips below
 # it when it looks up (Goldmouth's Exit Dock: top -8, camera -8.15). Prog 1277 then takes its path for a camera inside the
 # sea, which paints everything past the near plane in the sea's flat colour up to about 22 degrees above the horizon.
