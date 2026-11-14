@@ -556,6 +556,30 @@ static int test_textures(pool_t *tpool, pool_t *phys) {
     return 0;
 }
 
+// A GPU-written texture and a new one of another shape at the same storage: the new texture is not copied from the source,
+// and the refusal is counted (vk_texture.c entry_of, vk_texture_stale_refusals).
+static int test_stale_refusal(pool_t *tpool) {
+    enum { W = 64, H = 64, N = W * H * 4 };
+    static uint8_t g[N];
+    for (int i = 0; i < N; i++) g[i] = rnd8();
+    NVNcopyRegion all = {0, 0, 0, W, H, 1};
+    uint8_t *lin[4] = {0};
+    tex_t z = make_tex(tpool, 0xA0000, 0x25, W, H, 1, 30);
+    tex_t zz = make_tex(tpool, 0xA0000, 0x25, W, H, 2, 31);
+    if (fill_storage(&zz, lin)) return 1;
+    GCHECK(vk_texture_get(&z) != NULL, "stale test: texture z");
+    GCHECK(vk_texture_restore(&z, NULL, &all, g, 1), "stale test: GPU content of z");
+    uint64_t before = vk_texture_stale_refusals();
+    GCHECK(vk_texture_get(&zz) != NULL, "stale test: texture zz");
+    uint64_t counted = vk_texture_stale_refusals() - before;
+    GCHECK(counted == 1, "stale test: %llu refusals counted for one GPU-written source (want 1)", (unsigned long long)counted);
+    vk_texture_release(&zz), vk_texture_release(&z);
+    for (int i = 0; i < 4; i++) free(lin[i]);
+    g_gpu_checks += 2;
+    printf("probe-vkmem: a GPU-written texture of another shape at the same storage is refused as an alias source and counted\n");
+    return 0;
+}
+
 static int test_gpu(void) {
     uint64_t heap = 0;
     GCHECK(mem_set_heap_size(16ull << 20, &heap) == 0 && heap, "SetHeapSize 16 MiB");
@@ -568,7 +592,7 @@ static int test_gpu(void) {
                    .size = 0x80000, .span = 0x80000};
     if (test_import(&pool) || test_readfile(pool.mem + 0x38000) || test_virtual(&phys, &virt)) return 1;
     GCHECK(vk_pool_init(&tpool), "vk_pool_init of the texture pool");
-    if (test_textures(&tpool, &phys)) return 1;
+    if (test_textures(&tpool, &phys) || test_stale_refusal(&tpool)) return 1;
     VkMemStats st;
     vk_mem_stats(&st);
     GCHECK(st.imported_pools == 2 && st.physical_pools == 1 && st.virtual_pools == 1 && !st.import_failures,
