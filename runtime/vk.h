@@ -362,6 +362,7 @@ typedef struct {
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
 } VkTexImage;
 void vk_capture_texture(const VkTexImage *img);   // XC2_CAPTURE: notes a texture the measured frame samples (vk_capture.c)
+double vk_texel_bytes(VkFormat f);                // bytes per texel of an uncompressed or block format, for size estimates (vk_capture.c)
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // Captures (vk_texture.c): vk_texture_snapshot hands the recorder each part of every image whose content the guest
 // bytes do not hold (px NULL: that part cannot be read back), and vk_texture_restore puts one part back in the replay.

@@ -25,6 +25,10 @@
 # Replay NVN submissions on their own thread, at most one frame behind the game (1 = on, 0 = off). Adds up to a frame of
 # latency. Unset: on where the VRAM mirrors copy what the GPU reads at submit time, else off.
 # replay_async = 1
+# 1 (default) counts only presents toward the frame bound: the game queues a present once the replay thread has handled the
+# one before it, at most one frame ahead. 0 counts texture releases too, so the bound stops holding after the first release
+# and the game may run ahead by up to XC2_FLIGHT_MAX values (about three frames) and the replay queue. Takes effect after a restart.
+# frame_bound = 1
 # Presentation pacing. grid (default): each frame goes out at its slot of the frame limit, and a frame that misses its slot
 # goes out at once. buffer: the game may work on a frame two periods before its slot (one frame more latency), so a frame
 # that runs long still lands on the grid; the grid period follows the game's average work per frame when the scene cannot
@@ -83,6 +87,9 @@
 # that flicker in the cloud sea on AMD GPUs. 1 makes one copy for a run of such draws, 2 one copy for every draw (much
 # slower in scenes with many of them), 0 none.
 # feedback_snap = 1
+# How those copies are ordered against the rest of the frame: narrow (the default) orders only the copies' reads and
+# writes; full uses the whole-frame barriers the copies had before, for comparison. Only matters while feedback_snap is 1 or 2.
+# snap_sync = narrow
 # Start each frame only once the GPU has drawn the one before it: stops props sliding and flickering above 30 fps.
 # auto waits only where the GPU reads live game memory (memory = import, or a pool too large for the memory budget);
 # otherwise the buffers it reads are copied at submit time and the GPU may run a frame behind. 1 always waits (about

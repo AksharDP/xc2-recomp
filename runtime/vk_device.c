@@ -56,20 +56,30 @@ static void mesa_cache_beside_exe(void) {
 
 static int create_instance(void) {
     mesa_cache_beside_exe();
-    const char *ext[8];
+    const char *ext[10];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    int validate = cfg_bool("XC2_VK_VALIDATION");
+    // XC2_VK_VALIDATION=sync adds synchronization validation, which checks the barriers themselves (and is slow).
+    const char *vmode = cfg_get("XC2_VK_VALIDATION");
+    int sync_val = vmode && !strcmp(vmode, "sync");
+    int validate = cfg_bool("XC2_VK_VALIDATION") || sync_val;
     if (validate && !layer_present(layers[0])) {
         rt_log("vk: XC2_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
+        sync_val = 0;
     }
     if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    if (sync_val) ext[n_ext++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+    const VkValidationFeatureEnableEXT sync_enable[] = {VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+    const VkValidationFeaturesEXT features = {.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT, .enabledValidationFeatureCount = 1,
+                                              .pEnabledValidationFeatures = sync_enable};
+    if (sync_val) rt_log("vk: synchronization validation on (XC2_VK_VALIDATION=sync)");
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "XC2 Recomp",
                              .pEngineName = "XC2 Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
                                .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext,
-                               .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers};
+                               .enabledLayerCount = validate ? 1 : 0, .ppEnabledLayerNames = layers,
+                               .pNext = sync_val ? &features : NULL};
     rdoc_init();
     VkResult r = vkCreateInstance(&ci, NULL, &g_vk.instance);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateInstance failed (%d); is a Vulkan 1.3 driver installed?", (int)r); return 0; }
