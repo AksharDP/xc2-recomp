@@ -64,9 +64,9 @@ static int reserve_at(uint64_t at, uint64_t size, int watch) { return plat_mem_r
 // A 2 MiB region of the watched reservations that nothing wrote for a while can be made read-only (mem_freeze), so the
 // back end's write-watch queries skip it: no page of a frozen region changes before a thaw. The first write faults and
 // thaw_handler makes the region writable again before the write retries. A kernel write into guest memory (a file
-// read) fails on a read-only page instead of faulting, so file reads thaw their buffer first (mem_thaw), and so does
-// every commit, decommit and protection change here. A region stays thawed for FRZ_HOLD_MS after a mem_thaw: a file
-// read still in flight writes its buffer later. frz_lock is a leaf lock: nothing writes guest memory under it.
+// read) fails on a read-only page instead of faulting, so file reads thaw their buffer first (mem_read_begin, which
+// keeps it writable until mem_read_end), and so do commits, decommits and protection changes (mem_thaw, which holds the
+// region thawed for FRZ_HOLD_MS). frz_lock is a leaf lock: nothing writes guest memory under it.
 #define FRZ_SHIFT 21
 #define FRZ_SIZE (1ull << FRZ_SHIFT)
 #define FRZ_HOLD_MS 5000u
@@ -87,9 +87,10 @@ static int watched(uint64_t addr, uint64_t size) {
            (addr >= g->alias.base && size <= ALIAS_SIZE && addr - g->alias.base <= ALIAS_SIZE - size);
 }
 
-// frz_lock held exclusively. why: 1 a write fault, 2 mem_thaw (holds the region thawed), 3 a mapping change here.
-static void thaw_locked(uint64_t r, int why) {
-    if (why == 2) thaw_ms[r] = (uint32_t)plat_now_ms() | 1;
+// frz_lock held exclusively. why: 1 a write fault, 2 mem_thaw or a read's buffer, 3 a mapping change here. hold: the
+// region stays thawed for FRZ_HOLD_MS (mem_thaw); a read's buffer holds it only while the read runs (rd_busy).
+static void thaw_locked(uint64_t r, int why, int hold) {
+    if (why == 2 && hold) thaw_ms[r] = (uint32_t)plat_now_ms() | 1;
     int solid = frz_solid[r];
     if (why == 3) frz_solid[r] = 0;
     if (!frz[r]) return;
@@ -113,7 +114,7 @@ static void thaw_locked(uint64_t r, int why) {
 static void thaw_range_locked(uint64_t a, uint64_t n, int why) {
     if (!n || a >= RT_ADDRESS_LIMIT) return;
     uint64_t r0 = a >> FRZ_SHIFT, r1 = (a + n - 1 < RT_ADDRESS_LIMIT ? a + n - 1 : RT_ADDRESS_LIMIT - 1) >> FRZ_SHIFT;
-    for (uint64_t r = r0; r <= r1; r++) thaw_locked(r, why);
+    for (uint64_t r = r0; r <= r1; r++) thaw_locked(r, why, why == 2);
 }
 
 void mem_thaw(uint64_t a, uint64_t n) {
@@ -217,6 +218,43 @@ void mem_copy_par(void *dst, const void *src, uint64_t n) {
     plat_mutex_unlock(&CP.busy);
 }
 
+// Reads into guest memory (fs_host.c host_read_at, romfs.c read_at) bracket the kernel's write: mem_read_begin thaws the
+// regions of the buffer and marks them busy, mem_read_end clears the mark. A busy region is not frozen, so the write
+// cannot meet a read-only page and no 5 s hold is needed after the read. The 5 s hold of mem_thaw is kept for the other
+// callers and, with XC2_FRZ_READ=hold, for reads too (the old behaviour, for A/B runs).
+static int32_t rd_busy[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: reads in flight per region
+static int frz_read_hold = -1;                            // XC2_FRZ_READ=hold: reads use mem_thaw
+
+static void read_busy_locked(uint64_t a, uint64_t n, int delta) {
+    if (!n || a >= RT_ADDRESS_LIMIT) return;
+    uint64_t r0 = a >> FRZ_SHIFT, r1 = (a + n - 1 < RT_ADDRESS_LIMIT ? a + n - 1 : RT_ADDRESS_LIMIT - 1) >> FRZ_SHIFT;
+    for (uint64_t r = r0; r <= r1; r++) {
+        rd_busy[r] += delta;
+        if (delta > 0) thaw_locked(r, 2, 0);
+    }
+}
+
+void mem_read_begin(uint64_t a, uint64_t n) {
+    if (frz_read_hold < 0) {
+        const char *e = cfg_get("XC2_FRZ_READ");
+        frz_read_hold = e && !strcmp(e, "hold");
+    }
+    if (frz_read_hold) {
+        mem_thaw(a, n);
+        return;
+    }
+    plat_mutex_lock(&frz_lock);
+    read_busy_locked(a, n, +1);
+    plat_mutex_unlock(&frz_lock);
+}
+
+void mem_read_end(uint64_t a, uint64_t n) {
+    if (frz_read_hold) return;   // the hold runs out by itself
+    plat_mutex_lock(&frz_lock);
+    read_busy_locked(a, n, -1);
+    plat_mutex_unlock(&frz_lock);
+}
+
 // frz_lock held exclusively. Makes the committed pages of region r read-only when every one of them is read-write;
 // reserved holes (heap pages given back) stay as they are, and thaw_locked finds the read-only runs again.
 static int freeze_locked(uint64_t r) {
@@ -248,6 +286,7 @@ int mem_freeze(uint64_t a) {
     int ok = 0;
     plat_mutex_lock(&frz_lock);
     if (frz[r]) ok = 1;
+    else if (rd_busy[r] > 0) ok = 0;   // a read's kernel write is in flight into the region
     else if (thaw_ms[r] && (int32_t)((uint32_t)plat_now_ms() - thaw_ms[r]) < (int32_t)FRZ_HOLD_MS) ok = 0;   // |1 may be ahead
     else if (freeze_locked(r)) {
         __atomic_store_n(&frz[r], 1, __ATOMIC_RELEASE);
@@ -275,7 +314,7 @@ static int thaw_fault(uint64_t a) {
     if (a >= RT_ADDRESS_LIMIT || !watched(a, 1)) return 0;
     plat_mutex_lock(&frz_lock);
     int was = frz[a >> FRZ_SHIFT];
-    thaw_locked(a >> FRZ_SHIFT, 1);
+    thaw_locked(a >> FRZ_SHIFT, 1, 0);
     plat_mutex_unlock(&frz_lock);
     if (was) return 1;
     uint64_t end;

@@ -307,6 +307,7 @@ static void wait_counted(int why, uint64_t t0) {   // rl held
     dr_waits[why]++, dr_twaits[why]++;
     dr_ns[why] += d, dr_tns[why] += d;
     perf_end(PERF_DRAIN, t0);
+    perf_why(why == DR_FRAME ? PERF_WHY_FRAME : why == DR_FULL ? PERF_WHY_FULL : PERF_WHY_OTHER, d);
 }
 
 // A guest thread waiting for the replay gives its virtual core up, as around any blocking host wait (NVN_BLOCKING):
