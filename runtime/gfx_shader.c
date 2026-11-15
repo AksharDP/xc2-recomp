@@ -79,6 +79,7 @@ struct GfxShader {
     GfxShaderRes *res[GFX_RES_KINDS];
     int nres[GFX_RES_KINDS];
     uint32_t in_mask, out_mask;                            // user Locations of Input / Output variables
+    uint8_t sys_in;                                        // 1 when an Input is a BuiltIn (VertexIndex and the like): no Location
     GfxShaderIo in[32], out[32];
     uint32_t local[3];
 };
@@ -626,7 +627,8 @@ static void reflect_spirv(GfxShader *s) {
     int32_t *loc = calloc(bound, sizeof *loc);
     uint8_t *packed = calloc(bound, 1), *ttype = calloc(bound, 1), *tcomps = calloc(bound, 1);
     uint32_t *pointee = calloc(bound, sizeof *pointee);
-    if (!loc || !packed || !ttype || !tcomps || !pointee) goto out;
+    uint8_t *bltn = calloc(bound, 1);   // per id: a BuiltIn decoration
+    if (!loc || !packed || !ttype || !tcomps || !pointee || !bltn) goto out;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         if (!len || i + len > n) break;
@@ -637,6 +639,7 @@ static void reflect_spirv(GfxShader *s) {
         } else if (op == OP_DECORATE && len >= 4 && id < bound) {
             if (a[1] == DEC_LOCATION) loc[id] = (int32_t)a[2] + 1;
             else if (a[1] == DEC_COMPONENT) packed[id] = 1;
+            else if (a[1] == DEC_BUILTIN) bltn[id] = 1;
         } else if (op == OP_TYPE_INT && len >= 4 && id < bound) {
             ttype[id] = a[2] ? GFX_TYPE_SINT : GFX_TYPE_UINT, tcomps[id] = 1;
         } else if (op == OP_TYPE_FLOAT && len >= 3 && id < bound) {
@@ -649,6 +652,9 @@ static void reflect_spirv(GfxShader *s) {
             pointee[id] = a[2];
         } else if (op == OP_VARIABLE && len >= 4) {
             uint32_t type = a[0], var = a[1], sc = a[2];
+            // A builtin has no Location, so the mask below does not show it: callers that must know every input's data
+            // (quad_split) ask gfx_shader_builtin_inputs.
+            if (sc == SC_INPUT && var < bound && bltn[var]) s->sys_in = 1;
             if ((sc == SC_INPUT || sc == SC_OUTPUT) && var < bound && type < bound && loc[var] > 0 && loc[var] <= 32) {
                 int l = loc[var] - 1;
                 uint32_t t = pointee[type] < bound ? pointee[type] : 0;
@@ -660,7 +666,7 @@ static void reflect_spirv(GfxShader *s) {
         i += len;
     }
 out:
-    free(loc), free(packed), free(ttype), free(tcomps), free(pointee);
+    free(loc), free(packed), free(ttype), free(tcomps), free(pointee), free(bltn);
 }
 
 static void reflect(GfxShader *s) {
@@ -1552,6 +1558,8 @@ uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]) {
     if (io) memcpy(io, s->in, sizeof s->in);
     return s->in_mask;
 }
+
+int gfx_shader_builtin_inputs(const GfxShader *s) { return s->sys_in; }
 
 uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]) {
     if (io) memcpy(io, s->out, sizeof s->out);

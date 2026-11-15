@@ -97,6 +97,9 @@
 # least split_us microseconds long (0 to 20000).
 # split_draws = 64
 # split_us = 1000
+# Subdivide the large quads of the cloud sea into a grid of triangles (2 to 64; 0 = off), an experiment for its shimmer on
+# Mesa GPUs. Applies to draws of 4 to 16 quads whose vertex shader reads only a position.
+# quad_split = 0
 
 # Vulkan.
 # Vulkan validation layer: checks every call and slows the game down a lot. Needs the layer installed (Vulkan SDK).
