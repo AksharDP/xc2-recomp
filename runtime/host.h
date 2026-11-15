@@ -83,6 +83,11 @@ void perf_set_overlay(int mode);
 int perf_gpu_timing(void);                      // GPU timestamps wanted: XC2_TRACE=perf or the full overlay
 void perf_gpu_busy(uint64_t ns);                // GPU busy time of a timed submission part (vk_sync.c, any thread)
 uint64_t perf_gpu_busy_total(void);             // its running total (the overlay's GPU time per frame)
+// The same time by the frame that submitted the part (vk_sync.c completion thread, in submission order): parts, then
+// frame_done once every part of the frames up to that one is read. perf_gpu_frame_ns: 0 while the frame is not done.
+void perf_gpu_part(uint64_t frame, uint64_t ns);
+void perf_gpu_frame_done(uint64_t frame);
+int perf_gpu_frame_ns(uint64_t frame, uint64_t *ns);
 #define RT_RESULT(module, desc) ((uint32_t)(module) | ((uint32_t)(desc) << 9))
 void rt_sha256(const void *p, size_t n, uint8_t out[32]);   // BCrypt; fatal if the provider fails
 

@@ -61,6 +61,10 @@ static volatile uint8_t ts_busy[TS_PAIRS]; // written until the completion threa
 static int ts_cur = -1;                    // the pair of the part being recorded, -1 untimed
 static uint64_t ts_last_end;               // completion thread: end of the latest part read (ticks)
 static volatile int64_t ts_busy_ns, ts_parts, ts_missed;
+// The frame the parts recorded now belong to: present_image (vk_backend.c) moves it on in submission order, so each
+// part is charged to the present it precedes, whenever its timestamps are read (vk_sync_frame_mark, perf_gpu_part).
+static volatile uint64_t ts_frame = 1;
+static uint64_t ts_read_frame;   // completion thread: the frame of the latest part read
 
 // On the first submission that wants timing (perf_gpu_timing: XC2_TRACE=perf or the full performance overlay).
 static void ts_setup(VkCtx *c) {
@@ -89,11 +93,18 @@ static void ts_setup(VkCtx *c) {
     ts_state = 1;
 }
 
-typedef struct { uint32_t pair; } TsRead;
+typedef struct { uint32_t pair; uint64_t frame; } TsRead;
+
+void vk_sync_frame_mark(uint64_t frame) { __atomic_store_n(&ts_frame, frame + 1, __ATOMIC_RELAXED); }
 
 static void ts_read_cb(void *arg) {   // completion thread, in submission order
     TsRead *t = arg;
     VkCtx *c = vk_ctx();
+    // Parts are read in submission order: the first part of a later frame means every part of the earlier ones is read.
+    if (t->frame > ts_read_frame) {
+        perf_gpu_frame_done(t->frame - 1);
+        ts_read_frame = t->frame;
+    }
     uint64_t v[2];
     if (vkGetQueryPoolResults(c->device, ts_pool, 2 * t->pair, 2, sizeof v, v, sizeof v[0], VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         uint64_t s = v[0] & ts_mask, e = v[1] & ts_mask;
@@ -103,6 +114,7 @@ static void ts_read_cb(void *arg) {   // completion thread, in submission order
                 int64_t ns = (int64_t)((double)(e - from) * ts_period);
                 plat_add64(&ts_busy_ns, ns);
                 perf_gpu_busy((uint64_t)ns);
+                perf_gpu_part(t->frame, (uint64_t)ns);
             }
             if (e > ts_last_end) ts_last_end = e;
             plat_inc64(&ts_parts);
@@ -135,6 +147,7 @@ static void ts_close(VkCommandBuffer cb, int pair, uint64_t fence) {
     TsRead *t = malloc(sizeof *t);
     if (!t) rt_fatal("vk: out of memory");
     t->pair = (uint32_t)pair;
+    t->frame = __atomic_load_n(&ts_frame, __ATOMIC_RELAXED);
     vk_completion_add(fence, ts_read_cb, t);
 }
 

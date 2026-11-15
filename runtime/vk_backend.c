@@ -133,6 +133,7 @@ void gfx_present_wait_blit(uint64_t seq) {
 static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uint64_t queued, uint64_t frame,
                           uint64_t value) {
     static volatile int32_t n_skipped;
+    vk_sync_frame_mark(frame);   // the frame's GPU time (flight recorder): what was submitted up to here
     vk_exec_frame_log(t, frame);
     vk_mem_census(frame);
     if (vk_dump_armed) vk_dump_present(frame);

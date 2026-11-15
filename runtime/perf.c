@@ -44,6 +44,34 @@ void perf_gpu_busy(uint64_t ns) { plat_add64(&gpu_busy_total, (int64_t)ns); }
 
 uint64_t perf_gpu_busy_total(void) { return (uint64_t)__atomic_load_n(&gpu_busy_total, __ATOMIC_RELAXED); }
 
+// GPU busy time per frame, by the frame whose parts were submitted (not by when the timestamps were read, which lags the
+// present by the frames in flight). One writer, the completion thread; readers check the slot's frame around the read.
+#define GPU_FRAMES 64
+static struct { volatile uint64_t frame, ns; } gpu_frames[GPU_FRAMES];
+static volatile uint64_t gpu_frames_done;
+
+void perf_gpu_part(uint64_t frame, uint64_t ns) {
+    __typeof__(gpu_frames[0]) *g = &gpu_frames[frame % GPU_FRAMES];
+    if (__atomic_load_n(&g->frame, __ATOMIC_RELAXED) != frame) {
+        __atomic_store_n(&g->frame, 0, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        __atomic_store_n(&g->ns, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g->frame, frame, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&g->ns, g->ns + ns, __ATOMIC_RELAXED);
+}
+
+void perf_gpu_frame_done(uint64_t frame) { __atomic_store_n(&gpu_frames_done, frame, __ATOMIC_RELEASE); }
+
+int perf_gpu_frame_ns(uint64_t frame, uint64_t *ns) {
+    if (__atomic_load_n(&gpu_frames_done, __ATOMIC_ACQUIRE) < frame) return 0;
+    __typeof__(gpu_frames[0]) *g = &gpu_frames[frame % GPU_FRAMES];
+    uint64_t f = __atomic_load_n(&g->frame, __ATOMIC_ACQUIRE), v = __atomic_load_n(&g->ns, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    *ns = f == frame && __atomic_load_n(&g->frame, __ATOMIC_RELAXED) == frame ? v : 0;   // no timed part: none
+    return 1;
+}
+
 void prof_start(void) {
     flight_init();
     atexit(perf_summary_flush);   // boot.c's _exit path goes through prof_write instead
