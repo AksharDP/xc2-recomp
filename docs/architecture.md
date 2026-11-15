@@ -52,6 +52,9 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
 - Window, keyboard and mouse: Win32 (`gfx_window.c`, `input_win.c`). Gamepad and audio output: SDL3. Voice: libopus (BSD). Movies: the SDK's `movie::Decoder` is replaced by a host VP9 decoder over libvpx (BSD, static; `runtime/ov_movie.c`), because FFmpeg from MSYS2 is a GPL build.
 - zstd: most RomFS files of 1.4.3 are zstd frames. The patch set `zstd` sends the game's two decoder entry points to
   libzstd on the host (`ov_zstd.c`, `XC2_ZSTD_NATIVE`); the lifted decoder took almost three times as long.
+- zlib: XC2 3.0.1 inflates the xbc1 archives of streamed assets with zlib 1.2.8. The patch set `xc2zlib` sends inflate's
+  call of `inflate_fast` to zlib's own `inffast.c` compiled for the host, on the guest's structs (`ov_inflate.c`,
+  `XC2_ZLIB_NATIVE`; `XC2_ZLIB_CHECK=1` runs both and compares); the lifted function took 2.8 times as long.
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `xc2.ini` and `XC2_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
   drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Russian).

@@ -53,7 +53,7 @@ static const char *const known[] = {
     "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SNAP_SYNC", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SUBMIT_WAIT", "SPLIT_US", "STG_LAZY", "STICK_DEADZONE", "STOP_FRAME", "SWKBD_ANSWER",
     "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TIMER_1MS", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VRAM_LIMIT", "VS_OUTS",
-    "WALK_KEY", "WALK_SCALE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
+    "WALK_KEY", "WALK_SCALE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZLIB_CHECK", "ZLIB_NATIVE", "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
 // The xc2.ini section a key cfg_set may write goes to when the file lacks it (xc2.ini.example's sections).
@@ -133,6 +133,7 @@ static const CfgMeta metas[] = {
     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
     {"STG_LAZY", "1", "0|1", RESTART},
     {"TEX_ALIAS", "1", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+    {"ZLIB_NATIVE", "1", "0|1", RESTART}, {"ZLIB_CHECK", "0", "0|1", RESTART},
     // render fixes. FEEDBACK_SNAP has no fixed default: unset it is 0 on NVIDIA GPUs and 1 elsewhere (vk_exec_draw.c
     // snap_setting), so its consumer reads cfg_get, not cfg_int.
     {"LOD_GUARD", "1", "0|1", RESTART}, {"FEEDBACK_SNAP", "", "0|1|2", RESTART}, {"SUBMIT_WAIT", "0", "0|1", RESTART}, {"FRAME_GUARD", "auto", "auto|0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
