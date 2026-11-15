@@ -1240,6 +1240,8 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         perf_cell(UI_MENU_OV_FMT_MS, s.xlate_ms);
         perf_label(UI_MENU_OV_TEX_UPLOADS, wait_c);
         perf_cell(UI_MENU_OV_PER_FRAME, s.tex_uploads);
+        perf_label(UI_MENU_OV_TEX_TIME, wait_c);   // the count above is textures, not milliseconds
+        perf_cell(UI_MENU_OV_FMT_MS, s.tex_ms);
         ImGui::EndTable();
     }
     perf_picture(t, pic_c);
