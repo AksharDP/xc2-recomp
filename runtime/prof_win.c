@@ -15,7 +15,8 @@
 // thread is in a long kernel call, is written as `tstall <tid> <ms into the window> <ms stopping> <rip>...` with the
 // chain where the thread stopped) and, after a present at least <ms> after the previous one, writes
 // that interval's samples (plus the 20 ms before) to <XC2_PROFILE>.f<frame>: the profile format, one `stack 1` line per
-// sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time. At most 64 dumps.
+// sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time. At most 256 dumps,
+// 0.25 s apart or more; XC2_PROFILE_FRAMES=w<lo>-<hi> leaves the loading frames out.
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -68,7 +69,8 @@ static uint64_t frame_lo, frame_hi; // XC2_PROFILE_FRAMES=<lo>-<hi>: sample only
 static int64_t world_lo, world_hi;  // XC2_PROFILE_FRAMES=w<lo>-<hi>: only while the world clock is in [lo, hi) s (us)
 
 #define SLOW_RING (1u << 15)        // XC2_PROFILE_SLOW: about 0.5 s of samples of every thread
-#define SLOW_DUMPS 64
+#define SLOW_DUMPS 256
+#define SLOW_GAP_NS 250000000ull   // dumps at least this far apart (prof_sampler_frame)
 typedef struct { uint64_t t; DWORD tid; uint32_t depth; uint64_t rip[PROF_DEPTH]; } Sample;
 static Sample ring[SLOW_RING];
 static uint64_t ring_n;
@@ -372,7 +374,11 @@ void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
         int64_t w = frame_step_world_us();
         in_window = w >= world_lo && w < world_hi;
     }
-    if (slow_ns && d >= slow_ns && !dump_hi && in_window) {
+    // At most one dump per SLOW_GAP_NS: a burst of slow frames (a load, a streaming spike) used all 64 dumps within a
+    // second and left none for the rest of a session.
+    static uint64_t last_dump;
+    if (slow_ns && d >= slow_ns && !dump_hi && in_window && (!last_dump || now - last_dump >= SLOW_GAP_NS)) {
+        last_dump = now;
         dump_lo = (LONG64)(now - d - 20000000ull);
         dump_frame = (LONG64)frame;
         InterlockedExchange64(&dump_hi, (LONG64)now);
