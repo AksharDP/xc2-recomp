@@ -7,7 +7,7 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     recomp/, tools/         the lifter and the scripts; tools/data/expected-xc2[-jp]-<version>.json for the base game
                             and each supported update (SUPPORTED) of each release (REGIONS)
     llvm/                   llvm-mingw (bin/clang.exe)
-    runtime/                libxc2rt.a, the headers, install-side sources (romfs.c, patches.c, ov_zstd.c) and the icon; runtime/deps/ holds
+    runtime/                libxc2rt.a, the headers, install-side sources (build_game.py INSTALL_SIDE) and the icon; runtime/deps/ holds
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
     bin/                    xc2_xlate.exe (+ xc2_xlate.id), ninja.exe, SDL3.dll, libopus-0.dll, amd_fidelityfx_vk.dll
     xc2.ini.example
