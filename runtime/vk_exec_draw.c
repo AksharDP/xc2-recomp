@@ -812,7 +812,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (n > max) n = max;
     if (!n) return 0;
     if (sp.offset % align == 0) {
-        VK_MEM_USE(sp);
+        VK_MEM_USE(sp, n);
         if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: the bytes this binding reads
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
         if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
@@ -2225,8 +2225,8 @@ static void bind_vertex_buffers(VkExec *ex) {
         }
         VkMemSpan sp;
         if (!r->address || !vk_mem_resolve(r->address, 1, &sp)) continue;
-        VK_MEM_USE(sp);
         uint64_t n = r->size && r->size < sp.avail ? r->size : sp.avail;
+        VK_MEM_USE(sp, n);
         vb[b] = sp.buffer, vo[b] = sp.offset, vsz[b] = n, vcls[b] = sp.cls, vpool[b] = sp.pool;
         if (vk_capture_on) vk_capture_note(r->address, n);   // XC2_CAPTURE: the vertex bytes this stream reads
     }
@@ -2526,7 +2526,7 @@ static uint64_t xfb_begin(VkExec *ex, uint64_t n, VkMemSpan *sp) {
     uint64_t addr = ex->xfb.addr + ex->xfb_written;
     if (!vk_mem_resolve(addr, bytes, sp) || sp->avail < bytes || sp->offset % 4)
         return warn_once(W_XFB, "transform feedback into %#llx + %#llx is not backed or not aligned: skipped", (unsigned long long)addr, (unsigned long long)bytes), 0;
-    VK_MEM_USE(*sp);
+    VK_MEM_USE(*sp, bytes);
     static int logged;
     if (!logged++) rt_log("vk: first transform feedback draw: %llu records of %u bytes", (unsigned long long)n, stride);
     rec_xfb_bind(XF.bind, ex->cb, sp->buffer, sp->offset, bytes);
@@ -2655,7 +2655,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     } else if (sp.offset % isize[d->itype]) {
         return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
     } else {
-        VK_MEM_USE(sp);
+        VK_MEM_USE(sp, bytes);
         vkCmdBindIndexBuffer(ex->cb, sp.buffer, sp.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         ex->recorded++;
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
@@ -2756,8 +2756,8 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
         return warn_once(W_INDEX, "index buffer %#llx is not backed or not aligned: indirect draws skipped", (unsigned long long)d->ibuf);
     if ((ex->xfb_active && !xfb_draw_ok(d->prim, 1)) || !prepare_draw(ex, d->prim, 0x7fffffff, restart_for(ex, d->prim, d->itype))) return;
     vk_exec_frame.draws++;
-    VK_MEM_USE(ip);
-    VK_MEM_USE(ib);
+    VK_MEM_USE(ip, sizeof(VkDrawIndexedIndirectCommand));
+    VK_MEM_USE(ib, ib.avail);   // the index count is the GPU's: the rest of the pool
     vkCmdBindIndexBuffer(ex->cb, ib.buffer, ib.offset, d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     ex->recorded += 2;
@@ -2805,7 +2805,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);
-    VK_MEM_USE(ip);
+    VK_MEM_USE(ip, sizeof(VkDispatchIndirectCommand));
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = c0_dim[1] = c0_dim[2] = 0;
     B.c0_valid[2] = 0;   // a fresh c0 range: the copy below must not change one an earlier dispatch reads
@@ -2834,7 +2834,7 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     VkBuffer b;
     VkDeviceSize o;
     memcpy(scratch(ex, u->size, &b, &o), u->data, u->size);
-    VK_MEM_PICK(sp);
+    VK_MEM_PICK(sp, u->size);
     VkBufferCopy cp = {o, sp.offset, u->size};
     vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
     vk_mem_gpu_wrote(&sp, u->size);

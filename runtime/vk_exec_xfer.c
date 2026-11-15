@@ -415,7 +415,7 @@ static int buffer_side(const VkExec *ex, const Sub *s, uint64_t addr, uint64_t *
                   (unsigned long long)addr, (unsigned long long)*size);
         return 0;
     }
-    VK_MEM_PICK(m);
+    VK_MEM_PICK(m, *size);
     *span = m;
     *c = (VkBufferImageCopy){.bufferOffset = m.offset, .bufferRowLength = (uint32_t)(row / (uint64_t)s->bpb) * (uint32_t)s->bw,
                              .bufferImageHeight = hb * (uint32_t)s->bh, .imageSubresource = sub_layers(s),
@@ -503,8 +503,8 @@ static void copy_b2b(VkExec *ex, const p_copy_b2b *p) {
         }
         uint64_t n = left < s.avail ? left : s.avail;
         if (n > d.avail) n = d.avail;
-        VK_MEM_PICK(s);
-        VK_MEM_PICK(d);
+        VK_MEM_PICK(s, n);
+        VK_MEM_PICK(d, n);
         if (s.buffer == d.buffer && s.offset < d.offset + n && d.offset < s.offset + n) {
             warn_once(W_OVERLAP, "buffer copy %#llx -> %#llx overlaps within one buffer: skipped",
                       (unsigned long long)p->src, (unsigned long long)p->dst);
@@ -544,7 +544,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
         uint64_t n = left < d.avail ? left : d.avail & ~3ull;
         if (!n) break;
         if (!started) vk_exec_pass_end(ex), vk_exec_barrier(ex), started = 1;
-        VK_MEM_PICK(d);
+        VK_MEM_PICK(d, n);
         vkCmdFillBuffer(ex->cb, d.buffer, d.offset, n, p->value);
         vk_mem_gpu_wrote(&d, n);
         ex->recorded++;
