@@ -2,7 +2,8 @@ name: Test build
 
 # A test tag (test-*) or a manual run builds the Windows and Linux setups the way release.yml's windows and linux jobs
 # do, and keeps each as a workflow artifact, for one person to install and try. It never publishes a release:
-# release.yml does that, from a v* tag that matches VERSION. The steps below are those jobs', so change the two together.
+# release.yml does that, from a v* tag that matches VERSION. The steps below are those jobs', so change the two together,
+# except the windows job's upload: it keeps the release folder, not the zip (see there).
 
 on:
   push:
@@ -20,7 +21,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      # The tag, or the branch of a manual run, names the zip and the artifact. Any character outside A-Za-z0-9._- becomes
+      # The tag, or the branch of a manual run, names the artifact. Any character outside A-Za-z0-9._- becomes
       # "-": a branch has slashes, and a pipe or a quote is refused by the artifact upload or by NTFS. The ref goes in
       # through env, so Bash never parses its text.
       - name: Name the build
@@ -47,18 +48,19 @@ jobs:
         run: python tools/check_content.py
       - name: Build the shader translator
         run: python tools/build_xlate.py
-      - name: Build the release folder and zip
+      - name: Build the release folder
         timeout-minutes: 25   # about a minute warm; above check_bundle's own limits. v0.1.8 hung here with no way to see where
         env:
           PYTHONUNBUFFERED: "1"   # a killed step keeps its log only up to what Python has flushed
-          ZIP: build/release/XC2-Setup-${{ steps.name.outputs.name }}-windows.zip
-        run: python tools/make_release.py --out build/release/XC2-Setup --zip $env:ZIP
+        run: python tools/make_release.py --out build/release/XC2-Setup
+      # The folder is uploaded, not a zip of it: upload-artifact zips what it is given, so a zip here came out as a zip
+      # inside the download. Under build/release/** the download's top folder is XC2-Setup, as the release zip's is.
       - uses: actions/upload-artifact@v4
         with:
           name: XC2-Setup-${{ steps.name.outputs.name }}
-          path: build/release/XC2-Setup-${{ steps.name.outputs.name }}-windows.zip
+          path: build/release/**
+          include-hidden-files: true   # the release zip takes every file of the folder, dot-names included
           if-no-files-found: error
-          compression-level: 0   # already a zip
 
   linux:
     runs-on: ubuntu-24.04
