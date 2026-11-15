@@ -87,6 +87,13 @@ set xc2poll XC2_JOB_POLL 1
 site xc2poll main 6df47c sha:c707c9cce27c1f37 52a00060
 site xc2poll main 6df480 sha:f4cd221e7a1b197a 7281a800
 
+# zlib's inflate_fast (main+0x8acf00, zlib 1.2.8) in native code (runtime/ov_inflate.c): the file loader inflates the
+# xbc1 archives of streamed assets through inflate (main+0x8aa910), whose one call of inflate_fast, main+0x8abc70,
+# becomes a bl to the patch page's +0xfd0, where the host function sits. Lifted, inflate_fast had the most samples of any
+# guest function on a streaming route.
+set xc2zlib XC2_ZLIB_NATIVE 1
+site xc2zlib main 8abc70 sha:8e1534416e8c00af 94350cd8
+
 # xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
 # handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
 # setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70
