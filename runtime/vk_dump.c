@@ -420,7 +420,7 @@ static void buf_snap(VkExec *ex, int pass) {
     if (!bd_size) return;
     VkMemSpan s;
     if (!vk_mem_resolve(bd_addr, bd_size, &s) || s.avail < bd_size) return;
-    VK_MEM_PICK(s);   // the GPU's view of the buffer
+    VK_MEM_PICK(s, bd_size);   // the GPU's view of the buffer
     BufJob *j = calloc(1, sizeof *j);
     if (!j) rt_fatal("vk_dump: out of memory");
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bd_size,

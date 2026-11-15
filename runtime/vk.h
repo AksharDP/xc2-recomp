@@ -212,9 +212,11 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 // VRAM mirror of buffer-bound pools (vk_memory.c). vk_mirror_on: XC2_MEMORY=mirror|verify, or the
 // device class is discrete and XC2_MEMORY is unset or auto; set at device selection. The replay (submitting thread
 // under vk_sync_submit's lock) calls:
-// - VK_MEM_USE at a vertex, index, uniform, storage or indirect binding of a span vk_mem_resolve returned: the pool's
-//   mirror is created on first use and sp.buffer becomes it (same offsets); a pool that stays imported keeps its buffer.
-// - VK_MEM_PICK where a copy, fill or update reads or writes a span: the mirror if the pool has one, never a new one.
+// - VK_MEM_USE(sp, n) at a vertex, index, uniform, storage or indirect binding of a span vk_mem_resolve returned: the
+//   pool's mirror is created on first use and sp.buffer becomes it (same offsets); a pool that stays imported keeps its
+//   buffer. n: the bytes from sp.offset the GPU may read (sp.avail when not known), which a lazy mirror then keeps.
+// - VK_MEM_PICK(sp, n) where a copy, fill or update reads or writes n bytes of a span: the mirror if the pool has one,
+//   never a new one.
 // - vk_mem_gpu_wrote after recording a GPU write of [sp.offset, sp.offset + size) into sp.buffer: a mirror's bytes go
 //   back to guest memory at the end of the submission. No-op for imported buffers.
 // - vk_mem_mirror_begin at the start of a submission's recording, with the submission's capture, vk_mem_mirror_end
@@ -238,10 +240,10 @@ void vk_usnap_capture_drop(void *cap);
 int vk_usnap_programs(const void *cap, const void *const **out);
 void vk_exec_captures(void *mem, void *ubo);   // this thread's next vk_exec_record of handles uses these
 extern int vk_mirror_on;
-void vk_mem_use(VkMemSpan *sp);
-void vk_mem_pick(VkMemSpan *sp);
-#define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
-#define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
+void vk_mem_use(VkMemSpan *sp, uint64_t n);
+void vk_mem_pick(VkMemSpan *sp, uint64_t n);
+#define VK_MEM_USE(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp), (n)); } while (0)
+#define VK_MEM_PICK(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp), (n)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // Uniform blocks as of the submit call (vk_usnap.c): the capture copies the uniform ranges a submission binds, ubo
 // bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.

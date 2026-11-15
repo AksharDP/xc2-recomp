@@ -55,6 +55,8 @@ typedef struct PoolRec {
     uint8_t mhost;                     // MS_ON: the mirror is in host memory (it did not fit the VRAM budget)
     VkBuffer mbuf;                     // MS_ON: copy of [import_lo, import_hi), same offsets as buf
     VmaAllocation malloc_;
+    uint32_t *gsub;                    // XC2_MIRROR_LAZY: per 64 KiB granule of the import range, the submission whose
+    uint64_t ngran;                    // replay first used it (0: never; the mirror's bytes there are not kept)
     uint32_t wb_sub;                   // replay: the last submission that wrote mirror bytes back to guest memory
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
                                        // or in a capture queued for it (vk_mem_capture)
@@ -235,6 +237,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
+    free(r->gsub);
     free(r);
 }
 
@@ -1218,6 +1221,16 @@ static void dirty_frame(uint64_t frame) {
 //   bytes out (apply_capture). The CPU cannot have written them since without waiting for that fence.
 // - Staged uploads (XC2_MIRROR_STAGE, on): with 0, or past STAGE_MAX bytes of a capture, the capture keeps only the
 //   ranges, and the GPU copies them from guest memory when it runs the prologue (a live read).
+// - Lazy granules (XC2_MIRROR_LAZY, on): a mirror keeps only the 64 KiB granules the replay has used as a buffer
+//   (gsub). Most of what the CPU writes into the mirrored pools is never read by the GPU as a buffer: on a streaming
+//   route about 89 % of the bytes the large captures staged lay in granules no binding, copy or fill ever touched (the
+//   streaming jobs' staging area in a 380 MiB pool, which they fill with file reads and memcpy and copy out of again,
+//   and texture storage, which the replay uploads from guest memory). A pool's first use queues no whole-pool copy;
+//   each granule's first use as a buffer (mirror_touch, from vk_mem_use and vk_mem_pick with the bytes the GPU
+//   touches) queues a copy of that granule, as a pool's first use did, with the same live-read check; captures copy
+//   the written pages of used granules only. A capture that skips a write saw the granule unused, so the granule's
+//   first use, which comes later, copies guest memory after that write.
+#define GRAN_SHIFT 16
 #define VERIFY_BYTES (4u << 20)
 #define VERIFY_SAMPLES 64
 #define VERIFY_LOG 16
@@ -1225,6 +1238,8 @@ enum { MR_BUDGET, MR_UNTRACKED, MR_OVERLAP, MR_ALLOC, MR_N };
 
 int vk_mirror_on;
 static int mirror_verify;
+static int mirror_lazy = 1;            // XC2_MIRROR_LAZY: mirrors keep only the granules used as buffers
+static volatile int64_t m_gran_n, m_gran_bytes;   // granules first used, over the run
 static int mirror_gap = 2;             // pre-snap: hot pools at most this many 2 MiB regions apart share one query
 static PoolRec **mlist;                // pool_lock: mirrored pools by import_lo
 static int nm, mcap;
@@ -1380,6 +1395,7 @@ static void mirror_mode(int discrete) {
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
     mirror_stage = rt_knob("MIRROR_STAGE", "1") == 1;
+    mirror_lazy = rt_knob("MIRROR_LAZY", "1") == 1;
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
     const char *fi = cfg_get("XC2_FREEZE_IDLE");
@@ -1534,6 +1550,10 @@ static void mirror_create(PoolRec *r) {
         return refuse(r, MR_ALLOC, why);
     }
     r->mhost = (uint8_t)host;
+    if (mirror_lazy) {   // before the pool goes on the mirrored list: the capture reads gsub from then on
+        r->ngran = (n + (1ull << GRAN_SHIFT) - 1) >> GRAN_SHIFT;
+        if (!(r->gsub = calloc((size_t)r->ngran, sizeof *r->gsub))) rt_fatal("vk: out of memory (mirror granules)");
+    }
     if (host) plat_inc64(&m_host_n);
     if (host && plat_inc64(&m_host_logged) <= 4)   // short-lived small pools come back all session long
         rt_log("mem: pool %#llx+%#llx gets its mirror in host memory: its %.1f MiB do not fit the VRAM budget (%.0f of "
@@ -1548,8 +1568,8 @@ static void mirror_create(PoolRec *r) {
     nm++;
     plat_mutex_unlock(&pool_lock);
     __atomic_store_n(&r->mstate, MS_ON, __ATOMIC_RELEASE);
-    range_add(&pend, &npend, &cpend, r, 0, n);
-    mrep.first_n++, mrep.first_bytes += n;
+    mrep.first_n++;
+    if (!r->gsub) range_add(&pend, &npend, &cpend, r, 0, n), mrep.first_bytes += n;   // lazy: each granule on its first use
     if (host) {
         plat_add64(&m_host_bytes, (int64_t)n);
         return;
@@ -1595,6 +1615,24 @@ static void mirror_retire(void *arg) {
     destroy_rec(vk_ctx(), arg);
 }
 
+// XC2_MIRROR_LAZY: the replay has used the granule at offset off of r's import range as a buffer.
+static int gran_used(const PoolRec *r, uint64_t off) {
+    return !r->gsub || __atomic_load_n(&r->gsub[off >> GRAN_SHIFT], __ATOMIC_ACQUIRE) != 0;
+}
+
+// Queues [off, off + size) of r into cr, without the granules not used yet (lazy mirrors).
+static void capture_add(PoolRec *r, uint64_t off, uint64_t size) {
+    if (!r->gsub) {
+        range_add(&cr, &ncr, &ccr, r, off, size);
+        return;
+    }
+    for (uint64_t a = off, end = off + size, b; a < end; a = b) {
+        b = ((a >> GRAN_SHIFT) + 1) << GRAN_SHIFT;
+        if (b > end) b = end;
+        if (gran_used(r, a)) range_add(&cr, &ncr, &ccr, r, a, b - a);
+    }
+}
+
 // Submitting thread, gen_lock held exclusively: queues into cr the pages of r's mirror stamped after its mgen and its
 // flushed ranges. Returns 1 when it queued any.
 static int capture_pool(PoolRec *r) {
@@ -1607,14 +1645,14 @@ static int capture_pool(PoolRec *r) {
         if (a < lo) a = lo;
         if (b > hi) b = hi;
         if (snap_untracked[k]) {   // mirror_create refuses untracked ranges; a region that became so: all of it
-            range_add(&cr, &ncr, &ccr, r, a - lo, b - a);
+            capture_add(r, a - lo, b - a);
             continue;
         }
         if (reg_max[k] <= since) continue;
         const uint32_t *ch = gen_chunk[a >> GEN_CHUNK_SHIFT];   // a 2 MiB region lies in one chunk
         if (!ch) continue;
         for (uint64_t x = a; x < b; x += 1ull << GEN_PAGE_SHIFT)
-            if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since)
+            if (ch[(x >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] > since && gran_used(r, x - lo))
                 range_add(&cr, &ncr, &ccr, r, x - lo, 1ull << GEN_PAGE_SHIFT);
     }
     r->mgen = gen_now;
@@ -1625,7 +1663,7 @@ static int capture_pool(PoolRec *r) {
         plat_mutex_unlock(&flush_lock);
         a = a > lo ? a & ~0xfffull : lo;
         b = b < hi ? (b + 0xfff) & ~0xfffull : hi;
-        if (a < b) range_add(&cr, &ncr, &ccr, r, a - lo, b - a);
+        if (a < b) capture_add(r, a - lo, b - a);
     }
     return ncr > n0;
 }
@@ -1735,24 +1773,46 @@ static void capture_free(MCap *c) {
 
 void vk_mem_capture_drop(void *cap) { capture_free(cap); }
 
-void vk_mem_use(VkMemSpan *sp) {
+// Replay thread, lazy mirrors: [off, off + n) of r is used as a buffer by the submission being recorded. Each granule
+// of it not used before is queued for the next prologue, whole, as a pool's first use is (vk_mem_mirror_prologue copies
+// it and checks it for a CPU write since the capture).
+static void mirror_touch(PoolRec *r, uint64_t off, uint64_t n) {
+    uint64_t lim = r->import_hi - r->import_lo;
+    if (!r->gsub || off >= lim || !n) return;
+    uint64_t end = n > lim - off ? lim : off + n;
+    for (uint64_t g = off >> GRAN_SHIFT, g1 = (end - 1) >> GRAN_SHIFT; g <= g1; g++) {
+        if (__atomic_load_n(&r->gsub[g], __ATOMIC_RELAXED)) continue;
+        // Marked before the copy is queued: a capture that still sees the granule unused skips only writes this
+        // granule's copy, which runs later, includes.
+        __atomic_store_n(&r->gsub[g], msub ? msub : 1, __ATOMIC_RELEASE);
+        uint64_t a = g << GRAN_SHIFT, b = a + (1ull << GRAN_SHIFT) < lim ? a + (1ull << GRAN_SHIFT) : lim;
+        range_add(&pend, &npend, &cpend, r, a, b - a);
+        mrep.first_bytes += b - a;
+        plat_inc64(&m_gran_n);
+        plat_add64(&m_gran_bytes, (int64_t)(b - a));
+    }
+}
+
+void vk_mem_use(VkMemSpan *sp, uint64_t n) {
     PoolRec *r = sp->pool;
     if (r->mstate == MS_NONE) mirror_create(r);
     if (r->mstate != MS_ON) return;
     sp->buffer = r->mbuf;
+    mirror_touch(r, sp->offset, n);
 }
 
-void vk_mem_pick(VkMemSpan *sp) {
+void vk_mem_pick(VkMemSpan *sp, uint64_t n) {
     PoolRec *r = sp->pool;
     if (!r || r->mstate != MS_ON) return;
     sp->buffer = r->mbuf;
+    mirror_touch(r, sp->offset, n);
 }
 
 int vk_mem_mirror_probe(uint64_t addr) {
     VkMemSpan sp;
     if (!vk_mirror_on || !vk_mem_resolve(addr, 1, &sp) || !sp.pool) return 0;
     mepoch = vk_texture_epoch();
-    vk_mem_use(&sp);
+    vk_mem_use(&sp, sp.avail);
     return ((PoolRec *)sp.pool)->mstate == MS_ON;
 }
 
@@ -1961,6 +2021,10 @@ static void verify_cb(void *arg) {   // completion thread
         }
         for (uint64_t o = 0; o < s->len; o += 1ull << GEN_PAGE_SHIFT) {
             uint64_t a = r->import_lo + s->off + o;
+            if (r->gsub) {   // a lazy mirror holds a granule from the submission of its first use on
+                uint32_t g = __atomic_load_n(&r->gsub[(s->off + o) >> GRAN_SHIFT], __ATOMIC_ACQUIRE);
+                if (!g || (int32_t)(g - j->sub) > 0) { skipped++; continue; }
+            }
             const uint8_t *m = j->map + s->dst + o, *g = (const uint8_t *)(uintptr_t)a;
             pages++;
             if (!memcmp(m, g, 1ull << GEN_PAGE_SHIFT)) continue;
@@ -2079,9 +2143,15 @@ static void mirror_log(uint64_t frame) {
     double f = frame > last ? (double)(frame - last) : 1.0, M = 1048576.0;
     last = frame;
     uint64_t fc = (uint64_t)plat_xchg64(&m_flush_calls, 0), fb = (uint64_t)plat_xchg64(&m_flush_bytes, 0);
-    char ver[160] = "";
+    char ver[320] = "";
+    int vn = 0;
+    if (mirror_lazy)
+        vn = snprintf(ver, sizeof ver, "; lazy granules used %lld (%.1f MiB) over the run",
+                       (long long)__atomic_load_n(&m_gran_n, __ATOMIC_RELAXED),
+                       __atomic_load_n(&m_gran_bytes, __ATOMIC_RELAXED) / 1048576.0);
     if (mirror_verify)
-        snprintf(ver, sizeof ver, "; verify: pages compared %lld, skipped %lld (written since), mismatches %lld",
+        snprintf(ver + vn, sizeof ver - (size_t)vn,
+                 "; verify: pages compared %lld, skipped %lld (written since, or a granule not used yet), mismatches %lld",
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
                  (long long)plat_xchg64(&v_mismatch, 0));
     double sb = (double)plat_xchg64(&m_stage_bytes, 0), sd = (double)plat_xchg64(&m_stage_direct, 0);
