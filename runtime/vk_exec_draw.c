@@ -2595,6 +2595,10 @@ static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t i
     // A builtin input (VertexIndex and the like) has no Location, so the mask above does not show it: a shader that reads
     // the vertex number would see different numbers on the grid's vertices, so such a draw keeps the normal path.
     if (in != 1u || last_sys) QS_NO("inputs %#x%s", q, pg, in, last_sys ? " with a builtin input" : "");
+    // A position stream with a divisor is read per instance, so every vertex of the draw sees one position; the grid
+    // would read the corners per vertex instead and draw a different shape.
+    if (ex->pipe.vstream[va.stream].divisor) QS_NO("stream %u has divisor %u", q, pg, (unsigned)va.stream,
+                                                   (unsigned)ex->pipe.vstream[va.stream].divisor);
     uint32_t vs = ex->pipe.vstream[va.stream].stride;
     uint64_t vbase = ex->vbuf[va.stream].address;
     if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
