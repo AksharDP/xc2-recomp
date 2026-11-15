@@ -2873,10 +2873,15 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
             // One line per program that stores records: its record layout (gfx_shader_xfb reads the control section)
             // against the vertex input of the draws that consume it. A layout whose words miss a component the consumer
             // reads is exactly the "alpha is 1" class of fault (issue 22 hypothesis H5).
-            static uint64_t logged_serial;
+            // The programs already logged, so that two programs that take turns (XC2 alternates 378 and 410 every
+            // frame) log once each, not at every switch; past the table no more lines are written.
+            static uint64_t logged_serial[32];
+            static int nlogged;
             uint64_t serial = ex->prog ? ex->prog->serial : 0;
-            if (serial && serial != logged_serial) {
-                logged_serial = serial;
+            int seen = !serial || nlogged == (int)(sizeof logged_serial / sizeof *logged_serial);
+            for (int i = 0; i < nlogged && !seen; i++) seen = logged_serial[i] == serial;
+            if (!seen) {
+                logged_serial[nlogged++] = serial;
                 const uint8_t *ctl, *code;
                 uint32_t len;
                 if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len)) {
