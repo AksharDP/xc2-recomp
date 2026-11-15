@@ -6,6 +6,12 @@ For each log, and pooled over all of them: the frames' interval spread, the mean
 of each watched thread, the busiest other threads, and the counts that differ most from the log's median frame. Each
 frame is also given the thread whose CPU time comes nearest its interval (the likely critical path), and the share of
 frames per such thread is listed. --rows prints the N slowest frames with their main columns.
+
+--clock judges each frame at full clock: a laptop's core clock follows its power budget, so the same frame of the same
+build takes longer when the machine is warm or busy, in wall time and in CPU time alike. A log that has the probe_us
+column (runtime/flight.c clock_probe: a fixed chain of multiply-adds timed on the presenting thread at each frame's end)
+gets each interval scaled by the fastest probe of all the logs read (their 5th percentile) over the frame's own, and
+everything below, the split included, uses that scaled interval. The wall interval is kept as wall_ms.
 """
 import argparse
 import math
@@ -108,15 +114,28 @@ def main():
     ap.add_argument('--rows', type=int, default=0)
     ap.add_argument('--split', type=float, nargs=2, metavar=('FAST', 'SLOW'),
                     help='for a log taken with a low threshold: report frames under FAST ms and over SLOW ms apart')
+    ap.add_argument('--clock', action='store_true', help='scale each interval to full clock by the probe_us column')
     a = ap.parse_args()
     files = []
     for p in a.paths:
         files += sorted(p.rglob('slow.tsv')) if p.is_dir() else [p]
     if not files:
         sys.exit('no slow.tsv found')
+    logs = [(p, *load(p)) for p in files]
+    if a.clock:
+        probes = sorted(f['probe_us'] for _, _, fr in logs for f in fr if isinstance(f.get('probe_us'), float)
+                        and f['probe_us'] > 0)
+        if not probes:
+            sys.exit('--clock: no log has the probe_us column')
+        ref = probes[int(0.05 * (len(probes) - 1))]
+        print(f'# full clock: probe {ref:.2f} us (5th percentile of {len(probes)} frames)')
+        for _, _, fr in logs:
+            for f in fr:
+                f['wall_ms'] = f['interval_ms']
+                if isinstance(f.get('probe_us'), float) and f['probe_us'] > 0:
+                    f['interval_ms'] = f['interval_ms'] * ref / f['probe_us']
     pooled = []
-    for p in files:
-        head, frames = load(p)
+    for p, head, frames in logs:
         if a.from_world is not None:
             frames = [f for f in frames if f.get('world_ms', -1) >= a.from_world * 1000]
         if a.from_t is not None:

@@ -107,6 +107,7 @@ static const char *const cpu_names[U_N] = {"cpu_pres_ms", "cpu_main_ms", "cpu_re
 typedef struct {
     Rec r;
     int64_t world_us;
+    uint32_t probe_ns;   // clock_probe on the presenting thread at the frame's end
     uint32_t cpu_us[U_N], top_us[TOP_N];
     int16_t top[TOP_N];   // thr index, -1 none
 } SlowRec;
@@ -127,6 +128,29 @@ void flight_thread_self(uint32_t guest, const char *name) {
     thr[i].name = name;
     thr[i].prev = q ? plat_thread_q_ns(q) : 0;
     __atomic_store_n(&thr[i].q, q, __ATOMIC_RELEASE);
+}
+
+// The core clock as the presenting thread runs, for frame costs that do not depend on it: a laptop's clock follows its
+// power budget, and the CPU time of the same frame on the same build rose with it from run to run as much as the frame
+// time did, while other programs took only a steady sliver of the interval. A chain of dependent multiply-adds takes a
+// fixed number of cycles whatever the memory does, so its time is inversely the clock (about 7 us at 4.6 GHz).
+// tools/flight_slow.py scales the frame by the run's fastest probe over this one. The best of three takes out an
+// interrupt that lands in one.
+#define PROBE_STEPS 8000
+static volatile uint64_t probe_sink;
+static uint32_t clock_probe(void) {
+    uint64_t best = UINT64_MAX;
+    for (int k = 0; k < 3; k++) {
+        uint64_t x = probe_sink | 1, t0 = plat_now_ns();
+        for (int i = 0; i < PROBE_STEPS; i++) {
+            x = x * 6364136223846793005ull + 1442695040888963407ull;
+            __asm__ volatile("" : "+r"(x));   // one step at a time: the compiler may not fold or vectorize the chain
+        }
+        uint64_t d = plat_now_ns() - t0;
+        probe_sink = x;
+        if (d < best) best = d;
+    }
+    return best > UINT32_MAX ? UINT32_MAX : (uint32_t)best;
 }
 
 static void thr_label(int i, char *out, size_t n) {
@@ -484,6 +508,7 @@ static void slow_write(void) {
     if (slow_cpu) {
         for (int k = 0; k < U_N; k++) fprintf(f, "\t%s", cpu_names[k]);
         for (int j = 0; j < TOP_N; j++) fprintf(f, "\ttop%d\ttop%d_ms", j + 1, j + 1);
+        fprintf(f, "\tprobe_us");
     }
     fprintf(f, "\n");
     for (int i = 0; i < n; i++) {
@@ -498,6 +523,7 @@ static void slow_write(void) {
                 if (s->top[j] >= 0) thr_label(s->top[j], lab, sizeof lab);
                 fprintf(f, "\t%s\t%.2f", lab, s->top_us[j] / 1000.0);
             }
+            fprintf(f, "\t%.2f", s->probe_ns / 1000.0);
         }
         fprintf(f, "\n");
     }
@@ -596,6 +622,7 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const P
         if (keep) {
             if (s == &tmp) slow_dropped++;
             else {
+                s->probe_ns = slow_cpu ? clock_probe() : 0;
                 s->r = *r;
                 s->world_us = frame_step_world_us();
                 __atomic_store_n(&slow_n, slow_n + 1, __ATOMIC_RELEASE);
