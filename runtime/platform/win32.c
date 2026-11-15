@@ -291,13 +291,19 @@ void plat_timer_1ms(void) { timeBeginPeriod(1); }
 
 // The control bits name the policies the process decides itself, the state bits whether each is on: execution speed
 // and timer resolution both controlled and off, so Windows neither moves the process to EcoQoS nor ignores its 1 ms
-// timer while it is not the foreground window.
+// timer while it is not the foreground window. SetProcessInformation is looked up in kernel32: MinGW headers declare it
+// only when _WIN32_WINNT names Windows 8 or later, and the release build's toolchain does not.
+typedef BOOL(WINAPI *SetProcessInformation_t)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
 int plat_no_power_throttling(void) {
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    SetProcessInformation_t set =
+        k32 ? (SetProcessInformation_t)(void *)GetProcAddress(k32, "SetProcessInformation") : NULL;
+    if (!set) return 0;
     PROCESS_POWER_THROTTLING_STATE s = {
         .Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
         .StateMask = 0};
-    return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) != 0;
+    return set(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) != 0;
 }
 
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written
