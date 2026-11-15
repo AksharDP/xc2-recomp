@@ -454,7 +454,13 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     if make_lib:
         sources = [p for p in sources if p.name not in INSTALL_SIDE]
     elif runtime_lib:
-        sources = [p for p in sources if p.name in INSTALL_SIDE] + [out / 'modules.c']
+        sources = [p for p in sources if p.name in INSTALL_SIDE]
+        # A missing one still links (nothing calls its host functions by name), but the patched guest code then
+        # branches to a patch page address nobody registered and the game stops in rt_dispatch.
+        missing = sorted(INSTALL_SIDE - set(skip) - {p.name for p in sources})
+        if missing:
+            sys.exit(f'build_game: {RUNTIME} lacks the install-side sources {", ".join(missing)}')
+        sources += [out / 'modules.c']
     else:
         sources += [out / 'modules.c']
     for src in sources:

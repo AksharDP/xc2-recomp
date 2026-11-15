@@ -11,8 +11,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                files come out of the python.org installer's own component MSI, unpacked with msiexec /a and expand.exe;
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
-    runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, romfs.c, patches.c and
-               ov_zstd.c (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
+    runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, the sources of
+               build_game.py INSTALL_SIDE (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe, amd_fidelityfx_vk.dll (AMD's signed
                build, out of the FidelityFX SDK release)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
@@ -48,6 +48,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_game  # noqa: E402
 import check_content  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -402,7 +403,7 @@ def runtime_lib(out, llvm):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in ('romfs.c', 'patches.c', 'ov_zstd.c'):   # build_game.py INSTALL_SIDE
+    for name in sorted(build_game.INSTALL_SIDE):
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 
 
