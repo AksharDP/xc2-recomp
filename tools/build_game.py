@@ -99,8 +99,10 @@ CLANG = UCRT / 'clang.exe' if WIN else on_path('clang')
 NINJA = UCRT / 'ninja.exe' if WIN else on_path('ninja')
 SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll'] if WIN else []
 
-# Flags for generated code as LAS Recomp builds it (Makefile GENFLAGS, Windows), plus -march for the FP/SIMD lowering.
-GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
+# Flags for generated code. LAS Recomp's Makefile (GENFLAGS, Windows) used -O1. -O2 runs the XC2 issue 112 save about 5 %
+# faster in camera turns and in still play (interleaved pairs, 2026-11-13), and a 40k-line function file peaks at the same
+# 206 MiB of compile memory at either level. -march for the FP/SIMD lowering.
+GEN_FLAGS = ['-O2', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
 if WIN:
@@ -114,6 +116,59 @@ else:
                   '"-Wl,-Map=$builddir/xc2.map"']
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+
+
+def use_lto(jobs):
+    """ThinLTO over the generated code (--no-lto turns it off). Each lifted function is its own C function, spread over
+    hundreds of files, so the compiler could not inline the small ones (SDK lock and unlock, getters, the scene walk's
+    helpers) into their callers in other files; at link time it can. The issue 112 route, 20 interleaved pairs, frames
+    pooled per arm (2026-11-14): 1% low 37.4 -> 39.5 fps, 0.1% low 28.8 -> 32.1 fps, mean 78.4 -> 79.7 fps; .text 67.6
+    -> 78.8 MiB. The runtime is compiled as before. The link runs the code generation of every module, jobs at once
+    (137 s and 1.7 GiB on 20 threads); the cache in the build directory keeps the modules whose bitcode and imports are
+    unchanged, so relinking after a runtime change costs only the final link."""
+    global GEN_FLAGS, LINK_FLAGS
+    GEN_FLAGS = GEN_FLAGS + ['-flto=thin']
+    LINK_FLAGS = LINK_FLAGS + ['-flto=thin', '-O2', f'-Wl,--thinlto-jobs={jobs}',
+                               '"-Wl,--thinlto-cache-dir=$builddir/lto-cache"']
+
+
+def use_pgo(generate, profdata):
+    """Profile-guided optimization of the generated code, in two builds. --pgo-generate instruments the generated code
+    and links the profile runtime; the game writes LLVM_PROFILE_FILE (default default_%m.profraw in the working
+    directory) when it exits (plat_exit). llvm-profdata merge turns the runs' files into one .profdata, and --pgo-use
+    builds with it: the compiler lays out hot and cold code, inlines and unrolls by the measured counts. The runtime is
+    compiled as before. Profile from 3 replays of a recording on a second save, interleaved runs, frames pooled per arm
+    (2026-11-14): on that recording (8 rounds) mean 85.0 -> 90.6 fps, 1% low 35.8 -> 39.1, frames over 10 ms 49.7 -> 37.1 %
+    (fewer in 8 of 8); on the issue 112 recording (8 rounds) mean 83.1 -> 84.8 fps, frames over 10 ms 51.5 -> 46.0 % (7 of
+    8), 1% low unchanged; on a third recording no profile saw (6 rounds) mean 97.2 -> 99.3 fps, over 10 ms 24.3 -> 22.3 %.
+    So most of the gain on the trained play does not carry over: about 2 % elsewhere. A profile of two recordings was no
+    better on the third. The profile's hash goes into the flags, so a new profile recompiles the generated code and the
+    object cache does not mix objects of two profiles."""
+    global GEN_FLAGS, LINK_FLAGS, RT_FLAGS
+    if generate:
+        lib = pgo_runtime()
+        if not lib:
+            sys.exit('--pgo-generate: the profile runtime (libclang_rt.profile) of this clang is missing; on MSYS2 '
+                     'install mingw-w64-ucrt-x86_64-compiler-rt (docs/building.md)')
+        GEN_FLAGS = GEN_FLAGS + ['-fprofile-generate']
+        LINK_FLAGS = LINK_FLAGS + ['-fprofile-generate']
+        RT_FLAGS = RT_FLAGS + ['-DXC2_PGO_GENERATE']
+    else:
+        if not profdata.is_file():
+            sys.exit(f'--pgo-use: {flag_path(profdata)} not found')
+        digest = hashlib.sha256(profdata.read_bytes()).hexdigest()[:16]
+        # Functions the training never ran and a profile from older generated C are expected, not worth a warning each
+        GEN_FLAGS = GEN_FLAGS + [f'-fprofile-use={cmd_path(profdata)}', f'-DXC2_PGO_PROFILE={digest}',
+                                 '-Wno-profile-instr-unprofiled', '-Wno-profile-instr-out-of-date', '-Wno-backend-plugin']
+
+
+def pgo_runtime():
+    """The profile runtime library of CLANG, or None."""
+    r = subprocess.run([str(CLANG), '-print-resource-dir'], capture_output=True, text=True)
+    lib = Path(r.stdout.strip()) / 'lib'
+    return next(iter(sorted(lib.glob('**/libclang_rt.profile*.a'))), None) if r.returncode == 0 and lib.is_dir() else None
+
+
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
 # into toolchain/vma: one MIT header (THIRD_PARTY_NOTICES.md), checked against its hash.
 VMA_FETCH = ('https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/v3.4.0/include/vk_mem_alloc.h',
@@ -145,10 +200,10 @@ def vma_include():
 LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-lwinmm', '-lvulkan-1', '-lSDL3', '-lopus',
                   '-l:libvpx.a', '-l:libzstd.a', '-l:libc++.a', '-l:libc++abi.a', '-l:libunwind.a', '-l:libwinpthread.a']
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
-# Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
-# the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
-# functions sit on it).
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c'}
+# Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h; patches.c, ov_zstd.c and
+# ov_inflate.c include the patches.h of the player's game version (its patch page is the page after that version's
+# main; the host functions of ov_zstd.c and ov_inflate.c sit on it).
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'ov_inflate.c'}
 LIB_NAME = 'libxc2rt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/xc2.rc: the manifest of xc2.exe
@@ -399,7 +454,13 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     if make_lib:
         sources = [p for p in sources if p.name not in INSTALL_SIDE]
     elif runtime_lib:
-        sources = [p for p in sources if p.name in INSTALL_SIDE] + [out / 'modules.c']
+        sources = [p for p in sources if p.name in INSTALL_SIDE]
+        # A missing one still links (nothing calls its host functions by name), but the patched guest code then
+        # branches to a patch page address nobody registered and the game stops in rt_dispatch.
+        missing = sorted(INSTALL_SIDE - set(skip) - {p.name for p in sources})
+        if missing:
+            sys.exit(f'build_game: {RUNTIME} lacks the install-side sources {", ".join(missing)}')
+        sources += [out / 'modules.c']
     else:
         sources += [out / 'modules.c']
     for src in sources:
@@ -510,21 +571,33 @@ def translator_id(d):
     return f.read_text(encoding='ascii').strip() if f.is_file() else ''
 
 
+def fallback_translator(exe_dir):
+    """The build/xlate the runtime uses when no translator sits beside xc2.exe: that of the nearest parent of exe_dir
+    holding build/xlate/xc2_xlate (gfx_shader.c, the repository root). None when there is none. A worktree has no
+    build/ of its own, so a build there into the main checkout's build/ falls back to the main checkout's translator."""
+    name = 'xc2_xlate' + ('.exe' if WIN else '')
+    for d in (exe_dir, *exe_dir.parents):
+        if (d / 'build' / 'xlate' / name).is_file():
+            return d / 'build' / 'xlate'
+    return None
+
+
 def check_translator(exe_dir, allow_stale):
     """Stops the build when the translator it will use was built from other sources than this checkout's: build/xlate's,
-    or without one exe_dir's, unless exe_dir already holds a matching one (a task build's own translator). A stale
+    or without one exe_dir's, or without either the one the runtime falls back to (fallback_translator), unless exe_dir
+    already holds a matching one (a task build's own translator). A stale
     translator fails nothing: the runtime asks it for what the current sources implement and it silently leaves that
     out. One from before transform feedback left the feedback
     outputs out of the shaders, so nothing wrote the animated vertices of the hanging foliage in Uraya: those draws read
     the bone matrices sharing that scratch memory as positions and came out as long black spikes. Checkouts without the
     translator's sources (an unpacked release) have nothing to compare with."""
     src = ROOT / 'build' / 'xlate'
-    used = src if translator_id(src) else exe_dir
-    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not translator_id(used):
+    used = src if translator_id(src) else exe_dir if translator_id(exe_dir) else fallback_translator(exe_dir)
+    if not (ROOT / 'tools' / 'vendor' / 'ryujinx').is_dir() or not used or not translator_id(used):
         return
     from build_xlate import identity
     want = identity()
-    if want in (translator_id(src), translator_id(exe_dir)):
+    if want in (translator_id(src), translator_id(exe_dir)) or used not in (src, exe_dir) and translator_id(used) == want:
         return
     what = f'{below_root(used)} is {translator_id(used)[:16]}, these sources are {want[:16]}'
     if allow_stale:
@@ -996,6 +1069,15 @@ def main():
                          'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--no-lto', action='store_true',
+                    help='compile the generated C to machine code per file, without ThinLTO at the link (faster links, '
+                         'slower game: see use_lto)')
+    pgo = ap.add_mutually_exclusive_group()
+    pgo.add_argument('--pgo-generate', action='store_true',
+                     help='instrument the generated C for profile-guided optimization; the game writes LLVM_PROFILE_FILE '
+                          'at exit (see use_pgo)')
+    pgo.add_argument('--pgo-use', type=Path, metavar='PROFDATA',
+                     help='compile the generated C with this profile (llvm-profdata merge of --pgo-generate runs)')
     ap.add_argument('--allow-stale-translator', action='store_true',
                     help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
@@ -1055,6 +1137,13 @@ def main():
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
+    if not args.no_lto:
+        use_lto(jobs)
+    if args.pgo_generate and args.runtime_lib:
+        # The prebuilt library was compiled without XC2_PGO_GENERATE, so plat_exit would never write the profile
+        sys.exit('--pgo-generate needs the runtime compiled here, not --runtime-lib')
+    if args.pgo_generate or args.pgo_use:
+        use_pgo(args.pgo_generate, args.pgo_use.resolve() if args.pgo_use else None)
     if args.make_runtime_lib:
         # The library reads nothing of the game (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX stand in for layout.h), so it
         # builds without generated/ or extracted files: CI builds the release from a bare checkout

@@ -214,7 +214,7 @@ NVN_API(nvnTextureInitialize) {
     if (s->pkg_data) {
         if (!o->mem || nvn_gpu_only((uintptr_t)o->mem))
             rt_fatal("nvn: packaged texture data without CPU-visible storage");
-        memcpy(o->mem, s->pkg_data, (size_t)o->L.size);
+        mem_copy_par(o->mem, s->pkg_data, o->L.size);   // the storage is fresh pool pages: a large copy fans out (memory.c)
         nvn_guest_written((uintptr_t)o->mem, o->L.size);
     }
     o->serial = nvn_new_serial();
@@ -522,13 +522,32 @@ NVN_API(nvnMultisampleStateSetDefaults) {
     ST(ms_st, c)->enable = 1;
     ST(ms_st, c)->a2c_dither = 1;   // dithered alpha to coverage by default, as Maxwell (0x12e0) and deko3d's defaults
 }
-NVN_API(nvnMultisampleStateSetMultisampleEnable) { ST(ms_st, c)->enable = nvn_arg_bool(c, 1) != 0; }
-NVN_API(nvnMultisampleStateSetSamples) { ST(ms_st, c)->samples = (uint8_t)arg_x(c, 1); }
+// The multisample state is stored, and its getters return it, but the replay draws at each pass's own sample count
+// (vk_exec.c, pipe.samples) with the standard sample positions. A non-default value is reported once, not dropped
+// silently.
+#define MS_ONCE(...) do { static int once_; if (!once_++) rt_log("nvn: " __VA_ARGS__); } while (0)
+NVN_API(nvnMultisampleStateSetMultisampleEnable) {
+    int on = nvn_arg_bool(c, 1) != 0;
+    ST(ms_st, c)->enable = on;
+    if (!on) MS_ONCE("MultisampleState enable 0: stored, not applied (the replay draws at the pass's sample count)");
+}
+NVN_API(nvnMultisampleStateSetSamples) {
+    unsigned n = (unsigned)arg_x(c, 1);
+    ST(ms_st, c)->samples = (uint8_t)n;
+    if (n > 1) MS_ONCE("MultisampleState samples %u: stored, not applied (the replay draws at the pass's sample count)", n);
+}
 NVN_API(nvnMultisampleStateSetAlphaToCoverageEnable) { ST(ms_st, c)->a2c = nvn_arg_bool(c, 1) != 0; }
-NVN_API(nvnMultisampleStateSetSampleLocationsEnable) { ST(ms_st, c)->sl_en = nvn_arg_bool(c, 1) != 0; }
+NVN_API(nvnMultisampleStateSetSampleLocationsEnable) {
+    int on = nvn_arg_bool(c, 1) != 0;
+    ST(ms_st, c)->sl_en = on;
+    if (on) MS_ONCE("MultisampleState sample locations enable: stored, not applied (the standard positions are used)");
+}
 // void nvnMultisampleStateSetSampleLocations(NVNmultisampleState *s, int start, int n, const float *v): programmable
 // sample positions are not replayed
-NVN_API(nvnMultisampleStateSetSampleLocations) { (void)c; }
+NVN_API(nvnMultisampleStateSetSampleLocations) {
+    (void)c;
+    MS_ONCE("MultisampleState sample locations: programmable positions not replayed");
+}
 NVN_API(nvnPolygonStateSetDefaults) {
     *ST(poly_st, c) = (poly_st){NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0};
 }
@@ -660,8 +679,32 @@ NVN_API(nvnWindowSetCrop) {
 // 2nd or 3rd tick would only add latency and 50 ms frames.
 #define VSYNC_HZ 60ull
 static uint64_t frame_fence;   // the newest submit at the last present (the frame guard)
+// XC2_PACE: grid (default) puts each present on the grid of the frame limit, and a frame that misses its slot goes out at
+// once. buffer lets a frame's work start at the slot of its image's previous present, not one period after it, and
+// reuses that image only once its blit is submitted (gfx_present_wait_blit, in the acquire). The grid period is then the
+// frame limit or the sustained work per frame with a margin, whichever is longer, so a scene that cannot hold the limit
+// is paced at the rate it does hold. The null backend has no present thread to submit blits, so buffer stays off there.
+static int pace_buffer(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *gpu = rt_config()->gpu;
+        on = !strcmp(cfg_value("XC2_PACE"), "buffer") && !(gpu && !strcmp(gpu, "null"));
+    }
+    return on;
+}
+static uint64_t present_no;   // the presents of all windows so far; the backend numbers its presents the same way
+static uint64_t work_start;   // when the frame's work began (acquire returned); 0 between a present and the next acquire
+static double work_ema_ns;    // the guest's work per frame (acquire to present): rises slowly and falls quickly, so a
+                              // load or a title's slow frames do not hold the grid after they end
+static double late_ema;       // the share of recent presents that missed their slot (about the last 60)
+static double margin = 0.05;  // the grid runs this far above the average work: raised while presents miss their slots
 static uint64_t present_period(const win_t *o) {
-    if (frame_step_realtime() || frame_rate_paced()) return frame_step_cap_ns();
+    if (frame_step_realtime() || frame_rate_paced()) {
+        uint64_t cap = frame_step_cap_ns();
+        if (!pace_buffer()) return cap;
+        uint64_t sustained = (uint64_t)(work_ema_ns * (1.0 + margin));
+        return sustained > cap ? sustained : cap;
+    }
     return (o->interval > 0 ? (uint64_t)o->interval : 1ull) * 1000000000ull / VSYNC_HZ;
 }
 
@@ -694,7 +737,7 @@ NVN_API(nvnWindowAcquireTexture) {
     sync_t *s = arg_p(c, 1);
     int *out = arg_p(c, 2);
     NVN_BLOCKING();
-    int idx = o->active ? o->next++ % o->active : 0;
+    int idx = o->active ? (int)(o->next++ % (uint32_t)o->active) : 0;
     *out = idx;
     uint64_t at = idx < 4 ? o->avail[idx] : 0;
     if (at) {
@@ -702,6 +745,8 @@ NVN_API(nvnWindowAcquireTexture) {
         sleep_until(at);
         perf_end(PERF_PACE, p0);
     }
+    // XC2_PACE=buffer: the image's previous present must be blitted before the game writes the image again
+    if (pace_buffer() && idx < 4 && o->ticket[idx]) gfx_present_wait_blit(o->ticket[idx]);
     // Frame guard: the next frame starts once the GPU has run the previous frame's submissions. NVN starts the GPU when
     // the submit returns; here the replay records first and the GPU reads vertex and storage data in pool memory when
     // it runs (vk_usnap.c copies only uniform blocks). XC2 rewrites that data for its next frame with no fence, so above
@@ -733,6 +778,7 @@ NVN_API(nvnWindowAcquireTexture) {
         s->fenced = 3;
         s->fence = 0;
     }
+    work_start = kern_now_ns();
     ret_x(c, NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
 }
 
@@ -747,14 +793,28 @@ NVN_API(nvnQueuePresentTexture) {
     NVN_BLOCKING();
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
+    if (work_start) {   // the frame's work ends here; the waits of the present call below are not work
+        double w = (double)(kern_now_ns() - work_start);
+        work_start = 0;
+        if (w < 1e8) {   // a frame over 100 ms is a load, not the scene's pace
+            if (work_ema_ns <= 0) work_ema_ns = w;
+            else work_ema_ns += (w - work_ema_ns) / (w > work_ema_ns ? 8 : 4);
+        }
+    }
     o->presents++;
     __atomic_store_n(&frame_fence, nvn_fence_last(), __ATOMIC_RELEASE);   // the frame guard in nvnWindowAcquireTexture
     const tex_t *t = (const tex_t *)o->tex[idx];
     uint64_t period = present_period(o), now = kern_now_ns();
-    uint64_t slot = now + pace(&o->pace, now, period);
+    uint64_t wait = pace(&o->pace, now, period), slot = now + wait;
+    if (pace_buffer()) {   // a present with no wait missed its slot; the margin follows how often that happens
+        late_ema += ((wait == 0 ? 1.0 : 0.0) - late_ema) / 60;
+        if (late_ema > 0.10) margin += 0.004;
+        else if (late_ema < 0.03) margin -= 0.002;
+        margin = margin < 0 ? 0 : margin > 0.35 ? 0.35 : margin;
+    }
     gfx_backend()->present(t, o->crop, slot);
-    o->ticket[idx] = o->presents;
-    o->avail[idx] = slot + period;
+    o->ticket[idx] = ++present_no;   // the number vk_backend.c gives this present (gfx_present_wait_blit)
+    o->avail[idx] = pace_buffer() ? slot : slot + period;   // buffer: the next work on this image starts at this slot
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }

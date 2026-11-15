@@ -415,7 +415,7 @@ static int buffer_side(const VkExec *ex, const Sub *s, uint64_t addr, uint64_t *
                   (unsigned long long)addr, (unsigned long long)*size);
         return 0;
     }
-    VK_MEM_PICK(m);
+    VK_MEM_PICK(m, *size);
     *span = m;
     *c = (VkBufferImageCopy){.bufferOffset = m.offset, .bufferRowLength = (uint32_t)(row / (uint64_t)s->bpb) * (uint32_t)s->bw,
                              .bufferImageHeight = hb * (uint32_t)s->bh, .imageSubresource = sub_layers(s),
@@ -444,7 +444,17 @@ static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
     Sub s, d;
     if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, &s)) return;
     if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, &d)) return;
+    // The destination takes the source's slice or layer count (the game's regions do not always name one). sub_resolve
+    // checked the destination's own count, so the image must hold this one too, or the copy writes past its layers.
     d.nz = s.nz;
+    int is3d_dst = d.img->type == VK_IMAGE_TYPE_3D;
+    uint64_t dtop = is3d_dst ? (uint64_t)d.z + d.nz : (uint64_t)d.layer0 + (uint64_t)d.z + d.nz;
+    uint64_t dcap = is3d_dst ? max1(d.img->depth >> d.level) : d.img->layers;
+    if (dtop > dcap) {
+        warn_once(W_COPY, "texture copy of %u slices or layers into a destination with %llu: skipped", s.nz,
+                  (unsigned long long)dcap);
+        return;
+    }
     int same_size = s.w == d.w && s.h == d.h;
     int same_format = s.img->format == d.img->format;
     if (s.img->samples != d.img->samples && !(s.img->samples > 1 && d.img->samples == 1 && same_size && same_format)) {
@@ -493,8 +503,8 @@ static void copy_b2b(VkExec *ex, const p_copy_b2b *p) {
         }
         uint64_t n = left < s.avail ? left : s.avail;
         if (n > d.avail) n = d.avail;
-        VK_MEM_PICK(s);
-        VK_MEM_PICK(d);
+        VK_MEM_PICK(s, n);
+        VK_MEM_PICK(d, n);
         if (s.buffer == d.buffer && s.offset < d.offset + n && d.offset < s.offset + n) {
             warn_once(W_OVERLAP, "buffer copy %#llx -> %#llx overlaps within one buffer: skipped",
                       (unsigned long long)p->src, (unsigned long long)p->dst);
@@ -534,7 +544,7 @@ static void clear_buf(VkExec *ex, const p_clear_buf *p) {
         uint64_t n = left < d.avail ? left : d.avail & ~3ull;
         if (!n) break;
         if (!started) vk_exec_pass_end(ex), vk_exec_barrier(ex), started = 1;
-        VK_MEM_PICK(d);
+        VK_MEM_PICK(d, n);
         vkCmdFillBuffer(ex->cb, d.buffer, d.offset, n, p->value);
         vk_mem_gpu_wrote(&d, n);
         ex->recorded++;

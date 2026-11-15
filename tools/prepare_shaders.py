@@ -53,7 +53,8 @@ FMT = [None, 'R8Unorm', 'R8Snorm', 'R8Uint', 'R8Sint', 'R16Float', 'R16Unorm', '
 TYPES = {'float': 0, 'sint': 1, 'uint': 2}
 DEFAULT = {'tex': {str(slot): '2d' for slot in range(32)}}   # answers outside a shader's use mask are dropped
 CONTROL = 0x880
-ANS_REC = 4 + 32 + 32 + 147 + 1
+ANS_PACKED = 153                                  # gfx_shader.c ANS_PACKED
+ANS_REC = 4 + 32 + 32 + ANS_PACKED + 1
 
 
 BUNDLED_LIST = ROOT / 'tools' / 'data' / 'shader_list.tsv'   # the installer archive carries a copy (no git, no refs/)
@@ -94,7 +95,7 @@ def parse_list(text):
 
 
 def answers(deps, stage, control):
-    """GfxShaderAnswers in gfx_shader.c pack_answers layout (147 bytes) from the list's deps JSON."""
+    """GfxShaderAnswers in gfx_shader.c pack_answers layout (153 bytes) from the list's deps JSON."""
     tex, img, fmt, attr, fout = bytearray(32), bytearray(32), bytearray(32), bytearray(32), bytearray(8)
     for slot, t in deps.get('tex', {}).items():
         t = t.removesuffix('_depth')
@@ -109,8 +110,9 @@ def answers(deps, stage, control):
     local = [0, 0, 0]   # vk_exec_draw.c answers_for: zero for graphics stages (they are in the input id)
     if stage == 5:      # compute: the control section's local size, 0 read as 1
         local = [v or 1 for v in struct.unpack_from('<III', control, 0x748)]
-    packed = bytes(tex + img + fmt + attr + fout) + struct.pack('<HHHIB', *local, 0, 0)
-    assert len(packed) == 147
+    # local size, shared bytes, depth/dither flags, then the alpha test: function (0: none), a zero byte, reference
+    packed = bytes(tex + img + fmt + attr + fout) + struct.pack('<HHHIBBBf', *local, 0, 0, 0, 0, 0.0)
+    assert len(packed) == ANS_PACKED
     return packed
 
 
@@ -163,11 +165,11 @@ def main():
     recs.sort(key=lambda r: r[0])   # stable: list order within a priority
     out = a.build.resolve()
     with open(out / 'seed-programs.bin', 'wb') as f:
-        f.write(b'XCXSPRG' + struct.pack('<II', 1, 0))
+        f.write(b'XCXSPRG\0' + struct.pack('<II', 1, 0))   # gfx_shader.c RecHeader: an 8-byte magic
         for _, body in progs.values():
             f.write(body)
     with open(out / 'seed-answers.bin', 'wb') as f:
-        f.write(b'XCXSANS' + struct.pack('<II', 1, ANS_REC))
+        f.write(b'XCXSANS\0' + struct.pack('<II', 1, ANS_REC))
         for _, rec in recs:
             f.write(rec)
     by = [sum(1 for p, _ in recs if p == i) for i in range(3)]

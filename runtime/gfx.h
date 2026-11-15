@@ -36,6 +36,11 @@ typedef struct {                                           // the translator's a
     uint16_t local[3]; uint32_t shared_bytes;
     uint8_t depth_minus_w;
     uint8_t a2c_dither;                                    // fs: Maxwell's dithered alpha to coverage, in the shader
+    uint8_t alpha_func;                                    // fs: NVNalphaFunc 1..7 the fixed-function alpha test applies
+                                                           // to the fragment's alpha (0/ALWAYS: none), baked into the
+                                                           // shader as a discard (Ryujinx's AlphaTestOp, same values)
+    uint8_t alpha_pad;
+    float alpha_ref;                                       // fs: nvnCommandBufferSetAlphaRef's reference
 } GfxShaderAnswers;
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,

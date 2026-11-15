@@ -26,7 +26,8 @@
 static struct {
     int on, stop;
     PlatMutex lock;             // held around each top-up; vk_headroom_stop takes it before the allocator goes
-    int started;
+    int started, inited;        // inited: lock and ev exist (made once: an event handle is not released by a re-init)
+    PlatThread *thread;         // joined by vk_headroom_stop, so a later start cannot overlap the old thread
     PlatEvent ev;               // auto-reset: another thread allocated, or stop
     volatile uint32_t tid;      // the headroom thread's id
     volatile int64_t types;    // memory types a thread other than this one allocated device memory of
@@ -115,6 +116,7 @@ static void headroom_main(void *arg) {
 }
 
 // Before the allocator is destroyed: waits for a running top-up, frees the anchors, and the thread allocates no more.
+// The thread is joined, so a start after this one gets a thread of its own.
 void vk_headroom_stop(void) {
     if (!H.started) return;
     plat_mutex_lock(&H.lock);
@@ -123,13 +125,23 @@ void vk_headroom_stop(void) {
     for (uint32_t t = 0; c && t < 64; t++) drop_anchor(c, t);
     plat_mutex_unlock(&H.lock);
     plat_event_set(&H.ev);
+    plat_thread_join(H.thread);
+    H.thread = NULL;
+    H.started = 0;
 }
 
 void vk_headroom_start(void) {
     if (!H.on || H.started) return;
-    plat_mutex_init(&H.lock);
-    plat_event_init(&H.ev, 0, 0);
-    if (!plat_thread_spawn(headroom_main, NULL, "vk headroom", 0)) {
+    if (!H.inited) {
+        plat_mutex_init(&H.lock);
+        plat_event_init(&H.ev, 0, 0);
+        H.inited = 1;
+    }
+    H.stop = 0;
+    H.tid = 0;
+    H.types = 0;
+    H.thread = plat_thread_new(headroom_main, NULL, "vk headroom");
+    if (!H.thread) {
         H.on = 0;
         rt_log("vk: headroom: no thread, new VMA blocks stay on the allocating thread");
         return;

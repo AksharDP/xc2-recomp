@@ -354,7 +354,16 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
     F.ow = F.oh = 0;
     F.pinned[0] = 0;
     for (int p = 0; p < 2; p++)
-        if (!make_image(c, IMG_OUT, p, w, h)) return 0;
+        if (!make_image(c, IMG_OUT, p, w, h)) {
+            // Off for the run, as a failed context is. Left on, the stretch that calls this would retry the allocation after
+            // every resolve, each retry waiting for the GPU, with the jittered picture on screen; note_picture has already
+            // reset the miss counter, so MAX_MISSES would never turn FSR off.
+            rt_log("vk: FSR off: the output images (%ux%u) could not be created", w, h);
+            free_image(c, IMG_OUT, 0);
+            free_image(c, IMG_OUT, 1);
+            F.ok = 0;
+            return 0;
+        }
     struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
                                              .deviceContext = F.dev};
     struct ffxCreateBackendVKDesc_DEPRECATED backend_old = {

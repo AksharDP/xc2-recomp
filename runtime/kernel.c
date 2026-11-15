@@ -92,6 +92,8 @@ struct RtThread {
     int st;                    // S_* state since st_since
     uint64_t st_since, st_ns[S_N], nblk, npre, pre_since, cpu_last;
     uint64_t wobj;             // what the current wait is on: owner handle, key, address or first handle
+    void *wsync[64];           // WaitSynchronization: the objects its handles name (for a wake by object)
+    int nwsync;
     uint32_t waker;            // the thread whose signal ended the last wait (0: a host thread or a timeout)
     uint64_t wake_at, grant_at;   // when a wait was signalled and a core granted, until the thread runs again
     uint64_t lw_ns, lw_n, lw_max, lg_ns, lg_n, lg_max, sl_n, sl_req, sl_act;   // those latencies; SleepThread asked/took
@@ -246,12 +248,26 @@ static void wake(RtThread *t, uint32_t res) {
     plat_cond_signal(&t->cv);
 }
 
-static void wake_sync_waiters(void) {
+// Wakes the WaitSynchronization waiters whose handles name obj, the object that was just signalled (an event or a
+// thread). Each waiter rechecks its handles when it runs, so a waiter on other objects only blocks again; a waiter
+// with no handles ends by its timeout alone.
+static void wake_sync_waiters(const void *obj) {
     for (RtThread *w = g_wait; w;) {
         RtThread *n = w->next;
-        if (w->wkind == W_SYNC) wake(w, (uint32_t)-1);
+        if (w->wkind == W_SYNC)
+            for (int i = 0; i < w->nwsync; i++)
+                if (w->wsync[i] == obj) {
+                    wake(w, (uint32_t)-1);
+                    break;
+                }
         w = n;
     }
+}
+
+// The object a sync handle names, as sig_obj reads it (NULL for a handle that names none).
+static void *sync_obj(uint32_t h) {
+    unsigned i = h - 0x1000;
+    return i != 0 && i < MAX_H ? g_h[i].obj : NULL;
 }
 
 // SleepConditionVariableSRW counts milliseconds: round up (late is legal, early is not) and re-check the deadline
@@ -1601,7 +1617,7 @@ static void thread_finish(RtThread *t) {
     if (t->hthr) plat_intr_free(t->hthr);   // no waiter interrupts a thread without a core
     t->hthr = NULL;
     t->exited = 1;
-    wake_sync_waiters();
+    wake_sync_waiters(t);
     if (t->closed) thr_free(t);
     unlock();
 }
@@ -1785,9 +1801,33 @@ static void cv_hook(void) {
     if (h) h();
 }
 
+// XC2_SVC_CALLERS=<n>: logs each distinct guest return address that calls SVC n, up to 64 (a diagnostic, off by default).
+// The SDK calls an SVC through a stub of its own, so x30 is the return address into the stub's caller.
+static void svc_caller_note(const Cpu *c, uint32_t imm) {
+    static int32_t want = -2;   // -2: not read yet; -1: no SVC number matches
+    static PlatMutex lk = PLAT_MUTEX_INIT;
+    static uint64_t seen[64];
+    static int nseen;
+    if (want == -2) {
+        const char *e = cfg_get("XC2_SVC_CALLERS");
+        want = e && *e ? atoi(e) : -1;
+    }
+    if ((int32_t)imm != want) return;
+    uint64_t lr = c->x[30];
+    plat_mutex_lock(&lk);
+    int dup = 0;
+    for (int i = 0; i < nseen && !dup; i++) dup = seen[i] == lr;
+    if (!dup && nseen < 64) {
+        seen[nseen++] = lr;
+        rt_log("kernel: svc %u called from guest %#llx by thread %#x", imm, (unsigned long long)lr, tcur ? tcur->handle : 0u);
+    }
+    plat_mutex_unlock(&lk);
+}
+
 int kern_svc(Cpu *c, uint32_t imm) {
     uint64_t *x = c->x;
     if (g_diag > 0 && tcur) tcur->dg_svc = imm;
+    svc_caller_note(c, imm);
     switch (imm) {
     case 0x08: {   // CreateThread(-> w1 handle; x1 entry, x2 arg, x3 stack top, w4 priority, w5 core)
         int prio = (int)x[4], core = (int)x[5];
@@ -2090,7 +2130,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
             if (r == R_BAD_HANDLE) rt_log("kernel: event svc %#x: invalid handle %#x", imm, h);
         } else if (imm == 0x11) {
             e->signaled = 1;
-            wake_sync_waiters();
+            wake_sync_waiters(e);
         } else if (imm == 0x17 && !e->signaled) {
             r = R_BAD_STATE;
         } else {
@@ -2141,6 +2181,8 @@ int kern_svc(Cpu *c, uint32_t imm) {
                 left = ns - (int64_t)spent;
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
+            for (int k = 0; k < n; k++) t->wsync[k] = sync_obj(hs[k]);
+            t->nwsync = n;
             g_sync_blocks++;
             if (block(t, W_SYNC, left) == R_TIMEOUT) {
                 r = R_TIMEOUT;
@@ -2212,7 +2254,7 @@ void kern_event_signal(uint32_t hw) {
     Event *e = h_peek(hw, O_EVENT_W);
     if (!e) rt_fatal("kern_event_signal: %#x is not a writable event handle", hw);
     e->signaled = 1;
-    wake_sync_waiters();
+    wake_sync_waiters(e);
     unlock();
 }
 

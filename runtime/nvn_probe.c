@@ -222,6 +222,15 @@ static void probe_textures(void) {
     set_tex(NVN_FORMAT_RGBA_DXT5_SRGB, 160, 160, 8, 0x10000);
     CHECK((uint8_t)CALL(nvnTextureInitialize, U(&tex2), U(&texb)) == 1, "BC3 texture");
     CHECK(CALL(nvnTextureGetStorageSize, U(&tex2)) == 57344, "BC3 160x160 storage size");
+    // depth-stencil mode: the builder and a texture report the mode they hold (the getters used to answer DEPTH always)
+    CALL(nvnTextureBuilderSetDepthStencilMode, U(&texb), NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    CHECK(CALL(nvnTextureBuilderGetDepthStencilMode, U(&texb)) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL,
+          "builder depth-stencil mode is read back");
+    CALL(nvnTextureBuilderSetDepthStencilMode, U(&texb), NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH);
+    ((tex_t *)(void *)&tex2)->d.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+    CHECK(CALL(nvnTextureGetDepthStencilMode, U(&tex2)) == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL,
+          "texture depth-stencil mode is read back");
+    ((tex_t *)(void *)&tex2)->d.dsmode = NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH;
     CHECK(CALL(nvnTextureCompare, U(&tex1), U(&tex1)) == 1 && CALL(nvnTextureCompare, U(&tex1), U(&tex2)) == 0, "TextureCompare");
 
     // packaged texture data is copied into the pool storage at Initialize
@@ -444,6 +453,8 @@ static uint64_t record_all(void) {
     REC(OP_COPY_B2T, CALL(nvnCommandBufferCopyBufferToTexture, U(c), 0x9000, U(&tex1), U(&view), U(&rg), 0));
     REC(OP_COPY_STRIDE, CALL(nvnCommandBufferSetCopyRowStride, U(c), 256));
     REC(OP_BLEND_COLOR, CALL(nvnCommandBufferSetBlendColor, U(c), U(rgba)));
+    fv(0, 0.25f);
+    REC(OP_ALPHA_REF, CALL(nvnCommandBufferSetAlphaRef, U(c)));
     REC(OP_COPY_T2B, CALL(nvnCommandBufferCopyTextureToBuffer, U(c), U(&tex1), 0, U(&rg), 0xa000, 0));
     REC(OP_COPY_T2T, CALL(nvnCommandBufferCopyTextureToTexture, U(c), U(&tex1), 0, U(&rg), U(&tex2), 0, U(&rg2), 0));
     REC(OP_CLEAR_TEX, CALL(nvnCommandBufferClearTexture, U(c), U(&tex2), 0, U(&rg2), U(rgba), 0xf));
@@ -636,6 +647,7 @@ static void parse_all(uint64_t h) {
         }
         case OP_COPY_STRIDE: CHECK(((const p_copy_stride *)a)->stride == 256, "COPY_STRIDE payload"); break;
         case OP_BLEND_COLOR: CHECK(((const p_blend_color *)a)->rgba[2] == 0.3f, "BLEND_COLOR payload"); break;
+        case OP_ALPHA_REF: CHECK(((const p_alpha_ref *)a)->ref == 0.25f, "ALPHA_REF payload"); break;
         case OP_COPY_T2B: {
             const p_copy_b2t *p = a;
             CHECK(p->src == 0xa000 && p->tex && p->tex->serial == t1->serial && !p->has_view && p->r.width == 4, "COPY_T2B payload");

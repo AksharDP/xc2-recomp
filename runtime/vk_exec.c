@@ -74,13 +74,16 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu; targets%s",
+           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu copies %llu reused %llu "
+           "(snapshot draws %llu, images new %llu evicted %llu, draws skipped %llu, targets read live %llu); targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
-           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps, list);
+           (unsigned long long)f->fb_layouts, (unsigned long long)f->fb_snaps, (unsigned long long)f->fb_snap_reuse,
+           (unsigned long long)f->fb_snap_draws, (unsigned long long)f->snap_new, (unsigned long long)f->snap_evicted,
+           (unsigned long long)f->snap_skipped, (unsigned long long)f->snap_live, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }
@@ -569,22 +572,37 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
-void vk_exec_pass_begin(VkExec *ex) {
-    if (ex->in_pass) return;
+// The learned targets of the next pass (VkTexImage.fb_learned, attached in the feedback layout): their images and aspects
+// go to want[], and bit i of the result is set for attachment i (bit 8 depth).
+static uint32_t pass_learned(VkExec *ex, VkImage want[9], VkImageAspectFlags wasp[9], int *nwant) {
     resolve_rt(ex);
-    // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
-    VkImage want[9];
-    VkImageAspectFlags wasp[9];
-    int nwant = 0;
     uint32_t fbl = 0;
+    *nwant = 0;
     for (uint32_t i = 0; i < 9; i++) {
         const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
         if ((i < 8 && i >= ex->pass_ncolor) || !t->image || !t->img || !t->img->fb_learned) continue;
         fbl |= 1u << i;
-        if (has_image(want, nwant, t->image)) continue;
-        want[nwant] = t->image, wasp[nwant++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
+        if (has_image(want, *nwant, t->image)) continue;
+        want[*nwant] = t->image, wasp[(*nwant)++] = i < 8 ? VK_IMAGE_ASPECT_COLOR_BIT : t->img->aspect;
     }
+    return fbl;
+}
+
+static void pass_open(VkExec *ex, uint32_t fbl);
+
+void vk_exec_pass_begin(VkExec *ex) {
+    if (ex->in_pass) return;
+    VkImage want[9];
+    VkImageAspectFlags wasp[9];
+    int nwant = 0;
+    uint32_t fbl = pass_learned(ex, want, wasp, &nwant);
     barrier_to(ex, want, wasp, nwant);   // passes, clears, copies and dispatches see each other's results
+    pass_open(ex, fbl);
+}
+
+// Begins rendering with the attachments of the open pass; fbl as pass_learned gives it. No barrier: the caller has made
+// the earlier work visible.
+static void pass_open(VkExec *ex, uint32_t fbl) {
     ex->fbl_mask = fbl;
     ex->fb_dirty = 0;
     ex->pass_serial++;
@@ -632,6 +650,93 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
     if (ex->fsr3_armed) vk_fsr3_resolve(ex);
+}
+
+// A layout transition of one colour image, with the stages and accesses of its two sides.
+static VkImageMemoryBarrier2 snap_layout(VkImage img, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 src_stage,
+                                         VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    return (VkImageMemoryBarrier2){.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = src_stage,
+                                   .srcAccessMask = src_access, .dstStageMask = dst_stage, .dstAccessMask = dst_access,
+                                   .oldLayout = from, .newLayout = to, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img,
+                                   .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0,
+                                                        VK_REMAINING_ARRAY_LAYERS}};
+}
+
+void vk_exec_snap_copy(VkExec *ex, const VkExecSnap *s, int n, int narrow) {
+    VkImage want[9];
+    VkImageAspectFlags wasp[9];
+    int nwant = 0;
+    uint32_t fbl = pass_learned(ex, want, wasp, &nwant);
+    int same = nwant == ex->nfbl;
+    for (int i = 0; same && i < nwant; i++) same = has_image(ex->fbl_img, ex->nfbl, want[i]);
+    if (!narrow || !same) {   // the full barrier: copies between it and a pass begin, as before
+        vk_exec_barrier(ex);   // ends the pass; what it drew is visible to the copies
+        for (int i = 0; i < n; i++) {
+            VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {s[i].w, s[i].h, 1}};
+            vkCmdCopyImage(ex->cb, s[i].src, VK_IMAGE_LAYOUT_GENERAL, s[i].dst, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            ex->recorded++;
+        }
+        vk_exec_pass_begin(ex);
+        return;
+    }
+    vk_exec_pass_end(ex);
+    // Before the copies: the writes the copies read (attachments of the pass just ended, transfers and dispatches before
+    // it, through ALL_COMMANDS), and the reads of the copies' images by the snapshot draws before (the copies overwrite
+    // them). A learned source leaves the feedback layout for the copy, which cannot read from it.
+    VkImageMemoryBarrier2 ib[8];
+    uint32_t nib = 0;
+    for (int i = 0; i < n; i++)
+        if (has_image(ex->fbl_img, ex->nfbl, s[i].src))
+            ib[nib++] = snap_layout(s[i].src, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT, VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkMemoryBarrier2 pre = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &pre,
+                           .imageMemoryBarrierCount = nib, .pImageMemoryBarriers = ib};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    for (int i = 0; i < n; i++) {
+        VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .extent = {s[i].w, s[i].h, 1}};
+        vkCmdCopyImage(ex->cb, s[i].src, VK_IMAGE_LAYOUT_GENERAL, s[i].dst, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+        ex->recorded++;
+    }
+    // After the copies, before the resumed pass: the copies and every earlier write are visible to the graphics stages
+    // (the snapshot draw's samples, and the pass's LOAD of its attachments), and the copies' reads come before later
+    // writes to the copied targets. The learned sources return to the feedback layout.
+    VkImageMemoryBarrier2 ia[8];
+    uint32_t nia = 0;
+    for (int i = 0; i < n; i++)
+        if (has_image(ex->fbl_img, ex->nfbl, s[i].src))
+            ia[nia++] = snap_layout(s[i].src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+                                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                                    VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkMemoryBarrier2 post[2] = {
+        {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+         .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT},
+        {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+         .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+         .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+         .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT}};
+    di = (VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 2, .pMemoryBarriers = post,
+                            .imageMemoryBarrierCount = nia, .pImageMemoryBarriers = ia};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    vk_exec_frame.fb_layouts += nib + nia;
+    pass_open(ex, fbl);   // the learned set is the one fbl_img holds, so nothing else changes state
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
@@ -685,8 +790,12 @@ VkRect2D vk_exec_scissor(const VkExec *ex) {
 // image directly instead of opening a pass for it.
 static int whole_target(const VkExec *ex, const VkExecTarget *t) {
     // vkCmdClear*Image addresses a 3D level whole, not one depth plane: slices of a 3D target clear in a pass; it
-    // cannot clear a compressed image: views of BC blocks clear in a pass too
-    if (ex->in_pass || t->is3d || t->blocks || t->width != ex->pass_w || t->height != ex->pass_h) return 0;
+    // cannot clear a compressed image: views of BC blocks clear in a pass too. A stand-in of a 3D BC image (bc_target)
+    // clears in a pass as well: only the pass end copies a stand-in back to its BC image (bc_copy_back), so a clear
+    // of the stand-in directly would never reach the texture.
+    if (ex->in_pass || t->is3d || t->blocks || (t->img && t->img->image != t->image) || t->width != ex->pass_w ||
+        t->height != ex->pass_h)
+        return 0;
     if (!ex->has_scissor) return 1;
     const p_scissor *s = &ex->scissor;
     return s->x <= 0 && s->y <= 0 && (int64_t)s->x + s->w >= t->width && (int64_t)s->y + s->h >= t->height;
@@ -699,6 +808,12 @@ static void clear_attachment(VkExec *ex, const VkClearAttachment *a) {
     vkCmdClearAttachments(ex->cb, 1, a, 1, &cr);
     ex->recorded++;
     ex->fb_dirty |= a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT ? 1u << a->colorAttachment : 0x100u;
+    if ((a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) && a->colorAttachment < 8) {
+        // Its copy is stale, and so is the copy of the same image at another colour slot (a clear reads no copy).
+        VkImage img = ex->color[a->colorAttachment].image;
+        for (uint32_t j = 0; j < 8; j++)
+            if ((ex->snap_keep >> j & 1) && (j == a->colorAttachment || (img && ex->snap_src[j] == img))) ex->snap_keep &= ~(1u << j);
+    }
 }
 
 static void clear_color(VkExec *ex, const p_clear_color *c) {
@@ -707,13 +822,17 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
     resolve_rt(ex);
     int i = c->index;
     if (i < 0 || i >= (int)ex->pass_ncolor || !ex->color[i].image) {
-        warn_once(W_CLEAR_TARGET, "colour clear of target %d, which is not bound or not renderable: skipped", i);
+        // Every skip is logged (not once): the second and later targets matter when a stale buffer feeds a decal (H3)
+        rt_log("vk: colour clear of target %d, which is not bound or not renderable: skipped", i);
         return;
     }
     uint32_t mask = (uint32_t)c->mask & 0xf;
     if (!mask) return;
     if (mask != 0xf) {   // vkCmdClearAttachments ignores write masks; a masked clear needs a draw (vk_exec_draw.c)
-        warn_once(W_CLEAR_MASK, "colour clear with channel mask %#x is not replayed: skipped", mask);
+        // Every skip is logged (not once): which targets skip matters when a stale alpha or mask buffer is what a
+        // decal composites against (issue 22 hypothesis H3)
+        rt_log("vk: colour clear of target %d (nvn fmt %d) with channel mask %#x is not replayed: skipped",
+               i, ex->color[i].nvn_format, mask);
         return;
     }
     const VkExecTarget *t = &ex->color[i];
@@ -742,7 +861,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     uint32_t sm = (uint32_t)c->stencil_mask & 0xff;
     if (sm && (t->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) {
         if (sm == 0xff) asp |= VK_IMAGE_ASPECT_STENCIL_BIT;
-        else warn_once(W_STENCIL_MASK, "stencil clear with mask %#x is not replayed: skipped", sm);
+        else rt_log("vk: stencil clear with mask %#x is not replayed: skipped", sm);   // every skip, not once (H3)
     }
     if (!asp) return;
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
@@ -865,6 +984,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
             memcpy(ex->blend_color, ((const p_blend_color *)a)->rgba, sizeof ex->blend_color);
             ex->dirty |= VK_EXEC_DIRTY_BLEND_CONST;
             break;
+        case OP_ALPHA_REF: ex->alpha_ref = ((const p_alpha_ref *)a)->ref; break;
         case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
         case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
         case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;

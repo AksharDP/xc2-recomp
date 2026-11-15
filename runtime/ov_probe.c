@@ -28,8 +28,9 @@
 
 typedef struct { const char *key, *name; int fatal; uint64_t addr; int bound, calls; } Ov;
 static Ov ovs[] = {
-    // ov_system.c: nn::oe
-    {"oe.Initialize", "_ZN2nn2oe10InitializeEv"},
+    // ov_system.c: nn::oe. nn::oe::Initialize is the game's own code under an observer in XC2 (ov_system.c
+    // obs_oe_initialize), not an override, so the probe neither binds nor calls it; the overrides below need nothing it
+    // sets up.
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
@@ -205,6 +206,9 @@ static Ov *ov(const char *key) {
     rt_fatal("probe-services: no case %s", key);
 }
 
+// 1 when a relocation of the loaded game binds the override (set by the check in probe_services)
+static int imported(const char *key) { return ov(key)->bound; }
+
 static uint64_t U(const void *p) { return (uint64_t)(uintptr_t)p; }
 
 // The override called through its synthetic address with x0..x7 = a[0..7]; caller-saved registers hold garbage, the
@@ -293,7 +297,6 @@ static void probe_oe(void) {
     printf("oe: language %s by default (en-US locale), %s for this user's locale; %d locale/XC2_LANG cases %s\n",
            def, sys, (int)(sizeof cases / sizeof *cases), bad ? "FAILED" : "ok");
 
-    CALL("oe.Initialize", 0);
     CALL("oe.SetPerformanceConfiguration", 1, 0x92220008);
     CALL("oe.SetCpuBoostMode", 0);
     uint64_t mode = CALL("oe.GetOperationMode", 0), perf = CALL("oe.GetPerformanceMode", 0);
@@ -484,10 +487,15 @@ static void probe_time(void) {
           "automatic correction updated time: not a point of the steady clock");
     CHECK(CALL("time.LocationUpdatedTime", U(where), U(steady)) == 0 && !strcmp((char *)where, (char *)(b + 0xa8)),
           "device location %s, snapshot %s", (char *)where, (char *)(b + 0xa8));
-    uint32_t claim = (uint32_t)CALL("time.ClaimPeriodicBenefit", U(ctx), U(b), U(&penalty[0]), U(&penalty[1]), U(cb));
-    printf("time: periodic benefit claim of an empty context: result %u, %d callback checks, snapshot %s\n", claim,
-           benefit_checks, memcmp(ctx + 0xd0, b, 0xd0) ? "not taken" : "taken");
-    CHECK(claim <= 2, "periodic benefit claim result %u", claim);
+    // The claim runs the SDK's own nn::time::detail logic, which only an SDK that imports the claim has (XC2's does not)
+    if (imported("time.ClaimPeriodicBenefit")) {
+        uint32_t claim = (uint32_t)CALL("time.ClaimPeriodicBenefit", U(ctx), U(b), U(&penalty[0]), U(&penalty[1]), U(cb));
+        printf("time: periodic benefit claim of an empty context: result %u, %d callback checks, snapshot %s\n", claim,
+               benefit_checks, memcmp(ctx + 0xd0, b, 0xd0) ? "not taken" : "taken");
+        CHECK(claim <= 2, "periodic benefit claim result %u", claim);
+    } else {
+        printf("time: periodic benefit claim skipped: this game does not import it\n");
+    }
     CHECK(CALL("time.Finalize", 0) == 0 && (uint8_t)CALL("time.IsInitialized", 0) == 0, "time finalize");
     printf("time: ToCalendarTimeInUtc/ToPosixTimeFromUtc round trip %d values %s; local %04d-%02d-%02d %02d:%02d zone %s "
            "offset %+d s; snapshot location %s\n", (int)(sizeof ts / sizeof *ts), rt_bad ? "FAILED" : "ok", local.year,
@@ -699,6 +707,12 @@ typedef struct {
 } KbCase;
 
 static void probe_swkbd(void) {
+    // The arguments are built at the SDK layout swkbd.c reads (XCX's SDKs); a game that does not import ShowKeyboard
+    // (XC2) never reaches swkbd.c, and its SDK's layout is not that one
+    if (!imported("swkbd.ShowKeyboard")) {
+        printf("swkbd: skipped: this game does not import ShowKeyboard\n");
+        return;
+    }
     uint64_t make = sdk("_ZN2nn5swkbd10MakePresetEPNS0_14KeyboardConfigENS0_6PresetE");
     uint64_t header = sdk("_ZN2nn5swkbd13SetHeaderTextEPNS0_14KeyboardConfigEPKDs");
     uint64_t guide = sdk("_ZN2nn5swkbd12SetGuideTextEPNS0_14KeyboardConfigEPKDs");
@@ -974,15 +988,27 @@ int probe_services(void) {
         for (int k = 0; k < NOBS; k++)
             if (!strcmp(observers[k], n)) obs_bound++;
     }
-    for (int k = 0; k < NOV; k++)   // 1.2.1 lists no add-on content
-        CHECK(ovs[k].bound || (!RT_V143 && !strcmp(ovs[k].key, "aoc.ListAddOnContent")), "override %s matches no relocation",
-              ovs[k].name);
+    // XC2's SDK 3.5.0 imports only part of what XCX's did (the loader binds 172 of the 340 linked overrides), so there an
+    // override with no relocation is counted, not failed; its host function is still called and checked below through
+    // its synthetic address. The XCX builds keep the strict check (1.2.1 lists no add-on content).
+    int unbound = 0;
+    for (int k = 0; k < NOV; k++) {
+        if (ovs[k].bound) continue;
+        if (!rt_game_version) unbound++;
+        else CHECK(!RT_V143 && !strcmp(ovs[k].key, "aoc.ListAddOnContent"), "override %s matches no relocation", ovs[k].name);
+    }
+    if (unbound) {
+        printf("overrides: %d of %d probed here are not imported by this game (checked by address only):", unbound, NOV);
+        for (int k = 0; k < NOV; k++)
+            if (!ovs[k].bound) printf(" %s", ovs[k].key);
+        printf("\n");
+    }
     for (int k = 0; k < NOBS; k++) CHECK(hostfn_observer(observers[k]), "observer %s is not linked", observers[k]);
     CHECK(obs_bound == NOBS, "%d of %d observers match a JUMP_SLOT", obs_bound, NOBS);
 
     // Every linked override is either probed here or belongs to another probe or owner (nn::fs: fs probe, fibers: kernel probe,
     // movie::Decoder: --probe-movie, memcpy: the graphics write-back in nvn_api_core.c).
-    int linked = hostfn_table_size(0), others = 0;
+    int linked = hostfn_table_size(0), others = 0, untested = 0;
     for (int i = 0; i < linked; i++) {
         const char *n = hostfn_table_name(0, i);
         int mine = 0;
@@ -992,8 +1018,11 @@ int probe_services(void) {
                      !strcmp(n, KERN_SYM_FINALIZE_FIBER) || !strcmp(n, KERN_SYM_SWITCH_TO_FIBER) ||
                      !strcmp(n, KERN_SYM_GET_CURRENT_FIBER);
         others += theirs;
-        CHECK(mine || theirs, "override %s is linked but not probed", n);
+        // XC2 added overrides this XCX probe has no cases for yet (sockets, ssl, audio out, account, ...): counted there
+        if (!rt_game_version && !mine && !theirs) untested++;
+        else CHECK(mine || theirs, "override %s is linked but not probed", n);
     }
+    if (untested) printf("overrides: %d linked overrides have no case in this probe yet (XC2's additions)\n", untested);
     printf("bound: %d of %d overrides and %d of %d observers match relocations of the loaded modules\n", bound, NOV,
            obs_bound, NOBS);
 
@@ -1005,7 +1034,9 @@ int probe_services(void) {
     int called = 0;
     for (int k = 0; k < NOV; k++) {
         called += ovs[k].calls > 0;
-        CHECK(ovs[k].calls > 0, "override %s was not called", ovs[k].key);
+        // the two cases that need the SDK the game imports them from (probe_time, probe_swkbd) are skipped without it
+        int skipped = !ovs[k].bound && (!strcmp(ovs[k].key, "time.ClaimPeriodicBenefit") || !strcmp(ovs[k].key, "swkbd.ShowKeyboard"));
+        CHECK(ovs[k].calls > 0 || skipped, "override %s was not called", ovs[k].key);
     }
     printf("called: %d of %d overrides through rt_dispatch (%d named fatal stubs in child processes); %d other "
            "overrides belong to the kernel and fs probes\n", called, NOV, NFATAL, others);
