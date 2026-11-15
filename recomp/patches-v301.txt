@@ -249,3 +249,19 @@ site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 
 # bit is clear and they are unchanged.
 set xc2kill XC2_CHEAT_INSTA_KILL 0
 site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b
+
+# xc2qte (XC2_QTE_FIX, on): the QTE ring counts the frame time twice. Issues 48 and 72: a Blade Special's QTE ring
+# closes late against the special's animation, the button window opens after the animation and a mash window is
+# short. The update (main+0x1d0bc, the challenge layout) loads the frame message's step ([x21,#4], seconds per
+# frame, measured 0.01663 to 0.01677 at 60 fps) and turns it into frames of 1/30 s by
+# 30 into s8 (main+0x1d0c0, main+0x1d0c4). When the lookup main+0x7b4b0 finds the object, main+0x1d108 to
+# main+0x1d114 multiply s8 by the product of its [x0,#0xcd8] and [x0,#0xec8], which is the frame time in 1/30 s
+# frames again, so at 60 fps the factor is 0.25 instead of 0.5 and the ring advances at half speed. The
+# replacement of that last multiply, fmov s8, s1, keeps the object's product alone: at 30 fps nothing changes (s8
+# was 1.0), and at any other rate the advance is the frame time once. The paths that skip the lookup (the flag
+# nibble at [x19,#0x18], an id of -1, or no object) keep the step times 30 they already had. masagrator's
+# FPSLocker 3.0.1 set (BID 4F5C96E2D97F45AC) writes 1.0 into s8 at main+0x1d0c4 instead, which gives the same
+# factor when the lookup succeeds but 1.0, twice the console's rate at 60 fps, on the paths that skip it. Only s8
+# changes (s1 keeps the product, main+0x1d118 copies s8 to s0 for the call) and no flag is written.
+set xc2qte XC2_QTE_FIX 1
+site xc2qte main 1d114 sha:6cca7c0d6280bafd 1e204028
