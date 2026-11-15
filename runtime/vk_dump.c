@@ -12,16 +12,17 @@
 // Sampled 8-bit 2D textures up to TEX2D_CAP texels are copied once each as pass_<seq>_tex<id>_... at the end of the pass
 // that samples them; texture lines carry the storage address, mirror state, upload count and the image's and slot's
 // swizzle. Copies and texture clears are logged as "copy/clear after pass N". XC2_DUMP_LOG=<from> also logs the
-// frames from..frame-1 to passes.txt, with PNGs only of targets up to 64K texels. XC2_DUMP_BUF=<addr>:<size>[:...]
+// frames from..frame-1 to passes.txt, with PNGs only of targets up to 64K texels (any size with XC2_DUMP_ONLY). XC2_DUMP_BUF=<addr>:<size>[:...]
 // snapshots one GPU buffer range after every logged pass (buf_<pass>.bin and bufs.txt, see buf_snap).
 // PNGs are opaque (alpha dropped). Integer formats are scaled by the image maximum, depth by its min..max range, SNORM
 // as x/2+1/2, UNORM and sRGB bytes written as stored. Caps: MAX_PASSES passes copied, PNG_CAP bytes of PNGs.
 // XC2_DUMP_TEX=<id>|<w>x<h>[,...]: those texture slots, or 2D textures of that size, are copied where first sampled,
 // whatever their format.
+// XC2_DUMP_RAWF=1: float targets are also written as <name>.f32, the decoded texels as float32 RGBA, row-major.
 // XC2_DUMP_UBO=1: each listed pipeline also prints the first 16 vec4 of its user uniform blocks (c3 and up), read from
 // guest memory when the entry is listed. A block the submission rewrites with UpdateUniformBuffer shows its value from
 // before the submission (vk_exec_draw.c upd_note).
-// XC2_DUMP_ONLY=<w>x<h>: only images of that size are copied (the others still count as logged), so passes late in
+// XC2_DUMP_ONLY=<w>x<h>[,<w>x<h>]: only images of that size (or the two sizes) are copied (the others still count as logged), so passes late in
 // the frame are reached before the PNG cap.
 // XC2_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
 // (the terrain decals draw one pass each into the G-buffer and would use up both caps).
@@ -61,7 +62,7 @@ static int nwant_tex;
 static uint64_t last_targets;          // targets_sig of the last render pass; 0 after a dispatch
 static const char *pass_skip;          // why the current pass copies nothing, or NULL
 static volatile int64_t png_bytes, inflight;
-static uint32_t only_w, only_h;   // XC2_DUMP_ONLY=<w>x<h>: copy images of that size only
+static uint32_t only_w, only_h, only_w2, only_h2;   // XC2_DUMP_ONLY=<w>x<h>[,<w>x<h>]: copy images of those sizes only
 static PlatMutex rec_lock = PLAT_MUTEX_INIT, img_lock = PLAT_MUTEX_INIT;
 
 // ---- formats
@@ -265,6 +266,17 @@ static void write_images(const Job *j) {
         snprintf(path, sizeof path, "%s/%s%s.png", dir, j->name, pass ? "_tm" : "");
         rt_write_png(path, out, pw, ph);
     }
+    static int rawf = -1;
+    if (rawf < 0) {   // cfg_get: the setting has no row in cfg.c's table, and cfg_bool needs one
+        const char *e = cfg_get("XC2_DUMP_RAWF");
+        rawf = e && *e && strcmp(e, "0");
+    }
+    if (rawf && mode == M_FLOAT) {   // XC2_DUMP_RAWF=1: the decoded texels as float32 RGBA (NaN written as 0)
+        char path[600];
+        snprintf(path, sizeof path, "%s/%s.f32", dir, j->name);
+        FILE *f = fopen(path, "wb");
+        if (f) fwrite(px, 16, n, f), fclose(f);
+    }
     uint64_t all = distinct(j, 0, j->h), top = distinct(j, 0, j->h / 4 ? j->h / 4 : 1);
     plat_mutex_lock(&img_lock);
     if (images_f) {
@@ -298,13 +310,13 @@ static const char *copy_region(VkExec *ex, VkImage image, VkFormat vf, VkImageAs
                                const char *name) {
     const Fmt *f = fmt_of(vf);
     if (!f) return "format not decoded";
-    if (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1 != dump_frame && (uint64_t)w * h * d > 65536)
+    if (!only_w && __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1 != dump_frame && (uint64_t)w * h * d > 65536)
         return "logged frame, large image";
     if (aspect & VK_IMAGE_ASPECT_DEPTH_BIT) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
     else if (aspect != VK_IMAGE_ASPECT_COLOR_BIT) return "stencil only";
     uint64_t bytes = (uint64_t)w * h * d * f->bytes;
     uint64_t est = ((uint64_t)h * (1 + 4ull * w * d) + 128) * (mode_of(f) == M_FLOAT ? 2 : 1);
-    if (only_w && (w != only_w || h != only_h)) return "not the XC2_DUMP_ONLY size";
+    if (only_w && (w != only_w || h != only_h) && (!only_w2 || w != only_w2 || h != only_h2)) return "not the XC2_DUMP_ONLY size";
     if ((uint64_t)png_bytes + est > PNG_CAP) return "PNG cap reached";
     if ((uint64_t)inflight + bytes > INFLIGHT_CAP) return "too many copies in flight";
     Job *j = calloc(1, sizeof *j);
@@ -1036,7 +1048,8 @@ void vk_dump_init(void) {
     const char *du = cfg_get("XC2_DUMP_UBO");
     dump_ubo = du && *du && *du != '0';
     const char *only = cfg_get("XC2_DUMP_ONLY");
-    if (only && sscanf(only, "%ux%u", &only_w, &only_h) != 2) only_w = only_h = 0;
+    if (only && sscanf(only, "%ux%u,%ux%u", &only_w, &only_h, &only_w2, &only_h2) < 2) only_w = only_h = 0;
+    if (only_w2 && !only_h2) only_w2 = 0;
     const char *wt = cfg_get("XC2_DUMP_TEX");
     for (char *q = (char *)wt; q && *q && nwant_tex < 16; q += *q == ',') {
         uint32_t *w = want_tex[nwant_tex++];

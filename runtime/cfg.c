@@ -38,7 +38,7 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CAPTURE", "CLOTH_REALTIME", "CORE_DIAG", "CORE_FLOAT", "COPY_CACHE", "COPY_PAR", "COPY_PAR_MIN", "CRIT", "CRIT_OUT", "CUTSCENE_30", "DESC_TEMPLATE", "DEVICE_PROFILE", "DRAW_CALLERS", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DUMP_MESH", "DUMP_ONLY", "DUMP_PASS", "DUMP_PASS_ONLY", "DUMP_SKIP_RUNS", "DUMP_TEX", "DUMP_UBO",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CAPTURE", "CLOTH_REALTIME", "CORE_DIAG", "CORE_FLOAT", "COPY_CACHE", "COPY_PAR", "COPY_PAR_MIN", "CRIT", "CRIT_OUT", "CUTSCENE_30", "DESC_TEMPLATE", "DEVICE_PROFILE", "DRAW_CALLERS", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DUMP_MESH", "DUMP_ONLY", "DUMP_PASS", "DUMP_PASS_ONLY", "DUMP_RAWF", "DUMP_SKIP_RUNS", "DUMP_TEX", "DUMP_UBO",
     "EXEFS", "FEEDBACK", "FEEDBACK_SNAP", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "FPS60", "FPS_LIMIT", "FRAME_BOUND", "FRAME_GEN", "FRAME_GUARD","FREEZE_IDLE", "FREE_CORES", "FSR3", "FSR_VERSION", "FULLSCREEN", "GATHER_BIAS", "GLOW_AUDIT", "GLOW_FULL", "GLOW_ORTHO", "GPL", "GPL_DRAW_BUILD", "GPU",
     "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "HID_TRACE", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "JOB_POLL", "LANG", "LIB_PREBUILD",
@@ -46,7 +46,7 @@ static const char *const known[] = {
     "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MIRROR_LAZY", "MIRROR_STAGE", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MOTION", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
     "ONE_PER_CORE", "ONLY_PROG", "OPERATION_MODE", "OQ_VISIBLE", "OUTPUT_RES", "PACE", "PAD_LAYOUT", "PATCH_OUTPUT", "PATCH_SCENE", "PERF_OVERLAY", "PERF_SLOW_MS", "PICTURE_FIT", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
-    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
+    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "QUAD_SPLIT", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC", "RES_BUFFER",
     "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SEA_TOP", "SHADER_CACHE",
@@ -84,7 +84,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
     {"TEX_ALIAS", "performance"}, {"LOD_GUARD", "performance"}, {"FEEDBACK_SNAP", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
-    {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
+    {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"QUAD_SPLIT", "performance"}, {"VK_VALIDATION", "performance"},
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
 };
@@ -143,6 +143,7 @@ static const CfgMeta metas[] = {
     {"CAPTURE", "0", "0..1000000000", RESTART},      // diagnostic: measures the guest memory one frame reads (vk_capture.c)
     {"PUSH_SKIP", "1", "0|1", RESTART}, {"SPLIT_DRAWS", "64", "0..1000", RESTART},
     {"SPLIT_US", "1000", "0..20000", RESTART},
+    {"QUAD_SPLIT", "0", "0..64", RESTART},
     // Vulkan
     {"VK_VALIDATION", "0", "0|1", RESTART}, {"VK_DYN_VERTEX", "", "0|1", RESTART},
     {"VK_DYN_A2C", "", "0|1", RESTART},
