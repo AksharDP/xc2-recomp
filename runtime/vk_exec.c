@@ -933,6 +933,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
             rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
         const void *a = nvn_op_payload(h);
+        vk_prog_between_ops(&ex->prog);   // a program released meanwhile: its copy from here on
         switch (h->op) {
         case OP_END: return;
         case OP_BEGIN: break;
@@ -1040,6 +1041,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
     ex->cb = cb;
     ex->fence = fence;
+    ex->prog = vk_prog_resolve(ex->prog);   // the program carried over, as this submission sees it
     ex->recorded = 0;
     ex->in_pass = 0;
     ex->dirty = VK_EXEC_DIRTY_ALL;

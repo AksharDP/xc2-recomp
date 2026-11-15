@@ -188,11 +188,12 @@ typedef struct {
     const tex_t *tex;   // RI_RELEASE, RI_PRESENT: a copy the item owns (the game may reuse the object's memory)
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
-enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
-       DR_GUEST_READ, DR_FRAME, DR_FULL, DR_CHECK, DR_N };
+enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_PROG_COPY, DR_FINISH, DR_READ_TEXELS,
+       DR_WRITE_TEXELS, DR_GUEST_READ, DR_FRAME, DR_FULL, DR_CHECK, DR_N };
 static const char *const dr_name[DR_N] = {
-    "pool_fini", "map_virtual", "texture_release (queued)", "program_release", "finish", "read_texels (writer fence)",
-    "write_texels", "guest_read (writer fence)", "frame bound", "queue full", "check drain"};
+    "pool_fini", "map_virtual", "texture_release (queued)", "program_release", "program_release (copied)", "finish",
+    "read_texels (writer fence)", "write_texels", "guest_read (writer fence)", "frame bound", "queue full",
+    "check drain"};
 
 static PlatMutex rl = PLAT_MUTEX_INIT;
 static PlatCond rcv = PLAT_COND_INIT;   // item queued, item taken, item done
@@ -200,6 +201,7 @@ static ReplayItem rq[RQ_CAP];
 static int rq_head, rq_n, r_busy, r_started;
 static uint64_t r_presents_queued, r_presents_done, r_submit_done, game_frames;
 static ReplayItem r_cur;   // the item the replay thread runs while r_busy (its programs for vk_be_program_release)
+static void prog_copies_drop(uint64_t done);
 // Under rl: calls, calls that waited and the time waited per cause, since the last replay_log line and over the run.
 static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr_twaits[DR_N], dr_tns[DR_N];
 // XC2_REPLAY_CHECK: ReadTexels compared with a read after a full drain (under rl): checked, differing, differing
@@ -318,7 +320,7 @@ static void replay_main(void *arg) {
         }
         replay_busy(it.kind, busy0, kern_now_ns());
         plat_mutex_lock(&rl);
-        if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
+        if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no, prog_copies_drop(r_submit_done);
         else if (it.kind == RI_PRESENT || !frame_bound_on()) r_presents_done++;
         r_busy = 0;
         free(it.progs);   // under rl: vk_be_program_release reads r_cur's list under it
@@ -514,27 +516,124 @@ static int item_reads(const ReplayItem *q, const prog_t *p) {
     return a < q->nprogs && q->progs[a] == (const void *)p;
 }
 
+// ---- programs released while queued submissions may read them
+// Copies of released programs (VkProgCopy), under rl; pc_n is also read without it as a fast check by the replay.
+// pc_gen counts the copies made, pc_acked the last count the replay saw between two ops (vk_prog_between_ops).
+#define PROG_CTL 0x880   // the control section (gfx_shader.c hashes all of it)
+static VkProgCopy **pc;
+static int pc_n, pc_cap;
+static uint32_t pc_gen, pc_acked;
+
+// rl held: a copy of p for the submissions up to need; 0 when it cannot be made (the caller waits as before).
+static int prog_copy(const prog_t *p, uint64_t need) {
+    uint32_t n = p->nstage < 6 ? p->nstage : 6, len[6] = {0};
+    size_t total = sizeof(VkProgCopy);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *c = p->sd[i].control;
+        if (!c || !p->sd[i].data) continue;
+        memcpy(&len[i], c + 0x704, 4);
+        if (len[i] > (64u << 20)) return 0;   // not a code length
+        total += PROG_CTL + len[i];
+    }
+    if (pc_n == pc_cap) {
+        int cap = pc_cap ? pc_cap * 2 : 16;
+        VkProgCopy **q = realloc(pc, sizeof *q * (size_t)cap);
+        if (!q) return 0;
+        pc = q, pc_cap = cap;
+    }
+    VkProgCopy *k = malloc(total);
+    if (!k) return 0;
+    memset(k, 0, sizeof *k);
+    k->p = *p, k->p.magic = VK_PROG_COPY_MAGIC, k->orig = p, k->need = need;
+    uint8_t *m = (uint8_t *)(k + 1);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *c = p->sd[i].control;
+        if (!c || !p->sd[i].data) continue;
+        memcpy(m, c, PROG_CTL), k->p.sd[i].control = m, m += PROG_CTL;
+        memcpy(m, (const void *)(uintptr_t)p->sd[i].data, len[i]), k->code[i] = m, m += len[i];
+    }
+    pc[pc_n] = k;
+    __atomic_store_n(&pc_n, pc_n + 1, __ATOMIC_RELEASE);
+    return 1;
+}
+
+// rl held, replay thread: the copies no submission from done + 1 on can bind. The replay rebinds at the start of every
+// submission (vk_exec_record), so a copy whose submissions all ended is no longer bound.
+static void prog_copies_drop(uint64_t done) {
+    int k = 0;
+    for (int i = 0; i < pc_n; i++) {
+        if (pc[i]->need < done) free(pc[i]);
+        else pc[k++] = pc[i];
+    }
+    if (k != pc_n) __atomic_store_n(&pc_n, k, __ATOMIC_RELEASE);
+}
+
+const prog_t *vk_prog_resolve(const prog_t *p) {
+    if (!p || !__atomic_load_n(&pc_n, __ATOMIC_ACQUIRE)) return p;
+    plat_mutex_lock_shared(&rl);
+    const prog_t *orig = p, *best = NULL;
+    for (int i = 0; i < pc_n; i++)
+        if (&pc[i]->p == p) orig = pc[i]->orig;   // carried over from an earlier submission: resolved again
+    uint64_t s = r_cur.submit_no, need = UINT64_MAX;
+    for (int i = 0; i < pc_n; i++)
+        if (pc[i]->orig == orig && pc[i]->need >= s && pc[i]->need < need) best = &pc[i]->p, need = pc[i]->need;
+    plat_mutex_unlock_shared(&rl);
+    return best ? best : orig;
+}
+
+void vk_prog_between_ops(const prog_t **bound) {
+    static uint32_t seen;   // replay thread only
+    uint32_t g = __atomic_load_n(&pc_gen, __ATOMIC_ACQUIRE);
+    if (g == seen) return;
+    seen = g;
+    *bound = vk_prog_resolve(*bound);
+    plat_mutex_lock(&rl);
+    pc_acked = g;
+    plat_cond_broadcast(&rcv);
+    plat_mutex_unlock(&rl);
+}
+
 // Finalize and SetShaders on a program: the replay reads a bound program's control blocks and code from guest memory
-// (vk_exec_draw.c find_stage, shader_for), which the game may free or reuse once the call returns. Asynchronous: the
-// call waits until every queued submission that may read p (it binds p, or starts with p bound: vk_usnap_programs) was
-// replayed, not for the whole queue. While leaving or entering an area the game releases programs every frame, and
-// waiting for the whole queue each time held it for 1.65 s over two minutes in Goldmouth.
+// (vk_exec_draw.c find_stage, shader_for), which the game may free or reuse once the call returns. Asynchronous: when
+// a queued submission may read p (it binds p, or starts with p bound: vk_usnap_programs), the call copies p, its
+// control sections and its code (prog_copy), and the replay of those submissions binds the copy (vk_prog_resolve). It
+// then waits only while the replay runs an op of a submission that reads p, which may hold p itself, until that op
+// ends. Waiting until those submissions were replayed took 4 to 5 ms a time, about every sixth frame in battles and
+// cutscenes, and put nearly all of those frames over 15 ms. XC2_PROG_COPY=0 waits so, as when a copy cannot be made.
 static void vk_be_program_release(const prog_t *p) {
     if (gfx_replay_async()) {
+        static int copy_on = -1;
+        if (copy_on < 0) copy_on = cfg_bool("XC2_PROG_COPY");
         plat_mutex_lock(&rl);
-        dr_calls[DR_PROG_RELEASE]++, dr_tcalls[DR_PROG_RELEASE]++;
         uint64_t need = 0;
         for (int i = 0; i < rq_n; i++) {
             const ReplayItem *q = &rq[(rq_head + i) % RQ_CAP];
             if (item_reads(q, p) && q->submit_no > need) need = q->submit_no;
         }
-        if (r_busy && item_reads(&r_cur, p) && r_cur.submit_no > need) need = r_cur.submit_no;
-        if (need > r_submit_done) {
-            uint64_t p0 = perf_begin();
-            int away = core_away_unlocked();
-            while (r_submit_done < need) plat_cond_wait(&rcv, &rl);
-            wait_counted(DR_PROG_RELEASE, p0);
-            core_back_unlocked(&away);
+        int running = r_busy && item_reads(&r_cur, p);
+        if (running && r_cur.submit_no > need) need = r_cur.submit_no;
+        if (need > r_submit_done && copy_on && prog_copy(p, need)) {
+            dr_calls[DR_PROG_COPY]++, dr_tcalls[DR_PROG_COPY]++;
+            uint32_t g = pc_gen + 1;   // written under rl only
+            __atomic_store_n(&pc_gen, g, __ATOMIC_RELEASE);
+            if (running) {   // until the replay is between two ops of that submission, or past it
+                uint64_t run_no = r_cur.submit_no, p0 = perf_begin();
+                int away = core_away_unlocked();
+                while (r_busy && r_cur.kind == RI_SUBMIT && r_cur.submit_no == run_no &&
+                       (int32_t)(pc_acked - g) < 0)
+                    plat_cond_wait(&rcv, &rl);
+                wait_counted(DR_PROG_COPY, p0);
+                core_back_unlocked(&away);
+            }
+        } else {
+            dr_calls[DR_PROG_RELEASE]++, dr_tcalls[DR_PROG_RELEASE]++;
+            if (need > r_submit_done) {
+                uint64_t p0 = perf_begin();
+                int away = core_away_unlocked();
+                while (r_submit_done < need) plat_cond_wait(&rcv, &rl);
+                wait_counted(DR_PROG_RELEASE, p0);
+                core_back_unlocked(&away);
+            }
         }
         plat_mutex_unlock(&rl);
     }
