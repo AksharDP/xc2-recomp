@@ -119,7 +119,8 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    ```
    Train on play that covers the scenes you care about (an `XC2_INPUT_RECORD` recording replays the same play); the
    instrumented game runs at about half speed. After the generated C changes, train again: functions the old profile
-   does not know get no profile.
+   does not know get no profile. A profile saved as `build\pgo\default.profdata` is used by every v301 build that
+   names no other, so it stays on through rebuilds; `--no-pgo` builds without it.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
 
