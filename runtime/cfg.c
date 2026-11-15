@@ -53,7 +53,7 @@ static const char *const known[] = {
     "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SNAP_SYNC", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SUBMIT_WAIT", "SPLIT_US", "STG_LAZY", "STICK_DEADZONE", "STOP_FRAME", "SWKBD_ANSWER",
     "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_ASYNC", "TEX_MEMO", "TIMER_1MS", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VRAM_LIMIT", "VS_OUTS",
-    "WALK_KEY", "WALK_SCALE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZLIB_CHECK", "ZLIB_NATIVE", "ZSTD_CHECK", "ZSTD_NATIVE",
+    "WAIT_SPIN_US", "WALK_KEY", "WALK_SCALE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZLIB_CHECK", "ZLIB_NATIVE", "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
 // The xc2.ini section a key cfg_set may write goes to when the file lacks it (xc2.ini.example's sections).
@@ -79,7 +79,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"BIND_RSTICK_UP", "input"}, {"BIND_RSTICK_RIGHT", "input"}, {"BIND_RSTICK_DOWN", "input"},
     {"ASYNC_PREEMPT", "performance"}, {"PACE", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"}, {"CORE_FLOAT", "performance"},
     {"FRAME_BOUND", "performance"},
-    {"TIMER_1MS", "performance"}, {"POWER_THROTTLING", "performance"}, {"PROG_COPY", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
+    {"TIMER_1MS", "performance"}, {"POWER_THROTTLING", "performance"}, {"PROG_COPY", "performance"}, {"WAIT_SPIN_US", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
     {"TEX_ALIAS", "performance"}, {"LOD_GUARD", "performance"}, {"FEEDBACK_SNAP", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
@@ -125,7 +125,7 @@ static const CfgMeta metas[] = {
     {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"PACE", "grid", "grid|buffer", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"CORE_FLOAT", "1", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     {"POWER_THROTTLING", "0", "0|1", RESTART},
-    {"PROG_COPY", "1", "0|1", RESTART},
+    {"PROG_COPY", "1", "0|1", RESTART}, {"WAIT_SPIN_US", "30", "0..200", RESTART},
     {"FRAME_BOUND", "1", "0|1", RESTART},   // 1: the replay runs at most one present behind (docs/architecture.md)
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},

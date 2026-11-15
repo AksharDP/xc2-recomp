@@ -273,6 +273,16 @@ static void *sync_obj(uint32_t h) {
 
 // SleepConditionVariableSRW counts milliseconds: round up (late is legal, early is not) and re-check the deadline
 // against the performance counter, because the wait may also end early.
+// XC2_WAIT_SPIN_US: how long a guest wait polls for its wake, with G released, before it sleeps on its host condition
+// variable. The game's main thread waits for its job workers about 120 times a frame, a job lasting tens of
+// microseconds, and each sleep and wake through the OS cost about 5 us before the thread ran again (XC2_TRACE=sched
+// "wake to run"), on the main thread and on the workers alike. A waiter that sees its wake while polling skips both.
+// At 30 us (the default) 88 % of the waits on the rec4 route ended while polling, and over 8 interleaved rounds per
+// arm against 0 the mean frame went from 12.49 to 11.90 ms, frames over 20 ms from 4.5 to 2.1 % and the 1% low from
+// 38.0 to 45.3 fps (i7-12700H). The poller holds no virtual core, only a host CPU. 0 sleeps at once.
+static int64_t g_wait_spin_ns = -1;
+static uint64_t g_wspin_n, g_wspin_ok;   // G: waits that polled, and those that saw their wake while polling
+
 static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
     t->wkind = kind;
     t->woke = 0;
@@ -287,6 +297,19 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
     uint64_t now = kern_now_ns();
     int forever = ns < 0 || (uint64_t)ns > UINT64_MAX - now;
     uint64_t deadline = forever ? 0 : now + (uint64_t)ns;
+    if (g_wait_spin_ns < 0) {
+        int us = cfg_int("XC2_WAIT_SPIN_US");
+        g_wait_spin_ns = (int64_t)(us > 0 ? us : 0) * 1000;
+    }
+    if (g_wait_spin_ns > 0) {   // a waker sets woke under G; the loop below checks it again under G before sleeping
+        uint64_t end = now + (uint64_t)g_wait_spin_ns;
+        if (!forever && end > deadline) end = deadline;
+        g_wspin_n++;
+        unlock();
+        while (!__atomic_load_n(&t->woke, __ATOMIC_ACQUIRE) && kern_now_ns() < end) plat_pause();
+        lock();
+        if (t->woke) g_wspin_ok++;
+    }
     while (!t->woke) {
         if (forever) {
             plat_cond_wait(&t->cv, &G);
@@ -794,6 +817,14 @@ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns) {
                (unsigned long long)frame, (unsigned long long)v[0], (unsigned long long)v[1], (unsigned long long)v[2],
                (unsigned long long)v[3], (unsigned long long)v[4], (unsigned long long)v[5], (unsigned long long)v[6],
                (unsigned long long)v[7]);
+    }
+    if (g_wait_spin_ns > 0 && frame && frame % 600 == 0) {
+        lock();
+        uint64_t n = g_wspin_n, ok = g_wspin_ok;
+        unlock();
+        rt_log("kernel: frame %llu: XC2_WAIT_SPIN_US %lld: %llu waits polled, %llu (%.1f%%) woken while polling",
+               (unsigned long long)frame, (long long)(g_wait_spin_ns / 1000), (unsigned long long)n,
+               (unsigned long long)ok, n ? 100.0 * ok / n : 0.0);
     }
     if (g_diag <= 0) return;
     DgWindow w;
