@@ -179,13 +179,15 @@ void frame_step_init(void) {
 int frame_step_realtime(void) { return step_word != NULL; }
 
 // The frame limit (menu, XC2_FPS_LIMIT, live): 30, 60, 120, 144, any whole rate from 30 to 360, or display (the
-// refresh rate of the window's monitor). Unset, the older XC2_FPS60=0 still means 30. A limit of 30 switches the set
+// refresh rate of the window's monitor). Unset, it is LIMIT_DEFAULT_HZ (120), or 30 when the older XC2_FPS60=0 is
+// set. A limit of 30 switches the set
 // fps60 off (the shipping minimum interval 2), every other limit switches it on; the controller reads its minimum
 // interval from the patched sites each frame. With the real-time step the pacer holds frames to the limit; above 60
 // only the pacer changes, as the step has no lower bound. Without it the game steps whole 60 Hz vsyncs and the pacer
 // follows the game's interval, so the limit stops at 60.
 #define LIMIT_MIN_HZ 30
 #define LIMIT_MAX_HZ 360
+#define LIMIT_DEFAULT_HZ 120   // unset: the same value as the XC2_FPS_LIMIT row of the settings table (cfg.c)
 static int fps60_set = -2;
 static unsigned limit_seen;
 static int limit_read;
@@ -193,13 +195,13 @@ static int limit_hz = -1;   // 0: display; -1 before the first read
 
 static int limit_parse(void) {
     const char *e = cfg_get("XC2_FPS_LIMIT"), *old = cfg_get("XC2_FPS60");
-    if (!e || !*e) return old && !strcmp(old, "0") ? 30 : 60;
+    if (!e || !*e) return old && !strcmp(old, "0") ? 30 : LIMIT_DEFAULT_HZ;
     if (!strcmp(e, "display")) return 0;
     char *end;
     long n = strtol(e, &end, 10);
     if (!*end && n >= LIMIT_MIN_HZ && n <= LIMIT_MAX_HZ) return (int)n;
-    rt_log("frame rate: XC2_FPS_LIMIT=%s is not 30..360 or display; 60", e);
-    return 60;
+    rt_log("frame rate: XC2_FPS_LIMIT=%s is not 30..360 or display; %d", e, LIMIT_DEFAULT_HZ);
+    return LIMIT_DEFAULT_HZ;
 }
 
 static void frame_limit_live(void) {

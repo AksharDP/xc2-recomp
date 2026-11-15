@@ -863,6 +863,8 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
     for (int i = 0; i < 3; i++) *p++ = (uint8_t)a->local[i], *p++ = (uint8_t)(a->local[i] >> 8);
     put_u32(&p, a->shared_bytes);
     *p++ = (uint8_t)(a->depth_minus_w | a->a2c_dither << 1);   // bit 1 only when set: older keys stay the same
+    *p++ = (uint8_t)(a->alpha_func <= NVN_ALPHA_FUNC_GEQUAL ? a->alpha_func : 0), *p++ = 0;   // 0 = no alpha test
+    memcpy(p, &a->alpha_ref, 4), p += 4;
     return (size_t)(p - o);
 }
 
@@ -895,6 +897,8 @@ static void mask_answers(const GfxShaderAnswers *a, const UseMask *m, GfxShaderA
     memcpy(o->local, a->local, sizeof o->local);
     o->shared_bytes = a->shared_bytes;
     o->a2c_dither = a->a2c_dither;
+    o->alpha_func = a->alpha_func <= NVN_ALPHA_FUNC_GEQUAL ? a->alpha_func : 0;
+    o->alpha_ref = a->alpha_ref;
 }
 
 // The cache key of an input id under the current translator.
@@ -993,6 +997,11 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     // Maxwell dithers alpha to coverage on a single-sample target (docs/maxwell.md 5.7); Vulkan does not, so the
     // fragment shader discards the uncovered pixels of a 2x2 pattern itself (Ryujinx's alpha-to-coverage dither).
     if (!strcmp(stage, "ps") && a && a->a2c_dither) o += sprintf(o, ",\"a2c_dither\":true");
+    // The fixed-function alpha test (nvnColorStateSetAlphaTest's function against nvnCommandBufferSetAlphaRef's
+    // reference): the fragment shader discards what fails it. The NVNalphaFunc values 1..7 are Ryujinx's AlphaTestOp.
+    if (!strcmp(stage, "ps") && a && a->alpha_func && a->alpha_func != NVN_ALPHA_FUNC_ALWAYS &&
+        a->alpha_func <= NVN_ALPHA_FUNC_GEQUAL)
+        o += sprintf(o, ",\"alpha_test\":{\"op\":%u,\"ref\":%.9g}", a->alpha_func, (double)a->alpha_ref);
     // Transform feedback outputs. Already part of the code hash (the whole control section).
     uint8_t xfb[GFX_XFB_WORDS];
     uint32_t xfb_stride = !strcmp(stage, "vs") ? gfx_shader_xfb(control, xfb) : 0;
@@ -1576,7 +1585,7 @@ void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]) { memcpy(local
 //                       it stays in the ignored pipeline cache directory.
 // A file with another header is rewritten; a torn tail (killed process) is cut off at open.
 #define ANS_VERSION 1
-#define ANS_PACKED 147                                     // pack_answers' size
+#define ANS_PACKED 153                                     // pack_answers' size (147 before the alpha test was added)
 #define ANS_REC (4 + 32 + 32 + ANS_PACKED + 1)
 #define PRG_VERSION 1
 #define PRG_HEAD (12 + 32 + CONTROL_SIZE)
@@ -1644,6 +1653,10 @@ static void unpack_answers(const uint8_t *p, GfxShaderAnswers *a) {
     memcpy(&a->shared_bytes, p, 4), p += 4;
     a->depth_minus_w = *p & 1;
     a->a2c_dither = *p >> 1 & 1;
+    p += 1;
+    a->alpha_func = *p <= NVN_ALPHA_FUNC_GEQUAL ? *p : 0;
+    p += 2;
+    memcpy(&a->alpha_ref, p, 4);
 }
 
 // Reads a record file's body (after its header) into *body; 0 when absent, and a file with another header is removed.

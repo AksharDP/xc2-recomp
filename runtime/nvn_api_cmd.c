@@ -170,7 +170,7 @@ void nvn_pins_each(void (*fn)(const tex_t *pin, void *ctx), void *ctx) {
 // adding control memory again releases the copies recorded there without walking every live copy. 4 KiB pages cost
 // about 500 lookups per AddControlMemory under the exclusive lock (1.4.3 field: 53 calls a frame, 2 MiB ranges, 3.7
 // copies per page), and the recording threads waited on it.
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred; } copy_prefix;   // deferred: 0 unknown, 1 none, 2 some
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, cap; } copy_prefix;   // deferred: 0 unknown, 1 none, 2 some; cap: the block size copy_alloc gave
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -192,10 +192,74 @@ static void zombie_add(copy_prefix *pf) {   // copy_lock held
     zombies[nzombies++] = pf;
 }
 
+// Recording copies come from a cache of freed blocks as well as malloc. A fresh block is paid for on its first write (the
+// kernel zero-fills it), and that first write was about 40% of the flatten copy (XC2 probes, 2026-11-13); a cached block
+// has its pages already. A block is sized in whole FL_STEP units from its byte count, so a freed block fits the next
+// copy of about its size (cap at most twice the need). The cache keeps at most FL_MAX_BYTES. XC2_COPY_CACHE=0 turns it
+// off. Lock order: copy_lock, then fl_lock; fl_lock is never held while taking copy_lock.
+#define FL_STEP (64u << 10)
+#define FL_MAX_BYTES (96ull << 20)
+#define FL_SLOTS 32
+static struct { void *p; size_t cap; } fl[FL_SLOTS];
+static int fl_n;
+static uint64_t fl_bytes;
+static PlatMutex fl_lock = PLAT_MUTEX_INIT;
+
+static int copy_cache_on(void) {
+    static int on = -1;
+    if (on < 0) on = !(cfg_is_set("XC2_COPY_CACHE") && !cfg_bool("XC2_COPY_CACHE"));
+    return on;
+}
+
+static size_t copy_block_size(uint64_t bytes) { return (size_t)((sizeof(copy_prefix) + bytes + FL_STEP - 1) / FL_STEP) * FL_STEP; }
+
+// A block for a recording copy of bytes bytes (its prefix included); freed with copy_free.
+static copy_prefix *copy_alloc(uint64_t bytes) {
+    size_t need = copy_block_size(bytes), got = need;
+    void *p = NULL;
+    if (copy_cache_on()) {
+        plat_mutex_lock(&fl_lock);
+        int best = -1;
+        for (int i = 0; i < fl_n; i++)
+            if (fl[i].cap >= need && fl[i].cap <= 2 * need && (best < 0 || fl[i].cap < fl[best].cap)) best = i;
+        if (best >= 0) {
+            p = fl[best].p;
+            got = fl[best].cap;
+            fl_bytes -= fl[best].cap;
+            fl[best] = fl[--fl_n];
+        }
+        plat_mutex_unlock(&fl_lock);
+    }
+    if (!p) p = malloc(need);
+    if (!p) rt_fatal("nvn: out of memory (recording copy, %zu bytes)", need);
+    ((copy_prefix *)p)->cap = got;   // a reused block can be up to twice the need: copy_free caches it at this size
+    return p;
+}
+
+// Frees a block from copy_alloc (its prefix holds the block size it was given) into the cache, evicting
+// the oldest blocks when the cache is full: the copies' sizes change with the scene, and a cache that refused new blocks
+// stayed full of sizes nothing asked for again (zero hits for the rest of a burst).
+static void copy_free(copy_prefix *pf) {
+    size_t cap = pf->cap;   // the real block size, not the payload
+    if (!copy_cache_on() || cap > FL_MAX_BYTES) {
+        free(pf);
+        return;
+    }
+    plat_mutex_lock(&fl_lock);
+    while (fl_n && (fl_n == FL_SLOTS || fl_bytes + cap > FL_MAX_BYTES)) {
+        free(fl[0].p);
+        fl_bytes -= fl[0].cap;
+        memmove(&fl[0], &fl[1], sizeof fl[0] * (size_t)(--fl_n));
+    }
+    fl[fl_n].p = pf, fl[fl_n].cap = cap;
+    fl_n++, fl_bytes += cap;
+    plat_mutex_unlock(&fl_lock);
+}
+
 static void zombie_sweep(uint64_t replayed) {   // copy_lock held
     for (uint32_t i = 0; i < nzombies;) {
         if (zombies[i]->used_at <= replayed) {
-            free(zombies[i]);
+            copy_free(zombies[i]);
             zombies[i] = zombies[--nzombies];
         } else {
             i++;
@@ -234,14 +298,9 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
     return bytes;
 }
 
-// The recording [p, p + n), OP_BEGIN to OP_END (the recording buffer is one block: recording emits no OP_JUMP), copied
-// into one host block of its exact size. One allocation and one copy: growing the copy record by record cost the
-// game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
-static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
-    uint8_t *out = malloc(sizeof(copy_prefix) + n);
-    if (!out) rt_fatal("nvn: command copy allocation");
-    memcpy(out + sizeof(copy_prefix), p, n);
-    for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
+// Checks the recording [p, p + n), OP_BEGIN to OP_END: a corrupt record stops here, not in the replay.
+static void check_recording(const uint8_t *p, size_t n) {
+    for (size_t at = 0;;) {
         op_hdr h;
         memcpy(&h, p + at, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_ || h.op == OP_JUMP || h.op == OP_CALL || at + h.size > n ||
@@ -253,7 +312,34 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
             break;
         }
     }
-    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0};
+}
+
+// The finished recording of o (OP_BEGIN to OP_END; the recording buffer is one block: recording emits no OP_JUMP) as a
+// copy block, returned as its handle. A recording that fills at least half of its buffer takes the buffer itself: the
+// buffer keeps room for a copy_prefix in front of the records (nvnCommandBufferBeginRecording), so the handle needs no
+// copy, and the command buffer records on in a block of the same size from the copy cache. The scene's large
+// recordings (hundreds of KiB a frame) were copied once more here, about 5 % of the presenting thread in frames over
+// 10 ms (2026-11-14). A smaller recording is copied into a block of its size, so that the many small handles a frame
+// keeps alive do not each hold a large buffer. One allocation and one copy: growing the copy record by record cost the
+// game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
+static uint8_t *flatten_recording(cmd_t *o) {
+    const uint8_t *p = o->seg + sizeof(copy_prefix);
+    size_t n = (size_t)(o->cur - p), cap = (size_t)(o->end - o->seg);
+    check_recording(p, n);
+    uint8_t *out;
+    if (copy_cache_on() && 2 * (n + sizeof(copy_prefix)) >= cap && cap <= FL_MAX_BYTES) {
+        out = o->seg;
+        copy_prefix *next = copy_alloc(cap - sizeof(copy_prefix));
+        size_t got = (size_t)next->cap;
+        o->seg = (uint8_t *)next;
+        o->cur = o->seg + sizeof(copy_prefix);
+        o->end = o->seg + got;
+    } else {
+        out = (uint8_t *)copy_alloc(n);
+        memcpy(out + sizeof(copy_prefix), p, n);
+        cap = (size_t)((copy_prefix *)out)->cap;
+    }
+    *(copy_prefix *)out = (copy_prefix){COPY_MAGIC, n, 0, 0, 0, cap};
     return out + sizeof(copy_prefix);
 }
 
@@ -303,7 +389,7 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
             copy_bytes -= pf->bytes;
             pf->magic = 0;
             if (pf->used_at > replayed) zombie_add(pf);   // a queued submission still reads it
-            else free(pf);
+            else copy_free(pf);
             b->v[i] = b->v[--b->n];
         }
         if (!b->n) {
@@ -385,7 +471,11 @@ NVN_API(nvnCommandBufferBeginRecording) {
     cmd_t *o = cmd_of(c);
     if (o->recording) rt_log("nvn: BeginRecording on command buffer %p while it records", (void *)o);
     o->recording = 1;
-    o->cur = o->seg;   // the previous recording was copied at EndRecording
+    // The previous recording was copied or handed over at EndRecording. The records start past room for a copy_prefix,
+    // so that flatten_recording can hand the buffer over as the handle's block.
+    o->cur = o->seg;
+    cmd_reserve(o, sizeof(copy_prefix));
+    o->cur = o->seg + sizeof(copy_prefix);
     o->rec_start = o->cmd_used;
     put_hdr(cmd_alloc(o, 8), OP_BEGIN, 8);
     o->hw_used -= 8;   // BEGIN and END have no hardware equivalent
@@ -400,7 +490,8 @@ NVN_API(nvnCommandBufferEndRecording) {
     put_hdr(cmd_alloc(o, 8), OP_END, 8);
     o->hw_used -= 8;
     o->recording = 0;
-    uint8_t *copy = flatten_recording(o->seg, (size_t)(o->cur - o->seg));
+    size_t rec_bytes = (size_t)(o->cur - o->seg) - sizeof(copy_prefix);
+    uint8_t *copy = flatten_recording(o);
     // Finalizing the recorder does not retire its handle; only reusing the control memory it was recorded in does.
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
@@ -408,7 +499,7 @@ NVN_API(nvnCommandBufferEndRecording) {
     copy_add(lo, hi, copy);
     if (nvn_callers_on())
         rt_log("draw callers: EndRecording cmd %p -> handle %p (%zu bytes), lr %#llx", (void *)o, (void *)copy,
-               (size_t)(o->cur - o->seg), (unsigned long long)c->x[30]);
+               rec_bytes, (unsigned long long)c->x[30]);
     ret_x(c, (uintptr_t)copy);
 }
 // NVNboolean nvnCommandBufferIsRecording(const NVNcommandBuffer *cmd)
@@ -923,6 +1014,19 @@ NVN_API(nvnCommandBufferDownsample) {
 NVN_API(nvnCommandBufferSetCopyRowStride) { REC(cmd_of(c), OP_COPY_STRIDE, p_copy_stride)->stride = (int64_t)arg_x(c, 1); }
 // void nvnCommandBufferSetBlendColor(NVNcommandBuffer *cmd, const float *rgba)
 NVN_API(nvnCommandBufferSetBlendColor) { memcpy(REC(cmd_of(c), OP_BLEND_COLOR, p_blend_color)->rgba, arg_p(c, 1), 16); }
+// void nvnCommandBufferSetAlphaRef(NVNcommandBuffer *cmd, float ref): the reference of the fixed-function alpha test
+// (nvnColorStateSetAlphaTest picks the function, both together are baked into the fragment shader, docs/maxwell.md 5.7).
+// The value is logged once per distinct setting: a draw that uses it is exactly what a decal that shows its background
+// looks like from the command stream.
+NVN_API(nvnCommandBufferSetAlphaRef) {
+    float ref = arg_s(c, 0);
+    static _Thread_local float logged = -1.0f;
+    if (ref != logged) {
+        logged = ref;
+        rt_log("nvn: alpha test reference %g", (double)ref);
+    }
+    *REC(cmd_of(c), OP_ALPHA_REF, p_alpha_ref) = (p_alpha_ref){ref};
+}
 
 // Commands without an effect on this replay (hle_nvn.c g_nops): WaitSync and WaitEvent order work against other queues
 // or the CPU, and every submit replays in order on one queue; shader scratch memory and the tessellation patch size
@@ -978,10 +1082,20 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
     }
 }
 
+// The walk over a copy's deferred binds, skipped once the copy is known to hold none. The number of binds is fixed when
+// the recording is made (their sources and sizes are recorded; only the handles they read change), so the first walk's
+// answer holds for every later submit of the same copy: copy_prefix.deferred is 1 (none) or 2 (some) after that walk.
+static void resolve_copy(uint64_t handle) {
+    copy_prefix *pf = (copy_prefix *)(uintptr_t)handle - 1;
+    if (pf->deferred == 1) return;
+    int nd = resolve_deferred((const uint8_t *)(uintptr_t)handle, 0);
+    pf->deferred = nd ? 2 : 1;
+}
+
 void nvn_submit_prepare(const uint64_t *handles, int n) {
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
     for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands");
-    for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
+    for (int i = 0; i < n; i++) resolve_copy(handles[i]);
 }
 
 // Asynchronous replay. A copy a queued submission still reads keeps that submission's deferred binds: when it holds
@@ -1001,9 +1115,10 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
         out[i] = handles[i];
         if (pf->used_at > replayed && pf->used_at != now && pf->deferred != 1) {
             size_t sz = sizeof *pf + pf->bytes;
-            copy_prefix *cl = malloc(sz);
-            if (!cl) rt_fatal("nvn: out of memory (recording clone, %zu bytes)", sz);
+            copy_prefix *cl = copy_alloc(pf->bytes);   // freed by copy_free with the other zombies
+            const uint64_t clcap = cl->cap;
             memcpy(cl, pf, sz);
+            cl->cap = clcap;   // the clone
             cl->magic = 0;   // not a live handle: the game never sees it
             cl->used_at = now;
             zombie_add(cl);
@@ -1014,10 +1129,7 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
         }
     }
     plat_mutex_unlock(&copy_lock);
-    for (int i = 0; i < n; i++) {
-        int nd = resolve_deferred((const uint8_t *)(uintptr_t)out[i], 0);
-        if (out[i] == handles[i]) ((copy_prefix *)(uintptr_t)out[i] - 1)->deferred = nd ? 2 : 1;
-    }
+    for (int i = 0; i < n; i++) resolve_copy(out[i]);
     if (now % 7200 == 0)
         rt_log("nvn: asynchronous replay at submit %llu: %llu recording clones so far, %u copies waiting for the replay",
                (unsigned long long)now, (unsigned long long)__atomic_load_n(&n_clones, __ATOMIC_RELAXED), nzombies);
@@ -1033,7 +1145,7 @@ const char *nvn_op_name(uint32_t op) {
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
         "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "XFB_BIND",
-        "XFB_ACTIVE",
+        "XFB_ACTIVE", "ALPHA_REF",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";

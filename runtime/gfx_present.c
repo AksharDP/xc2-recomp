@@ -105,6 +105,7 @@ static VkCommandBuffer g_cb[FRAMES];
 static VkFence g_fence[FRAMES];
 static VkSemaphore g_acquire[FRAMES];
 static unsigned g_frame;
+static int g_fence_stuck;   // set while the slot's fence has not signalled after a 5 s wait: presents check it without waiting
 static int g_capture;
 static VkBuffer g_cap_buf;
 static VmaAllocation g_cap_alloc;
@@ -567,17 +568,44 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (wsys_minimized() || !g_sc) goto out;
 
     unsigned slot = g_frame % FRAMES;
-    if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) {
-        rt_log("gfx: present fence wait timed out");
-        goto out;
+    // The present thread's own waits: the fence of the frame FRAMES presents back (the GPU) and the swapchain image.
+    // The perf waits count only the render and replay threads, so these are spans (flight recorder: pres_*).
+    uint64_t fw0 = perf_begin();
+    // A fence that does not signal within the wait leaves its slot busy, and g_frame stays put, so the next present
+    // waits on the same fence. Once that has timed out, presents check the fence without waiting: a hung GPU costs one
+    // 5 s stall instead of one per frame, and presents resume when the fence signals. vk_device_fault_report reports
+    // only a device loss, so any other error just skips the frame.
+    if (g_fence_stuck) {
+        VkResult fs = vkGetFenceStatus(c->device, g_fence[slot]);
+        if (fs != VK_SUCCESS) {
+            vk_device_fault_report(fs);
+            goto out;
+        }
+        g_fence_stuck = 0;
+        rt_log("gfx: present fence signalled again; presents resume");
+    } else {
+        VkResult fw = vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull);
+        if (fw != VK_SUCCESS) {
+            perf_span(PERF_SPAN_PRES_FENCE, fw0);   // the timed-out wait is the stall the column is there to show
+            vk_device_fault_report(fw);
+            g_fence_stuck = 1;
+            rt_log("gfx: present fence wait timed out (%d); presents skip frames until the GPU signals it", (int)fw);
+            goto out;
+        }
     }
+    perf_span(PERF_SPAN_PRES_FENCE, fw0);
     uint32_t idx = 0;
+    uint64_t aq0 = perf_begin();
     VkResult r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
-        if (!create_swapchain()) goto out;
+        if (!create_swapchain()) {
+            perf_span(PERF_SPAN_PRES_ACQUIRE, aq0);
+            goto out;
+        }
         r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
+    perf_span(PERF_SPAN_PRES_ACQUIRE, aq0);
     vk_device_fault_report(r);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
     if (r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);

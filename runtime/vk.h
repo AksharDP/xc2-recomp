@@ -58,9 +58,10 @@ typedef struct {
     int gpl;                           // VK_EXT_graphics_pipeline_library enabled with fast linking (XC2_GPL=0: off)
     int amd;                           // an AMD GPU (vendor 0x1002), any driver
     int amd_sc;                        // AMD's Windows driver branch for RDNA 1 and 2 ("AMD proprietary shader compiler")
+    int nvidia;                        // an NVIDIA GPU (vendor 0x10de), any driver
 } VkCaps;
 extern VkCaps vk_caps;
-void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc
+void vk_caps_driver(VkPhysicalDevice p);             // first, before vkCreateDevice: vk_caps.amd, amd_sc, nvidia
 void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (XC2_VK_NO_FLOAT64 clears shaderFloat64)
 // Before vkCreateDevice, with the driver's graphics pipeline library feature and properties: sets vk_caps.gpl,
 // 1 = enable the extensions (VK_KHR_pipeline_library, VK_EXT_graphics_pipeline_library) and the feature.
@@ -211,9 +212,11 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 // VRAM mirror of buffer-bound pools (vk_memory.c). vk_mirror_on: XC2_MEMORY=mirror|verify, or the
 // device class is discrete and XC2_MEMORY is unset or auto; set at device selection. The replay (submitting thread
 // under vk_sync_submit's lock) calls:
-// - VK_MEM_USE at a vertex, index, uniform, storage or indirect binding of a span vk_mem_resolve returned: the pool's
-//   mirror is created on first use and sp.buffer becomes it (same offsets); a pool that stays imported keeps its buffer.
-// - VK_MEM_PICK where a copy, fill or update reads or writes a span: the mirror if the pool has one, never a new one.
+// - VK_MEM_USE(sp, n) at a vertex, index, uniform, storage or indirect binding of a span vk_mem_resolve returned: the
+//   pool's mirror is created on first use and sp.buffer becomes it (same offsets); a pool that stays imported keeps its
+//   buffer. n: the bytes from sp.offset the GPU may read (sp.avail when not known), which a lazy mirror then keeps.
+// - VK_MEM_PICK(sp, n) where a copy, fill or update reads or writes n bytes of a span: the mirror if the pool has one,
+//   never a new one.
 // - vk_mem_gpu_wrote after recording a GPU write of [sp.offset, sp.offset + size) into sp.buffer: a mirror's bytes go
 //   back to guest memory at the end of the submission. No-op for imported buffers.
 // - vk_mem_mirror_begin at the start of a submission's recording, with the submission's capture, vk_mem_mirror_end
@@ -237,10 +240,10 @@ void vk_usnap_capture_drop(void *cap);
 int vk_usnap_programs(const void *cap, const void *const **out);
 void vk_exec_captures(void *mem, void *ubo);   // this thread's next vk_exec_record of handles uses these
 extern int vk_mirror_on;
-void vk_mem_use(VkMemSpan *sp);
-void vk_mem_pick(VkMemSpan *sp);
-#define VK_MEM_USE(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp)); } while (0)
-#define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
+void vk_mem_use(VkMemSpan *sp, uint64_t n);
+void vk_mem_pick(VkMemSpan *sp, uint64_t n);
+#define VK_MEM_USE(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp), (n)); } while (0)
+#define VK_MEM_PICK(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp), (n)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // Uniform blocks as of the submit call (vk_usnap.c): the capture copies the uniform ranges a submission binds, ubo
 // bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
@@ -363,6 +366,7 @@ typedef struct {
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
 } VkTexImage;
 void vk_capture_texture(const VkTexImage *img);   // XC2_CAPTURE: notes a texture the measured frame samples (vk_capture.c)
+double vk_texel_bytes(VkFormat f);                // bytes per texel of an uncompressed or block format, for size estimates (vk_capture.c)
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // Captures (vk_texture.c): vk_texture_snapshot hands the recorder each part of every image whose content the guest
 // bytes do not hold (px NULL: that part cannot be read back), and vk_texture_restore puts one part back in the replay.
@@ -400,6 +404,7 @@ int vk_texture_read_image(const tex_t *t, const view_t *v, const NVNcopyRegion *
                           uint64_t img);            // always from the image (GPU copy, waited for); 0 on failure
 int vk_texture_cpu_stale(uint64_t addr, uint64_t size);    // a GPU-written mirrored texture there has stale storage
 uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size);   // newest recorded writer of such a texture; 0: none
+uint64_t vk_texture_stale_refusals(void);   // GPU-written sources of another shape refused by a new texture (entry_of), since start
 void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those images back into their storage (waits)
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc);   // vk_pool_fini: drop the images there
 void vk_texture_stats(uint64_t *images, uint64_t *uploads, uint64_t *reuploads);
@@ -423,6 +428,7 @@ void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h)
 void vk_sync_start(void);                  // vk_init (fatal without a device) and the completion thread; idempotent
 uint64_t vk_sync_submit(const uint64_t *handles, int n);   // records with vk_exec_record, submits; returns the value
 uint64_t vk_sync_reserve(void);            // asynchronous replay: the value the next queued submission signals
+void vk_sync_frame_mark(uint64_t frame);   // present_image: parts submitted from now on are timed as frame + 1's
 int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns);   // 1 when done; 0 on timeout or a value never submitted
 uint64_t vk_sync_fence_done(void);         // highest done value
 uint64_t vk_sync_issued(void);             // newest submitted value (the one being recorded is this + 1)

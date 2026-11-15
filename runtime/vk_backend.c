@@ -15,8 +15,10 @@
 // nvnQueueSubmitCommands and nvnQueuePresentTexture only queue; what the GPU reads from guest memory is copied in the
 // submit call first (vk_be_submit). Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
 // order; the replay thread runs the synchronous submit and present bodies in that order, so every value is signalled
-// by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the
-// replay thread handled present N-1. Calls that read or free GPU state that queued work may use drain the queue first
+// by the submission it was handed out for. With XC2_FRAME_BOUND=1 (the default) the game runs at most one frame ahead:
+// queueing present N waits until the replay thread handled present N-1. With 0 the release items count too, the bound
+// stops holding after the first release, and the game may run ahead by flight_bound (XC2_FLIGHT_MAX) and the queue.
+// Calls that read or free GPU state that queued work may use drain the queue first
 // (replay_drain), each cause counted.
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,12 +49,16 @@ static void stop_at_frame(uint64_t presented) {
     if (stop != ~0ull && presented + 1 >= stop) gfx_exit_saved("XC2_STOP_FRAME reached");
 }
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; VkFsrFrame fsr; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, seq; VkFsrFrame fsr; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
 static PresentJob job;
 static int pending, busy, present_thread;
+// Presents are numbered in the order present_image takes them (p_seq, under pl; a skipped present takes a number too).
+// blit_seq is the newest number whose blit the present thread has submitted: the game's image of that present may be
+// written again from then on (vk_present_wait_blit).
+static uint64_t p_seq, blit_seq;
 
 // Sleeps on a high-resolution timer to 1 ms before at, then yields until at: the timer alone wakes up to ~0.5 ms late.
 static void wait_until(uint64_t at) {
@@ -75,6 +81,10 @@ static void present_main(void *arg) {
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_fsr3_frame_show(&j.fsr);
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        plat_mutex_lock(&pl);
+        blit_seq = j.seq;   // the game's image of this present is free to write once its blit is queued
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
@@ -110,11 +120,20 @@ void vk_present_drain(void) {
     perf_end(PERF_DRAIN, p0);
 }
 
+// Waits until the present thread has submitted the blit of present number seq (see p_seq), so the game image that
+// present showed can be written again: the next submission that writes it is queued after the blit.
+void gfx_present_wait_blit(uint64_t seq) {
+    plat_mutex_lock(&pl);
+    while (blit_seq < seq) plat_cond_wait(&pcv, &pl);
+    plat_mutex_unlock(&pl);
+}
+
 // The present after the frame count: resolves the image and hands the blit to the present thread. queued: when the game
 // presented; value: the timeline value queued for this present (asynchronous replay), 0 for the next one (synchronous).
 static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uint64_t queued, uint64_t frame,
                           uint64_t value) {
     static volatile int32_t n_skipped;
+    vk_sync_frame_mark(frame);   // the frame's GPU time (flight recorder): what was submitted up to here
     vk_exec_frame_log(t, frame);
     vk_mem_census(frame);
     if (vk_dump_armed) vk_dump_present(frame);
@@ -123,11 +142,15 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
         if (plat_inc32(&n_skipped) <= 8)
             rt_log("vk: present of texture %p (format %#x) skipped: no colour image", (const void *)t, t ? t->d.format : 0);
+        vk_present_drain();   // the blits of the presents before this one are submitted (blit_seq then counts this one)
         if (value) {   // the queued value is still signalled, in order
-            vk_present_drain();
             uint64_t f = vk_sync_submit(NULL, 0);
             if (f != value) rt_fatal("vk: skipped present signalled %llu, queued as %llu", (unsigned long long)f, (unsigned long long)value);
         }
+        plat_mutex_lock(&pl);
+        blit_seq = ++p_seq;
+        plat_cond_broadcast(&pcv);
+        plat_mutex_unlock(&pl);
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
@@ -144,6 +167,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         present_thread = 1;
     }
     while (pending) plat_cond_wait(&pcv, &pl);   // one present in waiting at most
+    j.seq = ++p_seq;
     job = j;
     pending = 1;
     plat_cond_broadcast(&pcv);
@@ -160,7 +184,7 @@ typedef struct {
     void *mcap, *ucap;  // RI_SUBMIT: the submit-time captures (vk_mem_capture, vk_usnap_capture)
     const void **progs; // RI_SUBMIT: the programs its replay may read (vk_usnap_programs, a copy); nprogs -1: any
     int nprogs;
-    const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
+    const tex_t *tex;   // RI_RELEASE, RI_PRESENT: a copy the item owns (the game may reuse the object's memory)
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
 enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
@@ -192,7 +216,9 @@ int vk_replay_async(void) {
         int set = cfg_is_set("XC2_REPLAY_ASYNC"), snap = vk_mem_snapshots();
         on = set ? cfg_bool("XC2_REPLAY_ASYNC") : snap;
         rt_log("vk: replay %s (XC2_REPLAY_ASYNC=%d%s)",
-               on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on,
+               on ? (cfg_bool("XC2_FRAME_BOUND") ? "on its own thread, at most one frame behind the game"
+                                                  : "on its own thread, the frame bound off (XC2_FRAME_BOUND=0)")
+                  : "on the submitting thread", on,
                set ? "" : snap ? ", auto: submit-time copies" : ", auto: the GPU reads guest memory live");
     }
     return on;
@@ -242,6 +268,20 @@ static void replay_busy(int kind, uint64_t t0, uint64_t t1) {
     }
 }
 
+// XC2_FRAME_BOUND (settings table, cfg.c): 1 counts only presents toward the frame bound in vk_be_present, so the game
+// queues present N once the replay thread has handled present N-1. 0 counts every item replay_main finishes that is not
+// a submit, texture releases too: each release then loosens the bound by one present for good, so after the first
+// release the bound never waits again, and only flight_bound (XC2_FLIGHT_MAX) and the replay queue hold the game back.
+static int frame_bound_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        v = cfg_bool("XC2_FRAME_BOUND");
+        rt_log("vk: frame bound: %s (XC2_FRAME_BOUND=%d)",
+               v ? "one present behind the replay" : "releases count as presents", v);
+    }
+    return v;
+}
+
 static void replay_main(void *arg) {
     (void)arg;
     perf_replay_thread();
@@ -272,11 +312,12 @@ static void replay_main(void *arg) {
             vk_capture_frame(frame);
             stop_at_frame(frame);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
+            free((void *)it.tex);
         }
         replay_busy(it.kind, busy0, kern_now_ns());
         plat_mutex_lock(&rl);
         if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
-        else r_presents_done++;
+        else if (it.kind == RI_PRESENT || !frame_bound_on()) r_presents_done++;
         r_busy = 0;
         free(it.progs);   // under rl: vk_be_program_release reads r_cur's list under it
         r_cur = (ReplayItem){0};
@@ -290,6 +331,7 @@ static void wait_counted(int why, uint64_t t0) {   // rl held
     dr_waits[why]++, dr_twaits[why]++;
     dr_ns[why] += d, dr_tns[why] += d;
     perf_end(PERF_DRAIN, t0);
+    perf_why(why == DR_FRAME ? PERF_WHY_FRAME : why == DR_FULL ? PERF_WHY_FULL : PERF_WHY_OTHER, d);
 }
 
 // A guest thread waiting for the replay gives its virtual core up, as around any blocking host wait (NVN_BLOCKING):
@@ -399,7 +441,13 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     uint64_t frame = ++game_frames;
     perf_present(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
-    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns()};
+    // A copy, as a release takes: the game may reuse the texture object's memory before the replay presents it. The texture
+    // table keys on the descriptor's fields and keeps its own copy of the descriptor (vk_texture.c make_key, entry_of), so the
+    // present names the image the game presented, and the replay frees the copy after the present.
+    tex_t *copy = malloc(sizeof *copy);
+    if (!copy) rt_fatal("vk: out of memory (replay queue)");
+    memcpy(copy, t, sizeof *copy);
+    ReplayItem it = {.kind = RI_PRESENT, .tex = copy, .at = at_ns, .queued = kern_now_ns()};
     if (crop) {
         it.has_crop = 1;
         for (int i = 0; i < 4; i++) it.crop[i] = crop[i];

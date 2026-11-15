@@ -1250,7 +1250,15 @@ int plat_stderr_path(char *out, size_t cap) {
 
 // ---- process
 
+#ifdef XC2_PGO_GENERATE
+int __llvm_profile_write_file(void);
+#endif
+
 void plat_exit(int code) {
+#ifdef XC2_PGO_GENERATE
+    // build_game.py --pgo-generate: _exit skips the profile runtime's atexit hook, so the counters are written here
+    __llvm_profile_write_file();
+#endif
     fflush(stdout);
     fflush(stderr);
     _exit(code);

@@ -63,10 +63,18 @@ void nvn_guest_written(uint64_t addr, uint64_t size) {
 // memcpy of pool storage the GPU rendered into must copy what the GPU wrote: XCX moves its generated grass maps
 // between pools with memcpy. Copies below 1 KiB skip the check; the copy itself is memmove, as overlapping
 // arguments are undefined for memcpy anyway.
+// XC2's streaming jobs copy loaded assets into fresh pages with memcpy, one copy of a megabyte or more after another
+// (about 1.8 GB in the copies of 1 MiB and up on a 30 s route, at 2.6 to 2.8 GB/s on the one thread: the first write
+// to each page faults), and the main thread waits for those jobs in streaming frames. A large copy whose ends do not
+// overlap goes to mem_copy_par, which splits it over host helper threads (memory.c; XC2_COPY_PAR=0 keeps it on the
+// caller): the same bytes when it returns, as memcpy.
 static void ov_memcpy(Cpu *c) {
     uint64_t dst = arg_x(c, 0), src = arg_x(c, 1), n = arg_x(c, 2);
     if (n >= 1024) gfx_backend()->guest_read(src, n);
-    memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
+    if (dst + n <= src || src + n <= dst)
+        mem_copy_par((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);   // a plain memcpy below its threshold
+    else
+        memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
     ret_x(c, dst);
 }
 HOST_OVERRIDE("memcpy", ov_memcpy);
@@ -640,6 +648,8 @@ NVN_API(nvnQueueSubmitCommands) {
 
 // The producer (1.2.1 main f_70008c6460) releases the read lock on obj+0x538 at lr 0x70008c70c8; when
 // [obj+0x529] == [obj+0x528] (x19 = obj) it goes on to rewrite the back half. Waits off the core, at most ~400 ms.
+// Only the 1.2.1 build installs this observer (HOST_OBSERVER_GAME): XC2's lifted code ends below 0x70008c70c8, so the
+// address test never passes there, and the wrapper would cost a dispatch on every ReleaseReadLock for nothing.
 static void obs_release_read(Cpu *c) {
     uint64_t lr = c->x[30], obj = c->x[19];
     rt_original(c);
@@ -656,4 +666,4 @@ static void obs_release_read(Cpu *c) {
     uint64_t f = __atomic_load_n(&lod_fence[e % LOD_RING], __ATOMIC_RELAXED);
     if (gfx_backend()->fence_done() < f) gfx_backend()->fence_wait(f, 200000000ull);
 }
-HOST_OBSERVER("_ZN2nn2os15ReleaseReadLockEPNS0_20ReaderWriterLockTypeE", obs_release_read);
+HOST_OBSERVER_GAME("_ZN2nn2os15ReleaseReadLockEPNS0_20ReaderWriterLockTypeE", obs_release_read, 121);
