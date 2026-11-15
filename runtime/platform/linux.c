@@ -180,6 +180,23 @@ uint64_t plat_thread_cpu_ns(uint32_t tid) {
     return ns;
 }
 
+// The thread's CPU-time clock: clock_gettime reads it from any thread while the thread lives; afterwards the last
+// value read stands.
+struct PlatThreadQ { clockid_t clk; uint64_t last; };
+
+PlatThreadQ *plat_thread_q_self(void) {
+    PlatThreadQ *q = calloc(1, sizeof *q);
+    if (q && pthread_getcpuclockid(pthread_self(), &q->clk)) free(q), q = NULL;
+    return q;
+}
+
+uint64_t plat_thread_q_ns(PlatThreadQ *q) {
+    struct timespec ts;
+    if (!q) return 0;
+    if (!clock_gettime(q->clk, &ts)) q->last = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return q->last;
+}
+
 // ---- thread interruption: a signal handshake in place of Windows' SuspendThread / Get/SetThreadContext.
 // The caller moves the handle from IDLE to REQ and signals the thread. The thread's handler stores where it was and
 // moves REQ to STOPPED, then spins until the caller moves it on to GO (with the redirect in to), changes its own
@@ -469,6 +486,8 @@ uint64_t plat_counter_hz(void) { return 1000000000u; }
 // The timer slack (50 us by default) is how late the kernel may wake a sleeping thread to batch wakeups. New threads
 // inherit it from the thread that creates them.
 void plat_timer_1ms(void) { prctl(PR_SET_TIMERSLACK, 1000ul, 0, 0, 0); }
+
+int plat_no_power_throttling(void) { return 0; }   // Linux has no per-process power-saving mode to opt out of
 
 // clock_nanosleep wakes within the timer slack (50 us by default) of its deadline; the last PLAT_SPIN_NS are spent
 // yielding so the deadline is met closely, as on Windows.

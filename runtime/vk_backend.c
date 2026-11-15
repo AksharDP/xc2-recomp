@@ -69,6 +69,7 @@ static void wait_until(uint64_t at) {
 
 static void present_main(void *arg) {
     (void)arg;
+    flight_thread_self(0, "vk present");
     uint64_t last = 0, last_queued = 0;
     plat_mutex_lock(&pl);
     for (;;) {
@@ -285,6 +286,7 @@ static int frame_bound_on(void) {
 static void replay_main(void *arg) {
     (void)arg;
     perf_replay_thread();
+    flight_thread_self(0, "vk replay");
     plat_mutex_lock(&rl);
     for (;;) {
         while (!rq_n) plat_cond_wait(&rcv, &rl);

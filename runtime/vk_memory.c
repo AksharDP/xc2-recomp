@@ -2823,6 +2823,8 @@ uint64_t vk_upload_flush(int wait) {
     plat_rmutex_lock(&cmd_lock);
     VkCtx *c = vk_ctx();
     uint64_t seq = next_seq;
+    // Uploads queue their deswizzles under cmd_lock (vk_texture.c tj_add): with it held, none is added meanwhile
+    if (open_active) vk_texture_jobs_wait();
     if (c && open_active) {
         for (int i = 0; i < open_b.nstg; i++) vmaFlushAllocation(c->vma, open_b.stg[i].alloc, 0, VK_WHOLE_SIZE);
         vk_crumb(open_b.cb, VK_CRUMB_UPLOAD_END, open_b.seq);

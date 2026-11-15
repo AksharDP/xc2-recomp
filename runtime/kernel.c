@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "flight.h"
 #include "host.h"
 #include "kernel.h"
 #include "platform/platform.h"
@@ -1639,6 +1640,7 @@ static void thread_main(void *p) {
     RtThread *t = p;
     tcur = t;
     t->tid = plat_thread_id();
+    flight_thread_self(t->handle, NULL);
     PlatIntr *self = ap_open_self();
     lock();
     t->hthr = self;
@@ -1692,6 +1694,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
     g_main_stack = stack;
     core_take(t);
     unlock();
+    flight_thread_self(t->handle, "main");
     tcur = t;
     *cpu = t->cpu;
     return t->handle;

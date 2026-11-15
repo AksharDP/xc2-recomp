@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "flight.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "replay.h"
@@ -151,6 +152,7 @@ static struct {
 static void cp_helper(void *arg) {
     int k = (int)(intptr_t)arg;   // slice number, 1 .. helpers
     uint64_t seen = 0;
+    flight_thread_self(0, "copy");
     plat_mutex_lock(&CP.lock);
     for (;;) {
         while (CP.gen == seen) plat_cond_wait(&CP.work, &CP.lock);

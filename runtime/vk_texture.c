@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "flight.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -577,6 +578,118 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
                (unsigned long long)n_texels, (unsigned long long)n_diff_tex);
 }
 
+// ---------------------------------------------------------------- deferred deswizzles (XC2_TEX_ASYNC)
+// upload records the copy from staging into the image at once, but the deswizzle of a level into the staging buffer
+// goes to helper threads: the GPU reads staging only once the upload batch is submitted, and vk_upload_flush waits for
+// every job first (vk_texture_jobs_wait). The replay thread spent 1.3 ms of a 24 ms frame deswizzling while assets
+// streamed in, holding the texture lock, which the game's texture registrations then waited for. The storage is read a
+// little later than a synchronous upload reads it, at most until the next flush; the replay reads it after the game's
+// submit call either way. vk_texture_range_gone waits too, before a pool's storage goes back to the guest.
+#define TJ_MIN (16u << 10)   // smaller levels deswizzle inline: a job's wake-up costs about as much
+#define TJ_THREADS 3
+typedef struct { nvn_texdesc d; unsigned lv, ly; const void *mem; uint8_t *dst; uint32_t rb; size_t raw; uint64_t addr; } TexJob;
+static struct {
+    PlatOnce once;
+    PlatMutex lock;
+    PlatCond work, done;
+    TexJob *q;
+    int n, cap, head, busy, threads;
+} TJ = {PLAT_ONCE_INIT, .lock = PLAT_MUTEX_INIT, .work = PLAT_COND_INIT, .done = PLAT_COND_INIT};
+static int tj_on = -1;
+
+static void tj_run(const TexJob *j) {
+    static volatile int32_t n_bad;
+    if (nvn_deswizzle(&j->d, j->lv, j->ly, j->mem, j->dst, j->rb)) {
+        log_limited(&n_bad, "texture %#llx fmt %#x target %d: level %u layer %u has no CPU layout; uploaded as zeros",
+                    (unsigned long long)j->addr, j->d.format, j->d.target, j->lv, j->ly);
+        memset(j->dst, 0, j->raw);
+    }
+}
+
+// TJ.lock held: takes the next job into *j; 0 when none is queued.
+static int tj_take(TexJob *j) {
+    if (TJ.head == TJ.n) return 0;
+    *j = TJ.q[TJ.head++];
+    TJ.busy++;
+    return 1;
+}
+
+static void tj_finish_locked(void) {
+    TJ.busy--;
+    if (TJ.head == TJ.n && !TJ.busy) {
+        TJ.n = TJ.head = 0;
+        plat_cond_broadcast(&TJ.done);
+    }
+}
+
+static void tj_worker(void *arg) {
+    (void)arg;
+    flight_thread_self(0, "tex");
+    plat_mutex_lock(&TJ.lock);
+    for (;;) {
+        TexJob j;
+        while (!tj_take(&j)) plat_cond_wait(&TJ.work, &TJ.lock);
+        plat_mutex_unlock(&TJ.lock);
+        tj_run(&j);
+        plat_mutex_lock(&TJ.lock);
+        tj_finish_locked();
+    }
+}
+
+static void tj_init(void *arg) {
+    (void)arg;
+    for (int i = 0; i < TJ_THREADS; i++) {
+        if (!plat_thread_spawn(tj_worker, NULL, "tex", 0)) break;
+        TJ.threads++;
+    }
+    rt_log("vk: %d texture deswizzle helpers", TJ.threads);
+}
+
+static int tj_enabled(void) {
+    if (tj_on < 0) {
+        tj_on = !(cfg_is_set("XC2_TEX_ASYNC") && !cfg_bool("XC2_TEX_ASYNC"));
+        if (tj_on) {
+            plat_once(&TJ.once, tj_init, NULL);
+            if (!TJ.threads) tj_on = 0;
+        }
+    }
+    return tj_on;
+}
+
+// The deswizzle of one level and layer into dst: queued, or done here when small or the helpers are off.
+static void tj_add(const nvn_texdesc *d, unsigned lv, unsigned ly, const void *mem, uint8_t *dst, uint32_t rb, size_t raw,
+                   uint64_t addr) {
+    TexJob j = {*d, lv, ly, mem, dst, rb, raw, addr};
+    if (raw < TJ_MIN || !tj_enabled()) {
+        tj_run(&j);
+        return;
+    }
+    plat_mutex_lock(&TJ.lock);
+    if (TJ.n == TJ.cap) {
+        int cap = TJ.cap ? TJ.cap * 2 : 64;
+        TexJob *q = realloc(TJ.q, sizeof *q * (size_t)cap);
+        if (!q) rt_fatal("vk: out of memory for texture jobs");
+        TJ.q = q, TJ.cap = cap;
+    }
+    TJ.q[TJ.n++] = j;
+    plat_cond_signal(&TJ.work);
+    plat_mutex_unlock(&TJ.lock);
+}
+
+void vk_texture_jobs_wait(void) {
+    if (tj_on <= 0) return;
+    plat_mutex_lock(&TJ.lock);
+    TexJob j;
+    while (tj_take(&j)) {   // the caller helps with what is still queued
+        plat_mutex_unlock(&TJ.lock);
+        tj_run(&j);
+        plat_mutex_lock(&TJ.lock);
+        tj_finish_locked();
+    }
+    while (TJ.busy) plat_cond_wait(&TJ.done, &TJ.lock);
+    plat_mutex_unlock(&TJ.lock);
+}
+
 // Copies the whole storage into the image (every level and layer the image has).
 static void upload(Tex *e) {
     static volatile int32_t n_bad, n_undecoded;
@@ -626,7 +739,9 @@ static void upload(Tex *e) {
             uint32_t rb = (w + bw - 1) / bw * (uint32_t)bpb, rows = (h + bh - 1) / bh;
             size_t raw = (size_t)rb * rows * sl;
             uint8_t *dst = stg + rg[k].bufferOffset, *tmp = (astc && !agpu) || rgb ? malloc(raw) : NULL;
-            if (nvn_deswizzle(d, lv, ly, t->mem, tmp ? tmp : dst, rb)) {
+            if (!tmp && !acheck) {   // straight into staging: nothing reads it before the batch's flush
+                tj_add(d, lv, ly, t->mem, dst, rb, raw, e->pub.addr);
+            } else if (nvn_deswizzle(d, lv, ly, t->mem, tmp ? tmp : dst, rb)) {
                 log_limited(&n_bad, "texture %#llx fmt %#x target %d: level %u layer %u has no CPU layout; uploaded as zeros",
                             (unsigned long long)e->pub.addr, d->format, d->target, lv, ly);
                 memset(tmp ? tmp : dst, 0, raw);
@@ -1077,6 +1192,9 @@ void vk_texture_release(const tex_t *t) {
 
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc) {
     lock();
+    // No deferred deswizzle reads the storage once the guest has it back. The wait is under tex_lock, which every
+    // upload holds, so none can queue a job after it; the jobs themselves never take tex_lock.
+    vk_texture_jobs_wait();
     Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
     if (!list) rt_fatal("vk: out of memory for a list of textures");
     int n = 0;
