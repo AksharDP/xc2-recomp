@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "callcap.h"
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
@@ -602,11 +603,19 @@ static uint32_t reg_max[RT_ADDRESS_LIMIT >> REG_SHIFT];
 static uint64_t ww_calls, ww_bytes, ww_ticks, ww_dirty_calls, ww_dirty_ticks, ww_pages;
 
 static uint64_t ww_query(uint64_t addr, uint64_t size) {
-    uint64_t t0 = qpc();
+    uint64_t t0 = qpc(), c0 = callcap_on() ? callcap_now() : 0;
     uint64_t n = mem_written_pages(addr, size, gen_pages, sizeof gen_pages / sizeof *gen_pages);
     uint64_t dt = qpc() - t0;
     ww_ticks += dt, ww_calls++, ww_bytes += size;
     if (n && n != UINT64_MAX) ww_dirty_calls++, ww_dirty_ticks += dt, ww_pages += n;
+    if (c0 && n != UINT64_MAX) {   // XC2_CALLCAP (callcap.h CC_WWQUERY): the range and the pages found written in it
+        uint64_t ns = callcap_now() - c0;
+        static uint32_t idx[sizeof gen_pages / sizeof *gen_pages];   // gen_lock held
+        for (uint64_t k = 0; k < n; k++) idx[k] = (uint32_t)((gen_pages[k] - addr) >> 12);
+        CcWwQuery q = {size, n, sizeof gen_pages / sizeof *gen_pages};
+        CcBlob b[2] = {{&q, sizeof q}, {idx, n * sizeof *idx}};
+        callcap_add(CC_WWQUERY, ns, b, 2);
+    }
     return n;
 }
 

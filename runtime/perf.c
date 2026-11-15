@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "callcap.h"
 #include "cfg.h"
 #include "flight.h"
 #include "gfx.h"
@@ -74,6 +75,7 @@ int perf_gpu_frame_ns(uint64_t frame, uint64_t *ns) {
 
 void prof_start(void) {
     flight_init();
+    callcap_init();
     atexit(perf_summary_flush);   // boot.c's _exit path goes through prof_write instead
     perf_base = (rt_trace & RT_TRACE_PERF) || flight_on;
     perf_on = perf_base || overlay == 2;
@@ -373,6 +375,7 @@ void perf_present(uint64_t frame) {
         pf.replay_ns = rep;
         flight_frame(frame, now, d, &pf, counts);
     }
+    callcap_frame(frame, d);
     if (!(rt_trace & RT_TRACE_PERF)) {
         memset(frame_ns, 0, sizeof frame_ns);
         memset(rep_frame_ns, 0, sizeof rep_frame_ns);

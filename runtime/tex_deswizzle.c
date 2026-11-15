@@ -10,6 +10,9 @@
 // addressing inside a level and the copy.
 #include "tex.h"
 #include <string.h>
+#ifndef CALLBENCH
+#include "callcap.h"
+#endif
 
 static uint32_t gob_off(uint32_t x, uint32_t y) {
     return (x % 64 / 32) * 256 + (y % 8 / 2) * 64 + (x % 32 / 16) * 32 + (y % 2) * 16 + x % 16;
@@ -122,7 +125,41 @@ int nvn_texels_box(const nvn_texdesc *d, unsigned level, unsigned layer, uint32_
     return 0;
 }
 
+#ifndef CALLBENCH
+// XC2_CALLCAP (callcap.h CC_DESWIZZLE): the texture's description and whole storage, the call timed, and a hash of the
+// rows it wrote. Storages over 64 MiB are not captured.
+static int deswizzle_captured(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, void *dst,
+                              size_t dst_pitch) {
+    nvn_texlayout L;
+    nvn_tex_layout(d, &L);
+    uint32_t row_bytes, rows = 1, slices = 1, bpb;
+    uint64_t base;
+    unsigned th, td;
+    if (nvn_tex_is_linear(d)) {
+        int bw = 1, bh = 1;
+        nvn_fmt_bpb(d->format, &bw, &bh);
+        rows = d->target == 0 ? 1 : (d->height + bh - 1) / bh;
+    } else if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) {
+        rows = 0;
+    }
+    uint64_t size = L.size > (uint64_t)L.layer_size * L.layers ? L.size : (uint64_t)L.layer_size * L.layers;
+    uint64_t t0 = callcap_now();
+    int ret = move(d, level, layer, (uint8_t *)src, (uint8_t *)dst, dst_pitch, 1);
+    uint64_t ns = callcap_now() - t0;
+    if (size <= (64ull << 20)) {
+        uint64_t dst_size = (uint64_t)rows * slices * dst_pitch;
+        CcDeswizzle r = {level, layer, (uint32_t)ret, 0, dst_pitch, dst_size, ret ? 0 : cc_hash(dst, dst_size)};
+        CcBlob b[3] = {{&r, sizeof r}, {d, sizeof *d}, {src, size}};
+        callcap_add(CC_DESWIZZLE, ns, b, 3);
+    }
+    return ret;
+}
+#endif
+
 int nvn_deswizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, void *dst, size_t dst_pitch) {
+#ifndef CALLBENCH
+    if (callcap_on()) return deswizzle_captured(d, level, layer, src, dst, dst_pitch);
+#endif
     return move(d, level, layer, (uint8_t *)src, (uint8_t *)dst, dst_pitch, 1);
 }
 int nvn_swizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, size_t src_pitch, void *dst) {

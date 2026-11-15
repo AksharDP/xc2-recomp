@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "callcap.h"
 #include "cfg.h"
 #include "flight.h"
 #include "host.h"
@@ -195,7 +196,22 @@ static uint64_t cp_min(void) {
     return v;
 }
 
+static void copy_par(void *dst, const void *src, uint64_t n);
+
+// XC2_CALLCAP (callcap.h CC_COPY): each copy's size and alignment, and its time.
 void mem_copy_par(void *dst, const void *src, uint64_t n) {
+    if (!callcap_on()) {
+        copy_par(dst, src, n);
+        return;
+    }
+    uint64_t t0 = callcap_now();
+    copy_par(dst, src, n);
+    CcCopy c = {n, (uintptr_t)dst & 0xfff, (uintptr_t)src & 0xfff};
+    CcBlob b = {&c, sizeof c};
+    callcap_add(CC_COPY, callcap_now() - t0, &b, 1);
+}
+
+static void copy_par(void *dst, const void *src, uint64_t n) {
     if (n < cp_min() || !cp_enabled()) {
         memcpy(dst, src, (size_t)n);
         return;
