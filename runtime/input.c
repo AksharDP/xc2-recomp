@@ -521,8 +521,16 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             static int was_captured;
             static uint8_t mouse_ignore[KEY_COUNT];
             int cap = ikb_captured();
+            // Only the keys the result reads: the bound ones, the walk key and the mouse buttons. On Windows each
+            // ikb_down is a GetAsyncKeyState call into the kernel, and asking for every key on every poll took 0.7 ms
+            // of the game's main thread in frames over 15 ms.
+            uint8_t want[KEY_COUNT] = {0};
+            for (int i = 0; i < input_map.nkeys; i++) want[input_map.keys[i].key] = 1;
+            walk_get();
+            if (walk_key > 0 && walk_key < KEY_COUNT) want[walk_key] = 1;
+            for (int k = KEY_MOUSE_L; k <= KEY_MOUSE_X2; k++) want[k] = 1;
             for (int k = 1; k < KEY_COUNT; k++) {
-                down[k] = ikb_down(k);
+                down[k] = want[k] && ikb_down(k);
                 if (k < KEY_MOUSE_L || k > KEY_MOUSE_X2) continue;
                 if (cap && !was_captured) mouse_ignore[k] = down[k];
                 if (!down[k]) mouse_ignore[k] = 0;
@@ -531,7 +539,6 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             was_captured = cap;
             b |= input_map_buttons(down);
             int32_t k[2];
-            walk_get();
             int walk = walk_key != KEY_NONE && down[walk_key];
             input_map_stick(down, 0, k);
             if (walk) k[0] = (int32_t)(k[0] * walk_scale), k[1] = (int32_t)(k[1] * walk_scale);
