@@ -407,6 +407,9 @@ uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size);   // newest recor
 uint64_t vk_texture_stale_refusals(void);   // GPU-written sources of another shape refused by a new texture (entry_of), since start
 void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those images back into their storage (waits)
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc);   // vk_pool_fini: drop the images there
+// Waits until every deswizzle uploads deferred to the helper threads (XC2_TEX_ASYNC) has written its staging buffer;
+// vk_upload_flush calls it before submitting the batch. Any thread.
+void vk_texture_jobs_wait(void);
 void vk_texture_stats(uint64_t *images, uint64_t *uploads, uint64_t *reuploads);
 // Entries now, live and released (TextureFinalize, kept until sweep_released), with the bytes of their own memory
 // (images not bound into pool memory).
