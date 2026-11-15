@@ -2944,7 +2944,7 @@ void vk_mem_shutdown(void) {
     nm = npend = nwbl = 0;   // mirrors went with their pools
     plat_mutex_lock(&shadow_lock);
     for (int i = 0; i < nspend; i++) snap_release(spend[i].snap);
-    nstouch = nspend = 0;   // shadows too
+    nstouch = nspend = nsdone = 0;   // shadows too, and the write-backs a capture may predate
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);
     for (int i = 0; i < nretiring; i++) destroy_rec(c, retiring[i]);   // finalized ones whose callback never ran

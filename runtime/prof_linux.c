@@ -123,8 +123,9 @@ static int cmp(const void *a, const void *b) {
 }
 
 void prof_sampler_write(void) {
-    if (state != 2) return;
-    __atomic_store_n(&state, 3, __ATOMIC_SEQ_CST);
+    // The frame thread (the window's end) and the exit hook (prof_write) may both get here: one of them writes.
+    int sampling = 2;
+    if (!__atomic_compare_exchange_n(&state, &sampling, 3, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;
     syscall(SYS_timer_delete, timer);
     // A signal delivered before the delete may still be in its handler on the sampled thread; one that starts later
     // sees state 3 and returns. Wait for the former before reading the tables.
