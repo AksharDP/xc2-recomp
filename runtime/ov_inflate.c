@@ -23,8 +23,9 @@
 // wrote the original software. If you use this software in a product, an acknowledgment in the product documentation
 // would be appreciated but is not required. 2. Altered source versions must be plainly marked as such, and must not be
 // misrepresented as being the original software. 3. This notice may not be removed or altered from any source
-// distribution. (Jean-loup Gailly, Mark Adler.) Altered: guest struct layouts, guest message pointers, and the host
-// call wrapper, stats and check mode around it.
+// distribution. (Jean-loup Gailly, Mark Adler.) Altered: guest struct layouts, guest message pointers, the copy of a
+// match from the output (fills and words instead of bytes, the same bytes written), and the host call wrapper, stats
+// and check mode around it.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -207,17 +208,30 @@ static void inflate_fast(uint64_t strm_a, unsigned start) {
                         if (len > 1) *++out = *++from;
                     }
                 } else {
-                    from = out - dist;   // copy from the output; the minimum length is three
-                    do {
-                        *++out = *++from;
-                        *++out = *++from;
-                        *++out = *++from;
-                        len -= 3;
-                    } while (len > 2);
-                    if (len) {
-                        *++out = *++from;
-                        if (len > 1) *++out = *++from;
+                    // Copy from the output; the minimum length is three. zlib copies a byte at a time, and with a
+                    // distance of 1 (a quarter of the match bytes in XC2's archives) each byte waits for the store
+                    // before it. Altered: a fill for distance 1 and whole words from 8 on; the bytes written are the
+                    // same and none past out + len.
+                    uint8_t *o = out + 1;
+                    const uint8_t *s = o - dist;
+                    if (dist >= 8) {
+                        if (len >= 8) {   // words, the last one ending exactly at o + len
+                            uint8_t *stop = o + len;
+                            do { memcpy(o, s, 8); o += 8; s += 8; } while (o + 8 <= stop);
+                            memcpy(stop - 8, stop - 8 - dist, 8);
+                        } else if (len >= 4) {   // two words of 4 that overlap
+                            memcpy(o, s, 4);
+                            memcpy(o + len - 4, s + len - 4, 4);
+                        } else {
+                            o[0] = s[0]; o[1] = s[1]; o[2] = s[2];
+                        }
+                    } else if (dist == 1) {
+                        memset(o, s[0], len);
+                    } else {   // 2 to 7: each byte may be one this copy wrote
+                        unsigned k = 0;
+                        do o[k] = s[k]; while (++k < len);
                     }
+                    out += len;
                 }
             } else if ((op & 64) == 0) {   // second-level distance code
                 here = dcode[here.val + (hold & ((1U << op) - 1))];
