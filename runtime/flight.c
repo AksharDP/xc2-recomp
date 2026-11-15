@@ -5,6 +5,11 @@
 // XC2_FLIGHT_SPIKE_MS (100; 0 off; at most one dump per 10 s), and XC2_FLIGHT_AT=<frame>[,<frame>...]. A dump holds
 // the frames up to FLIGHT_POST presents after the trigger, so the aftermath is in it too. tools/flight_view.py reads it.
 //
+// XC2_FLIGHT_SLOW_MS=<ms> keeps every frame whose interval exceeds ms, for the whole run, and nothing else: at exit they
+// go to <dir>/<YYYYMMDD-HHMMSS>-slow/slow.tsv with the ring's columns, the world clock, and the CPU time each watched
+// thread (flight_thread_self) used in the interval (XC2_FLIGHT_CPU=0 leaves those out). Without XC2_FLIGHT=1 the ring
+// is only the slow log's scratch: no thumbnails, spike or exit dumps. tools/flight_slow.py reads it.
+//
 // Records come from perf_present (prof_win.c) on the render thread; the counts are differences of the XC2_TRACE=perf
 // running totals and of vk_exec_frame. Off, the only cost is the flight_on branch in perf_present and vk_backend.c.
 #include <stdio.h>
@@ -85,18 +90,109 @@ static VkExecFrame prev_exec;
 static int exit_on = 1;                          // XC2_FLIGHT_EXIT: flight_exit writes the ring at exit
 static volatile uint64_t cost_ns, cost_max_ns;   // render-thread time in flight_frame, for the dump log line
 
+// ---- slow-frame log (XC2_FLIGHT_SLOW_MS)
+// Watched threads, registered by the threads themselves (flight_thread_self). Each frame reads every one's CPU time;
+// the presenting thread is the one that calls flight_frame.
+#define THR_MAX 256
+typedef struct { PlatThreadQ *q; uint32_t guest, tid; const char *name; uint64_t prev; } Thr;
+static Thr thr[THR_MAX];
+static volatile int thr_n;     // slots claimed; a slot counts once its q is set (release)
+// CPU columns: the presenting thread, the main thread, the replay thread, the present thread, the copy helpers
+// (memory.c mem_copy_par), the other guest threads, the other host threads; then the three busiest single threads of
+// the rest, by label.
+enum { U_PRES, U_MAIN, U_REPLAY, U_VKPRES, U_COPY, U_GUEST, U_HOST, U_N };
+static const char *const cpu_names[U_N] = {"cpu_pres_ms", "cpu_main_ms", "cpu_replay_ms", "cpu_vkpres_ms", "cpu_copy_ms",
+                                           "cpu_guest_other_ms", "cpu_host_other_ms"};
+#define TOP_N 3
+typedef struct {
+    Rec r;
+    int64_t world_us;
+    uint32_t cpu_us[U_N], top_us[TOP_N];
+    int16_t top[TOP_N];   // thr index, -1 none
+} SlowRec;
+#define SLOW_MAX 40000
+static uint64_t slow_ns;   // 0: off
+static int slow_cpu = 1, slow_only;
+static SlowRec *slow;
+static int slow_n;
+static uint64_t slow_dropped, slow_seen;   // over the cap; frames looked at
+static uint32_t pres_tid;
+
+void flight_thread_self(uint32_t guest, const char *name) {
+    int i = __atomic_fetch_add(&thr_n, 1, __ATOMIC_RELAXED);
+    if (i >= THR_MAX) return;
+    PlatThreadQ *q = plat_thread_q_self();
+    thr[i].guest = guest;
+    thr[i].tid = plat_thread_id();
+    thr[i].name = name;
+    thr[i].prev = q ? plat_thread_q_ns(q) : 0;
+    __atomic_store_n(&thr[i].q, q, __ATOMIC_RELEASE);
+}
+
+static void thr_label(int i, char *out, size_t n) {
+    if (thr[i].name && thr[i].guest) snprintf(out, n, "%s:%#x", thr[i].name, thr[i].guest);
+    else if (thr[i].name) snprintf(out, n, "%s", thr[i].name);
+    else snprintf(out, n, "%#x", thr[i].guest);
+}
+
+// The CPU time every watched thread used since the previous frame, summed into the columns of s (render thread).
+static void slow_cpu_frame(SlowRec *s, int keep) {
+    int n = __atomic_load_n(&thr_n, __ATOMIC_RELAXED);
+    if (n > THR_MAX) n = THR_MAX;
+    uint64_t u[U_N] = {0};
+    uint64_t top_v[TOP_N] = {0};
+    int top_i[TOP_N] = {-1, -1, -1};
+    for (int i = 0; i < n; i++) {
+        PlatThreadQ *q = __atomic_load_n(&thr[i].q, __ATOMIC_ACQUIRE);
+        if (!q) continue;
+        uint64_t v = plat_thread_q_ns(q), d = v > thr[i].prev ? v - thr[i].prev : 0;
+        thr[i].prev = v;
+        if (!keep || !d) continue;
+        const char *nm = thr[i].name;
+        int k = thr[i].tid == pres_tid       ? U_PRES
+              : thr[i].guest && nm           ? U_MAIN
+              : thr[i].guest                 ? U_GUEST
+              : !strcmp(nm, "vk replay")     ? U_REPLAY
+              : !strcmp(nm, "vk present")    ? U_VKPRES
+              : !strcmp(nm, "copy")          ? U_COPY
+                                             : U_HOST;
+        u[k] += d;
+        if (k != U_GUEST && k != U_HOST) continue;
+        for (int j = 0; j < TOP_N; j++)
+            if (d > top_v[j]) {
+                memmove(top_v + j + 1, top_v + j, (TOP_N - 1 - j) * sizeof *top_v);
+                memmove(top_i + j + 1, top_i + j, (TOP_N - 1 - j) * sizeof *top_i);
+                top_v[j] = d, top_i[j] = i;
+                break;
+            }
+    }
+    if (!keep) return;
+    for (int k = 0; k < U_N; k++) s->cpu_us[k] = (uint32_t)(u[k] / 1000);
+    for (int j = 0; j < TOP_N; j++) s->top_us[j] = (uint32_t)(top_v[j] / 1000), s->top[j] = (int16_t)top_i[j];
+}
+
 static unsigned env_u(const char *name, unsigned def) {
     const char *e = cfg_get(name);
     return e && *e ? (unsigned)strtoul(e, NULL, 10) : def;
 }
 
 void flight_init(void) {
-    if (strcmp(cfg_value("XC2_FLIGHT"), "1")) return;
-    ring_n = (int)env_u("XC2_FLIGHT_FRAMES", 600);
+    int ring_on = !strcmp(cfg_value("XC2_FLIGHT"), "1");
+    slow_ns = (uint64_t)env_u("XC2_FLIGHT_SLOW_MS", 0) * 1000000ull;
+    if (!ring_on && !slow_ns) return;
+    slow_only = !ring_on;
+    // Slow-only: the ring holds the last 64 records as the slow log's scratch (counts, the GPU time filled in later)
+    ring_n = slow_only ? 64 : (int)env_u("XC2_FLIGHT_FRAMES", 600);
     if (ring_n < 64) ring_n = 64;
     if (ring_n > 7200) ring_n = 7200;
     if (!(ring = calloc((size_t)ring_n, sizeof *ring))) { rt_log("flight: no memory for %d records, off", ring_n); return; }
-    spike_ns = (uint64_t)cfg_int("XC2_FLIGHT_SPIKE_MS") * 1000000ull;
+    if (slow_ns && !(slow = malloc(sizeof *slow * SLOW_MAX))) {
+        rt_log("flight: no memory for the slow-frame log, off");
+        slow_ns = 0;
+        if (slow_only) return;
+    }
+    slow_cpu = env_u("XC2_FLIGHT_CPU", 1) != 0;
+    spike_ns = slow_only ? 0 : (uint64_t)cfg_int("XC2_FLIGHT_SPIKE_MS") * 1000000ull;
     for (const char *p = cfg_get("XC2_FLIGHT_AT"); p && *p && n_at < 16;) {
         char *end;
         unsigned long long f = strtoull(p, &end, 10);
@@ -113,11 +209,15 @@ void flight_init(void) {
         else snprintf(tmp, sizeof tmp, "flight");
     }
     if (!plat_full_path(tmp, base_dir, sizeof base_dir)) snprintf(base_dir, sizeof base_dir, "%s", tmp);
-    thumbs_on = env_u("XC2_FLIGHT_THUMBS", 1) != 0;
-    exit_on = env_u("XC2_FLIGHT_EXIT", 1) != 0;
+    thumbs_on = !slow_only && env_u("XC2_FLIGHT_THUMBS", 1) != 0;
+    exit_on = !slow_only && env_u("XC2_FLIGHT_EXIT", 1) != 0;
     if (thumbs_on) vk_thumbs_enable(ring_n);
     flight_on = 1;
-    rt_log("flight: on: last %d frames, %s; dump on F8, on a frame over %llu ms (one per 10 s)%s, to %s", ring_n,
+    if (slow_ns)
+        rt_log("flight: slow-frame log: every frame over %llu ms (up to %d), %s, written at exit to %s",
+               (unsigned long long)(slow_ns / 1000000), SLOW_MAX,
+               slow_cpu ? "with each thread's CPU time" : "no CPU columns", base_dir);
+    if (!slow_only) rt_log("flight: on: last %d frames, %s; dump on F8, on a frame over %llu ms (one per 10 s)%s, to %s", ring_n,
            thumbs_on ? "thumbnails 320x180" : "no thumbnails", (unsigned long long)(spike_ns / 1000000),
            spike_ns ? "" : " (spike trigger off)", base_dir);
     if (thumbs_on)
@@ -251,6 +351,29 @@ static int write_png(const char *path, const uint8_t *rgba, PngBufs *pb) {
 }
 
 // ---------------------------------------------------------------- dump thread
+// The record columns of frames.tsv and slow.tsv, without the line end.
+static void tsv_head(FILE *f) {
+    fprintf(f, "frame\tt_ms\tinterval_ms\tguest_ms");
+    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", blocked_names[k]);
+    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", rep_names[k]);
+    for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%s", span_names[k]);
+    for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%s", why_names[k]);
+    fprintf(f, "\tgpu_ms\treplay_ms");
+    for (int k = 0; k < C_N; k++) fprintf(f, "\t%s", count_names[k]);
+}
+
+static void tsv_row(FILE *f, const Rec *r) {
+    fprintf(f, "%llu\t%.1f\t%.2f\t%.2f", (unsigned long long)r->frame, r->t_ns / 1e6, r->interval_us / 1000.0,
+            r->guest_us / 1000.0);
+    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->blocked_us[k] / 1000.0);
+    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->rep_us[k] / 1000.0);
+    for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%.2f", r->span_us[k] / 1000.0);
+    for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%.2f", r->why_us[k] / 1000.0);
+    if (r->gpu_us == GPU_PENDING) fprintf(f, "\tnan\t%.2f", r->replay_us / 1000.0);
+    else fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
+    for (int k = 0; k < C_N; k++) fprintf(f, "\t%u", r->n[k]);
+}
+
 static void dump_main(void *arg) {
     DumpJob *j = arg;
     uint64_t t_start = plat_now_ms();
@@ -296,25 +419,10 @@ static void dump_main(void *arg) {
     }
     fprintf(f, "# xc2 flight dump: %s at frame %llu, interval %.1f ms\n", j->why, (unsigned long long)j->trig_frame,
             j->trig_interval_us / 1000.0);
-    fprintf(f, "frame\tt_ms\tinterval_ms\tguest_ms");
-    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", blocked_names[k]);
-    for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%s", rep_names[k]);
-    for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%s", span_names[k]);
-    for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%s", why_names[k]);
-    fprintf(f, "\tgpu_ms\treplay_ms");
-    for (int k = 0; k < C_N; k++) fprintf(f, "\t%s", count_names[k]);
+    tsv_head(f);
     fprintf(f, "\tthumb\n");
     for (int i = 0; i < j->n; i++) {
-        const Rec *r = &j->r[i];
-        fprintf(f, "%llu\t%.1f\t%.2f\t%.2f", (unsigned long long)r->frame, r->t_ns / 1e6, r->interval_us / 1000.0,
-                r->guest_us / 1000.0);
-        for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->blocked_us[k] / 1000.0);
-        for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->rep_us[k] / 1000.0);
-        for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%.2f", r->span_us[k] / 1000.0);
-        for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%.2f", r->why_us[k] / 1000.0);
-        if (r->gpu_us == GPU_PENDING) fprintf(f, "\tnan\t%.2f", r->replay_us / 1000.0);
-        else fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
-        for (int k = 0; k < C_N; k++) fprintf(f, "\t%u", r->n[k]);
+        tsv_row(f, &j->r[i]);
         fprintf(f, "\t%d\n", have ? have[i] : 0);
     }
     fclose(f);
@@ -352,10 +460,57 @@ static void trigger(uint64_t frame, uint64_t interval_ns, const char *why) {
     dump_at = frame + (FLIGHT_POST < ring_n / 4 ? FLIGHT_POST : (uint64_t)ring_n / 4);
 }
 
-// At exit (prof_write, on the exit path's thread): the ring as it stands, written here and now, without thumbnails
-// (the device is going away with the process). Once per run.
+// At exit: the slow-frame log, in the order the frames came. The render thread may still add records meanwhile; one read
+// of the count fixes which are written.
+static void slow_write(void) {
+    int n = __atomic_load_n(&slow_n, __ATOMIC_ACQUIRE);
+    if (!slow_ns) return;
+    struct tm st;
+    plat_local_time(&st);
+    char dir[PLAT_PATH_MAX], path[PLAT_PATH_MAX + 16];
+    snprintf(dir, sizeof dir, "%s/%04d%02d%02d-%02d%02d%02d-slow", base_dir, st.tm_year + 1900, st.tm_mon + 1, st.tm_mday,
+             st.tm_hour, st.tm_min, st.tm_sec);
+    plat_file_mkdir_p(dir);
+    snprintf(path, sizeof path, "%s/slow.tsv", dir);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        rt_log("flight: cannot write %s", path);
+        return;
+    }
+    fprintf(f, "# xc2 slow-frame log: frames over %.1f ms: %d of %llu%s\n", slow_ns / 1e6, n,
+            (unsigned long long)slow_seen, slow_dropped ? " (log full: later ones dropped)" : "");
+    tsv_head(f);
+    fprintf(f, "\tworld_ms");
+    if (slow_cpu) {
+        for (int k = 0; k < U_N; k++) fprintf(f, "\t%s", cpu_names[k]);
+        for (int j = 0; j < TOP_N; j++) fprintf(f, "\ttop%d\ttop%d_ms", j + 1, j + 1);
+    }
+    fprintf(f, "\n");
+    for (int i = 0; i < n; i++) {
+        SlowRec *s = &slow[i];
+        gpu_fill(&s->r);
+        tsv_row(f, &s->r);
+        fprintf(f, "\t%.1f", s->world_us < 0 ? -1.0 : s->world_us / 1000.0);
+        if (slow_cpu) {
+            for (int k = 0; k < U_N; k++) fprintf(f, "\t%.2f", s->cpu_us[k] / 1000.0);
+            for (int j = 0; j < TOP_N; j++) {
+                char lab[48] = "-";
+                if (s->top[j] >= 0) thr_label(s->top[j], lab, sizeof lab);
+                fprintf(f, "\t%s\t%.2f", lab, s->top_us[j] / 1000.0);
+            }
+        }
+        fprintf(f, "\n");
+    }
+    fclose(f);
+    rt_log("flight: slow-frame log %s: %d frames over %.1f ms of %llu", path, n, slow_ns / 1e6,
+           (unsigned long long)slow_seen);
+}
+
+// At exit (prof_write, on the exit path's thread): the slow-frame log, and the ring as it stands, written here and now,
+// without thumbnails (the device is going away with the process). Once per run.
 void flight_exit(void) {
-    static int done;
+    static int done, slow_done;
+    if (flight_on && !slow_done) slow_done = 1, slow_write();
     // The render thread may still record while this copies: one read of the count fixes which records are copied, and
     // the oldest slot, the one the next record overwrites, is left out of a full ring.
     uint64_t rec = __atomic_load_n(&recorded, __ATOMIC_ACQUIRE);
@@ -431,6 +586,23 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const P
         prev_cnt[k] = v;
     }
     recorded++;
+    if (slow_ns) {
+        // Every frame reads the threads' CPU time, so a slow frame's columns cover its own interval only
+        pres_tid = plat_thread_id();
+        int keep = interval_ns > slow_ns && recorded > 1;
+        slow_seen++;
+        SlowRec tmp, *s = keep && slow_n < SLOW_MAX ? &slow[slow_n] : &tmp;
+        if (slow_cpu) slow_cpu_frame(s, keep);
+        if (keep) {
+            if (s == &tmp) slow_dropped++;
+            else {
+                s->r = *r;
+                s->world_us = frame_step_world_us();
+                __atomic_store_n(&slow_n, slow_n + 1, __ATOMIC_RELEASE);
+            }
+        }
+        for (int i = slow_n - 1; i >= 0 && i >= slow_n - 8; i--) gpu_fill(&slow[i].r);   // as the frames finish
+    }
 
     static int key_was;
     int key = input_flight_key();

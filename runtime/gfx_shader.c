@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "flight.h"
 #include "gfx.h"
 #include "host.h"
 #include "platform/platform.h"
@@ -1302,6 +1303,7 @@ static XWait **wait_slot(const uint8_t key[32]) {
 
 static void xlate_worker(void *arg) {
     (void)arg;
+    flight_thread_self(0, "xlate");
     for (;;) {
         plat_mutex_lock(&X.lock);
         while (!X.head) plat_cond_wait(&X.work, &X.lock);

@@ -1,5 +1,6 @@
 // Windows implementation of platform.h: CreateThread, QueryPerformanceCounter, high-resolution waitable timers,
 // SRW locks and condition variables.
+#include <intrin.h>
 #include <io.h>
 #include <stdio.h>
 #include <windows.h>
@@ -104,6 +105,36 @@ uint64_t plat_thread_cpu_ns(uint32_t tid) {
              100;
     if (th) CloseHandle(th);
     return ns;
+}
+
+// QueryThreadCycleTime counts the thread's time in time-stamp counter ticks, so the ns follow from the counter's rate
+// against QueryPerformanceCounter, measured from the first handle on and refreshed while the gap grows.
+struct PlatThreadQ { HANDLE h; };
+static volatile LONG64 tsc0, qpc0_ns;
+static volatile double tsc_per_ns;
+
+PlatThreadQ *plat_thread_q_self(void) {
+    HANDLE h;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, THREAD_QUERY_LIMITED_INFORMATION,
+                         FALSE, 0))
+        return NULL;
+    PlatThreadQ *q = malloc(sizeof *q);
+    if (!q) return CloseHandle(h), NULL;
+    q->h = h;
+    if (!tsc0) qpc0_ns = (LONG64)plat_now_ns(), tsc0 = (LONG64)__rdtsc();
+    return q;
+}
+
+uint64_t plat_thread_q_ns(PlatThreadQ *q) {
+    ULONG64 cyc;
+    if (!q || !QueryThreadCycleTime(q->h, &cyc)) return 0;
+    uint64_t now = plat_now_ns(), dn = now - (uint64_t)qpc0_ns;
+    if (dn > 50000000ull) {   // the rate over at least 50 ms; later calls refine it
+        double r = (double)((uint64_t)__rdtsc() - (uint64_t)tsc0) / (double)dn;
+        if (r > 0.1) tsc_per_ns = r;
+    }
+    double r = tsc_per_ns;
+    return r > 0 ? (uint64_t)((double)cyc / r) : 0;
 }
 
 // ---- thread interruption: SuspendThread, Get/SetThreadContext, ResumeThread.

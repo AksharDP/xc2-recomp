@@ -33,6 +33,11 @@ void plat_thread_detach(PlatThread *t);   // frees t; the thread runs on
 uint64_t plat_thread_affinity(PlatThread *t, uint64_t mask);
 uint32_t plat_cpu_count(void);            // logical processors
 uint64_t plat_thread_cpu_ns(uint32_t tid);  // CPU time of the thread with id tid (plat_thread_id) so far; 0 unknown
+// A handle on the calling thread that another thread can read its CPU time through, at sub-microsecond resolution
+// (GetThreadTimes moves in scheduler ticks, too coarse for one frame). Never freed; NULL when the platform has none.
+typedef struct PlatThreadQ PlatThreadQ;
+PlatThreadQ *plat_thread_q_self(void);
+uint64_t plat_thread_q_ns(PlatThreadQ *q);   // CPU time so far in ns; 0 unknown. Any thread, also after q's thread ended
 // The logical processors the process may use (bit n = processor n, the first 64), into *all, and the lowest of each
 // physical core among them into *first; returns the number of physical cores, 0 when unknown.
 int plat_cpu_cores(uint64_t *all, uint64_t *first);
