@@ -63,10 +63,18 @@ void nvn_guest_written(uint64_t addr, uint64_t size) {
 // memcpy of pool storage the GPU rendered into must copy what the GPU wrote: XCX moves its generated grass maps
 // between pools with memcpy. Copies below 1 KiB skip the check; the copy itself is memmove, as overlapping
 // arguments are undefined for memcpy anyway.
+// XC2's streaming jobs copy loaded assets into fresh pages with memcpy, one copy of a megabyte or more after another
+// (about 1.8 GB in the copies of 1 MiB and up on a 30 s route, at 2.6 to 2.8 GB/s on the one thread: the first write
+// to each page faults), and the main thread waits for those jobs in streaming frames. A large copy whose ends do not
+// overlap goes to mem_copy_par, which splits it over host helper threads (memory.c; XC2_COPY_PAR=0 keeps it on the
+// caller): the same bytes when it returns, as memcpy.
 static void ov_memcpy(Cpu *c) {
     uint64_t dst = arg_x(c, 0), src = arg_x(c, 1), n = arg_x(c, 2);
     if (n >= 1024) gfx_backend()->guest_read(src, n);
-    memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
+    if (dst + n <= src || src + n <= dst)
+        mem_copy_par((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);   // a plain memcpy below its threshold
+    else
+        memmove((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
     ret_x(c, dst);
 }
 HOST_OVERRIDE("memcpy", ov_memcpy);
