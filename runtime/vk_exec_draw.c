@@ -1014,16 +1014,29 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
     int full = glow_full_on() && glow_prim == NVN_DRAW_PRIMITIVE_QUADS && fabs(pw - ow) <= 0.01 * ow &&
                fabs(ph - oh) <= 0.01 * oh;
     if (!half && !full) return 0;
-    uint8_t head[GLOW_HEAD];
-    if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
-    float x0, y1, x15, y16;
-    memcpy(&x0, head + 0x00, 4);
-    memcpy(&y1, head + 0x14, 4);
-    memcpy(&x15, head + 0xf0, 4);
-    memcpy(&y16, head + 0x104, 4);
-    // The entries read 2/output: doubled over the output size they are 1.
-    int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
+    // The answer per block and snapshot generation. The snapshot arena is device memory the CPU reaches through the
+    // BAR, written sequentially and read uncached, and the draws of a pass at half the output bind one c4 block after
+    // another: the replay spent about 1 ms of a streaming frame reading the same 264 bytes for each. vk_usnap_gen
+    // changes at every submission and at every GPU write that drops snapshot bytes, so a kept answer was read from the
+    // bytes the draw would read. A block the snapshot lacks is read from guest memory each time, and not kept.
+    static struct { uint64_t addr, gen; int data; } memo[64];
+    uint64_t gen = vk_usnap_gen();
+    int k = (int)((b->addr >> 8) & 63), snap = vk_usnap_host(b->addr, GLOW_HEAD) != NULL, data;
+    if (snap && memo[k].addr == b->addr && memo[k].gen == gen) {
+        data = memo[k].data;
+    } else {
+        uint8_t head[GLOW_HEAD];
+        if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
+        float x0, y1, x15, y16;
+        memcpy(&x0, head + 0x00, 4);
+        memcpy(&y1, head + 0x14, 4);
+        memcpy(&x15, head + 0xf0, 4);
+        memcpy(&y16, head + 0x104, 4);
+        // The entries read 2/output: doubled over the output size they are 1.
+        data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
                fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
+        if (snap) memo[k].addr = b->addr, memo[k].gen = gen, memo[k].data = data;
+    }
     if (!data) return 0;
     double sx = ow / 1280.0, sy = oh / 720.0;
     // Each distinct target size is logged once (the first 16), so stderr.txt lists what was scaled.
