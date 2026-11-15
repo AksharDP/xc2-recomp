@@ -1090,6 +1090,8 @@ static uint32_t block(RtThread *t, int kind, int64_t ns) {
     return r;
 }
 
+uint32_t kern_cur_handle(void) { return tcur ? tcur->handle : 0; }   // fnprof.c: the calling guest thread
+
 int kern_core_away(void) {
     RtThread *t = tcur;
     if (!t || t->cur_core < 0) return 0;

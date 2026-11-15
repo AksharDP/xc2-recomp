@@ -76,6 +76,7 @@ int perf_gpu_frame_ns(uint64_t frame, uint64_t *ns) {
 void prof_start(void) {
     flight_init();
     callcap_init();
+    fnprof_init();
     atexit(perf_summary_flush);   // boot.c's _exit path goes through prof_write instead
     perf_base = (rt_trace & RT_TRACE_PERF) || flight_on;
     perf_on = perf_base || overlay == 2;
@@ -242,6 +243,7 @@ static void ftg_report(uint64_t now) {
 __attribute__((weak)) void gfx_exit_log(void) {}
 
 void perf_summary_flush(void) {   // at exit (prof_write)
+    fnprof_report();
     if (summary_t0) {
         ft_report(kern_now_ns(), "exit");
         ftg_report(kern_now_ns());
@@ -355,6 +357,7 @@ void perf_present(uint64_t frame) {
     static uint64_t last, sum, max, n, win_start, ab_b;
     static int64_t win_prev[PERF_CNT_N];
     prof_render_tid = plat_thread_id();
+    fnprof_frame(frame);
     if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
     uint64_t now = kern_now_ns(), d = last ? now - last : 0;
     prof_sampler_frame(frame, now, last ? d : 0);
