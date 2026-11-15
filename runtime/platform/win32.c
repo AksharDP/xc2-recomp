@@ -131,6 +131,7 @@ PlatThreadQ *plat_thread_q_self(void) {
     PlatThreadQ *q = calloc(1, sizeof *q);
     if (!q) return CloseHandle(h), NULL;
     q->h = h;
+    QueryThreadCycleTime(h, &q->cyc);   // the baseline: cycles before registration are no frame's
     plat_once(&tsc_once, tsc_ref, NULL);
     return q;
 }
@@ -145,8 +146,10 @@ uint64_t plat_thread_q_ns(PlatThreadQ *q) {
         if (r > 0.1) __atomic_store(&tsc_per_ns, &r, __ATOMIC_RELAXED);
     }
     __atomic_load(&tsc_per_ns, &r, __ATOMIC_RELAXED);
+    // Before the first rate the cycles are dropped, not kept for later: kept, they would all land in the first frame
+    // measured after it. The frames of those first 50 ms show no CPU time.
     if (r > 0 && cyc > q->cyc) q->ns += (uint64_t)((double)(cyc - q->cyc) / r);
-    if (r > 0) q->cyc = cyc;   // before the first rate, the cycles wait for it
+    if (cyc > q->cyc) q->cyc = cyc;
     return q->ns;
 }
 
