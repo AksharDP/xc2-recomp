@@ -49,18 +49,24 @@ def mean(xs):
     return sum(xs) / len(xs) if xs else float('nan')
 
 
+def wall(f):
+    """The wall interval: CPU times are wall-clock times, so their share is of this, whether or not --clock scaled
+    interval_ms."""
+    return f.get('wall_ms', f['interval_ms'])
+
+
 def limit(f):
     """The single thread whose CPU time is the largest share of the interval, and that share (the summed columns of
     the other guest and host threads and the copy helpers are not single threads)."""
     best, share = 'none', 0.0
     for c in CPU[:4]:
         v = f.get(c)
-        if isinstance(v, float) and v / f['interval_ms'] > share:
-            best, share = c[4:-3], v / f['interval_ms']
+        if isinstance(v, float) and v / wall(f) > share:
+            best, share = c[4:-3], v / wall(f)
     for j in (1, 2, 3):
         v = f.get(f'top{j}_ms')
-        if isinstance(v, float) and v / f['interval_ms'] > share:
-            best, share = str(f[f'top{j}']), v / f['interval_ms']
+        if isinstance(v, float) and v / wall(f) > share:
+            best, share = str(f[f'top{j}']), v / wall(f)
     return best, share
 
 
@@ -74,26 +80,27 @@ def report(name, frames, rows):
     buckets = Counter('20-25' if x < 25 else '25-33' if x < 33.4 else '33-50' if x < 50 else '50-100' if x < 100
                       else '100+' for x in iv)
     print('   intervals: ' + ', '.join(f'{k} ms {buckets[k]}' for k in ['20-25', '25-33', '33-50', '50-100', '100+']))
-    have = frames[0].keys()
+    have = set().union(*(f.keys() for f in frames))   # pooled logs may differ: XC2_FLIGHT_CPU=0 leaves out the CPU columns
     print('   mean ms: interval %.2f' % mean([f['interval_ms'] for f in frames]) + ''.join(
-        f', {c[:-3]} {mean([f[c] for f in frames]):.2f}' for c in TIME if c in have))
+        f', {c[:-3]} {mean([f.get(c) for f in frames]):.2f}' for c in TIME if c in have))
     if 'cpu_pres_ms' in have:
-        print('   cpu ms:  ' + ', '.join(f'{c[4:-3]} {mean([f[c] for f in frames]):.2f}' for c in CPU))
+        cf = [f for f in frames if 'cpu_pres_ms' in f]   # the CPU lines are of the frames that have the columns
+        print(f'   cpu ms ({len(cf)} frames):  ' + ', '.join(f'{c[4:-3]} {mean([f[c] for f in cf]):.2f}' for c in CPU))
         tops = defaultdict(float)
-        for f in frames:
+        for f in cf:
             for j in (1, 2, 3):
                 if f.get(f'top{j}') not in (None, '-'):
                     tops[str(f[f'top{j}'])] += f[f'top{j}_ms']
         print('   other threads, cpu ms per slow frame: ' + ', '.join(
-            f'{k} {v / len(frames):.2f}' for k, v in sorted(tops.items(), key=lambda kv: -kv[1])[:8]))
+            f'{k} {v / len(cf):.2f}' for k, v in sorted(tops.items(), key=lambda kv: -kv[1])[:8]))
         lim = Counter()
-        for f in frames:
+        for f in cf:
             lim[limit(f)[0]] += 1
         print('   busiest thread (largest CPU share of the interval): ' + ', '.join(
-            f'{k} {100 * v / len(frames):.0f}%' for k, v in lim.most_common(6)))
+            f'{k} {100 * v / len(cf):.0f}%' for k, v in lim.most_common(6)))
         print('   mean CPU share of the interval: pres %.0f%%, main %.0f%%, replay %.0f%%' % tuple(
-            100 * mean([f[c] / f['interval_ms'] for f in frames]) for c in CPU[:3]))
-    print('   mean counts: ' + ', '.join(f'{c} {mean([f[c] for f in frames]):.1f}' for c in COUNTS if c in have))
+            100 * mean([f[c] / wall(f) for f in cf]) for c in CPU[:3]))
+    print('   mean counts: ' + ', '.join(f'{c} {mean([f.get(c) for f in frames]):.1f}' for c in COUNTS if c in have))
     if rows:
         print('   slowest frames:')
         print('     frame   world_s  ms     guest  capt  drainF drainO pres   main   replay  gpu    stageMB  tex_up '

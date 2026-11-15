@@ -62,9 +62,12 @@ typedef struct {
 #define GPU_PENDING UINT32_MAX   // gpu_us before the frame's GPU parts are all read; written as nan if still so at a dump
 #define GPU_FILL 16              // records looked at per present for it: the frames in flight and some
 
+// gpu_us is the one field of a record written after the record is complete, and the exit dump may fill and read it
+// while the render thread still does, so both go through atomics; either writer stores the same value.
 static void gpu_fill(Rec *r) {
     uint64_t ns;
-    if (r->gpu_us == GPU_PENDING && perf_gpu_frame_ns(r->frame, &ns)) r->gpu_us = (uint32_t)(ns / 1000);
+    if (__atomic_load_n(&r->gpu_us, __ATOMIC_RELAXED) == GPU_PENDING && perf_gpu_frame_ns(r->frame, &ns))
+        __atomic_store_n(&r->gpu_us, (uint32_t)(ns / 1000), __ATOMIC_RELAXED);
 }
 
 typedef struct {
@@ -393,8 +396,9 @@ static void tsv_row(FILE *f, const Rec *r) {
     for (int k = 0; k < PERF_N; k++) fprintf(f, "\t%.2f", r->rep_us[k] / 1000.0);
     for (int k = 0; k < PERF_SPAN_N; k++) fprintf(f, "\t%.2f", r->span_us[k] / 1000.0);
     for (int k = 0; k < PERF_WHY_N; k++) fprintf(f, "\t%.2f", r->why_us[k] / 1000.0);
-    if (r->gpu_us == GPU_PENDING) fprintf(f, "\tnan\t%.2f", r->replay_us / 1000.0);
-    else fprintf(f, "\t%.2f\t%.2f", r->gpu_us / 1000.0, r->replay_us / 1000.0);
+    uint32_t gpu = __atomic_load_n(&r->gpu_us, __ATOMIC_RELAXED);
+    if (gpu == GPU_PENDING) fprintf(f, "\tnan\t%.2f", r->replay_us / 1000.0);
+    else fprintf(f, "\t%.2f\t%.2f", gpu / 1000.0, r->replay_us / 1000.0);
     for (int k = 0; k < C_N; k++) fprintf(f, "\t%u", r->n[k]);
 }
 

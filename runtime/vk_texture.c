@@ -1191,8 +1191,10 @@ void vk_texture_release(const tex_t *t) {
 }
 
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc) {
-    vk_texture_jobs_wait();   // no deferred deswizzle reads the storage once the guest has it back
     lock();
+    // No deferred deswizzle reads the storage once the guest has it back. The wait is under tex_lock, which every
+    // upload holds, so none can queue a job after it; the jobs themselves never take tex_lock.
+    vk_texture_jobs_wait();
     Tex **list = malloc(sizeof *list * (size_t)(by_key.n + 1));
     if (!list) rt_fatal("vk: out of memory for a list of textures");
     int n = 0;

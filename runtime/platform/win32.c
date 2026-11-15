@@ -108,33 +108,46 @@ uint64_t plat_thread_cpu_ns(uint32_t tid) {
 }
 
 // QueryThreadCycleTime counts the thread's time in time-stamp counter ticks, so the ns follow from the counter's rate
-// against QueryPerformanceCounter, measured from the first handle on and refreshed while the gap grows.
-struct PlatThreadQ { HANDLE h; };
-static volatile LONG64 tsc0, qpc0_ns;
-static volatile double tsc_per_ns;
+// against QueryPerformanceCounter, measured from the first handle on and refreshed while the gap grows. Scheduler
+// ticks (GetThreadTimes) would not do: they move in 15.6 ms steps, about one frame. Each handle adds its cycles since
+// the last query at the rate of the moment, so a refined rate never rescales the cycles counted before it. A handle is
+// queried by its own thread once, at registration, and afterwards only by the one thread that reads them all.
+struct PlatThreadQ { HANDLE h; ULONG64 cyc; uint64_t ns; };
+static PlatOnce tsc_once;
+static uint64_t tsc0, qpc0_ns;
+static double tsc_per_ns;   // 0 until 50 ms after the reference pair; any thread may refine it
+
+static void tsc_ref(void *arg) {
+    (void)arg;
+    qpc0_ns = plat_now_ns();
+    tsc0 = __rdtsc();
+}
 
 PlatThreadQ *plat_thread_q_self(void) {
     HANDLE h;
     if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, THREAD_QUERY_LIMITED_INFORMATION,
                          FALSE, 0))
         return NULL;
-    PlatThreadQ *q = malloc(sizeof *q);
+    PlatThreadQ *q = calloc(1, sizeof *q);
     if (!q) return CloseHandle(h), NULL;
     q->h = h;
-    if (!tsc0) qpc0_ns = (LONG64)plat_now_ns(), tsc0 = (LONG64)__rdtsc();
+    plat_once(&tsc_once, tsc_ref, NULL);
     return q;
 }
 
 uint64_t plat_thread_q_ns(PlatThreadQ *q) {
     ULONG64 cyc;
-    if (!q || !QueryThreadCycleTime(q->h, &cyc)) return 0;
-    uint64_t now = plat_now_ns(), dn = now - (uint64_t)qpc0_ns;
+    if (!q || !QueryThreadCycleTime(q->h, &cyc)) return q ? q->ns : 0;
+    uint64_t dn = plat_now_ns() - qpc0_ns;
+    double r;
     if (dn > 50000000ull) {   // the rate over at least 50 ms; later calls refine it
-        double r = (double)((uint64_t)__rdtsc() - (uint64_t)tsc0) / (double)dn;
-        if (r > 0.1) tsc_per_ns = r;
+        r = (double)(__rdtsc() - tsc0) / (double)dn;
+        if (r > 0.1) __atomic_store(&tsc_per_ns, &r, __ATOMIC_RELAXED);
     }
-    double r = tsc_per_ns;
-    return r > 0 ? (uint64_t)((double)cyc / r) : 0;
+    __atomic_load(&tsc_per_ns, &r, __ATOMIC_RELAXED);
+    if (r > 0 && cyc > q->cyc) q->ns += (uint64_t)((double)(cyc - q->cyc) / r);
+    if (r > 0) q->cyc = cyc;   // before the first rate, the cycles wait for it
+    return q->ns;
 }
 
 // ---- thread interruption: SuspendThread, Get/SetThreadContext, ResumeThread.
