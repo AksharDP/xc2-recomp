@@ -328,6 +328,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_INSTA_KILL] = "Insta kill",
     [UI_MENU_CHEAT_INSTA_KILL_DESC] = "The party's hits land for 9999 damage. Most enemies fall in one hit; "
                                       "high-health foes take a few. Switches at once.",
+    [UI_MENU_CHEAT_ONE_DAMAGE] = "One damage",
+    [UI_MENU_CHEAT_ONE_DAMAGE_DESC] = "The party's hits land for 1 damage, so enemies last while you try things "
+                                      "out. Insta kill wins when both are on. Switches at once.",
     [UI_MENU_CHEATS_OPEN] = "Open mods folder",
     [UI_MENU_CHEATS_OPEN_DESC] = "Cheat files live in a mod's cheats folder: mods\\<mod>\\cheats\\<build id>.txt. "
                                  "Shows the mods folder; it is created if it is missing.",
@@ -659,6 +662,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_INSTA_KILL] = "Мгновенное убийство",
     [UI_MENU_CHEAT_INSTA_KILL_DESC] = "Удары отряда наносят 9999 урона. Большинство врагов падает с одного "
                                       "удара, у противников с большим запасом здоровья уйдёт несколько. "
+                                      "Включается и выключается сразу.",
+    [UI_MENU_CHEAT_ONE_DAMAGE] = "Единица урона",
+    [UI_MENU_CHEAT_ONE_DAMAGE_DESC] = "Удары отряда наносят 1 урона, и враги держатся, пока вы что-то пробуете. "
+                                      "Если включено и мгновенное убийство, действует оно. "
                                       "Включается и выключается сразу.",
     [UI_MENU_CHEATS_OPEN] = "Открыть папку модов",
     [UI_MENU_CHEATS_OPEN_DESC] = "Файлы читов лежат в папке cheats мода: mods\\<мод>\\cheats\\<build id>.txt. "
