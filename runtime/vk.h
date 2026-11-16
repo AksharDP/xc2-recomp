@@ -449,8 +449,8 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
 VkCommandBuffer vk_sync_split(void);
 // The parallel replay (vk_exec.c, XC2_REPLAY_WORKERS). vk_sync_worker_begin: on a worker thread, a begun command buffer
 // from that thread's own pool, free once fence is done. vk_sync_parts: inside vk_exec_record, the n parts the workers
-// recorded and ended, submitted in order (after the upload batch and the mirror prologue) without a signal, ahead of the
-// command buffer the replay thread records.
+// recorded and ended, kept for vk_sync_submit, which submits them in order after the mirror prologue and ahead of the
+// command buffer the replay thread records, in one vkQueueSubmit2.
 VkCommandBuffer vk_sync_worker_begin(uint64_t fence);
 void vk_sync_parts(const VkCommandBuffer *cbs, int n);
 // Runs fn(arg) on the completion thread once fence is done on the GPU (event writes, counter reports, sync state).

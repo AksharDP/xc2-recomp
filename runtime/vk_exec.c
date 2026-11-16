@@ -1056,7 +1056,7 @@ static void views_release(VkExec *ex) {   // the transient views go with the sub
 // render targets and fixed-function state each op leaves, without recording. Before a render target change (a pass
 // boundary) the list is cut into parts of about equal draw counts, each starting with a copy of that state. n worker
 // threads record the first parts into command buffers of their own while the replay thread records the last part into
-// the submission's command buffer; the workers' parts are submitted in order ahead of it (vk_sync_parts), and the last
+// the submission's command buffer; the workers' parts go in order ahead of it in the submission's one submit (vk_sync_parts), and the last
 // part's state carries on in X as the whole submission's would. Each worker part ends its pass and with a full barrier,
 // so every image is in GENERAL when the next part begins, as at the start of a submission.
 // Not yet safe: what one part records into the texture and snapshot bookkeeping (a texture rendered by an earlier part,

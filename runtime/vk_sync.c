@@ -305,9 +305,13 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
     return cb;
 }
 
+static VkCommandBuffer *wparts;   // vk_sync_parts
+static int nwparts, cwparts;
+
 VkCommandBuffer vk_sync_split(void) {
     VkCtx *c = vk_ctx();
     VkCommandBuffer cb = slots[cur_slot].cb;
+    if (nwparts) rt_fatal("vk: a split while parallel parts wait for their submission");   // they would go after it
     ts_end(cb, cur_fence);
     if (!rec_end_cb(cb, 0, 0)) vkEndCommandBuffer(cb);   // every command of the part is in cb, ended by its recorder
     vk_upload_flush(0);   // the uploads this part asked for precede it in queue order
@@ -369,29 +373,20 @@ VkCommandBuffer vk_sync_worker_begin(uint64_t fence) {
     return wpool->s[i].cb;
 }
 
+// The workers' parts of the submission being recorded (vk_exec.c, parallel parts), in order. They go into the
+// submission's own vkQueueSubmit2, after the prologue and before the replay thread's part: submitted any earlier, the
+// prologue would record into a command buffer of cmd_pool while the replay thread's recorder may still be recording
+// the last part into another, and a command pool is used by one thread at a time.
+
 void vk_sync_parts(const VkCommandBuffer *cbs, int n) {
     if (n <= 0) return;
-    VkCtx *c = vk_ctx();
-    vk_upload_flush(0);   // the uploads the parts asked for precede them in queue order
-    VkCommandBuffer pro = prologue(c, cur_fence);
-    VkCommandBufferSubmitInfo *ci = calloc((size_t)n + 1, sizeof *ci);
-    if (!ci) rt_fatal("vk: out of memory");
-    int k = 0;
-    if (pro) ci[k++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro};
-    for (int i = 0; i < n; i++)
-        ci[k++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cbs[i]};
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = (uint32_t)k, .pCommandBufferInfos = ci};
-    vk_queue_lock();
-    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vk_queue_unlock();
-    free(ci);
-    if (r != VK_SUCCESS) {
-        vk_device_fault_report(r);
-        rt_fatal("vk: vkQueueSubmit2 of %d parallel parts of value %llu failed (%d)", n, (unsigned long long)cur_fence, (int)r);
+    if (nwparts + n > cwparts) {
+        cwparts = nwparts + n + 8;
+        if (!(wparts = realloc(wparts, sizeof *wparts * (size_t)cwparts))) rt_fatal("vk: out of memory");
     }
-    vk_mem_note_submit(cur_fence);
+    memcpy(wparts + nwparts, cbs, sizeof *cbs * (size_t)n);
+    nwparts += n;
 }
-
 // Asynchronous replay (vk_backend.c): the value the next queued submission or present will signal. Values are handed
 // out in queue order and the replay thread submits them in that order, so each vk_sync_submit gets exactly its value.
 uint64_t vk_sync_reserve(void) {
@@ -429,17 +424,23 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_upload_flush(0);
     VkCommandBuffer pro = prologue(c, fence);
     s = &slots[cur_slot];
-    VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
-                                        {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb}};
+    if (nwparts) recorded = 1;   // the last part follows the workers' parts even when it recorded nothing
+    VkCommandBufferSubmitInfo cbs[16], *cbi = nwparts + 2 <= 16 ? cbs : malloc(sizeof *cbi * (size_t)(nwparts + 2));
+    if (!cbi) rt_fatal("vk: out of memory");
+    uint32_t ncb = 0;
+    if (pro) cbi[ncb++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro};
+    for (int i = 0; i < nwparts; i++)
+        cbi[ncb++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = wparts[i]};
+    nwparts = 0;
+    if (recorded) cbi[ncb++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb};
     VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = c->timeline,
                                  .value = fence, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
-    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                        .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
-                        .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
-                        .pSignalSemaphoreInfos = &sig};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = ncb, .pCommandBufferInfos = cbi,
+                        .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &sig};
     vk_queue_lock();
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
+    if (cbi != cbs) free(cbi);
     if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
         rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
