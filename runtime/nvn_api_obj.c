@@ -214,7 +214,11 @@ NVN_API(nvnTextureInitialize) {
     if (s->pkg_data) {
         if (!o->mem || nvn_gpu_only((uintptr_t)o->mem))
             rt_fatal("nvn: packaged texture data without CPU-visible storage");
-        mem_copy_par(o->mem, s->pkg_data, o->L.size);   // the storage is fresh pool pages: a large copy fans out (memory.c)
+        // XC2 streams a texture's bytes into its pool storage itself and passes that storage as the packaged data: on the
+        // rec4 route all 12,400 such initializations named the same address, 3.8 GiB in 25 s that the copy rewrote onto
+        // itself on the render thread (up to 1.5 ms for one texture). Only another source needs the copy.
+        if ((const void *)s->pkg_data != (const void *)o->mem)
+            mem_copy_par(o->mem, s->pkg_data, o->L.size);   // fresh pool pages: a large copy fans out (memory.c)
         nvn_guest_written((uintptr_t)o->mem, o->L.size);
     }
     o->serial = nvn_new_serial();
