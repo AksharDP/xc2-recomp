@@ -59,7 +59,12 @@ The line `vk: using gpu N: <name>` says which one ran.
    tab (F1) puts these and your changed settings on the clipboard. Say which game update you ran.
 3. What you saw: how far it got (menu, loading, field), roughly how smooth it ran, and screenshots of anything wrong
    (black or missing areas, flickering, wrong colours, missing grass). Win+Shift+S is fine.
-4. If it crashed or hung: what you were doing. The log of that run ends with the crash report, so send it whole.
+4. If it crashed or hung: what you were doing, and the newest `logs\crash-<date>-<time>.txt` (a crash or fatal
+   error) or `logs\hang-<date>-<time>.txt` (no frame for 30 s). The game shows the file's path when it stops. It holds
+   the crash report and the log's first and last lines, so it is enough on its own, even when `xc2.log` has been
+   overwritten by a later run or stopped at 64 MiB. The ten newest of each are kept. The `.dmp` file beside a crash
+   report is a minidump for a debugger: it holds pieces of game memory, so send it only when asked, and not in a
+   public issue.
 5. For a bug you can trigger again: a recording of your input (`set XC2_INPUT_RECORD=input.txt`, see
    [controls.md](controls.md), "Scripted input") and the save you started from.
 

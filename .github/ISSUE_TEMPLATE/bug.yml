@@ -41,4 +41,4 @@ body:
     id: log
     attributes:
       label: Log
-      description: Attach logs\xc2.log from the folder of xc2.exe. After a crash, copy it before you start the game again.
+      description: Attach logs\xc2.log from the folder of xc2.exe; copy it before you start the game again. After a crash or a hang, also attach the newest logs\crash-*.txt or logs\hang-*.txt (the game names it when it stops). Do not attach .dmp files here.
