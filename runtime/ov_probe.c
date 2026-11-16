@@ -265,31 +265,41 @@ static void set_env(const char *name, const char *value) { plat_setenv(name, val
 // The language settings probe_oe sets through the environment. Their xc2.ini values (an installed folder has lang and
 // game_langs) are taken out of memory for the probe, so a case that leaves one unset sees it unset, and put back after;
 // the probe never saves the file.
+// The environment holds each under its name and the legacy XCX_ one, which cfg reads when the XC2_ one is unset.
 static const char *const kLangKeys[] = {"XC2_LANG", "XC2_LOCALE", "XC2_GAME_LANGS"};
+static const char *const kLangLegacy[] = {"XCX_LANG", "XCX_LOCALE", "XCX_GAME_LANGS"};
 enum { N_LANG_KEYS = sizeof kLangKeys / sizeof *kLangKeys };
 
-static void lang_keys_isolate(char *env[N_LANG_KEYS], char *file[N_LANG_KEYS]) {
+static char *env_take(const char *name) {   // its value (a copy), and removes it
+    const char *v = getenv(name);
+    char *kept = v ? strdup(v) : NULL;
+    set_env(name, NULL);
+    return kept;
+}
+
+static void lang_keys_isolate(char *env[2 * N_LANG_KEYS], char *file[N_LANG_KEYS]) {
     for (int i = 0; i < N_LANG_KEYS; i++) {
-        const char *v = cfg_get(kLangKeys[i]);
-        env[i] = cfg_from_env(kLangKeys[i]) && v ? strdup(v) : NULL;
-        set_env(kLangKeys[i], NULL);
+        env[i] = env_take(kLangKeys[i]);
+        env[N_LANG_KEYS + i] = env_take(kLangLegacy[i]);
         file[i] = cfg_is_set(kLangKeys[i]) ? strdup(cfg_get(kLangKeys[i])) : NULL;   // not a device profile's value
     }
     cfg_reset(kLangKeys, N_LANG_KEYS);
 }
 
-static void lang_keys_restore(char *env[N_LANG_KEYS], char *file[N_LANG_KEYS]) {
+static void lang_keys_restore(char *env[2 * N_LANG_KEYS], char *file[N_LANG_KEYS]) {
     for (int i = 0; i < N_LANG_KEYS; i++) {
         set_env(kLangKeys[i], NULL);
         if (file[i]) cfg_set(kLangKeys[i], file[i]);
         set_env(kLangKeys[i], env[i]);
+        set_env(kLangLegacy[i], env[N_LANG_KEYS + i]);
         free(env[i]);
+        free(env[N_LANG_KEYS + i]);
         free(file[i]);
     }
 }
 
 static void probe_oe(void) {
-    char *keep_env[N_LANG_KEYS], *keep_file[N_LANG_KEYS];
+    char *keep_env[2 * N_LANG_KEYS], *keep_file[N_LANG_KEYS];
     lang_keys_isolate(keep_env, keep_file);
     // shipped: XC2_GAME_LANGS, as the installer writes it for the Americas and Europe (US) or the Japanese release (JP)
     static const char US[] = "en-US en-GB fr fr-CA de it es es-419 ko", JP[] = "ja zh-CN zh-TW";

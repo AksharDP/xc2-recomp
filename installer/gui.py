@@ -72,6 +72,7 @@ class App:
         self.languages = None            # the languages of the chosen game files (LanguageProbe); None while unknown
         self.probe = None                # the LanguageProbe running, or None
         self.probe_for = None            # the inputs the shown languages are of (guilogic.probe_inputs)
+        self.probe_for_dest = None       # after a failed read: the install folder whose recorded languages show
         self.probe_after = None
         self.probe_status = ('ui.langs_hint', {})   # the line under the language box: (text id, params)
         self.probe_done_status = self.probe_status   # that line for probe_for, put back when its files are chosen again
@@ -310,7 +311,9 @@ class App:
             self.set_languages(self.recorded_languages(), ('ui.langs_hint', {}))
             self.probe_done_status = self.probe_status
             return
-        if inputs == self.probe_for:   # back to the files shown: a read of other files started since is dropped
+        dest = self.vars['dest'].get()
+        if inputs == self.probe_for and self.probe_for_dest in (None, dest):
+            # back to the files shown: a read of other files started since is dropped
             if self.probe is not None:
                 self.probe = None
                 self.probe_status = self.probe_done_status
@@ -333,12 +336,13 @@ class App:
         self.probe = None
         if probe.inputs != self.current_inputs():   # the fields changed while it ran; their own read is queued
             return
-        self.probe_for = probe.inputs
+        self.probe_for, self.probe_for_dest = probe.inputs, None
         e = probe.result
         if e['type'] == 'languages' and e.get('languages'):
             self.set_languages(e['languages'], ('ui.langs_found', {'release': e.get('release', ''),
                                                                    'known': ', '.join(e['languages'])}))
-        else:
+        else:   # the list shown is the install folder's, so another folder reads again
+            self.probe_for_dest = self.vars['dest'].get()
             reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
             self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
         self.probe_done_status = self.probe_status

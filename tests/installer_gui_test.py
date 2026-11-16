@@ -394,6 +394,24 @@ class LanguageWindowTest(unittest.TestCase):
         self.finish(b, self.JP)
         self.assertEqual(self.app.languages, self.US)
 
+    def test_after_a_failed_read_another_folder_reads_again(self):
+        jp, us = self.dir / 'jp-install', self.dir / 'us-install'
+        for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
+            folder.mkdir()
+            statefile.save(folder, statefile.empty('r0') | {'lang': lang, 'languages': langs})
+        self.app.vars['dest'].set(str(jp))
+        self.choose('us.nsp')
+        self.made[-1].result = {'type': 'error', 'id': 'check.languages_unreadable'}
+        self.app.poll_probe()
+        self.assertEqual(self.app.languages, self.JP)   # the folder's list stands in for the unreadable files
+        self.app.vars['dest'].set(str(us))
+        self.app.start_probe()
+        self.assertEqual(len(self.made), 2)
+        self.made[-1].result = {'type': 'error', 'id': 'check.languages_unreadable'}
+        self.app.poll_probe()
+        self.assertEqual(self.app.languages, self.US)
+        self.assertEqual(self.app.selected_lang(), 'fr')
+
     def test_the_install_folders_language_is_kept(self):
         jp, us = self.dir / 'jp-install', self.dir / 'us-install'
         for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
