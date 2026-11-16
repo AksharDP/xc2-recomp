@@ -32,8 +32,8 @@ from installer.events import Reporter  # noqa: E402
 from installer.runner import Context  # noqa: E402
 from installer.steps import all_steps  # noqa: E402
 from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog, Form, Model, Process,  # noqa: E402
-                                amount, describe_event, parse_line, parse_probe, probe_command, probe_inputs,
-                                windows_ui_language)
+                                amount, describe_event, parse_line, parse_probe, probe_command, probe_inputs)
+from installer import ini  # noqa: E402
 from installer.runner import InstallError  # noqa: E402
 from installer.steps import Check  # noqa: E402
 
@@ -307,42 +307,39 @@ class CheckLanguageTest(unittest.TestCase):
 
 
 class CatalogTest(unittest.TestCase):
-    def test_russian_covers_english_with_the_same_placeholders(self):
-        en, ru = Catalog('en').english, Catalog('ru').texts
-        self.assertEqual(sorted(set(en) - set(ru)), [])
-        self.assertEqual(sorted(set(ru) - set(en)), [])
-        holes = [k for k in en if sorted(re.findall(r'\{\w+\}', en[k])) != sorted(re.findall(r'\{\w+\}', ru[k]))]
-        self.assertEqual(holes, [])
+    def test_the_window_is_english_only(self):
+        catalogs = sorted(p.stem for p in (ROOT / 'installer' / 'text').glob('*.json'))
+        self.assertEqual(catalogs, ['en'])
+        self.assertEqual(Catalog('ru').lang, 'en')   # a language without a catalog falls back to English
 
     def test_every_id_the_window_uses_exists(self):
         cat = Catalog('en')
         ids = ['ui.' + n for n in ('title', 'start', 'cancel', 'open_folder', 'notice', 'space_one', 'space_two',
-                                   'process_died', 'result_ok', 'result_failed', 'result_cancelled')]
+                                   'process_died', 'result_ok', 'result_failed', 'result_cancelled', 'langs_hint',
+                                   'langs_checking', 'langs_found', 'langs_failed', 'lang_not_in_game')]
         ids += [f'step.{s}' for s in ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
         ids += ['ui.state_' + n for n in ('started', 'done', 'skipped', 'pending', 'running', 'failed')]
-        for lang in ('en', 'ru'):
-            cat.set_language(lang)
-            self.assertEqual([i for i in ids if not cat.has(i)], [])
+        ids += ['lang.' + c for c in ini.LANGUAGES]
+        self.assertEqual([i for i in ids if not cat.has(i)], [])
 
     def test_codes_become_names(self):
-        for lang, korean in (('en', 'Korean'), ('ru', 'Корейский')):
-            cat = Catalog(lang)
-            self.assertIn(korean, cat('warn.lang_needs_fonts', lang='ko'))
-            self.assertNotIn(' ko ', cat('warn.lang_needs_fonts', lang='ko'))
-            self.assertNotIn('extract', cat('state.output_changed', step='extract'))
-            for word in ('base', 'update', 'keys'):
-                self.assertIn(cat('param.input.' + word), cat('check.keys_wrong', input=word))
-            self.assertNotIn('en-US', cat('check.lang_unknown', lang='xx', known='ja, en-US'))
-        self.assertEqual(Catalog('en')('check.lang_unknown', lang='xx', known='ja, en-US'),
+        cat = Catalog('en')
+        self.assertIn('Korean', cat('warn.lang_needs_fonts', lang='ko'))
+        self.assertNotIn(' ko ', cat('warn.lang_needs_fonts', lang='ko'))
+        self.assertNotIn('extract', cat('state.output_changed', step='extract'))
+        for word in ('base', 'update', 'keys'):
+            self.assertIn(cat('param.input.' + word), cat('check.keys_wrong', input=word))
+        self.assertEqual(cat('check.lang_unknown', lang='xx', known='ja, en-US'),
                          "Unknown language 'xx'. Known: Japanese, English (US).")
+        self.assertEqual(cat('check.lang_not_in_game', lang='en-US', known='ja, zh-CN, zh-TW'),
+                         'These game files have no English (US) text. Their languages: Japanese, '
+                         'Chinese (Simplified, China), Chinese (Traditional, Taiwan).')
 
     def test_fallback_and_params(self):
-        cat = Catalog('ru')
+        cat = Catalog('en')
         self.assertIn('36.4', cat('ui.log_space', need='36.4', free='1.0'))
         self.assertEqual(cat('no.such.id'), 'no.such.id')
         self.assertIn('a, b', cat('check.release_incomplete', paths=['a', 'b']))
-        cat.set_language('de')   # unknown language falls back to English
-        self.assertEqual(cat.lang, 'en')
 
     def test_describe_and_amount(self):
         cat = Catalog('en')
@@ -352,9 +349,6 @@ class CatalogTest(unittest.TestCase):
         line = describe_event(cat, {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 1.5})
         self.assertIn('1.5 s', line)
         self.assertEqual(describe_event(cat, {'type': 'start'}), '')
-
-    def test_windows_language_is_a_known_value(self):
-        self.assertIn(windows_ui_language(), ('en', 'ru'))
 
 
 BREAK_CHILD = 'import time\nprint("ready", flush=True)\ntime.sleep(60)\n'

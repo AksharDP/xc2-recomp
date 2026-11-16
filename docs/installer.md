@@ -170,9 +170,8 @@ with that release's `--toolchain` and `--ninja`.
   the merged RomFS before it deletes them. The check computes the exact figure.
 - Window (`python -m installer.gui`, `installer/gui.py` draws, `installer/guilogic.py` decides): form, step list with
   progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
-  finish screen with Open folder. English or Russian, chosen from the Windows display language, switchable in the
-  window; every sentence is an id in `installer/text/<en|ru>.json`. A folder with `xc2-install.json` needs only the
-  folder. `--selftest [--shots DIR]` builds every screen in both languages and closes itself.
+  finish screen with Open folder. English; every sentence is an id in `installer/text/en.json`. A folder with
+  `xc2-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen and closes itself.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and an extracted game; see its docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
@@ -184,7 +183,7 @@ The unpacked release; `tools/make_release.py` assembles it and `--zip` packs it:
 
 ```
 XC2-Setup.exe        starts python/pythonw.exe -m installer.gui (installer/launcher/launcher.c, no console)
-installer/            the installer: steps, CLI, window, en/ru text catalog
+installer/            the installer: steps, CLI, window, text catalog
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
@@ -207,7 +206,7 @@ Every tagged release carries the AppImage next to the Windows zip (`.github/work
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `XC2-Setup-<version>-linux.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
 Desktop Mode. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
-Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `xc2` there with
+Xft against the sniper sysroot so the window uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `xc2` there with
 `libSDL3.so.0` beside it. The folder inside the AppImage:
 
 ```
@@ -233,7 +232,7 @@ bin/                  xc2_xlate, ninja, libSDL3.so.0
   read-only, and a Steam Deck's `/home` is often too full for the generated C while the game goes to the SD card.
 - The game keeps Mesa's shader cache in `mesa-cache` beside `xc2` unless `MESA_SHADER_CACHE_DIR` is set, for the
   same reason: RADV fills its default folder in `~/.cache` up to 1 GB.
-- The window follows `LANG` for English or Russian, cancels through SIGTERM to the CLI's process group (the CLI handles
+- The window cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
 - Building either release needs no game files: the runtime library takes main's base and the module limit from

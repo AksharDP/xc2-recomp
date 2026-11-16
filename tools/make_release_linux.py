@@ -488,17 +488,11 @@ def check_bundle(out):
                         str(chk / 'temp'), '--root', str(out)], cwd='/', env=env, capture_output=True, text=True,
                        timeout=600)
     mr.bundle_verdict(r, out)
-    run([py, '-c', 'import tkinter as tk; from tkinter import font; '
-         'root = tk.Tk(); root.withdraw(); '
-         'fonts = [font.nametofont("TkDefaultFont"), font.Font(family="DejaVu Sans"), '
-         'font.Font(family="DejaVu Sans Mono")]; '
-         'missing = [(f.actual("family"), c) for f in fonts for c in "УстановкаЁёЙй" if f.measure(c) <= 0]; '
-         'root.destroy(); assert not missing, f"Cyrillic glyphs missing: {missing}"'], cwd='/', env=env)
     r = subprocess.run([str(py), '-m', 'installer.gui', '--selftest', '--root', str(out)], cwd='/', env=env,
                        capture_output=True, text=True, timeout=300)
     if r.returncode:
         sys.exit(f'bundle check: window selftest exit {r.returncode}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
-    print('bundle check: the window built every screen in both languages and closed')
+    print('bundle check: the window built every screen and closed')
 
 
 def prove(out):

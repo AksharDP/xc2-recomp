@@ -2,13 +2,12 @@
 
 gui.py draws; everything it decides lives here so tests/installer_gui_test.py runs it headless.
 
-    Catalog      text of an id in the window language (installer/text/<lang>.json), English when that lacks it
+    Catalog      text of an id (installer/text/en.json, the window's only language)
     Form         what the player entered; command() and problems() build and check the CLI call
     LanguageProbe  runs `python -m installer.probe` on the chosen game files in a thread: the languages they have
     Model        folds the CLI's JSON events (events.py) into step states, progress, space, errors and the result
     Process      runs `python -m installer ...`, cancels it with Ctrl+Break and feeds lines to a queue
 """
-import ctypes
 import json
 import os
 import queue
@@ -25,11 +24,10 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en', 'ru')
+UI_LANGUAGES = ('en',)   # the window's languages: a catalog installer/text/<lang>.json each
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
-LANG_RU = 0x19   # primary language id of Russian in a Windows LANGID
 
 
 def load_texts(lang):
@@ -76,21 +74,9 @@ def flat(value):
     return ', '.join(str(v) for v in value) if isinstance(value, (list, tuple)) else value
 
 
-def windows_ui_language():
-    """'ru' when the display language (Windows; elsewhere LC_ALL, LC_MESSAGES or LANG) is Russian, else 'en'."""
-    if os.name != 'nt':
-        loc = os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or ''
-        return 'ru' if loc.lower().startswith('ru') else 'en'
-    try:
-        langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
-    except (AttributeError, OSError):
-        return 'en'
-    return 'ru' if langid & 0x3ff == LANG_RU else 'en'
-
-
-def default_game_language(ui):
-    """en-US for every window language until the game files are read: the game has no Russian text, so a Russian
-    window still installs English. The probe then picks the default of the files' languages (ini.default_language)."""
+def default_game_language():
+    """en-US until the game files are read; the probe then picks the default of their languages
+    (ini.default_language)."""
     return 'en-US'
 
 

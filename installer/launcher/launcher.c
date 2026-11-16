@@ -1,6 +1,6 @@
 /* XC2-Setup.exe: starts python\pythonw.exe -m installer.gui with this exe's folder as the working directory.
 
-   No console window. The two message strings come from the catalog (installer/text/<lang>.json, ids launcher.title and
+   No console window. The two message strings come from the catalog (installer/text/en.json, ids launcher.title and
    launcher.python_missing); tools/make_release.py writes them into launcher_text.h before it compiles this file.
    Build: llvm/bin/llvm-windres -I runtime -O coff launcher.rc -o launcher_rc.o, then
    llvm/bin/clang -O2 -mwindows launcher.c launcher_rc.o -o XC2-Setup.exe */
@@ -9,14 +9,11 @@
 
 #include "launcher_text.h"
 
-#define LANGID_RUSSIAN 0x19
 #define PATH_CHARS (MAX_PATH * 2)
 
 static void fail(void)
 {
-    int russian = (GetUserDefaultUILanguage() & 0x3ff) == LANGID_RUSSIAN;
-    MessageBoxW(NULL, russian ? LAUNCHER_PYTHON_MISSING_RU : LAUNCHER_PYTHON_MISSING_EN,
-                russian ? LAUNCHER_TITLE_RU : LAUNCHER_TITLE_EN, MB_OK | MB_ICONERROR);
+    MessageBoxW(NULL, LAUNCHER_PYTHON_MISSING_EN, LAUNCHER_TITLE_EN, MB_OK | MB_ICONERROR);
 }
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, int show)
