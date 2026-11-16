@@ -269,6 +269,7 @@
 # The port's own cheats, the Cheats tab's built-in rows (only in builds whose patch file has them):
 # cheat_god_mode = 1       # enemy attacks land for 0
 # cheat_insta_kill = 1     # the party's hits land for 9999
+# cheat_one_damage = 1     # the party's hits land for 1 (insta kill wins when both are on)
 
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's

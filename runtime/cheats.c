@@ -617,6 +617,7 @@ const char *cheats_buttons(uint32_t mask, char *buf, int n) {
 static const struct { const char *set, *key; UiTextId name, desc; } g_builtin[] = {
     {"xc2god", "XC2_CHEAT_GOD_MODE", UI_MENU_CHEAT_GOD_MODE, UI_MENU_CHEAT_GOD_MODE_DESC},
     {"xc2kill", "XC2_CHEAT_INSTA_KILL", UI_MENU_CHEAT_INSTA_KILL, UI_MENU_CHEAT_INSTA_KILL_DESC},
+    {"xc2one", "XC2_CHEAT_ONE_DAMAGE", UI_MENU_CHEAT_ONE_DAMAGE, UI_MENU_CHEAT_ONE_DAMAGE_DESC},
 };
 static CheatBuiltin g_builtin_info[sizeof g_builtin / sizeof *g_builtin];
 static int g_builtin_set[sizeof g_builtin / sizeof *g_builtin];   // the patch sets, read with g_builtin_n

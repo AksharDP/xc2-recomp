@@ -112,9 +112,10 @@ Above the mods' cheats, the tab lists the cheats that ship with the port, when t
 |---|---|
 | God mode | enemy attacks land for 0 damage |
 | Insta kill | the party's hits land for 9999 damage; most enemies fall in one hit, high-health foes take a few |
+| One damage | the party's hits land for 1 damage, so enemies last while you try things out; Insta kill wins when both are on |
 
 They work like code cheats: they turn on and off at once, no setup run needed, and each is saved in `xc2.ini` as
-`cheat_god_mode` / `cheat_insta_kill` under `[cheats]`. Both start off. They only cover damage dealt in battle
+`cheat_god_mode` / `cheat_insta_kill` / `cheat_one_damage` under `[cheats]`. All start off. They only cover damage dealt in battle
 through the game's damage calculation; effects that drain or set HP directly are not affected. A build made for
 another game version without these patches lists none.
 

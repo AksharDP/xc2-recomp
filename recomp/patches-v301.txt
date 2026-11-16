@@ -249,6 +249,13 @@ site xc2god main 5b904 sha:25ddfebad5ecc05a a95a23e9 913bfa7e b94003de 130f3fde 
 # bit is clear and they are unchanged.
 set xc2kill XC2_CHEAT_INSTA_KILL 0
 site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 5284e1e9 4b1b0129 1b096fdb b900027b
+#
+# xc2one (XC2_CHEAT_ONE_DAMAGE, off): the party's hits land for 1, so a battle lasts as long as it is needed to try
+# arts, combos and chain attacks. It is xc2kill's replacement with 1 in place of 9999 (mov w9, #1): the same side
+# bit and positive-damage test, so whiffs, blocks and enemy hits are unchanged. With both on, xc2kill wins (the
+# first set in file order takes the site).
+set xc2one XC2_CHEAT_ONE_DAMAGE 0
+site xc2one main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 52800029 4b1b0129 1b096fdb b900027b
 
 # xc2qte (XC2_QTE_FIX, on): the QTE ring counts the frame time twice. Issues 48 and 72: a Blade Special's QTE ring
 # closes late against the special's animation, the button window opens after the animation and a mash window is
