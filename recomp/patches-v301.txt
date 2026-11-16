@@ -128,6 +128,16 @@ site xc2res main 6421c4 sha:a95ccb820bea65ad @page:x8 b9407d08
 # half turn moved the arrow by half its size, down and right. The pivot (sp+8) is scaled by the page's +0x88 (720 /
 # frame height) where it is loaded. x8 is free after the origin function's blr x8; s3 is written next.
 site xc2res main 833090 sha:09434673fdbacb66 2d410be0 @page:x8 bd408903 1e230800 1e230842
+# Scaled interface panes (the character art of the Characters menu at 1.15 to 1.19, issue 47): before the pivot, the
+# same transform moves the position by the pane's pivot fraction (+0x14c, +0x150 of the pane) times the difference
+# between the pane's size (sp+0x18) and its pixel bounds (+0x190..0x196) times the unit scales (+0x548, +0x54c), which
+# is nonzero only for a scaled pane. Above 1280x720 that difference keeps its 1280x720 size while the position it is
+# subtracted from shrinks with the frame (half at 2560x1440), so each scaled picture moved up and left by up to 120 units.
+# Both differences are scaled by the page's +0x88 where they are taken: x (main+0x83303c), where x8 is reloaded by the
+# adrp at main+0x833050 before it is read and s4 is unused; y (main+0x833070), where x8 holds the origin table and x9 is
+# free until main+0x833084, and s3 is not read again before main+0x833094 writes it.
+site xc2res main 83303c sha:ced4720d09bbcb83 1e233821 @page:x8 bd408904 1e240821
+site xc2res main 833070 sha:6b6ffaeb00aaefe0 1e203820 @page:x9 bd408923 1e230800
 site xc2res main 6c2bd8 sha:2b4fceb6018b7f4f @page:x9 b9408129
 site xc2res main 6c2be8 sha:673c02dc4db9f003 @page:x10 b940854a
 site xc2res main 6c2bf8 sha:720baacc72f3a511 @page:x10 b940854a
