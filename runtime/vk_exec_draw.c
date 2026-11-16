@@ -3081,6 +3081,19 @@ static void bind_handles(uint64_t *dst, int cap, const p_bind_handles *b) {
     memcpy(&dst[b->first], b->h, sizeof(uint64_t) * (size_t)b->n);
 }
 
+// The ops of vk_exec_op_draw that only change the bound state: applied to ex, 1. Anything else (draws, dispatches,
+// uniform updates, transform feedback activation): nothing done, 0. The parallel replay's pre-walk (vk_exec.c) uses it
+// to know the state a part starts with.
+int vk_exec_bind_op(VkExec *ex, uint32_t op, const void *payload) {
+    switch (op) {
+    case OP_BIND_PROGRAM: case OP_XFB_BIND: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+    case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
+        vk_exec_op_draw(ex, op, payload);
+        return 1;
+    default: return 0;
+    }
+}
+
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_BIND_PROGRAM: {

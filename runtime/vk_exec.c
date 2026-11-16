@@ -930,20 +930,9 @@ static void maybe_split(VkExec *ex) {
     n_parts++;
 }
 
-static void walk(VkExec *ex, const op_hdr *h, int depth) {
-    for (;;) {
-        if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
-            rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
-        const void *a = nvn_op_payload(h);
-        vk_prog_between_ops(&ex->prog);   // a program released meanwhile: its copy from here on
-        switch (h->op) {
-        case OP_END: return;
-        case OP_BEGIN: break;
-        case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
-        case OP_CALL:
-            if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
-            walk(ex, nvn_op_first(((const p_jump *)a)->target), depth + 1);
-            break;
+// One op other than the control flow (BEGIN, END, JUMP, CALL), which walk and flatten follow.
+static void exec_op(VkExec *ex, uint32_t op, const void *a) {
+    switch (op) {
         case OP_SET_RT: set_rt(ex, a); break;
         case OP_CLEAR_COLOR: clear_color(ex, a); break;
         case OP_CLEAR_DS: clear_ds(ex, a); break;
@@ -1000,28 +989,306 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool; break;
         case OP_BARRIER: vk_exec_barrier(ex); break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
-            if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) vk_exec_frame.draws_seen++, split_draws++;
-            if (vk_dump_armed && h->op == OP_DRAW) vk_dump_note("replay draw prim %d count %d", ((const p_draw *)a)->prim, ((const p_draw *)a)->count);
-            if (vk_dump_armed && h->op == OP_DRAW_IDX) vk_dump_note("replay draw prim %d count %d", ((const p_draw_idx *)a)->prim, ((const p_draw_idx *)a)->count);
-            if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) vk_exec_frame.dispatches++, split_draws++;
+            if (op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND) vk_exec_frame.draws_seen++;
+            if (vk_dump_armed && op == OP_DRAW) vk_dump_note("replay draw prim %d count %d", ((const p_draw *)a)->prim, ((const p_draw *)a)->count);
+            if (vk_dump_armed && op == OP_DRAW_IDX) vk_dump_note("replay draw prim %d count %d", ((const p_draw_idx *)a)->prim, ((const p_draw_idx *)a)->count);
+            if (op == OP_DISPATCH || op == OP_DISPATCH_IND) vk_exec_frame.dispatches++;
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
         case OP_XFB_BIND: case OP_XFB_ACTIVE:
-            vk_exec_op_draw(ex, h->op, a);
+            vk_exec_op_draw(ex, op, a);
             break;
         case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX:
-            if (h->op != OP_CLEAR_TEX) vk_exec_frame.copies++;
-            if (vk_dump_armed) vk_dump_copy(ex, h->op, a);
+            if (op != OP_CLEAR_TEX) vk_exec_frame.copies++;
+            if (vk_dump_armed) vk_dump_copy(ex, op, a);
             // fall through
         case OP_SIGNAL_EVENT: case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_ENABLE: case OP_RENDER_COND:
         case OP_CLEAR_BUF:
-            vk_exec_op_xfer(ex, h->op, a);
+            vk_exec_op_xfer(ex, op, a);
             break;
-        default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(h->op));
+        default: rt_fatal("vk: op %s has no replay handler", nvn_op_name(op));
+    }
+}
+
+static int is_draw_op(uint32_t op) {   // a draw or dispatch: counts toward XC2_SPLIT_DRAWS
+    return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND || op == OP_DISPATCH || op == OP_DISPATCH_IND;
+}
+
+static void check_op(const op_hdr *h) {
+    if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
+        rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
+}
+
+static void walk(VkExec *ex, const op_hdr *h, int depth) {
+    for (;;) {
+        check_op(h);
+        const void *a = nvn_op_payload(h);
+        vk_prog_between_ops(&ex->prog);   // a program released meanwhile: its copy from here on
+        switch (h->op) {
+        case OP_END: return;
+        case OP_BEGIN: break;
+        case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
+        case OP_CALL:
+            if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
+            walk(ex, nvn_op_first(((const p_jump *)a)->target), depth + 1);
+            break;
+        default:
+            if (is_draw_op(h->op)) split_draws++;
+            exec_op(ex, h->op, a);
         }
         if (split_draws >= split_n) maybe_split(ex);
         h = nvn_op_next(h);
     }
+}
+
+static void views_release(VkExec *ex) {   // the transient views go with the submission's fence
+    if (!ex->nviews) return;
+    ViewList *l = malloc(sizeof *l + sizeof(VkImageView) * (size_t)ex->nviews);
+    if (!l) rt_fatal("vk: out of memory");
+    l->n = ex->nviews;
+    for (int i = 0; i < ex->nviews; i++) l->v[i] = ((ViewEnt *)ex->views)[i].view;
+    vk_completion_add(ex->fence, free_views, l);
+    ex->nviews = 0;
+}
+
+// ---- parallel parts (XC2_REPLAY_WORKERS=<n>, an experiment, default 0)
+// The ops of a submission are flattened into one list and walked once for their state alone (pre_op): the bound state,
+// render targets and fixed-function state each op leaves, without recording. Before a render target change (a pass
+// boundary) the list is cut into parts of about equal draw counts, each starting with a copy of that state. n worker
+// threads record the first parts into command buffers of their own while the replay thread records the last part into
+// the submission's command buffer; the workers' parts are submitted in order ahead of it (vk_sync_parts), and the last
+// part's state carries on in X as the whole submission's would. Each worker part ends its pass and with a full barrier,
+// so every image is in GENERAL when the next part begins, as at the start of a submission.
+// Not yet safe: what one part records into the texture and snapshot bookkeeping (a texture rendered by an earlier part,
+// a uniform snapshot range an earlier part writes, the inline uniform updates) is seen by a later part only if it was
+// recorded first. Submissions with transform feedback, samples-passed counters or conditional rendering stay serial.
+typedef struct { const op_hdr **op; int n, cap; } OpList;
+
+static void flatten(const op_hdr *h, int depth, OpList *l) {
+    for (;;) {
+        check_op(h);
+        const void *a = nvn_op_payload(h);
+        switch (h->op) {
+        case OP_END: return;
+        case OP_BEGIN: break;
+        case OP_JUMP: h = (const op_hdr *)(uintptr_t)((const p_jump *)a)->target; continue;
+        case OP_CALL:
+            if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
+            flatten(nvn_op_first(((const p_jump *)a)->target), depth + 1, l);
+            break;
+        default:
+            if (l->n == l->cap) {
+                l->cap = l->cap ? l->cap * 2 : 4096;
+                if (!(l->op = realloc(l->op, sizeof *l->op * (size_t)l->cap))) rt_fatal("vk: out of memory");
+            }
+            l->op[l->n++] = h;
+        }
+        h = nvn_op_next(h);
+    }
+}
+
+// The state op applies to ex, nothing recorded.
+static void pre_op(VkExec *ex, uint32_t op, const void *a) {
+    switch (op) {
+    case OP_SET_RT:
+        if (memcmp(&ex->rt, a, sizeof ex->rt)) ex->rt = *(const p_set_rt *)a, ex->rt_resolved = 0;
+        break;
+    case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BLEND_COLOR:
+    case OP_ALPHA_REF: case OP_DEPTH_CLAMP: case OP_RASTER_DISCARD: case OP_PRIM_RESTART: case OP_COPY_STRIDE:
+    case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL:
+        exec_op(ex, op, a);   // state only
+        break;
+    case OP_RENDER_ENABLE: ex->render_disabled = !((const p_flag *)a)->value; break;
+    case OP_XFB_ACTIVE:   // parts are not cut while it is on, so the bytes stored since (xfb_written) stay in one part
+        ex->xfb_active = ((const p_flag *)a)->value != 0;
+        if (ex->xfb_active) ex->xfb_written = 0;
+        break;
+    default: vk_exec_bind_op(ex, op, a);
+    }
+}
+
+static int serial_only(uint32_t op) { return op == OP_RENDER_COND; }
+
+// Samples-passed counting as the ops leave it (vk_exec_xfer.c reset_counter, oq_report), for the pre-walk: parts are
+// cut only where nothing is counted, so a reset, the draws it counts and the report stay in one part.
+typedef struct { int counting, reported, keep; } OqSim;
+
+static void oq_sim(OqSim *s, uint32_t op, const void *a) {
+    if (op == OP_RESET_COUNTER && ((const p_reset_counter *)a)->type == NVN_COUNTER_TYPE_SAMPLES_PASSED)
+        s->counting = 1, s->reported = 0;
+    if (op == OP_REPORT_COUNTER && ((const p_report_counter *)a)->type == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
+        if (s->reported) s->keep = 1;
+        s->reported = 1;
+        if (!s->keep) s->counting = 0;
+    }
+}
+
+#define PAR_MAX 9   // workers (XC2_REPLAY_WORKERS, at most 8) plus the replay thread
+typedef struct { VkExec ex; int i0, i1; } Part;   // ops [i0, i1) of the list, recorded with ex
+static struct {
+    int n, prio;
+    PlatMutex lock;
+    PlatCond cv, done_cv;
+    Part parts[PAR_MAX];
+    int nparts, next, done;   // the workers' parts of the submission being recorded: handed out, finished
+    OpList ops;
+    uint64_t subs, nparts_all, tried, maxrun, alldraws;
+    uint64_t ns[4];   // pre-walk, the replay thread's part, its wait for the workers, the workers' parts (summed)
+} W = {.n = -1, .lock = PLAT_MUTEX_INIT, .cv = PLAT_COND_INIT, .done_cv = PLAT_COND_INIT};
+
+static void part_record(Part *p) {
+    VkExec *ex = &p->ex;
+    ex->cb = vk_sync_worker_begin(ex->fence);
+    x_cur = ex;
+    vk_exec_draw_new_cb();
+    for (int i = p->i0; i < p->i1; i++) {
+        const op_hdr *h = W.ops.op[i];
+        vk_prog_between_ops(&ex->prog);
+        exec_op(ex, h->op, nvn_op_payload(h));
+    }
+    vk_exec_pass_end(ex);
+    vk_exec_barrier(ex);
+    views_release(ex);
+    free(ex->views), free(ex->oq_seg);   // the part's counting ended within it: its segments went with their reports
+    ex->views = NULL, ex->cap_views = 0, ex->oq_seg = NULL, ex->oq_capseg = 0;
+    x_cur = NULL;
+    vkEndCommandBuffer(ex->cb);
+}
+
+static void worker_main(void *arg) {
+    (void)arg;
+    plat_thread_priority(W.prio);
+    plat_mutex_lock(&W.lock);
+    for (;;) {
+        while (W.next >= W.nparts) plat_cond_wait(&W.cv, &W.lock);
+        Part *p = &W.parts[W.next++];
+        plat_mutex_unlock(&W.lock);
+        uint64_t t0 = kern_now_ns();
+        part_record(p);
+        uint64_t t1 = kern_now_ns();
+        plat_mutex_lock(&W.lock);
+        W.ns[3] += t1 - t0;
+        W.done++;
+        plat_cond_broadcast(&W.done_cv);
+    }
+}
+
+static int par_workers(void) {
+    if (W.n < 0) {
+        W.n = cfg_int("XC2_REPLAY_WORKERS");
+        if (W.n < 0) W.n = 0;
+        if (W.n > PAR_MAX - 1) W.n = PAR_MAX - 1;
+        W.prio = plat_thread_priority_get();
+        for (int i = 0; i < W.n; i++)
+            if (!plat_thread_new(worker_main, NULL, "vk replay worker")) W.n = i;
+        if (W.n) rt_log("vk: replay parts recorded by %d worker threads and the replay thread (XC2_REPLAY_WORKERS)", W.n);
+    }
+    return W.n;
+}
+
+// The submission's ops into parts; 0 when it stays serial (walk).
+#define PAR_MIN_DRAWS 96   // a part has at least this many draws and dispatches
+static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
+    int nw = par_workers();
+    if (!nw || vk_dump_armed || vk_capture_on) return 0;
+    if (++W.tried % 1000 == 0 && W.subs) {
+        double s = (double)W.subs;
+        rt_log("vk: parallel replay: %llu of the last 1000 submissions in parts, %.2f parts each; per such submission "
+               "%.3f ms pre-walk, %.3f ms the replay thread's part, %.3f ms waiting for the workers, %.3f ms in the "
+               "workers' parts (sum); longest run of draws between render target changes %.0f%% of the draws",
+               (unsigned long long)W.subs, (double)W.nparts_all / s, W.ns[0] / s / 1e6, W.ns[1] / s / 1e6,
+               W.ns[2] / s / 1e6, W.ns[3] / s / 1e6, W.alldraws ? 100.0 * (double)W.maxrun / (double)W.alldraws : 0.0);
+        W.subs = W.nparts_all = W.maxrun = W.alldraws = 0, memset(W.ns, 0, sizeof W.ns);
+    }
+    uint64_t t0 = kern_now_ns();
+    W.ops.n = 0;
+    for (int i = 0; i < n; i++) flatten(nvn_op_first(handles[i]), 0, &W.ops);
+    int draws = 0;
+    for (int i = 0; i < W.ops.n; i++) {
+        const op_hdr *h = W.ops.op[i];
+        if (serial_only(h->op)) {
+            static volatile int32_t told[OP_COUNT_];
+            if (plat_inc32(&told[h->op]) == 1)
+                rt_log("vk: a submission with %s stays serial (parallel replay)", nvn_op_name(h->op));
+            return 0;
+        }
+        draws += is_draw_op(h->op);
+    }
+    int want = nw + 1;
+    if (draws / want < PAR_MIN_DRAWS) want = draws / PAR_MIN_DRAWS;
+    if (want < 2) return 0;
+    if (ex->oq_counting || ex->oq_nseg || ex->xfb_active) return 0;   // carried in: they stay on X
+    OqSim oq = {0, ex->oq_reported, vk_exec_oq_keep()};
+    int reported[PAR_MAX] = {0};
+    int per = draws / want, k = 1, since = 0, run = 0, maxrun = 0;   // run: draws since the last place a cut could go
+    for (int i = 0; i < W.ops.n; i++) {   // measurement only: the longest run of draws no cut can divide
+        const op_hdr *h = W.ops.op[i];
+        if (h->op == OP_SET_RT) run = 0;   // approximate: ignores counting and transform feedback
+        run += is_draw_op(h->op);
+        if (run > maxrun) maxrun = run;
+    }
+    W.maxrun += (uint64_t)maxrun, W.alldraws += (uint64_t)draws;
+    W.parts[0].ex = *ex, W.parts[0].i0 = 0;   // part 0 starts with the state as it is
+    VkExec *cur = malloc(sizeof *cur);         // the state walked on, copied into each part where it begins
+    if (!cur) rt_fatal("vk: out of memory");
+    *cur = *ex;
+    for (int i = 0; i < W.ops.n; i++) {
+        const op_hdr *h = W.ops.op[i];
+        const void *a = nvn_op_payload(h);
+        if (h->op == OP_SET_RT && k < want && since >= per && !oq.counting && !cur->xfb_active &&
+            memcmp(&cur->rt, a, sizeof cur->rt)) {
+            W.parts[k - 1].i1 = i;
+            W.parts[k].ex = *cur, W.parts[k].i0 = i;
+            reported[k] = oq.reported;
+            k++, since = 0;
+        }
+        vk_prog_between_ops(&cur->prog);
+        pre_op(cur, h->op, a);
+        oq_sim(&oq, h->op, a);
+        since += is_draw_op(h->op);
+    }
+    free(cur);
+    W.parts[k - 1].i1 = W.ops.n;
+    if (k < 2) return 0;
+    uint32_t ps = ex->pass_serial;
+    for (int p = 0; p < k; p++) {   // as vk_exec_record starts a command buffer; pass serials apart
+        VkExec *e = &W.parts[p].ex;
+        e->recorded = 0, e->in_pass = 0, e->dirty = VK_EXEC_DIRTY_ALL, e->rt_resolved = 0, e->barrier_at = -1;
+        e->views = NULL, e->nviews = e->cap_views = 0;
+        e->nfbl = 0, e->fbl_mask = 0, e->fb_dirty = 0, e->fb_fs = NULL, e->nsnap = 0, e->snap_keep = 0, e->snap_now = 0;
+        e->pass_serial = ps + (uint32_t)p * 0x10000u;
+        e->oq_counting = 0, e->oq_open = -1, e->oq_lost = 0, e->oq_seg = NULL, e->oq_nseg = e->oq_capseg = 0;
+        if (p) e->oq_reported = reported[p];
+    }
+    // The last part on X: its command buffer, fence, view list and segment array stay.
+    VkExec last = W.parts[k - 1].ex;
+    last.cb = ex->cb, last.fence = ex->fence, last.views = ex->views, last.cap_views = ex->cap_views, last.nviews = 0;
+    last.oq_seg = ex->oq_seg, last.oq_capseg = ex->oq_capseg;
+    int i0 = W.parts[k - 1].i0, i1 = W.parts[k - 1].i1;
+    uint64_t t1 = kern_now_ns();
+    plat_mutex_lock(&W.lock);
+    W.nparts = k - 1, W.next = 0, W.done = 0;
+    plat_cond_broadcast(&W.cv);
+    plat_mutex_unlock(&W.lock);
+    *ex = last;
+    for (int i = i0; i < i1; i++) {
+        const op_hdr *h = W.ops.op[i];
+        vk_prog_between_ops(&ex->prog);
+        exec_op(ex, h->op, nvn_op_payload(h));
+    }
+    uint64_t t2 = kern_now_ns();
+    plat_mutex_lock(&W.lock);
+    while (W.done < k - 1) plat_cond_wait(&W.done_cv, &W.lock);
+    W.nparts = W.next = 0;
+    W.ns[0] += t1 - t0, W.ns[1] += t2 - t1, W.ns[2] += kern_now_ns() - t2;
+    plat_mutex_unlock(&W.lock);
+    VkCommandBuffer cbs[PAR_MAX];
+    for (int p = 0; p < k - 1; p++) cbs[p] = W.parts[p].ex.cb;
+    vk_sync_parts(cbs, k - 1);
+    W.subs++, W.nparts_all += (uint64_t)k;
+    if ((rt_trace & RT_TRACE_PERF) && W.subs % 600 == 0)
+        rt_log("perf: parallel replay: %.2f parts per parallel submission", (double)W.nparts_all / (double)W.subs);
+    return 1;
 }
 
 // The submit-time captures of the next submission this thread records (vk_backend.c, the replay thread or the
@@ -1056,23 +1323,18 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     part_t0 = kern_now_ns();
     x_cur = ex;
     if (n) vk_mem_mirror_begin(mcap), vk_usnap_begin(ucap, fence);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++)
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
-        if (vk_dump_armed) vk_dump_note("replay handle %d/%d %#llx", i, n, (unsigned long long)handles[i]);
-        walk(ex, nvn_op_first(handles[i]), 0);
-    }
+    if (!(n && record_parallel(ex, handles, n)))
+        for (int i = 0; i < n; i++) {
+            if (vk_dump_armed) vk_dump_note("replay handle %d/%d %#llx", i, n, (unsigned long long)handles[i]);
+            walk(ex, nvn_op_first(handles[i]), 0);
+        }
     vk_exec_pass_end(ex);
     x_cur = NULL;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory
-    if (ex->nviews) {
-        ViewList *l = malloc(sizeof *l + sizeof(VkImageView) * (size_t)ex->nviews);
-        if (!l) rt_fatal("vk: out of memory");
-        l->n = ex->nviews;
-        for (int i = 0; i < ex->nviews; i++) l->v[i] = ((ViewEnt *)ex->views)[i].view;
-        vk_completion_add(fence, free_views, l);
-        ex->nviews = 0;
-    }
+    views_release(ex);
     ex->cb = VK_NULL_HANDLE;
     if (n) n_subs++;
     if ((rt_trace & RT_TRACE_PERF) && n_subs >= 240) {

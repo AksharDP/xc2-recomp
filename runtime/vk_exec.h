@@ -93,6 +93,12 @@ typedef struct VkExec {
 
     // ---- vk_exec_xfer.c slots (render enable, conditional rendering): left empty by vk_exec.c
     int render_disabled;                 // OP_RENDER_ENABLE false or a failed OP_RENDER_COND: clears and draws skip
+    // Samples-passed counting (vk_exec_xfer.c): draws are counted, a samples-passed report since the last reset, the
+    // query slot active in the open pass (-1: none), the slots closed since the last report or reset (seg, nseg of
+    // capseg), a draw the segment missed; epoch: vk_exec_xfer.c's when these were last valid (a device restart resets).
+    int oq_counting, oq_reported, oq_open, oq_lost;
+    uint32_t *oq_seg, oq_nseg, oq_capseg;
+    uint32_t oq_epoch;
     p_render_cond render_cond;           // last OP_RENDER_COND
     int has_render_cond;
 
@@ -219,6 +225,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
 // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
+int vk_exec_bind_op(VkExec *ex, uint32_t op, const void *payload);   // a bind op of the above applied: 1; else 0
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
@@ -230,3 +237,4 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+int vk_exec_oq_keep(void);   // the game reported twice without a reset: counting stays on for good

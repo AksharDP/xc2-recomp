@@ -128,15 +128,20 @@ static VkQueryPool oq_pool;
 static int oq_state;                     // 0 not set up, 1 counting available, -1 unavailable
 static VkQueryControlFlags oq_flags;
 static volatile uint8_t oq_busy[OQ_N];   // from begin until the completion thread read and reset the slot
-static uint32_t oq_next;                 // replay: next ring slot
-static int oq_counting;                  // replay: draws are counted (a reset since the last report, or oq_keep)
-static int oq_reported;                  // replay: a samples-passed report since the last reset
+static uint32_t oq_next;                 // replay: next ring slot (taken atomically: parts may record at once)
 static int oq_keep;                      // replay: the game reported twice without a reset: count every draw
-static int oq_open = -1;                 // replay: the slot whose query is active in the open pass
-static uint32_t *oq_seg;                 // replay: slots closed since the last report or reset
-static uint32_t oq_nseg, oq_capseg;
-static int oq_lost;                      // replay: the segment missed a draw (ring full)
+static uint32_t oq_epoch = 1;            // bumped by vk_exec_xfer_shutdown: the VkExec counting state is reset
 static uint64_t oq_count;                // completion thread: samples since the last reset
+// The rest of the replay's counting state is in VkExec (oq_*), so that each part of a submission recorded on its own
+// thread (vk_exec.c, parallel parts) has its own; the parts are cut where no counting is going on.
+
+static void oq_sync(VkExec *ex) {
+    if (ex->oq_epoch == oq_epoch) return;
+    ex->oq_epoch = oq_epoch;
+    ex->oq_counting = ex->oq_reported = ex->oq_lost = 0, ex->oq_open = -1, ex->oq_nseg = 0;
+}
+
+int vk_exec_oq_keep(void) { return oq_keep; }
 
 typedef struct { uint64_t addr; int reset, lost; uint32_t n; uint32_t q[]; } OqSegment;
 
@@ -166,39 +171,41 @@ static int oq_ready(void) {
 }
 
 static void oq_close(VkExec *ex) {
-    if (oq_open < 0) return;
-    vkCmdEndQuery(ex->cb, oq_pool, (uint32_t)oq_open);
+    oq_sync(ex);
+    if (ex->oq_open < 0) return;
+    vkCmdEndQuery(ex->cb, oq_pool, (uint32_t)ex->oq_open);
     ex->recorded++;
-    if (oq_nseg == oq_capseg) {
-        oq_capseg = oq_capseg ? oq_capseg * 2 : 64;
-        oq_seg = realloc(oq_seg, sizeof *oq_seg * oq_capseg);
-        if (!oq_seg) rt_fatal("vk: out of memory");
+    if (ex->oq_nseg == ex->oq_capseg) {
+        ex->oq_capseg = ex->oq_capseg ? ex->oq_capseg * 2 : 64;
+        ex->oq_seg = realloc(ex->oq_seg, sizeof *ex->oq_seg * ex->oq_capseg);
+        if (!ex->oq_seg) rt_fatal("vk: out of memory");
     }
-    oq_seg[oq_nseg++] = (uint32_t)oq_open;
-    oq_open = -1;
+    ex->oq_seg[ex->oq_nseg++] = (uint32_t)ex->oq_open;
+    ex->oq_open = -1;
 }
 
 void vk_exec_oq_draw(VkExec *ex) {
-    if (!oq_counting || oq_open >= 0) return;
+    oq_sync(ex);
+    if (!ex->oq_counting || ex->oq_open >= 0) return;
     uint32_t q = oq_next % OQ_N;
     if (__atomic_load_n(&oq_busy[q], __ATOMIC_ACQUIRE)) {
         warn_once(W_QUERY, "occlusion query ring full: draws left uncounted");
-        oq_lost = 1;
+        ex->oq_lost = 1;
         return;
     }
+    q = __atomic_fetch_add(&oq_next, 1, __ATOMIC_RELAXED) % OQ_N;   // the slot looked at may have been taken meanwhile
     oq_busy[q] = 1;
-    oq_next++;
     vkCmdBeginQuery(ex->cb, oq_pool, q, oq_flags);
     ex->recorded++;
-    oq_open = (int)q;
+    ex->oq_open = (int)q;
 }
 
 void vk_exec_oq_pass_end(VkExec *ex) { oq_close(ex); }
 
 void vk_exec_xfer_shutdown(void) {
     if (oq_state > 0) vkDestroyQueryPool(vk_ctx()->device, oq_pool, NULL);
-    oq_pool = VK_NULL_HANDLE, oq_state = 0, oq_next = 0, oq_counting = oq_reported = oq_keep = 0, oq_open = -1;
-    oq_nseg = 0, oq_lost = 0, oq_count = 0;
+    oq_pool = VK_NULL_HANDLE, oq_state = 0, oq_next = 0, oq_keep = 0, oq_count = 0;
+    oq_epoch++;
     memset((void *)oq_busy, 0, sizeof oq_busy);
 }
 
@@ -244,18 +251,18 @@ static void oq_cb(void *arg) {
 // Hands the segment to the completion thread with a report (addr; 0: no CPU-visible memory) or a reset.
 static void oq_segment(VkExec *ex, uint64_t addr, int reset) {
     oq_close(ex);
-    OqSegment *s = malloc(sizeof *s + sizeof *s->q * oq_nseg);
+    OqSegment *s = malloc(sizeof *s + sizeof *s->q * ex->oq_nseg);
     if (!s) rt_fatal("vk: out of memory");
-    s->addr = addr, s->reset = reset, s->lost = oq_lost, s->n = oq_nseg;
-    memcpy(s->q, oq_seg, sizeof *s->q * oq_nseg);
-    oq_nseg = 0, oq_lost = 0;
+    s->addr = addr, s->reset = reset, s->lost = ex->oq_lost, s->n = ex->oq_nseg;
+    if (ex->oq_nseg) memcpy(s->q, ex->oq_seg, sizeof *s->q * ex->oq_nseg);
+    ex->oq_nseg = 0, ex->oq_lost = 0;
     vk_completion_add(ex->fence, oq_cb, s);
 }
 
 static void reset_counter(VkExec *ex, const p_reset_counter *p) {
     if (p->type != NVN_COUNTER_TYPE_SAMPLES_PASSED || !oq_ready()) return;
     oq_segment(ex, 0, 1);
-    oq_counting = 1, oq_reported = 0;
+    ex->oq_counting = 1, ex->oq_reported = 0;
 }
 
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
@@ -264,12 +271,12 @@ static void oq_report(VkExec *ex, uint64_t addr) {
     LOG_ONCE("vk: the game reports samples-passed counters (occlusion culling); first report at %#llx",
              (unsigned long long)addr);
     oq_segment(ex, addr, 0);
-    if (oq_reported && !oq_keep) {
+    if (ex->oq_reported && !oq_keep) {
         oq_keep = 1;
         rt_log("vk: samples passed reported twice without a reset: counting every draw from now on");
     }
-    oq_reported = 1;
-    if (!oq_keep) oq_counting = 0;
+    ex->oq_reported = 1;
+    if (!oq_keep) ex->oq_counting = 0;
 }
 
 static void signal_event(VkExec *ex, const p_signal_event *p) {
@@ -296,7 +303,8 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
         *a = p->addr;
         vk_completion_add(ex->fence, counter_cb, a);
     }
-    pending[pending_head++ % PENDING] = (typeof(pending[0])){p->addr, ex->fence, samples};
+    // Threads recording parts of one submission (the parallel replay) may report at once: each takes its own entry.
+    pending[__atomic_fetch_add(&pending_head, 1, __ATOMIC_RELAXED) % PENDING] = (typeof(pending[0])){p->addr, ex->fence, samples};
 }
 
 // ---- conditional rendering

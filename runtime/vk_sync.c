@@ -334,6 +334,64 @@ VkCommandBuffer vk_sync_split(void) {
     return s->cb;
 }
 
+// A worker's command buffers come from a pool of its own (a pool is used by one thread at a time) and are reused once
+// the submission they were recorded for is done.
+typedef struct { VkCommandBuffer cb; uint64_t fence; } WorkerCb;
+typedef struct { VkCommandPool pool; WorkerCb *s; int n; } WorkerPool;
+static _Thread_local WorkerPool *wpool;
+
+VkCommandBuffer vk_sync_worker_begin(uint64_t fence) {
+    VkCtx *c = vk_ctx();
+    if (!wpool) {
+        if (!(wpool = calloc(1, sizeof *wpool))) rt_fatal("vk: out of memory (worker pool)");
+        VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                      .queueFamilyIndex = c->gfx_family};
+        if (vkCreateCommandPool(c->device, &pi, NULL, &wpool->pool) != VK_SUCCESS) rt_fatal("vk: worker command pool");
+    }
+    uint64_t done = vk_sync_fence_done();
+    int i = 0;
+    while (i < wpool->n && wpool->s[i].fence > done) i++;
+    if (i == wpool->n) {
+        WorkerCb *s = realloc(wpool->s, sizeof *s * (size_t)(wpool->n + 1));
+        if (!s) rt_fatal("vk: out of memory (worker command buffers)");
+        wpool->s = s;
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                          .commandPool = wpool->pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                          .commandBufferCount = 1};
+        if (vkAllocateCommandBuffers(c->device, &ai, &s[i].cb) != VK_SUCCESS) rt_fatal("vk: worker command buffer");
+        wpool->n++;
+    }
+    wpool->s[i].fence = fence;
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkBeginCommandBuffer(wpool->s[i].cb, &bi);
+    return wpool->s[i].cb;
+}
+
+void vk_sync_parts(const VkCommandBuffer *cbs, int n) {
+    if (n <= 0) return;
+    VkCtx *c = vk_ctx();
+    vk_upload_flush(0);   // the uploads the parts asked for precede them in queue order
+    VkCommandBuffer pro = prologue(c, cur_fence);
+    VkCommandBufferSubmitInfo *ci = calloc((size_t)n + 1, sizeof *ci);
+    if (!ci) rt_fatal("vk: out of memory");
+    int k = 0;
+    if (pro) ci[k++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro};
+    for (int i = 0; i < n; i++)
+        ci[k++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cbs[i]};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = (uint32_t)k, .pCommandBufferInfos = ci};
+    vk_queue_lock();
+    VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
+    vk_queue_unlock();
+    free(ci);
+    if (r != VK_SUCCESS) {
+        vk_device_fault_report(r);
+        rt_fatal("vk: vkQueueSubmit2 of %d parallel parts of value %llu failed (%d)", n, (unsigned long long)cur_fence, (int)r);
+    }
+    vk_mem_note_submit(cur_fence);
+}
+
 // Asynchronous replay (vk_backend.c): the value the next queued submission or present will signal. Values are handed
 // out in queue order and the replay thread submits them in that order, so each vk_sync_submit gets exactly its value.
 uint64_t vk_sync_reserve(void) {
