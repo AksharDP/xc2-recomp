@@ -22,8 +22,12 @@ static volatile uint64_t head, tail;   // words published by the producer / cons
 static volatile int32_t sleeping;         // the recorder waits for wake_ev
 static PlatEvent wake_ev;              // auto-reset
 static uint64_t put_h;                 // producer: words written (published up to head)
-static VkCommandBuffer rec_cb;         // the part being recorded (set while the recorder is idle)
-static int rec_live;                   // producer: rec_begin started the recorder for rec_cb
+// The part being recorded (set while the recorder is idle) and whether rec_begin started the recorder for it. Per
+// thread: only the thread that called rec_begin queues into the ring, so a thread recording another command buffer at
+// the same time (a thread recording a part of the replay of its own) sees no part here and makes its calls at once.
+static _Thread_local VkCommandBuffer rec_cb;
+static _Thread_local int rec_live;
+static VkCommandBuffer ring_cb;        // the recorder's copy of rec_cb, the command buffer its packets go into
 static PlatThread *rec_thread;
 static int rec_prio;                   // the submitting thread's priority, which the recorder takes
 
@@ -169,7 +173,7 @@ void rec_begin(VkCommandBuffer cb) {
     RS_.parts++;
     if (!RT_KNOB_ON(mode)) return;
     RS_.parts_on++;
-    rec_cb = cb;   // the recorder is idle: rec_end drained it
+    rec_cb = ring_cb = cb;   // the recorder is idle: rec_end drained it; head's release publishes ring_cb with the packets
     rec_live = 1;
     __atomic_store_n(&part_open, 1, __ATOMIC_RELAXED);
 }
@@ -597,7 +601,7 @@ void rec_xfb_mark(PFN_vkCmdBeginTransformFeedbackEXT fn, VkCommandBuffer cb) {
 // ---- the recorder's side
 
 static void exec_packet(uint32_t op, void *p) {
-    VkCommandBuffer cb = rec_cb;
+    VkCommandBuffer cb = ring_cb;
     switch (op) {
 #define F(name, ...) case R_##name: { A_##name *a = p; vkCmd##name(cb, __VA_ARGS__); break; }
     F(BeginQuery, a->p, a->q, a->f)

@@ -42,7 +42,9 @@ typedef struct {
 
 static VkExec X;
 static int x_ready;
-static _Thread_local int x_here;   // this thread is inside vk_exec_record (vk_exec_inline_begin)
+// The replay state this thread records with, while it is inside vk_exec_record (vk_exec_inline_begin): X on the replay
+// thread. Per thread, so a thread that records a part of the replay into a command buffer of its own reaches its own.
+static _Thread_local VkExec *x_cur;
 
 // ---- XC2_TRACE=gfx frame counters
 
@@ -50,7 +52,7 @@ VkExecFrame vk_exec_frame;
 static struct { const uint8_t *mem; uint32_t w, h, fmt, n; } fw[64];   // textures written this frame
 static int nfw;
 
-uint64_t vk_exec_recording_fence(void) { return x_here ? X.fence : 0; }
+uint64_t vk_exec_recording_fence(void) { return x_cur ? x_cur->fence : 0; }
 
 void vk_exec_frame_written(const tex_t *t) {
     if (!(rt_trace & RT_TRACE_GFX) || !t) return;
@@ -740,17 +742,17 @@ void vk_exec_snap_copy(VkExec *ex, const VkExecSnap *s, int n, int narrow) {
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
-    VkExec *ex = &X;
+    VkExec *ex = x_cur;
     *reopen = 0;
-    if (!x_here || !ex->cb) return VK_NULL_HANDLE;
+    if (!ex || !ex->cb) return VK_NULL_HANDLE;
     *reopen = ex->in_pass;
     vk_exec_barrier(ex);   // ends the pass; feedback-layout targets go back to GENERAL
     return ex->cb;
 }
 
-void vk_exec_inline_end(int reopen) {
-    X.recorded++;
-    if (reopen) vk_exec_pass_begin(&X);
+void vk_exec_inline_end(int reopen) {   // after a vk_exec_inline_begin that returned a command buffer
+    x_cur->recorded++;
+    if (reopen) vk_exec_pass_begin(x_cur);
 }
 
 typedef struct { VkBuffer b; VmaAllocation a; } InlineBuf;
@@ -767,7 +769,7 @@ VkBuffer vk_exec_inline_buffer(VkDeviceSize size) {
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (!t || vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &t->b, &t->a, NULL) != VK_SUCCESS) { free(t); return VK_NULL_HANDLE; }
-    vk_completion_add(X.fence, free_inline_buf, t);
+    vk_completion_add(x_cur ? x_cur->fence : X.fence, free_inline_buf, t);
     return t->b;
 }
 
@@ -1052,7 +1054,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     vk_exec_frame.submits++;
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();
-    x_here = 1;
+    x_cur = ex;
     if (n) vk_mem_mirror_begin(mcap), vk_usnap_begin(ucap, fence);
     for (int i = 0; i < n; i++) {
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
@@ -1060,7 +1062,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
         walk(ex, nvn_op_first(handles[i]), 0);
     }
     vk_exec_pass_end(ex);
-    x_here = 0;
+    x_cur = NULL;
     if (ex->recorded) vk_exec_barrier(ex);   // later submissions see this one's writes
     if (n) ex->recorded += vk_mem_mirror_end(ex->cb, fence), vk_usnap_end(fence);   // VRAM mirror bytes the GPU wrote go back to guest memory
     if (ex->nviews) {

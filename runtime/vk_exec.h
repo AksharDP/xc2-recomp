@@ -81,6 +81,10 @@ typedef struct VkExec {
     const prog_t *prog;                  // OP_BIND_PROGRAM
     int32_t prog_stages;
     NVNbufferRange vbuf[16];             // OP_BIND_VBUF
+    // Serials the per-draw memos compare (bind_sig, bind_vertex_buffers). They are replay state rather than counters of
+    // a recording thread, so a copy of the state carries them and they only grow.
+    uint64_t bind_gen;                   // bumped by every bind op that writes prog, ubo, ssbo, tex or img
+    uint64_t vbuf_serial;                // bumped by every OP_BIND_VBUF
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
     uint64_t tex[6][128], samp[6][128], img[6][32];   // OP_BIND_TEX / OP_BIND_SAMP / OP_BIND_IMG handles per stage
     p_xfb_bind xfb;                      // OP_XFB_BIND
