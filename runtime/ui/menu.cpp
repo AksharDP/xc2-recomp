@@ -34,6 +34,7 @@ extern "C" {
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+int ov_language_shipped(const char *code);   // ov.h (pulls in gfx.h)
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
@@ -458,27 +459,30 @@ static void row_gpu(void) {
     opt_choice_list("XC2_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
 }
 
-// The game language: one entry per Switch language the menu offers (a Switch code that names it), each under its own
-// name. Dutch, Portuguese and Russian are not among them: neither the US nor the JP release has their text, and
-// choosing one left the game on a black screen (GitHub issue 107).
+// The game language: one entry per language the installed game files have text for (ov_language_shipped, from
+// XC2_GAME_LANGS: the Americas and Europe release has English, French, German, Italian, Spanish and Korean, the
+// Japanese one Japanese and Chinese), each under its own name. A language the files lack left the game on a black
+// screen (GitHub issue 107); Dutch, Portuguese and Russian are in no release.
 static void row_game_lang(void) {
     static const struct { const char *code; UiTextId name; } langs[] = {
         {"en-US", UI_MENU_LANGNAME_EN}, {"ja", UI_MENU_LANGNAME_JA}, {"fr", UI_MENU_LANGNAME_FR},
         {"de", UI_MENU_LANGNAME_DE}, {"it", UI_MENU_LANGNAME_IT}, {"es", UI_MENU_LANGNAME_ES},
         {"zh-CN", UI_MENU_LANGNAME_ZH_HANS}, {"zh-TW", UI_MENU_LANGNAME_ZH_HANT}, {"ko", UI_MENU_LANGNAME_KO},
     };
-    enum { N = sizeof langs / sizeof *langs + 1 };
-    const char *vals[N], *names[N];
+    enum { MAX = sizeof langs / sizeof *langs + 1 };
+    const char *vals[MAX], *names[MAX];
     vals[0] = "";
     names[0] = menu_text(UI_MENU_GAME_LANG_AUTO);
     const char *now = cfg_value("XC2_LANG");
-    int cur = *now ? -1 : 0;
-    for (int i = 1; i < N; i++) {
-        vals[i] = langs[i - 1].code;
-        names[i] = menu_text(langs[i - 1].name);
-        if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[i]))) cur = i;   // en-GB is English too
+    int cur = *now ? -1 : 0, n = 1;
+    for (const auto &l : langs) {
+        if (!ov_language_shipped(l.code)) continue;
+        vals[n] = l.code;
+        names[n] = menu_text(l.name);
+        if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[n]))) cur = n;   // en-GB is English too
+        n++;
     }
-    opt_choice_list("XC2_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
+    opt_choice_list("XC2_LANG", UI_MENU_GAME_LANG, vals, names, n, UI_MENU_GAME_LANG_DESC, cur);
 }
 
 // The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.

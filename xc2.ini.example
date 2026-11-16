@@ -174,9 +174,13 @@
 # picture_fit = keep
 
 [language]
-# Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
+# Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-TW, ...). Default: the Windows locale.
+# A language the game files have no text for gives way to en-US, or ja on the Japanese release (see game_langs).
 # locale = en-US
 # lang = en-US
+# The languages the installed game files have text for, written by the setup: the Americas and Europe release has
+# en-US en-GB fr fr-CA de it es es-419 ko, the Japanese one ja zh-CN zh-TW. The settings menu offers only these.
+# game_langs = en-US en-GB fr fr-CA de it es es-419 ko
 # System mode reported to the game: docked or handheld.
 # operation_mode = docked
 # Language of the settings menu and the overlay: en or ru. Default: the Windows display language, English if it is

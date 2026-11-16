@@ -120,7 +120,8 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
                'xc2_titles.py',   # the releases and their title ids (installer, xc2_extract.py, build_game.py)
                'xc2_merge_romfs.py',   # the update applied to the game data in place (extract.py, installer Extract)
                'cheats.py', 'exefs_patches.py',   # the mods folder's code cheats and ExeFS patches (installer Lift)
-               'xc2_prompts.py']   # the button prompts (installer Prepare)
+               'xc2_prompts.py',   # the button prompts (installer Prepare)
+               'xc2_languages.py']   # the game languages the game files have text for (installer ini, check, probe)
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes, the prompts' icons
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 

@@ -30,6 +30,7 @@ from .runner import InstallError, Step
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import extract  # noqa: E402
+import xc2_languages  # noqa: E402
 import xc2_titles  # noqa: E402
 from extract_exefs import (common_tickets, container_entries, load_keys, nca_ctr_key, nca_inventory)  # noqa: E402
 from package_select import program_nca  # noqa: E402
@@ -174,6 +175,28 @@ def raise_if_damaged(error, name, path):
         raise InstallError('check.input_damaged', input=name, path=str(path), detail=str(error)) from None
 
 
+def game_languages(base, update, keys_path):
+    """The game languages the game files have text for, read in place (tools/xc2_languages.py): the base game patched
+    by update (None: the base alone). The two releases differ, so this is what the window offers and the check takes."""
+    try:
+        return xc2_languages.languages(xc2_languages.from_game(Path(base), Path(keys_path),
+                                                               Path(update) if update else None))
+    except ValueError as e:
+        raise_if_damaged(e, 'base', base)
+        raise InstallError('check.languages_unreadable', detail=str(e)) from None
+
+
+def installed_languages(dest):
+    """The game languages of an installed RomFS (dest/romfs, with the update applied), or None without one."""
+    romfs = Path(dest) / 'romfs'
+    if not (romfs / 'index.json').is_file():
+        return None
+    try:
+        return xc2_languages.languages(xc2_languages.from_romfs(romfs))
+    except (OSError, ValueError, KeyError, StopIteration):
+        return None
+
+
 def game_version(ctx):
     """The update this install is built from: what the check identified, else the recorded one."""
     return ctx.state.get('version', SUPPORTED[0])
@@ -244,16 +267,12 @@ class Check(Step):
         own = (ctx.temp, *ctx.temp.parents)   # a temp folder inside the install folder (installer/cli.py) is ours
         if ctx.mode == 'install' and dest.is_dir() and any(p not in own for p in dest.iterdir()):
             raise InstallError('check.dest_not_empty', path=str(dest))
-        lang = ctx.options.lang or ctx.state.get('lang')
-        if not ctx.options.lang and lang in ini.DROPPED_LANGUAGES:
-            lang = 'en-US'   # an install recorded with a language the game lacks (nl, pt, ru) is updated to English
-        if not lang:
-            raise InstallError('check.lang_missing')
-        if lang not in ini.LANGUAGES:
-            raise InstallError('check.lang_unknown', lang=lang, known=', '.join(ini.LANGUAGES))
-        if lang in ini.NEED_SHARED_FONTS:
-            rep.warning('warn.lang_needs_fonts', lang=lang)
-        ctx.lang = lang
+        # The language: the one asked for, else the recorded one as this release names it (an earlier install's nl,
+        # pt or ru, which no release has, gives way to the default of the game's languages in self.language)
+        requested = ctx.options.lang or ini.recorded_language(ctx.state.get('lang'))
+        if requested and requested not in ini.LANGUAGES:
+            raise InstallError('check.lang_unknown', lang=requested, known=', '.join(ini.LANGUAGES))
+        ctx.languages = None
         ctx.temp.mkdir(parents=True, exist_ok=True)
 
         rep.progress('check', 'host', force=True)
@@ -269,7 +288,21 @@ class Check(Step):
             self.versions(ctx)
         elif dlc_inputs(ctx):   # add-ons added to an installed folder: inputs() did not see them
             self.dlc_files(ctx)
+        self.language(ctx, requested)
         return {}
+
+    def language(self, ctx, requested):
+        """ctx.lang: requested, or the default of the game's languages; it must be one the game files have text for.
+        The languages come from the game files when the extraction runs (inputs), else from the install."""
+        langs = ctx.languages or ctx.state.get('languages') or installed_languages(ctx.dest)
+        lang = requested or (ini.default_language(langs) if langs else None)
+        if not lang:
+            raise InstallError('check.lang_missing')
+        if langs and lang not in langs:
+            raise InstallError('check.lang_not_in_game', lang=lang, known=', '.join(langs))
+        if lang in ini.NEED_SHARED_FONTS:
+            ctx.reporter.warning('warn.lang_needs_fonts', lang=lang)
+        ctx.lang, ctx.languages = lang, langs
 
     def dlc_files(self, ctx):
         """Add-on files chosen without the game files: they need the keys too (their NCAs are encrypted), and each must
@@ -369,6 +402,8 @@ class Check(Step):
             with path.open('rb') as f:
                 dlc_record(f, path, keys, region)
         del keys
+        ctx.languages = game_languages(o.base, o.update, o.keys)
+        ctx.reporter.log(f'check: the game files have text for {" ".join(ctx.languages)}')
 
     @staticmethod
     def open_input(f, path, keys, name, is_update):
@@ -955,11 +990,16 @@ class Cleanup(Step):
     def run(self, ctx):
         rep, dest = ctx.reporter, ctx.dest
         rep.progress('cleanup', 'ini', force=True)
+        # the installed RomFS has the update applied: its languages are the ones the game runs with, which the in-game
+        # menu offers and the runtime keeps to (game_langs, runtime/ov_system.c ov_language_shipped)
+        langs = installed_languages(dest) or ctx.languages
         try:
-            ini.write(dest, ctx.lang, ctx.layout.ini_example)
+            ini.write(dest, ctx.lang, ctx.layout.ini_example, game_langs=langs)
         except (OSError, ValueError) as e:   # ValueError: an xc2.ini saved in another encoding than UTF-8
             raise InstallError('cleanup.ini_failed', detail=str(e)) from None
         ctx.state['lang'] = ctx.lang
+        if langs:
+            ctx.state['languages'] = list(langs)
         (dest / 'profile').mkdir(exist_ok=True)
         if (dest / GAME_EXE).is_file():   # an install from before the rename keeps the old exe until the new one is in
             try:

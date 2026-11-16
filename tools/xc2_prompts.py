@@ -61,7 +61,18 @@ class Archive:
         self.ard = where['bf2.ard'][0]
         with open(self.image, 'rb') as f:
             f.seek(where['bf2.arh'][0])
-            h = bytearray(f.read(where['bf2.arh'][1]))
+            self._load(f.read(where['bf2.arh'][1]))
+
+    @classmethod
+    def from_header(cls, arh):
+        """The archive's names from the bytes of bf2.arh alone (names and lookup work; read needs the image)."""
+        self = cls.__new__(cls)
+        self.image, self.ard = None, None
+        self._load(arh)
+        return self
+
+    def _load(self, arh):
+        h = bytearray(arh)
         magic, slen, nodes, soff, _, noff, nlen, foff, nfiles, key = struct.unpack_from('<4s9I', h, 0)
         if magic != b'arh1':
             sys.exit('bf2.arh: not an arh1 header')

@@ -214,10 +214,42 @@ class IniTest(unittest.TestCase):
 
     def test_languages_without_text_are_not_offered(self):
         # Neither release has Dutch, Portuguese or Russian text; asking for one gave a black screen (GitHub issue 107).
-        for code in ('nl', 'pt', 'pt-BR', 'ru'):
+        # The game knows no zh-Hans or zh-Hant: Chinese is zh-CN and zh-TW.
+        for code in ('nl', 'pt', 'pt-BR', 'ru', 'zh-Hans', 'zh-Hant'):
             self.assertNotIn(code, ini.LANGUAGES)
-            self.assertIn(code, ini.DROPPED_LANGUAGES)
         self.assertFalse(set(ini.DROPPED_LANGUAGES) & set(ini.LANGUAGES))
+        self.assertTrue(set(ini.REPLACED.values()) <= set(ini.LANGUAGES))
+
+    def test_recorded_and_default_language(self):
+        self.assertIsNone(ini.recorded_language('ru'))
+        self.assertIsNone(ini.recorded_language(None))
+        self.assertEqual(ini.recorded_language('zh-Hans'), 'zh-CN')
+        self.assertEqual(ini.recorded_language('zh-Hant'), 'zh-TW')
+        self.assertEqual(ini.recorded_language('de'), 'de')
+        self.assertEqual(ini.default_language(['en-GB', 'en-US', 'ko']), 'en-US')
+        self.assertEqual(ini.default_language(['ja', 'zh-CN', 'zh-TW']), 'ja')
+
+    def test_codes_match_the_runtime(self):
+        # runtime/cfg.c's XC2_LANG values and runtime/ov_system.c game_codes are the installer's codes
+        cfg = (ROOT / 'runtime' / 'cfg.c').read_text(encoding='utf-8')
+        values = re.search(r'\{"LANG", "", "([^"]+)"', cfg).group(1).split('|')
+        self.assertEqual(sorted(values), sorted(ini.LANGUAGES))
+        ov = (ROOT / 'runtime' / 'ov_system.c').read_text(encoding='utf-8')
+        codes = re.findall(r'"([^"]+)"', re.search(r'game_codes\[\] = \{([^}]+)\}', ov).group(1))
+        self.assertEqual(sorted(codes), sorted(ini.LANGUAGES))
+
+    def test_game_langs_is_written_beside_lang(self):
+        example = self.EXAMPLE + '# game_langs = en-US\n'
+        out = ini.set_value(ini.set_language(example, 'ja'), 'game_langs', 'ja zh-CN zh-TW')
+        self.assertIn('\nlang = ja\n', out)
+        self.assertIn('\ngame_langs = ja zh-CN zh-TW\n', out)
+        self.assertEqual(ini.get_value(out, 'game_langs'), 'ja zh-CN zh-TW')
+        self.assertEqual(ini.get_language(out), 'ja')   # `lang` does not match the game_langs line
+        again = ini.set_value(out, 'game_langs', 'en-US ko')
+        self.assertEqual(again.count('game_langs'), 1)
+        with tempfile.TemporaryDirectory() as d:
+            path = ini.write(d, 'en-US', game_langs=['en-US', 'ko'])
+            self.assertEqual(ini.get_value(path.read_text(), 'game_langs'), 'en-US ko')
 
     def test_missing_section_is_added(self):
         self.assertEqual(ini.set_language('fps60 = 0\n', 'fr'), 'fps60 = 0\n\n[language]\nlang = fr\n')

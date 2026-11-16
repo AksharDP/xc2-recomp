@@ -1,8 +1,9 @@
 """The installer window: python -m installer.gui
 
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
-install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Decisions live in guilogic.py;
-this file only draws. The window text is in installer/text/<en|ru>.json under "ui.*" and "launcher.*" ids.
+install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Once the base game and the
+keys are chosen it runs `python -m installer.probe` on them, and the language list holds only the languages those game
+files have text for (the two releases differ). Decisions live in guilogic.py; this file only draws. The window text is in installer/text/<en|ru>.json under "ui.*" and "launcher.*" ids.
 
     --selftest [--shots DIR]   build every screen in both languages and close by itself (PNG per screen with --shots)
     --lang en|ru               window language (default: the Windows display language)
@@ -25,10 +26,12 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import preferences
-from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Model, Process,
-                       amount, default_game_language, describe_event, parse_line, windows_ui_language)
+from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, LanguageProbe, Model,
+                       Process, amount, default_game_language, describe_event, parse_line, probe_inputs,
+                       windows_ui_language)
 
 POLL_MS = 100
+PROBE_DELAY_MS = 500   # after the last edit of a game file or keys path, so typing a path does not start a probe per key
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
 COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808080', FAILED: '#c01c28'}
 PAD = 14
@@ -68,6 +71,11 @@ class App:
         }
         self.vars['lang'] = tk.StringVar()
         self.lang_code = default_game_language(ui_lang)
+        self.languages = None            # the languages of the chosen game files (LanguageProbe); None while unknown
+        self.probe = None                # the LanguageProbe running, or None
+        self.probe_for = None            # the inputs the shown languages are of (guilogic.probe_inputs)
+        self.probe_after = None
+        self.probe_status = ('ui.langs_hint', {})   # the line under the language box: (text id, params)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
 
@@ -108,8 +116,11 @@ class App:
             for name in ('base', 'update', 'dlc', 'keys', 'dest'):
                 self.vars[name].trace_add('write', self.queue_preferences_save)
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
+        for name in ('base', 'update', 'keys', 'dest'):   # dest: an install folder's recorded languages
+            self.vars[name].trace_add('write', self.queue_probe)
         self.refresh_form()
         self.show('form')
+        self.queue_probe()
 
     # ---- text -----------------------------------------------------------------------------------------------------
 
@@ -147,10 +158,20 @@ class App:
     def lang_label(self, code):
         return self.cat('lang.' + code)
 
+    def offered(self):
+        """The languages the list holds: those of the chosen game files once read, else every one the game knows."""
+        return list(self.languages) if self.languages else list(ini.LANGUAGES)
+
     def fill_languages(self):
         code = self.selected_lang()
-        self.lang_box.configure(values=[self.lang_label(c) for c in ini.LANGUAGES])
+        offered = self.offered()
+        if code not in offered:   # chosen before the files were read, or for the other release: their default
+            code = ini.default_language(offered)
+        self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
+        self.lang_code = code
+        status_id, params = self.probe_status
+        self.langs_label.configure(text=self.cat(status_id, **params))
 
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
@@ -226,10 +247,12 @@ class App:
         self.lang_box.grid(row=i, column=1, sticky='w', pady=4)
         self.lang_touched = False
         self.lang_box.bind('<<ComboboxSelected>>', lambda _e: setattr(self, 'lang_touched', True))
+        self.langs_label = ttk.Label(grid, foreground='#606060', wraplength=480, justify='left')
+        self.langs_label.grid(row=i + 1, column=1, columnspan=2, sticky='w', pady=(0, 4))
         self.fill_languages()
-        self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=4)
-        ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=4)
-        self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(8, 0))
+        self.label(grid, 'ui.dest').grid(row=i + 2, column=0, sticky='w', pady=4)
+        ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 2, column=1, sticky='ew', pady=4)
+        self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 2, column=2, padx=(8, 0))
         self.update_hint = ttk.Label(f, wraplength=620, justify='left')
         self.update_hint.pack(anchor='w', pady=(8, 0))
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=620, justify='left')
@@ -290,7 +313,60 @@ class App:
 
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=tuple(self.dlc_paths()),
-                    keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
+                    keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
+                    languages=tuple(self.languages or ()))
+
+    # ---- the languages of the game files ---------------------------------------------------------------------------
+
+    def queue_probe(self, *_):
+        if self.probe_after is not None:
+            self.root.after_cancel(self.probe_after)
+        self.probe_after = self.root.after(PROBE_DELAY_MS, self.start_probe)
+
+    def start_probe(self):
+        """Read the languages of the chosen game files, unless they are the ones already shown or being read."""
+        self.probe_after = None
+        inputs = probe_inputs(self.vars['base'].get(), self.vars['update'].get(), self.vars['keys'].get())
+        if inputs is None:
+            self.probe, self.probe_for = None, None
+            self.set_languages(self.recorded_languages(), ('ui.langs_hint', {}))
+            return
+        if inputs == self.probe_for or (self.probe and self.probe.inputs == inputs):
+            return
+        self.probe = LanguageProbe(self.layout.python, inputs, cwd=self.layout.root)
+        self.probe_status = ('ui.langs_checking', {})
+        self.fill_languages()
+        self.root.after(POLL_MS, self.poll_probe)
+
+    def poll_probe(self):
+        probe = self.probe
+        if probe is None:
+            return
+        if not probe.done():
+            self.root.after(POLL_MS, self.poll_probe)
+            return
+        self.probe, self.probe_for = None, probe.inputs
+        e = probe.result
+        if e['type'] == 'languages' and e.get('languages'):
+            self.set_languages(e['languages'], ('ui.langs_found', {'release': e.get('release', ''),
+                                                                   'known': ', '.join(e['languages'])}))
+        else:
+            reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
+            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
+
+    def recorded_languages(self):
+        """The languages an install folder recorded (xc2-install.json), shown before the game files are chosen."""
+        state = self.form().installed_state()
+        return (state or {}).get('languages') or None
+
+    def set_languages(self, languages, status):
+        """Offer languages (None: every one) and show status under the list; a choice they lack gives way to their
+        default (fill_languages)."""
+        self.lang_touched = self.lang_touched and self.selected_lang() in (languages or ini.LANGUAGES)
+        self.languages = list(languages) if languages else None
+        self.probe_status = status
+        self.fill_languages()
+        self.fit()
 
     def queue_preferences_save(self, *_):
         """Debounce writes so editing a path does not sync the file on every keystroke."""
@@ -329,8 +405,9 @@ class App:
         state = form.installed_state()
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
-            if state.get('lang') in ini.LANGUAGES and not self.lang_touched:
-                self.vars['lang'].set(self.lang_label(state['lang']))
+            recorded = ini.recorded_language(state.get('lang'))
+            if recorded in self.offered() and not self.lang_touched:
+                self.vars['lang'].set(self.lang_label(recorded))
         else:
             self.update_hint.configure(text='')
         self.fit()

@@ -265,22 +265,41 @@ static void set_env(const char *name, const char *value) { plat_setenv(name, val
 static void probe_oe(void) {
     char *keep_lang = cfg_get("XC2_LANG") ? strdup(cfg_get("XC2_LANG")) : NULL;
     char *keep_locale = cfg_get("XC2_LOCALE") ? strdup(cfg_get("XC2_LOCALE")) : NULL;
-    static const struct { const char *lang, *locale, *want; } cases[] = {
-        {NULL, "en-US", "en-US"}, {NULL, "be-BY", "en-US"}, {NULL, "xx", "en-US"},     {NULL, "ja-JP", "ja"},
-        {NULL, "fr-CA", "fr-CA"}, {NULL, "es-MX", "es-419"}, {NULL, "es_ES", "es"},     {NULL, "zh-Hant-TW", "zh-Hant"},
-        {NULL, "zh-CN", "zh-Hans"}, {NULL, "en-GB", "en-GB"}, {NULL, "ru-RU", "en-US"}, {"ja", "fr-FR", "ja"},
-        {NULL, "nl-NL", "en-US"}, {NULL, "pt-BR", "en-US"}, {NULL, "pt-PT", "en-US"}, {"en-US", NULL, "en-US"}};
+    char *keep_shipped = cfg_get("XC2_GAME_LANGS") ? strdup(cfg_get("XC2_GAME_LANGS")) : NULL;
+    // shipped: XC2_GAME_LANGS, as the installer writes it for the Americas and Europe (US) or the Japanese release (JP)
+    static const char US[] = "en-US en-GB fr fr-CA de it es es-419 ko", JP[] = "ja zh-CN zh-TW";
+    static const struct { const char *lang, *locale, *shipped, *want; } cases[] = {
+        {NULL, "en-US", NULL, "en-US"}, {NULL, "be-BY", NULL, "en-US"}, {NULL, "xx", NULL, "en-US"},
+        {NULL, "ja-JP", NULL, "ja"}, {NULL, "fr-CA", NULL, "fr-CA"}, {NULL, "es-MX", NULL, "es-419"},
+        {NULL, "es_ES", NULL, "es"}, {NULL, "zh-Hant-TW", NULL, "zh-TW"}, {NULL, "zh-CN", NULL, "zh-CN"},
+        {NULL, "en-GB", NULL, "en-GB"}, {NULL, "ru-RU", NULL, "en-US"}, {"ja", "fr-FR", NULL, "ja"},
+        {NULL, "nl-NL", NULL, "en-US"}, {NULL, "pt-BR", NULL, "en-US"}, {NULL, "pt-PT", NULL, "en-US"},
+        {"en-US", NULL, NULL, "en-US"}, {"zh-Hans", NULL, NULL, "zh-CN"}, {"zh-Hant", NULL, NULL, "zh-TW"},
+        // a language the installed release lacks becomes its default: en-US on US, ja on JP
+        {NULL, "ja-JP", US, "en-US"}, {NULL, "zh-TW", US, "en-US"}, {NULL, "ko-KR", US, "ko"}, {"de", NULL, US, "de"},
+        {NULL, "en-US", JP, "ja"}, {"fr", NULL, JP, "ja"}, {NULL, "zh-HK", JP, "zh-TW"}, {"zh-Hans", NULL, JP, "zh-CN"},
+        {NULL, "de-DE", "zh-CN,ko", "zh-CN"}};
     int bad = 0;
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         set_env("XC2_LANG", cases[i].lang);
         set_env("XC2_LOCALE", cases[i].locale);
+        set_env("XC2_GAME_LANGS", cases[i].shipped);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
-            printf("  FAIL: language for XC2_LANG=%s XC2_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
-                   cases[i].locale ? cases[i].locale : "", got, cases[i].want);
+            printf("  FAIL: language for XC2_LANG=%s XC2_LOCALE=%s XC2_GAME_LANGS=%s is %s, not %s\n",
+                   cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "",
+                   cases[i].shipped ? cases[i].shipped : "", got, cases[i].want);
         }
     }
+    set_env("XC2_GAME_LANGS", NULL);
+    CHECK(ov_language_shipped("ja") && ov_language_shipped("ko"), "without XC2_GAME_LANGS a language is missing");
+    set_env("XC2_GAME_LANGS", US);
+    CHECK(ov_language_shipped("ko") && ov_language_shipped("en-GB") && !ov_language_shipped("ja") &&
+              !ov_language_shipped("en") && !ov_language_shipped("zh-CN"),
+          "ov_language_shipped does not match whole codes of XC2_GAME_LANGS");
+    set_env("XC2_GAME_LANGS", keep_shipped);
+    free(keep_shipped);
     set_env("XC2_LANG", NULL);
     set_env("XC2_LOCALE", NULL);
     char sys[16];

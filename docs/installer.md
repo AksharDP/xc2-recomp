@@ -13,7 +13,8 @@ XC2's inputs; file names inside the game folder (`xc2.exe`, `xc2.ini`) are XC2 R
      packs 1 to 6 and *Torna ~ The Golden Country*, title ids 0100E95004039001..9006 and 0100E95004039063), of
      either release ([Releases](#releases));
    - their `prod.keys`;
-   - the game language and the install folder.
+   - the game language, from the languages the chosen game files have text for ([Game languages](#game-languages)),
+     and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
 4. Plays `xc2.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
 
@@ -24,7 +25,7 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   xc2.exe, SDL3.dll, libopus-0.dll, xc2_xlate.exe
   amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll, amd_fidelityfx_framegeneration_vk.dll
                                 AMD FSR SDK 2.4 (FSR upscaling and frame generation); without them the FSR settings stay off
-  xc2.ini                       language; the other keys as commented defaults (xc2.ini.example)
+  xc2.ini                       lang and game_langs; the other keys as commented defaults (xc2.ini.example)
   exefs/, romfs/                 extracted from the player's files (base merged with 3.0.1; RomFS about 13 GiB)
   aoc/<index>/                   each add-on's RomFS (about 4.6 GiB for all seven; packs 5 and 6 hold only a key file)
   profile/                       saves
@@ -110,12 +111,40 @@ A full first install from the base game, 3.0.1 and all seven add-ons took about 
 
 A cancelled or failed setup resumes from the last finished step (`xc2-install.json`).
 
+## Game languages
+
+The two releases have text in different languages, and the game shows a black screen in a language its files lack
+(GitHub issue 107): it turns the language into the folder of its text (`bdat/<folder>` in `bf2.arh`) without checking
+that the folder exists. `tools/xc2_languages.py` reads those folders, from the game files in place or from an
+extracted RomFS:
+
+| Release | Text folders | Languages offered |
+|---|---|---|
+| The Americas and Europe | base `fr gb ge it sp`, update 3.0.1 adds `kr` | en-US, en-GB, fr, fr-CA, de, it, es, es-419, ko |
+| Japan (base; the 3.0.0 update not checked) | `jp cn tw` | ja, zh-CN, zh-TW |
+
+No release has Dutch, Portuguese or Russian. The game's own code table has no zh-Hans, zh-Hant or pt-BR, so Chinese
+goes to it as zh-CN and zh-TW. The NACP's supported-language flags do not match the text (the 3.0.1 update lists ja
+and Chinese, the Japanese base English), so the installer reads the folders instead.
+
+- Window: once the base game and the keys are chosen it runs `python -m installer.probe --base FILE [--update FILE]
+  --keys FILE` (one JSON line, `installer/probe.py`, about a second), and the language list holds only those
+  languages, with the release named under it. Without an update the list is the base game's (no Korean).
+- Check: the language must be one the game files have (`check.lang_not_in_game`); without `--lang` a first install
+  gets en-US, or ja when the files have no English.
+- Cleanup: the languages of the installed RomFS go into `xc2.ini` as `game_langs` and into `xc2-install.json` as
+  `languages`. The in-game menu offers only those, and the runtime turns a language outside them (XC2_LANG, or the
+  Windows locale when it is unset) into en-US, else the first of them (`runtime/ov_system.c` `ov_language`).
+- An install recorded with nl, pt, pt-BR or ru gets its release's default on update; zh-Hans and zh-Hant become zh-CN
+  and zh-TW.
+
 ## Command line
 
 `installer/` (stdlib only; `installer/layout.py` maps the release folder and, in a repository, the dev toolchain):
 
 ```
-python -m installer --base FILE --update FILE --keys FILE [--dlc FILE ...] --lang CODE --dest DIR [--root DIR] [--temp DIR] [--verify]
+python -m installer --base FILE --update FILE --keys FILE [--dlc FILE ...] [--lang CODE] --dest DIR [--root DIR] [--temp DIR] [--verify]
+python -m installer.probe --base FILE [--update FILE] --keys FILE
 ```
 
 In a repository checkout (dev mode, no release folder) the installer borrows Python, llvm-mingw, Ninja and
@@ -130,7 +159,7 @@ with that release's `--toolchain` and `--ninja`.
   `installer/text/en.json` holds their English text. The human-readable log goes to `<temp>/logs/`.
 - `--progress-lines` (`events.LauncherReporter`): stdout carries `progress <0 to 1> <text>` lines instead of JSON, the
   format of RecompLauncher's setup step (`recomplauncher.json`, `prepare`), and an error is one line on stderr. A first
-  install without `--lang` gets en-US; an update keeps the recorded language. `--dlc` may be repeated
+  install without `--lang` gets en-US, or ja on the Japanese release; an update keeps the recorded language. `--dlc` may be repeated
   (`--dlc=FILE` once per add-on). In the AppImage, `AppRun -m installer ...` runs the module with the bundled Python
   and no window, the same arguments as `python\python.exe -m installer ...` in the Windows release.
 - Exit codes: 0 done, 1 failed, 2 bad command line, 3 cancelled. The window cancels with Ctrl+Break to the

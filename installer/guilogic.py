@@ -4,6 +4,7 @@ gui.py draws; everything it decides lives here so tests/installer_gui_test.py ru
 
     Catalog      text of an id in the window language (installer/text/<lang>.json), English when that lacks it
     Form         what the player entered; command() and problems() build and check the CLI call
+    LanguageProbe  runs `python -m installer.probe` on the chosen game files in a thread: the languages they have
     Model        folds the CLI's JSON events (events.py) into step states, progress, space, errors and the result
     Process      runs `python -m installer ...`, cancels it with Ctrl+Break and feeds lines to a queue
 """
@@ -88,7 +89,8 @@ def windows_ui_language():
 
 
 def default_game_language(ui):
-    """en-US for every window language: the game has no Russian text, so a Russian window still installs English."""
+    """en-US for every window language until the game files are read: the game has no Russian text, so a Russian
+    window still installs English. The probe then picks the default of the files' languages (ini.default_language)."""
     return 'en-US'
 
 
@@ -115,6 +117,7 @@ class Form:
     keys: str = ''
     lang: str = ''
     dest: str = ''
+    languages: tuple = ()  # the languages the chosen game files have (LanguageProbe); empty while unknown
 
     def installed_state(self):
         """The recorded state of the install folder (xc2-install.json), or None. Never raises."""
@@ -144,6 +147,8 @@ class Form:
                     found.append(f'ui.missing_{name}')
             if self.lang not in ini.LANGUAGES:
                 found.append('ui.need_lang')
+            elif self.languages and self.lang not in self.languages:
+                found.append('ui.lang_not_in_game')
         else:
             for name in ('base', 'update', 'keys'):
                 value = getattr(self, name).strip()
@@ -173,6 +178,60 @@ class Form:
         if verify:
             cmd.append('--verify')
         return cmd
+
+
+# ---- the languages of the game files -----------------------------------------------------------------------------
+
+def probe_inputs(base, update, keys):
+    """(base, update or None, keys) the probe reads, or None while the base game or the keys are not chosen files. An
+    update that is not a file yet is left out: the base's languages show until it is."""
+    base, update, keys = base.strip(), update.strip(), keys.strip()
+    if not base or not keys or not Path(base).is_file() or not Path(keys).is_file():
+        return None
+    return base, (update if update and Path(update).is_file() else None), keys
+
+
+def probe_command(python, inputs):
+    base, update, keys = inputs
+    cmd = [str(python), '-m', 'installer.probe', '--base', base, '--keys', keys]
+    return cmd + ['--update', update] if update else cmd
+
+
+def parse_probe(output):
+    """The probe's event (installer/probe.py): its last JSON line, or None when it printed none."""
+    for line in reversed(output.splitlines()):
+        event = parse_line(line)
+        if event and event['type'] in ('languages', 'error'):
+            return event
+    return None
+
+
+class LanguageProbe:
+    """One probe run in a thread. done() is True once result holds its event (an error event when it failed)."""
+
+    def __init__(self, python, inputs, cwd=None, timeout=300):
+        self.inputs, self.result = inputs, None
+        self.command, self.cwd, self.timeout = probe_command(python, inputs), cwd, timeout
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        flags = CREATE_NO_WINDOW if os.name == 'nt' else 0
+        env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
+        try:
+            r = subprocess.run(self.command, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                               timeout=self.timeout, creationflags=flags)
+            out = r.stdout.decode('utf-8', errors='replace')
+            event = parse_probe(out)
+            if event is None:
+                tail = (out + r.stderr.decode('utf-8', errors='replace')).strip()[-300:]
+                event = {'type': 'error', 'id': 'check.languages_unreadable', 'params': {'detail': tail}}
+        except (OSError, subprocess.SubprocessError) as e:
+            event = {'type': 'error', 'id': 'check.languages_unreadable', 'params': {'detail': str(e)}}
+        self.result = event
+
+    def done(self):
+        return self.result is not None
 
 
 # ---- events -> state ---------------------------------------------------------------------------------------------
