@@ -44,7 +44,9 @@ typedef struct Arena {
 } Arena;
 
 typedef struct { uint64_t lo, hi; } Rng;
-typedef struct { uint64_t lo, hi, off; int dropped; } Reg;
+// drop_at, hit_max: with parallel parts (vk_usnap_par), the first op position that drops the range and the last that read it
+typedef struct { uint64_t lo, hi, off; int dropped; uint32_t drop_at, hit_max; } Reg;
+#define NO_DROP UINT32_MAX
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
 // A capture: the merged ranges and the arena holding their bytes as of the submit call, and the programs the
@@ -69,7 +71,16 @@ static struct {
     int nwr, cwr;
     // since the last summary
     uint64_t subs, hits, drops, inflight;
+    // Parallel parts (vk_exec.c): several threads record parts of the submission at once. A drop then applies by op
+    // position, not by when it was recorded: the ranges drop for the ops after drop_at (the op list's index, which each
+    // recording thread sets for the op it records: vk_usnap_pos). The drops of the copies, fills and inline updates are
+    // placed before the parts start (vk_usnap_predrop); those of shader and transform feedback writes are found while
+    // recording, and a read after such a drop that came too late is counted (vk_usnap_par_end).
+    int par;
+    uint64_t late;   // reads that a drop recorded later should have turned away (since the last summary)
 } U;
+static PlatMutex ulock = PLAT_MUTEX_INIT;   // U.wr and the ranges' drop marks, while parts record at once
+static _Thread_local uint32_t upos;          // the op position this thread records (parallel parts)
 
 // The capture's state (submitting thread, cap_lock).
 static PlatMutex cap_lock = PLAT_MUTEX_INIT;
@@ -266,12 +277,12 @@ static void summary(void) {
     double s = C.subs ? (double)C.subs : 1.0, r = U.subs ? (double)U.subs : 1.0;
     rt_log("vk_usnap: %llu submissions with a snapshot, %llu without; per submission %.0f ranges, %.1f KiB copied in "
            "%.3f ms, %.0f uniform bindings from the copy, %.1f dropped by GPU writes, %.1f left out (GPU writes in "
-           "flight), %.1f refused (not an imported pool)",
+           "flight), %.1f refused (not an imported pool); parallel parts: %llu reads before a drop found later",
            (unsigned long long)C.subs, (unsigned long long)C.off_subs, C.regions / s, C.bytes / s / 1024.0,
-           C.copy_ns / s / 1e6, U.hits / r, U.drops / r, U.inflight / r, C.refused / s);
+           C.copy_ns / s / 1e6, U.hits / r, U.drops / r, U.inflight / r, C.refused / s, (unsigned long long)U.late);
     C.subs = C.off_subs = C.regions = C.bytes = C.copy_ns = C.refused = 0;
     plat_mutex_unlock(&cap_lock);
-    U.subs = U.hits = U.drops = U.inflight = 0;
+    U.subs = U.hits = U.drops = U.inflight = U.late = 0;
 }
 
 // The submit call: the uniform ranges the submission binds, merged, those that lie wholly in one imported pool copied.
@@ -377,8 +388,10 @@ void vk_usnap_begin(void *p, uint64_t fence) {
     free(cap->progs);   // the queue item owns its copy (vk_backend.c vk_be_submit)
     free(cap);
     if (!U.arena) return;
-    for (int i = 0; i < U.nreg; i++)
+    for (int i = 0; i < U.nreg; i++) {
+        U.reg[i].drop_at = NO_DROP, U.reg[i].hit_max = 0;
         if (wr_hits(U.reg[i].lo, U.reg[i].hi)) U.reg[i].dropped = 1, U.inflight++;
+    }
     U.on = 1;
     U.subs++;
 }
@@ -387,6 +400,15 @@ void vk_usnap_end(uint64_t fence) {
     if (U.arena) vk_completion_add(fence, arena_done, U.arena), U.arena = NULL;
     U.on = 0, U.gen++;
 }
+// Parallel parts: whether r serves the op this thread records (no drop at an earlier position); a read is noted, so that
+// a drop at an earlier position found later is counted (vk_usnap_par).
+static int par_hit(Reg *r) {
+    if (upos > __atomic_load_n(&r->drop_at, __ATOMIC_ACQUIRE)) return 0;
+    uint32_t m = __atomic_load_n(&r->hit_max, __ATOMIC_RELAXED);
+    while (upos > m && !__atomic_compare_exchange_n(&r->hit_max, &m, upos, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+    return 1;
+}
+
 // First region whose end is above a.
 static int first_above(uint64_t a) {
     int lo = 0, hi = U.nreg;
@@ -402,13 +424,14 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
     if (!U.on || !n) return 0;
     int i = first_above(addr);
     if (i >= U.nreg) return 0;
-    const Reg *r = &U.reg[i];
+    Reg *r = &U.reg[i];
     if (r->dropped || addr < r->lo || addr + n > r->hi) return 0;
+    if (U.par && !par_hit(r)) return 0;
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){U.arena->buf, off, n};
     if (vk_capture_on) vk_capture_note(addr, n);   // XC2_CAPTURE: a uniform block read from the submit snapshot
-    U.hits++;
+    if (!U.par) U.hits++;
     return 1;
 }
 
@@ -418,8 +441,9 @@ const void *vk_usnap_host(uint64_t addr, uint64_t n) {
     if (!U.on || !n) return NULL;
     int i = first_above(addr);
     if (i >= U.nreg) return NULL;
-    const Reg *r = &U.reg[i];
+    Reg *r = &U.reg[i];
     if (r->dropped || addr < r->lo || addr + n > r->hi) return NULL;
+    if (U.par && !par_hit(r)) return NULL;
     return U.arena->map + r->off + (addr - r->lo);
 }
 
@@ -432,8 +456,26 @@ int vk_usnap_read(uint64_t addr, uint64_t n, void *dst) {
     return 1;
 }
 
+// A drop at op position pos (parallel parts): the ranges [addr, addr+n) touches serve no op after pos. ulock held.
+static void drop_at(uint64_t addr, uint64_t n, uint32_t pos) {
+    for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
+        if (!U.reg[i].dropped && pos < U.reg[i].drop_at) {
+            if (U.reg[i].drop_at == NO_DROP) U.drops++;
+            U.reg[i].drop_at = pos;
+            __atomic_add_fetch(&U.gen, 1, __ATOMIC_RELEASE);
+        }
+}
+
 void vk_usnap_drop(uint64_t addr, uint64_t n) {
     if (!__atomic_load_n(&umode, __ATOMIC_RELAXED) || !n) return;
+    if (U.par) {
+        plat_mutex_lock(&ulock);
+        if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
+        U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
+        if (U.on) drop_at(addr, n, upos);
+        plat_mutex_unlock(&ulock);
+        return;
+    }
     if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
     U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
     if (!U.on) return;
@@ -441,7 +483,31 @@ void vk_usnap_drop(uint64_t addr, uint64_t n) {
         if (!U.reg[i].dropped) U.reg[i].dropped = 1, U.drops++, U.gen++;
 }
 
-uint64_t vk_usnap_gen(void) { return U.gen; }
+uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_ACQUIRE); }
+
+void vk_usnap_pos(uint32_t pos) { upos = pos; }
+
+void vk_usnap_par(int on) {
+    if (on) {
+        U.par = 1;
+        return;
+    }
+    // The parts are recorded: the late reads are counted, and the dropped ranges are marked as a serial replay leaves them.
+    for (int i = 0; i < U.nreg; i++) {
+        Reg *r = &U.reg[i];
+        if (r->drop_at == NO_DROP) continue;
+        if (r->hit_max > r->drop_at) U.late++;
+        r->dropped = 1, r->drop_at = NO_DROP;
+    }
+    U.par = 0;
+}
+
+void vk_usnap_predrop(uint64_t addr, uint64_t n, uint32_t pos) {
+    if (!U.on || !n || !__atomic_load_n(&umode, __ATOMIC_RELAXED)) return;
+    plat_mutex_lock(&ulock);
+    drop_at(addr, n, pos);
+    plat_mutex_unlock(&ulock);
+}
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {

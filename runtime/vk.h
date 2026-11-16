@@ -253,6 +253,11 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
 int vk_usnap_read(uint64_t addr, uint64_t n, void *dst);   // the same bytes copied out; 0 when the snapshot lacks them
 const void *vk_usnap_host(uint64_t addr, uint64_t n);   // the copy for the CPU to read; NULL: not copied
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
+// Parallel parts (vk_exec.c): vk_usnap_par(1) before they start and (0) once all are recorded; vk_usnap_pos, the op
+// position the calling thread records; vk_usnap_predrop, a drop that the op at pos will make, placed beforehand.
+void vk_usnap_par(int on);
+void vk_usnap_pos(uint32_t pos);
+void vk_usnap_predrop(uint64_t addr, uint64_t n, uint32_t pos);
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void *cap);
@@ -392,6 +397,7 @@ uint32_t vk_texture_slots_gen(void);
 // guards (a lookup may create an entry). 0 when the slot was never registered: nothing is kept under 0.
 uint64_t vk_texture_slot_token(int id);
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
+void vk_texture_order_stats(uint64_t out[4]);   // parallel parts: order waits, unordered new textures and marks (vk_texture.c)
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none

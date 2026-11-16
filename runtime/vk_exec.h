@@ -229,6 +229,11 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
 int vk_exec_bind_op(VkExec *ex, uint32_t op, const void *payload);   // a bind op of the above applied: 1; else 0
+void vk_exec_upd_seed(const VkExec *ex, const void *const *ups, int n);   // parallel parts: the inline updates before it
+// Parallel parts: the index of the part the calling thread records (-1: none), and a wait until every earlier part is
+// recorded (1 when it waited), for what must see their effects; vk_texture.c waits so before it makes a new texture.
+int vk_exec_part(void);
+int vk_exec_order_wait(void);
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,

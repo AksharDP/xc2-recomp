@@ -58,6 +58,8 @@ typedef struct Tex {
     uint8_t listed;               // in owned[]
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
     struct Tex *rel_prev, *rel_next;   // while released: the list of released entries, oldest first
+    uint64_t mk_fence;            // parallel parts: the submission and part (vk_exec_part) of the last GPU-written mark
+    int mk_part;
 } Tex;
 
 // A slot keeps what vk_texture_by_id resolved for it, so a draw binding skips the key lookup and the address chain: the
@@ -143,11 +145,44 @@ static void tex_init(void *p) {
     __atomic_store_n(&tex_ready, 1, __ATOMIC_RELEASE);
     return;
 }
+static _Thread_local int lock_depth;   // tex_lock is recursive: how deep this thread holds it
 static void lock(void) {
     if (!__atomic_load_n(&tex_ready, __ATOMIC_ACQUIRE)) plat_once(&tex_once, tex_init, NULL);
     plat_rmutex_lock(&tex_lock);
+    lock_depth++;
 }
-static void unlock(void) { plat_rmutex_unlock(&tex_lock); }
+static void unlock(void) { lock_depth--, plat_rmutex_unlock(&tex_lock); }
+
+// Parallel parts (vk_exec.c) record at once, and a texture's bookkeeping is shared. Marking an image GPU-written is the
+// same in any order for that image: the mark brings it up to date from the storage first (make_fresh), and every upload
+// runs before the submission's first part. A new texture is not: over storage another texture holds GPU content for, it
+// takes that content or the storage bytes (entry_of), as the parts before it leave the other one. So a part makes a new
+// texture over storage another entry holds only once every earlier part is recorded (vk_exec_order_wait), with tex_lock let go for the wait; where the
+// lock is held deeper the part goes on, and that is counted. Counted as well, tex_lock: a new texture taking the
+// content of a mark a later part made (it should have taken the storage bytes), and a mark that comes before the mark of
+// a later part on a texture at the same address in write-back order (gpu_seq) although it should come after.
+static uint64_t n_ord_wait, n_ord_nested, n_ord_future, n_ord_seq;
+
+void vk_texture_order_stats(uint64_t out[4]) {
+    lock();
+    out[0] = n_ord_wait, out[1] = n_ord_nested, out[2] = n_ord_future, out[3] = n_ord_seq;
+    n_ord_wait = n_ord_nested = n_ord_future = n_ord_seq = 0;
+    unlock();
+}
+
+// tex_lock held once: before a new texture is made in a part, wait for the earlier ones; 1 when the lock was let go.
+static int order_before_new(void) {
+    if (vk_exec_part() <= 0) return 0;
+    if (lock_depth != 1) {
+        n_ord_nested++;
+        return 0;
+    }
+    unlock();
+    int waited = vk_exec_order_wait();
+    lock();
+    if (waited) n_ord_wait++;
+    return 1;
+}
 
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
 static uint32_t mip(uint32_t v, unsigned lv) { return umax(v >> lv, 1); }
@@ -1057,9 +1092,16 @@ static int stale_copy(Tex *e, Tex **srcs, int n) {
 }
 
 static Tex *entry_of(const tex_t *t) {
+    tex_t own;   // t may lie in another entry, which may go while order_before_new lets tex_lock go
     TexKey k;
     make_key(t, &k);
     Tex *e = nvn_hm_get(&by_key, &k);
+    // Only another entry at the address makes the new one depend on what the earlier parts did (the alias source or the
+    // stale renders below); over storage no other entry holds, the new texture is the same whenever it is made.
+    if (!e && vk_exec_part() > 0 && nvn_hm_get(&by_addr, &k.addr)) {
+        own = *t, t = &own;
+        if (order_before_new()) e = nvn_hm_get(&by_key, &k);   // another thread may have made it meanwhile
+    }
     if (!e) {
         if (tex_alias < 0) {
             tex_alias = cfg_bool("XC2_TEX_ALIAS");
@@ -1096,6 +1138,9 @@ static Tex *entry_of(const tex_t *t) {
             }
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
+        if (src && src->mk_fence && src->mk_fence == vk_exec_recording_fence() && src->mk_part > vk_exec_part() &&
+            vk_exec_part() >= 0)
+            n_ord_future++;
         if (tex_alias) {
             if (src && alias_copy(e, src)) {
                 n_alias_copied++;
@@ -1170,6 +1215,11 @@ void vk_texture_gpu_written(const tex_t *t) {
         uint64_t f = vk_exec_recording_fence();
         if (f > e->wr_fence) e->wr_fence = f;
         if (e->pub.mirrored) mark_gpu_written(e, f);
+        int part = vk_exec_part();
+        if (part >= 0 && e->pub.mirrored)
+            for (const Tex *s = nvn_hm_get(&by_addr, &e->key.addr); s; s = s->next_at)
+                if (s != e && s->mk_fence == f && s->mk_part > part && s->pub.mirrored) n_ord_seq++;
+        e->mk_fence = f, e->mk_part = part;
     }
     unlock();
 }

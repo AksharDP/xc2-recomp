@@ -1059,9 +1059,14 @@ static void views_release(VkExec *ex) {   // the transient views go with the sub
 // the submission's command buffer; the workers' parts go in order ahead of it in the submission's one submit (vk_sync_parts), and the last
 // part's state carries on in X as the whole submission's would. Each worker part ends its pass and with a full barrier,
 // so every image is in GENERAL when the next part begins, as at the start of a submission.
-// Not yet safe: what one part records into the texture and snapshot bookkeeping (a texture rendered by an earlier part,
-// a uniform snapshot range an earlier part writes, the inline uniform updates) is seen by a later part only if it was
-// recorded first. Submissions with transform feedback, samples-passed counters or conditional rendering stay serial.
+// What one part leaves for later ones reaches them in op order, not in the order the threads happen to record: each part
+// starts with the inline uniform updates of the ops before it (vk_exec_upd_seed); the uniform snapshot's drops apply
+// by op position (vk_usnap.c vk_usnap_par); a part makes a new texture over storage another texture holds only after
+// the earlier parts are recorded (vk_texture.c entry_of, vk_exec_order_wait); samples-passed segments go to the
+// completion thread in part order (vk_exec_oq_flush). Marking a texture GPU-written is the same in any order (the
+// comment at vk_texture.c order_before_new). A replayed capture (--replay) gives the same pictures with parts as without
+// them when the serial replay does not split its submissions (XC2_SPLIT_DRAWS=0); the parts never split one. Submissions
+// with conditional rendering stay serial, and parts are not cut inside transform feedback.
 typedef struct { const op_hdr **op; int n, cap; } OpList;
 
 static void flatten(const op_hdr *h, int depth, OpList *l) {
@@ -1136,7 +1141,41 @@ static struct {
     OpList ops;
     uint64_t subs, nparts_all, tried, maxrun, alldraws, block[2];
     uint64_t ns[4];   // pre-walk, the replay thread's part, its wait for the workers, the workers' parts (summed)
+    // The inline uniform updates of the op list in op order, and how many come before each part (vk_exec_upd_seed).
+    const void **ups;
+    int nups, cups, ups_at[PAR_MAX];
+    int pdone[PAR_MAX];   // the part is recorded (vk_exec_order_wait)
+    uint64_t owaits;      // order waits since the last log
 } W = {.n = -1, .lock = PLAT_MUTEX_INIT, .cv = PLAT_COND_INIT, .done_cv = PLAT_COND_INIT};
+
+static _Thread_local int par_idx = -1;   // the part this thread records (vk_exec_part)
+
+int vk_exec_part(void) { return par_idx; }
+
+int vk_exec_order_wait(void) {
+    if (par_idx <= 0) return 0;
+    int waited = 0;
+    plat_mutex_lock(&W.lock);
+    for (int q = 0; q < par_idx; q++)
+        while (!W.pdone[q]) waited = 1, plat_cond_wait(&W.done_cv, &W.lock);
+    if (waited) W.owaits++;
+    plat_mutex_unlock(&W.lock);
+    return waited;
+}
+
+// The ops [i0, i1) on this thread, as part index of the submission: its inline updates first, each op's position for the
+// uniform snapshot's drops.
+static void part_ops(VkExec *ex, int index, int i0, int i1) {
+    par_idx = index;
+    vk_exec_upd_seed(ex, W.ups, W.ups_at[index]);
+    for (int i = i0; i < i1; i++) {
+        const op_hdr *h = W.ops.op[i];
+        vk_usnap_pos((uint32_t)i);
+        vk_prog_between_ops(&ex->prog);
+        exec_op(ex, h->op, nvn_op_payload(h));
+    }
+    par_idx = -1;
+}
 
 static void part_record(Part *p) {
     VkExec *ex = &p->ex;
@@ -1146,12 +1185,11 @@ static void part_record(Part *p) {
     if (W.rec) rec_own(), rec_begin(ex->cb);
     x_cur = ex;
     vk_exec_draw_new_cb();
-    for (int i = p->i0; i < p->i1; i++) {
-        const op_hdr *h = W.ops.op[i];
-        vk_prog_between_ops(&ex->prog);
-        exec_op(ex, h->op, nvn_op_payload(h));
-    }
+    int index = (int)(p - W.parts);
+    part_ops(ex, index, p->i0, p->i1);
+    par_idx = index;   // the pass end marks the part's targets
     vk_exec_pass_end(ex);
+    par_idx = -1;
     vk_exec_barrier(ex);
     views_release(ex);
     free(ex->views);   // the part's query segments stay for vk_exec_oq_flush
@@ -1173,6 +1211,7 @@ static void worker_main(void *arg) {
         uint64_t t1 = kern_now_ns();
         plat_mutex_lock(&W.lock);
         W.ns[3] += t1 - t0;
+        W.pdone[p - W.parts] = 1;
         W.done++;
         plat_cond_broadcast(&W.done_cv);
     }
@@ -1200,13 +1239,15 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
     if (!nw || vk_dump_armed || vk_capture_on) return 0;
     if (++W.tried % 1000 == 0 && W.subs) {
         double s = (double)W.subs;
+        uint64_t to[4];
+        vk_texture_order_stats(to);
         rt_log("vk: parallel replay: %llu of the last 1000 submissions in parts, %.2f parts each; per such submission "
                "%.3f ms pre-walk, %.3f ms the replay thread's part, %.3f ms waiting for the workers, %.3f ms in the "
-               "workers' parts (sum); longest run of draws between render target changes %.0f%% of the draws; cuts blocked by counting %llu, by transform feedback %llu",
+               "workers' parts (sum); longest run of draws between render target changes %.0f%% of the draws; cuts blocked by counting %llu, by transform feedback %llu; waits for earlier parts %llu; new textures: waited %llu, unordered %llu, with a later part's content %llu; write-back order inverted %llu",
                (unsigned long long)W.subs, (double)W.nparts_all / s, W.ns[0] / s / 1e6, W.ns[1] / s / 1e6,
                W.ns[2] / s / 1e6, W.ns[3] / s / 1e6, W.alldraws ? 100.0 * (double)W.maxrun / (double)W.alldraws : 0.0,
-               (unsigned long long)W.block[0], (unsigned long long)W.block[1]);
-        W.subs = W.nparts_all = W.maxrun = W.alldraws = W.block[0] = W.block[1] = 0, memset(W.ns, 0, sizeof W.ns);
+               (unsigned long long)W.block[0], (unsigned long long)W.block[1], (unsigned long long)W.owaits, (unsigned long long)to[0], (unsigned long long)to[1], (unsigned long long)to[2], (unsigned long long)to[3]);
+        W.subs = W.nparts_all = W.maxrun = W.alldraws = W.block[0] = W.block[1] = W.owaits = 0, memset(W.ns, 0, sizeof W.ns);
     }
     uint64_t t0 = kern_now_ns();
     W.ops.n = 0;
@@ -1236,6 +1277,7 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
         if (run > maxrun) maxrun = run;
     }
     W.maxrun += (uint64_t)maxrun, W.alldraws += (uint64_t)draws;
+    W.nups = 0;
     W.parts[0].ex = *ex, W.parts[0].i0 = 0;   // part 0 starts with the state as it is
     VkExec *cur = malloc(sizeof *cur);         // the state walked on, copied into each part where it begins
     if (!cur) rt_fatal("vk: out of memory");
@@ -1254,16 +1296,36 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
             W.parts[k - 1].i1 = i;
             W.parts[k].ex = *cur, W.parts[k].i0 = i;
             reported[k] = oq.reported, counting[k] = oq.counting;
+            W.ups_at[k] = W.nups;
             k++, since = 0;
         }
         vk_prog_between_ops(&cur->prog);
         pre_op(cur, h->op, a);
         oq_sim(&oq, h->op, a);
+        if (h->op == OP_UPDATE_UB) {
+            if (W.nups == W.cups) {
+                W.cups = W.cups ? W.cups * 2 : 1024;
+                if (!(W.ups = realloc(W.ups, sizeof *W.ups * (size_t)W.cups))) rt_fatal("vk: out of memory");
+            }
+            W.ups[W.nups++] = a;
+        }
         since += is_draw_op(h->op);
     }
     free(cur);
     W.parts[k - 1].i1 = W.ops.n;
     if (k < 2) return 0;
+    W.ups_at[0] = 0;
+    // The uniform snapshot's drops that the copies, fills and inline updates make go in by op position before any part
+    // records (vk_usnap.c); those of shader writes are found as the parts record.
+    vk_usnap_par(1);
+    for (int i = 0; i < W.ops.n; i++) {
+        const op_hdr *h = W.ops.op[i];
+        const void *a = nvn_op_payload(h);
+        if (h->op == OP_UPDATE_UB) vk_usnap_predrop(((const p_update_ub *)a)->dst, ((const p_update_ub *)a)->size, (uint32_t)i);
+        else if (h->op == OP_COPY_B2B) vk_usnap_predrop(((const p_copy_b2b *)a)->dst, ((const p_copy_b2b *)a)->size, (uint32_t)i);
+        else if (h->op == OP_CLEAR_BUF) vk_usnap_predrop(((const p_clear_buf *)a)->addr, ((const p_clear_buf *)a)->size, (uint32_t)i);
+    }
+    memset(W.pdone, 0, sizeof W.pdone);
     uint32_t ps = ex->pass_serial;
     for (int p = 0; p < k; p++) {   // as vk_exec_record starts a command buffer; pass serials apart
         VkExec *e = &W.parts[p].ex;
@@ -1290,17 +1352,14 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
     plat_cond_broadcast(&W.cv);
     plat_mutex_unlock(&W.lock);
     *ex = last;
-    for (int i = i0; i < i1; i++) {
-        const op_hdr *h = W.ops.op[i];
-        vk_prog_between_ops(&ex->prog);
-        exec_op(ex, h->op, nvn_op_payload(h));
-    }
+    part_ops(ex, k - 1, i0, i1);
     uint64_t t2 = kern_now_ns();
     plat_mutex_lock(&W.lock);
     while (W.done < k - 1) plat_cond_wait(&W.done_cv, &W.lock);
     W.nparts = W.next = 0;
     W.ns[0] += t1 - t0, W.ns[1] += t2 - t1, W.ns[2] += kern_now_ns() - t2;
     plat_mutex_unlock(&W.lock);
+    vk_usnap_par(0);
     VkExec *pp[PAR_MAX];
     for (int p = 0; p < k - 1; p++) pp[p] = &W.parts[p].ex;
     pp[k - 1] = ex;

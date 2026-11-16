@@ -1238,6 +1238,13 @@ static void upd_note(const VkExec *ex, const p_update_ub *u) {
     UPD.u[UPD.n++ % UPD_N] = (typeof(UPD.u[0])){u->dst, u->dst + u->size, u->data};
 }
 
+// Parallel parts (vk_exec.c): a part recorded on its own thread starts with the n inline updates that the ops before it
+// make, in op order, as the thread that recorded those ops would hold them.
+void vk_exec_upd_seed(const VkExec *ex, const void *const *ups, int n) {
+    UPD.fence = ex->fence, UPD.n = 0;
+    for (int i = n > UPD_N ? n - UPD_N : 0; i < n; i++) upd_note(ex, ups[i]);
+}
+
 // 1 when an update of this submission supplied [a, a+n).
 static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
     if (UPD.fence != ex->fence) return 0;
@@ -1409,7 +1416,7 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 // (snap_drops). When no image can be had, the draw is skipped (FB_SKIP): reading the target itself is what this path
 // exists to avoid. The budget counts each copy at its format's texel size (vk_texel_bytes). It is soft: the images of the
 // submission being recorded are never dropped, so one submission may leave the pool above SNAP_BYTES until a later
-// submission uses other keys. Replay thread.
+// submission uses other keys. snap_lock: the threads that record parts of a submission at once (vk_exec.c) share the pool.
 #define SNAP_MAX 32
 #define SNAP_BYTES ((uint64_t)384 << 20)
 #define FB_SKIP 0xffffffffu   // feedback_prepare: the draw cannot be made with its copies
@@ -1418,6 +1425,7 @@ static int nsn;
 static uint64_t snap_total;   // bytes the pool holds (estimate)
 static uint64_t snap_gen;     // bumps with every image the pool creates or drops: bind_sig keys on it
 static uint64_t snap_drops;   // bumps with every image the pool drops: a kept copy may be one of them (feedback_snapshot)
+static PlatMutex snap_lock = PLAT_MUTEX_INIT;   // the pool (snap_image, snap_shutdown)
 
 // Drops entry i. Its image and its views are both deferred (vk_exec_image_gone and vk_defer_image): each is destroyed once
 // the submissions that may still use it have finished, not at once.
@@ -1444,7 +1452,15 @@ static int snap_victim(uint64_t fence) {
 }
 
 // The copy for target slot slot in the submission with fence; VK_NULL_HANDLE when none can be had.
+static VkImage snap_image_locked(uint64_t fence, const VkExecTarget *t, uint32_t slot);
 static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) {
+    plat_mutex_lock(&snap_lock);
+    VkImage i = snap_image_locked(fence, t, slot);
+    plat_mutex_unlock(&snap_lock);
+    return i;
+}
+
+static VkImage snap_image_locked(uint64_t fence, const VkExecTarget *t, uint32_t slot) {
     static int warned;
     const VkTexImage *img = t->img;
     for (int i = 0; i < nsn; i++)
@@ -1498,6 +1514,7 @@ static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) 
 }
 
 static void snap_shutdown(void) {
+    plat_mutex_lock(&snap_lock);
     vk_texture_lock();   // as snap_drop: vk_exec_image_gone reads the view tables under it
     for (int i = 0; i < nsn; i++) {
         vk_exec_image_gone(snap_imgs[i].image);
@@ -1505,6 +1522,7 @@ static void snap_shutdown(void) {
     }
     vk_texture_unlock();
     nsn = 0, snap_total = 0, snap_gen++, snap_drops++;
+    plat_mutex_unlock(&snap_lock);
 }
 
 // A target whose whole content is one 2D image, which is what snap_image copies.
