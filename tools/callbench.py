@@ -75,12 +75,12 @@ def run(exe, caps, reps, kind=None, csv=None):
 
 
 def table(text):
-    """{kind: (calls, captured ms/frame, here ms/frame, differ)} from the program's output."""
+    """{kind: (calls, captured ms/frame, here ms/frame, differ, skipped)} from the program's output."""
     rows = {}
     for ln in text.splitlines():
         m = re.match(r'(\w+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s+(\d+)$', ln.strip())
         if m:
-            rows[m[1]] = (int(m[2]), float(m[3]), float(m[4]), int(m[6]))
+            rows[m[1]] = (int(m[2]), float(m[3]), float(m[4]), int(m[6]), int(m[7]))
     return rows
 
 
@@ -108,6 +108,7 @@ def main():
         sys.exit(rc)
     exes = {'base': build(runtime_dir(a.base)), 'cand': build(runtime_dir(a.cand))}
     times = {k: {} for k in exes}
+    cover = {k: {} for k in exes}   # per kind, the (calls, skipped) of each round
     differ = {k: 0 for k in exes}
     for r in range(a.rounds):
         for name in (('base', 'cand') if r % 2 == 0 else ('cand', 'base')):
@@ -115,7 +116,8 @@ def main():
             rows = table(out)
             if rc not in (0, 1) or not rows:   # 1 reports results that differ; anything else did not run
                 sys.exit(f'callbench: the {name} bench failed (status {rc}):\n{out}')
-            for kind, (calls, _cap, here, d) in rows.items():
+            for kind, (calls, _cap, here, d, skipped) in rows.items():
+                cover[name].setdefault(kind, set()).add((calls, skipped))
                 if calls:   # a kind whose calls were all skipped has no time to compare
                     times[name].setdefault(kind, []).append(here)
                 differ[name] += d
@@ -125,12 +127,13 @@ def main():
     compared = 0
     for kind in sorted(set(times['base']) | set(times['cand'])):
         b, c = times['base'].get(kind), times['cand'].get(kind)
-        if b and c and len(b) == len(c):
+        cb, cc = cover['base'].get(kind), cover['cand'].get(kind)
+        if b and c and len(b) == len(c) == a.rounds and cb == cc and len(cb) == 1:   # the same calls replayed each time
             mb, mc = statistics.median(b), statistics.median(c)
             print(f'  {kind:10} base {mb:8.3f}  cand {mc:8.3f}' + (f'  cand/base {mc / mb:.3f}' if mb else ''))
             compared += 1
         else:
-            print(f'  {kind:10} not replayed in every round of both: no comparison')
+            print(f'  {kind:10} not the same calls replayed in every round of both: no comparison')
     if not compared:
         sys.exit('callbench: no kind of call ran in both benches')
     sys.exit(1 if differ['cand'] else 0)
