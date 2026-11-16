@@ -115,7 +115,7 @@ static int run_deswizzle(const Blob *b, int nb, uint64_t *best) {
         int ret = nvn_deswizzle(&d, r.level, r.layer, b[2].p, dst, (size_t)r.dst_pitch);
         uint64_t t = now_ns() - t0;
         if (t < *best) *best = t;
-        same &= (uint32_t)ret == r.ret && (ret || cc_hash(dst, r.dst_size) == r.dst_hash);
+        same &= (uint32_t)ret == r.ret && (ret || cc_hash_rows(dst, r.dst_size, r.row_bytes, r.dst_pitch) == r.dst_hash);
     }
     S[CC_DESWIZZLE].bytes += r.dst_size;
     free(dst);
@@ -240,12 +240,19 @@ static void bench_file(const char *path) {
         p += sizeof r;
         Blob b[16];
         int nb = 0;
-        for (uint32_t k = 0; k < r.nblob && p + 8 <= end; k++) {
+        int whole = 1;
+        for (uint32_t k = 0; k < r.nblob; k++) {
             uint64_t len;
+            if ((uint64_t)(end - p) < 8) { whole = 0; break; }
             memcpy(&len, p, 8);
             p += 8;
+            if (len > (uint64_t)(end - p) || ((len + 7) & ~7ull) > (uint64_t)(end - p)) { whole = 0; break; }
             if (nb < 16) b[nb++] = (Blob){p, len};
             p += (len + 7) & ~7ull;
+        }
+        if (!whole) {   // a cut-off file: its last record is not replayed
+            fprintf(stderr, "callbench: %s: record %llu runs past the end of the file\n", path, (unsigned long long)i);
+            break;
         }
         if (r.kind >= CC_KINDS || (only && (int)r.kind != only)) continue;
         uint64_t best = 0;

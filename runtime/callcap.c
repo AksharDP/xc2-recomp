@@ -21,7 +21,7 @@ static struct {
     PlatMutex qlock;               // the writer's queue
     PlatCond qcv;
     CcFrame q[CC_QUEUE];
-    int qhead, qn;
+    int qhead, qn, writing;        // writing: the writer holds a frame it has not finished (qlock)
     uint64_t thr_ns, files, files_max, kept, lost, written_bytes;
     char dir[PLAT_PATH_MAX];
 } C = {.lock = PLAT_MUTEX_INIT, .qlock = PLAT_MUTEX_INIT, .qcv = PLAT_COND_INIT};
@@ -36,6 +36,7 @@ static void writer(void *arg) {
         CcFrame fr = C.q[C.qhead];
         C.qhead = (C.qhead + 1) % CC_QUEUE;
         C.qn--;
+        C.writing = 1;
         plat_mutex_unlock(&C.qlock);
         char path[PLAT_PATH_MAX + 32];
         snprintf(path, sizeof path, "%s/f%06llu.ccap", C.dir, (unsigned long long)fr.frame);
@@ -43,15 +44,39 @@ static void writer(void *arg) {
         if (f) {
             CcFileHdr h = {.frame = fr.frame, .interval_ns = fr.interval_ns, .nrec = fr.nrec, .dropped = fr.dropped};
             memcpy(h.magic, CC_MAGIC, 8);
-            fwrite(&h, sizeof h, 1, f);
-            fwrite(fr.buf, 1, (size_t)fr.n, f);
-            fclose(f);
-            __atomic_add_fetch(&C.written_bytes, fr.n, __ATOMIC_RELAXED);
+            int ok = fwrite(&h, sizeof h, 1, f) == 1;
+            ok &= fwrite(fr.buf, 1, (size_t)fr.n, f) == (size_t)fr.n;
+            ok &= fclose(f) == 0;
+            if (ok) {
+                __atomic_add_fetch(&C.written_bytes, fr.n, __ATOMIC_RELAXED);
+            } else {   // a short file would claim records it does not hold
+                rt_log("callcap: writing %s failed; removed", path);
+                remove(path);
+            }
         } else {
             rt_log("callcap: cannot write %s", path);
         }
         free(fr.buf);
+        plat_mutex_lock(&C.qlock);
+        C.writing = 0;
+        plat_cond_broadcast(&C.qcv);
+        plat_mutex_unlock(&C.qlock);
     }
+}
+
+void callcap_finish(void) {
+    if (!C.dir[0]) return;
+    __atomic_store_n(&callcap_level, 0, __ATOMIC_RELEASE);
+    uint64_t t0 = plat_now_ns();
+    plat_mutex_lock(&C.qlock);
+    while ((C.qn || C.writing) && plat_now_ns() - t0 < 5000000000ull) {   // the writer broadcasts after each file
+        plat_mutex_unlock(&C.qlock);
+        plat_sleep_ms(5);
+        plat_mutex_lock(&C.qlock);
+    }
+    int left = C.qn + C.writing;
+    plat_mutex_unlock(&C.qlock);
+    if (left) rt_log("callcap: %d frames not written at exit (5 s)", left);
 }
 
 void callcap_init(void) {

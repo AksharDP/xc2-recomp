@@ -16,7 +16,8 @@
 // chain where the thread stopped) and, after a present at least <ms> after the previous one, writes
 // that interval's samples (plus the 20 ms before) to <XC2_PROFILE>.f<frame>: the profile format, one `stack 1` line per
 // sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time (`twait` in place of
-// `tstack` for a repeated chain of a thread that used no cycles, so a script can tell running from waiting). At most 256 dumps,
+// `tstack` for a repeated chain of a thread that used no cycles: off the CPU, blocked or waiting for one, so a script
+// can tell those samples from code that ran). At most 256 dumps,
 // 0.25 s apart or more; XC2_PROFILE_FRAMES=w<lo>-<hi> leaves the loading frames out.
 #include <windows.h>
 #include <psapi.h>
@@ -72,7 +73,8 @@ static int64_t world_lo, world_hi;  // XC2_PROFILE_FRAMES=w<lo>-<hi>: only while
 #define SLOW_RING (1u << 15)        // XC2_PROFILE_SLOW: about 0.5 s of samples of every thread
 #define SLOW_DUMPS 256
 #define SLOW_GAP_NS 250000000ull   // dumps at least this far apart (prof_sampler_frame)
-// wait: the thread used no cycles since its previous sample, which the sample repeats (written as twait, not tstack)
+// wait: the thread used no cycles since its previous sample, which the sample repeats (written as twait, not tstack):
+// it was off the CPU, blocked or runnable without a core, which the cycle count cannot tell apart
 typedef struct { uint64_t t; DWORD tid; uint32_t depth, wait; uint64_t rip[PROF_DEPTH]; } Sample;
 static Sample ring[SLOW_RING];
 static uint64_t ring_n;

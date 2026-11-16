@@ -112,17 +112,27 @@ def main():
     for r in range(a.rounds):
         for name in (('base', 'cand') if r % 2 == 0 else ('cand', 'base')):
             rc, out = run(exes[name], a.captures, a.reps, a.kind)
-            for kind, (calls, cap, here, d) in table(out).items():
-                times[name].setdefault(kind, []).append(here)
+            rows = table(out)
+            if rc not in (0, 1) or not rows:   # 1 reports results that differ; anything else did not run
+                sys.exit(f'callbench: the {name} bench failed (status {rc}):\n{out}')
+            for kind, (calls, _cap, here, d) in rows.items():
+                if calls:   # a kind whose calls were all skipped has no time to compare
+                    times[name].setdefault(kind, []).append(here)
                 differ[name] += d
             print(f'round {r + 1} {name}: ' + ', '.join(f'{k} {v[-1]:.3f}' for k, v in times[name].items()), flush=True)
     print(f'\nmedian ms per captured frame over {a.rounds} rounds (results differing from the game: base '
           f'{differ["base"]}, cand {differ["cand"]})')
+    compared = 0
     for kind in sorted(set(times['base']) | set(times['cand'])):
         b, c = times['base'].get(kind), times['cand'].get(kind)
-        if b and c:
+        if b and c and len(b) == len(c):
             mb, mc = statistics.median(b), statistics.median(c)
-            print(f'  {kind:10} base {mb:8.3f}  cand {mc:8.3f}  cand/base {mc / mb if mb else 0:.3f}')
+            print(f'  {kind:10} base {mb:8.3f}  cand {mc:8.3f}' + (f'  cand/base {mc / mb:.3f}' if mb else ''))
+            compared += 1
+        else:
+            print(f'  {kind:10} not replayed in every round of both: no comparison')
+    if not compared:
+        sys.exit('callbench: no kind of call ran in both benches')
     sys.exit(1 if differ['cand'] else 0)
 
 

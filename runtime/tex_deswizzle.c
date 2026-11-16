@@ -148,7 +148,9 @@ static int deswizzle_captured(const nvn_texdesc *d, unsigned level, unsigned lay
     uint64_t ns = callcap_now() - t0;
     if (size <= (64ull << 20)) {
         uint64_t dst_size = (uint64_t)rows * slices * dst_pitch;
-        CcDeswizzle r = {level, layer, (uint32_t)ret, 0, dst_pitch, dst_size, ret ? 0 : cc_hash(dst, dst_size)};
+        uint32_t rb = nvn_tex_is_linear(d) ? (uint32_t)dst_pitch : row_bytes;   // linear: whole rows, as before
+        CcDeswizzle r = {level, layer, (uint32_t)ret, rb, dst_pitch, dst_size,
+                         ret ? 0 : cc_hash_rows(dst, dst_size, rb, dst_pitch)};
         CcBlob b[3] = {{&r, sizeof r}, {d, sizeof *d}, {src, size}};
         callcap_add(CC_DESWIZZLE, ns, b, 3);
     }

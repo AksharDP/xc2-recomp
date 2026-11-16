@@ -37,7 +37,8 @@ typedef struct {
 #define CC_DCODES 592   // zlib ENOUGH_DISTS
 typedef struct { uint32_t avail_in, avail_out, bits, mode; uint64_t hold, out_hash; } CcInflateOut;
 
-typedef struct { uint32_t level, layer, ret, pad; uint64_t dst_pitch, dst_size, dst_hash; } CcDeswizzle;
+// row_bytes: the bytes of each dst_pitch row the call writes (0 in older files: the whole pitch); dst_hash covers those
+typedef struct { uint32_t level, layer, ret, row_bytes; uint64_t dst_pitch, dst_size, dst_hash; } CcDeswizzle;
 typedef struct { uint64_t n, dst_off, src_off; } CcCopy;   // offsets: the pointers' low 12 bits
 typedef struct { uint64_t size, n, cap; } CcWwQuery;       // cap: the page buffer's entries
 
@@ -49,6 +50,14 @@ static inline uint64_t cc_hash(const void *p, uint64_t n) {
     for (; n; n--, b++) h = (h ^ *b) * 0x100000001B3ull;
     return h ^ h >> 32;
 }
+// cc_hash of the first row_bytes of each pitch-byte row of n bytes: rows written into a wider pitch leave the padding as
+// it was, which is not part of the result.
+static inline uint64_t cc_hash_rows(const void *p, uint64_t n, uint64_t row_bytes, uint64_t pitch) {
+    if (!row_bytes || !pitch || row_bytes >= pitch) return cc_hash(p, n);
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ n;
+    for (uint64_t at = 0; at + row_bytes <= n; at += pitch) h = (h ^ cc_hash((const uint8_t *)p + at, row_bytes)) * 0x100000001B3ull;
+    return h ^ h >> 32;
+}
 
 #ifndef CALLBENCH
 typedef struct { const void *p; uint64_t n; } CcBlob;
@@ -58,6 +67,7 @@ void callcap_init(void);                                                  // per
 void callcap_add(uint32_t kind, uint64_t ns, const CcBlob *b, int nb);   // any thread
 void callcap_frame(uint64_t frame, uint64_t interval_ns);                // perf_present: keep or drop the frame's calls
 uint64_t callcap_now(void);                                              // the clock the hooks time calls with
+void callcap_finish(void);                                               // at exit: stop, write the queued frames
 #endif
 
 #endif

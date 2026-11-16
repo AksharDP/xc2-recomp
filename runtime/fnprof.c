@@ -16,27 +16,32 @@
 
 #define FP_FUNCS 8
 #define FP_SLOTS (1u << 16)   // per table, open addressing; a full table counts the call as dropped
-typedef struct { uint64_t key; uint64_t n, held, waiters; } FpSlot;
+// used: 0 free, 1 being claimed, 2 key valid; separate from key so every 64-bit argument is its own group
+typedef struct { uint64_t key, used; uint64_t n, held, waiters; } FpSlot;
 typedef struct { uint64_t addr, calls, dropped; int word; FpSlot *by_x0, *by_lr, *by_tid, *by_owner; } FpFunc;
 
 volatile int g_fnprof;
 static FpFunc fp[FP_FUNCS];
 static int nfp;
-static uint64_t fp_frame0, fp_last;
+static uint64_t fp_presents;
 
 uint32_t kern_cur_handle(void);
 
 static FpSlot *slot(FpSlot *t, uint64_t key) {
-    key |= 1ull << 63;   // 0 marks a free slot
     uint32_t i = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 48);
     for (uint32_t k = 0; k < 64; k++, i = (i + 1) & (FP_SLOTS - 1)) {
-        uint64_t cur = __atomic_load_n(&t[i].key, __ATOMIC_ACQUIRE);
-        if (cur == key) return &t[i];
-        if (!cur) {
+        uint64_t u = __atomic_load_n(&t[i].used, __ATOMIC_ACQUIRE);
+        if (!u) {
             uint64_t z = 0;
-            if (__atomic_compare_exchange_n(&t[i].key, &z, key, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) || z == key)
+            if (__atomic_compare_exchange_n(&t[i].used, &z, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                t[i].key = key;
+                __atomic_store_n(&t[i].used, 2, __ATOMIC_RELEASE);
                 return &t[i];
+            }
+            u = z;
         }
+        while (u == 1) u = __atomic_load_n(&t[i].used, __ATOMIC_ACQUIRE);   // another thread is writing the key
+        if (t[i].key == key) return &t[i];
     }
     return NULL;
 }
@@ -87,20 +92,19 @@ void fnprof_init(void) {
 }
 
 void fnprof_frame(uint64_t frame) {
-    if (!g_fnprof) return;
-    if (!fp_frame0) fp_frame0 = frame ? frame : 1;
-    fp_last = frame;
+    (void)frame;
+    if (g_fnprof) fp_presents++;
 }
 
 static int by_n(const void *a, const void *b) {
-    uint64_t x = ((const FpSlot *)a)->n, y = ((const FpSlot *)b)->n;
+    uint64_t x = ((const FpSlot *)a)->n, y = ((const FpSlot *)b)->n;   // free slots have n 0
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
 static void top(const char *what, FpSlot *t, double frames, int n, int owners) {
     qsort(t, FP_SLOTS, sizeof *t, by_n);
     for (int i = 0; i < n && t[i].n; i++) {
-        uint64_t k = t[i].key & ~(1ull << 63);
+        uint64_t k = t[i].key;
         char d[128] = "";
         if (owners) snprintf(d, sizeof d, "thread %#x waits on owner %#x", (uint32_t)(k >> 32), (uint32_t)k);
         else if (!strcmp(what, "caller")) ldr_describe(k, d, sizeof d);
@@ -113,7 +117,7 @@ static void top(const char *what, FpSlot *t, double frames, int n, int owners) {
 void fnprof_report(void) {
     if (!g_fnprof) return;
     g_fnprof = 0;
-    double frames = fp_last > fp_frame0 ? (double)(fp_last - fp_frame0) : 1;
+    double frames = fp_presents ? (double)fp_presents : 1;   // presents while counting
     for (int i = 0; i < nfp; i++) {
         FpFunc *f = &fp[i];
         char d[128];

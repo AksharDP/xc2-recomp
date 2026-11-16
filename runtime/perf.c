@@ -243,6 +243,7 @@ static void ftg_report(uint64_t now) {
 __attribute__((weak)) void gfx_exit_log(void) {}
 
 void perf_summary_flush(void) {   // at exit (prof_write)
+    callcap_finish();
     fnprof_report();
     if (summary_t0) {
         ft_report(kern_now_ns(), "exit");
