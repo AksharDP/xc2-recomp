@@ -683,19 +683,17 @@ static void stamp_range(uint64_t lo, uint64_t hi, uint32_t g) {
 
 // Write-watch query of [lo, hi), stamping its written pages with g (gen_lock held exclusively). One call over the whole
 // range: a call costs about 0.7 us on top of its walk, and the streaming captures queried a 654 MiB pool in 164 pieces of
-// 4 MiB (offline, 656 MiB with up to 2048 pages written: 0.82 instead of 0.93 ms). A call that fills gen_pages goes on
-// past the last page it returned, so no part of the range is walked twice (calls that started over at lo walked a
-// load's tens of thousands of written pages dozens of times: 40-60 ms frames at the title and at loads).
-// 0 when the range is not write-watched.
+// 4 MiB (offline, 656 MiB with up to 2048 pages written: 0.82 instead of 0.93 ms). A call that fills gen_pages asks
+// again over the same range: the query resets the bits of the pages it returns and keeps the others, so the next call
+// returns the rest whatever order GetWriteWatch lists pages in (it does not document one). That walks the range again
+// only after 256 MiB were written. 0 when the range is not write-watched.
 static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
-    for (uint64_t c = lo; c < hi;) {
-        uint64_t n = ww_query(c, hi - c);
+    for (;;) {
+        uint64_t n = ww_query(lo, hi - lo);
         if (n == UINT64_MAX) return 0;
         for (uint64_t k = 0; k < n; k++) stamp_page(gen_pages[k], g);
-        if (n < GEN_PAGES_CAP) break;
-        c = gen_pages[n - 1] + (1ull << GEN_PAGE_SHIFT);
+        if (n < GEN_PAGES_CAP) return 1;
     }
-    return 1;
 }
 
 void vk_guest_written(uint64_t addr, uint64_t size) {
