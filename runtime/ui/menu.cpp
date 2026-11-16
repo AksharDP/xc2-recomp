@@ -252,10 +252,11 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean and Chinese
-// language names merged in from a system font when there is one (each language is named in its own script).
-// Made again when the window height changes; the old texture goes after the queue is idle (CreateFontsTexture).
-static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0};
+// Roboto Medium (Latin, Cyrillic for mod folder names, dashes and quotes) at 26 px per 1080 lines, with the glyphs of
+// the Japanese, Korean and Chinese language names merged in from a system font when there is one (each language is
+// named in its own script). Made again when the window height changes; the old texture goes after the queue is idle
+// (CreateFontsTexture).
+static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
     {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},

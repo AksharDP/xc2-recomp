@@ -57,6 +57,8 @@ def set_value(text, key, value):
     for i, line in enumerate(lines):
         m = active.match(line)
         if m:
+            # later copies (also with the xcx_ prefix) would win at run time, so only this one stays
+            lines[i + 1:] = [l for l in lines[i + 1:] if not active.match(l)]
             lines[i] = f'{m.group(1)}{key}{m.group(2)}{value}'
             return '\n'.join(lines) + '\n'
     for i, line in enumerate(lines):

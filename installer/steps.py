@@ -269,9 +269,10 @@ class Check(Step):
             raise InstallError('check.dest_not_empty', path=str(dest))
         # The language: the one asked for, else the recorded one as this release names it (an earlier install's nl,
         # pt or ru, which no release has, gives way to the default of the game's languages in self.language)
-        requested = ctx.options.lang or ini.recorded_language(ctx.state.get('lang'))
-        if requested and requested not in ini.LANGUAGES:
-            raise InstallError('check.lang_unknown', lang=requested, known=', '.join(ini.LANGUAGES))
+        requested, recorded = ctx.options.lang, ini.recorded_language(ctx.state.get('lang'))
+        for code in (requested, recorded):
+            if code and code not in ini.LANGUAGES:
+                raise InstallError('check.lang_unknown', lang=code, known=', '.join(ini.LANGUAGES))
         ctx.languages = None
         ctx.temp.mkdir(parents=True, exist_ok=True)
 
@@ -288,14 +289,18 @@ class Check(Step):
             self.versions(ctx)
         elif dlc_inputs(ctx):   # add-ons added to an installed folder: inputs() did not see them
             self.dlc_files(ctx)
-        self.language(ctx, requested)
+        self.language(ctx, requested, recorded)
         return {}
 
-    def language(self, ctx, requested):
-        """ctx.lang: requested, or the default of the game's languages; it must be one the game files have text for.
-        The languages come from the game files when the extraction runs (inputs), else from the install."""
-        langs = ctx.languages or ctx.state.get('languages') or installed_languages(ctx.dest)
-        lang = requested or (ini.default_language(langs) if langs else None)
+    def language(self, ctx, requested, recorded=None):
+        """ctx.lang: requested, else the recorded one when the game files have it, else the default of their
+        languages; it must be one the game files have text for. The languages come from the game files when the
+        extraction runs (inputs), else from the installed RomFS, else from the list the install recorded (an
+        interrupted replacement can leave the RomFS of other game files than that list was read from)."""
+        langs = ctx.languages or installed_languages(ctx.dest) or ctx.state.get('languages')
+        if recorded and langs and recorded not in langs:
+            recorded = None   # e.g. fr kept from the Americas release after a switch to the Japanese one
+        lang = requested or recorded or (ini.default_language(langs) if langs else None)
         if not lang:
             raise InstallError('check.lang_missing')
         if langs and lang not in langs:

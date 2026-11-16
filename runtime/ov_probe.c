@@ -262,10 +262,35 @@ static char *lang(void) {
 
 static void set_env(const char *name, const char *value) { plat_setenv(name, value); }   // NULL removes it
 
+// The language settings probe_oe sets through the environment. Their xc2.ini values (an installed folder has lang and
+// game_langs) are taken out of memory for the probe, so a case that leaves one unset sees it unset, and put back after;
+// the probe never saves the file.
+static const char *const kLangKeys[] = {"XC2_LANG", "XC2_LOCALE", "XC2_GAME_LANGS"};
+enum { N_LANG_KEYS = sizeof kLangKeys / sizeof *kLangKeys };
+
+static void lang_keys_isolate(char *env[N_LANG_KEYS], char *file[N_LANG_KEYS]) {
+    for (int i = 0; i < N_LANG_KEYS; i++) {
+        const char *v = cfg_get(kLangKeys[i]);
+        env[i] = cfg_from_env(kLangKeys[i]) && v ? strdup(v) : NULL;
+        set_env(kLangKeys[i], NULL);
+        file[i] = cfg_is_set(kLangKeys[i]) ? strdup(cfg_get(kLangKeys[i])) : NULL;   // not a device profile's value
+    }
+    cfg_reset(kLangKeys, N_LANG_KEYS);
+}
+
+static void lang_keys_restore(char *env[N_LANG_KEYS], char *file[N_LANG_KEYS]) {
+    for (int i = 0; i < N_LANG_KEYS; i++) {
+        set_env(kLangKeys[i], NULL);
+        if (file[i]) cfg_set(kLangKeys[i], file[i]);
+        set_env(kLangKeys[i], env[i]);
+        free(env[i]);
+        free(file[i]);
+    }
+}
+
 static void probe_oe(void) {
-    char *keep_lang = cfg_get("XC2_LANG") ? strdup(cfg_get("XC2_LANG")) : NULL;
-    char *keep_locale = cfg_get("XC2_LOCALE") ? strdup(cfg_get("XC2_LOCALE")) : NULL;
-    char *keep_shipped = cfg_get("XC2_GAME_LANGS") ? strdup(cfg_get("XC2_GAME_LANGS")) : NULL;
+    char *keep_env[N_LANG_KEYS], *keep_file[N_LANG_KEYS];
+    lang_keys_isolate(keep_env, keep_file);
     // shipped: XC2_GAME_LANGS, as the installer writes it for the Americas and Europe (US) or the Japanese release (JP)
     static const char US[] = "en-US en-GB fr fr-CA de it es es-419 ko", JP[] = "ja zh-CN zh-TW";
     static const struct { const char *lang, *locale, *shipped, *want; } cases[] = {
@@ -300,8 +325,7 @@ static void probe_oe(void) {
     CHECK(ov_language_shipped("ko") && ov_language_shipped("en-GB") && !ov_language_shipped("ja") &&
               !ov_language_shipped("en") && !ov_language_shipped("zh-CN"),
           "ov_language_shipped does not match whole codes of XC2_GAME_LANGS");
-    set_env("XC2_GAME_LANGS", keep_shipped);
-    free(keep_shipped);
+    set_env("XC2_GAME_LANGS", NULL);
     set_env("XC2_LANG", NULL);
     set_env("XC2_LOCALE", NULL);
     char sys[16];
@@ -309,10 +333,7 @@ static void probe_oe(void) {
     set_env("XC2_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("XC2_LANG", keep_lang);
-    set_env("XC2_LOCALE", keep_locale);
-    free(keep_lang);
-    free(keep_locale);
+    lang_keys_restore(keep_env, keep_file);
     checks++;
     failures += bad > 0;
     printf("oe: language %s by default (en-US locale), %s for this user's locale; %d locale/XC2_LANG cases %s\n",

@@ -212,6 +212,13 @@ class IniTest(unittest.TestCase):
         self.assertEqual(out, '[display]\nvk_present = fifo\n[language]\n  lang =  de\nfps60 = 0\n')
         self.assertEqual(ini.get_language(out), 'de')
 
+    def test_later_copies_of_the_key_are_removed(self):
+        # the runtime takes the last value, so a second active line would undo the one written
+        text = '[language]\ngame_langs = en-US ko\nlang = fr\nxcx_game_langs = de\n# game_langs = it\n'
+        out = ini.set_value(text, 'game_langs', 'ja zh-CN zh-TW')
+        self.assertEqual(out, '[language]\ngame_langs = ja zh-CN zh-TW\nlang = fr\n# game_langs = it\n')
+        self.assertEqual(ini.get_value(out, 'game_langs'), 'ja zh-CN zh-TW')
+
     def test_languages_without_text_are_not_offered(self):
         # Neither release has Dutch, Portuguese or Russian text; asking for one gave a black screen (GitHub issue 107).
         # The game knows no zh-Hans or zh-Hant: Chinese is zh-CN and zh-TW.

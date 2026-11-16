@@ -74,6 +74,7 @@ class App:
         self.probe_for = None            # the inputs the shown languages are of (guilogic.probe_inputs)
         self.probe_after = None
         self.probe_status = ('ui.langs_hint', {})   # the line under the language box: (text id, params)
+        self.probe_done_status = self.probe_status   # that line for probe_for, put back when its files are chosen again
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
 
@@ -140,7 +141,10 @@ class App:
     def fill_languages(self):
         code = self.selected_lang()
         offered = self.offered()
-        if code not in offered:   # chosen before the files were read, or for the other release: their default
+        recorded = None if self.lang_touched else self.recorded_lang()
+        if recorded in offered:   # an update keeps the language the install has, unless the user picked another
+            code = recorded
+        elif code not in offered:   # chosen before the files were read, or for the other release: their default
             code = ini.default_language(offered)
         self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
@@ -300,12 +304,19 @@ class App:
     def start_probe(self):
         """Read the languages of the chosen game files, unless they are the ones already shown or being read."""
         self.probe_after = None
-        inputs = probe_inputs(self.vars['base'].get(), self.vars['update'].get(), self.vars['keys'].get())
+        inputs = self.current_inputs()
         if inputs is None:
             self.probe, self.probe_for = None, None
             self.set_languages(self.recorded_languages(), ('ui.langs_hint', {}))
+            self.probe_done_status = self.probe_status
             return
-        if inputs == self.probe_for or (self.probe and self.probe.inputs == inputs):
+        if inputs == self.probe_for:   # back to the files shown: a read of other files started since is dropped
+            if self.probe is not None:
+                self.probe = None
+                self.probe_status = self.probe_done_status
+                self.fill_languages()
+            return
+        if self.probe and self.probe.inputs == inputs:
             return
         self.probe = LanguageProbe(self.layout.python, inputs, cwd=self.layout.root)
         self.probe_status = ('ui.langs_checking', {})
@@ -319,7 +330,10 @@ class App:
         if not probe.done():
             self.root.after(POLL_MS, self.poll_probe)
             return
-        self.probe, self.probe_for = None, probe.inputs
+        self.probe = None
+        if probe.inputs != self.current_inputs():   # the fields changed while it ran; their own read is queued
+            return
+        self.probe_for = probe.inputs
         e = probe.result
         if e['type'] == 'languages' and e.get('languages'):
             self.set_languages(e['languages'], ('ui.langs_found', {'release': e.get('release', ''),
@@ -327,11 +341,20 @@ class App:
         else:
             reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
             self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
+        self.probe_done_status = self.probe_status
+
+    def current_inputs(self):
+        return probe_inputs(self.vars['base'].get(), self.vars['update'].get(), self.vars['keys'].get())
 
     def recorded_languages(self):
         """The languages an install folder recorded (xc2-install.json), shown before the game files are chosen."""
         state = self.form().installed_state()
         return (state or {}).get('languages') or None
+
+    def recorded_lang(self):
+        """The game language the install folder has (xc2-install.json), or None."""
+        state = self.form().installed_state()
+        return ini.recorded_language(state.get('lang')) if state else None
 
     def set_languages(self, languages, status):
         """Offer languages (None: every one) and show status under the list; a choice they lack gives way to their

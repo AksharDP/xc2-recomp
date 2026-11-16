@@ -36,6 +36,7 @@ from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog
 from installer import ini  # noqa: E402
 from installer.runner import InstallError  # noqa: E402
 from installer.steps import Check  # noqa: E402
+from installer import steps as steps_module  # noqa: E402
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
@@ -274,13 +275,28 @@ class CheckLanguageTest(unittest.TestCase):
     US = ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'ko']
     JP = ['ja', 'zh-CN', 'zh-TW']
 
-    def resolve(self, requested, languages=None, state=None):
+    def resolve(self, requested, languages=None, state=None, recorded=None, installed=None):
         warnings = []
         with tempfile.TemporaryDirectory() as d:
             ctx = SimpleNamespace(languages=languages, state=state or {}, dest=Path(d),
                                   reporter=SimpleNamespace(warning=lambda id, **p: warnings.append(id)))
-            Check().language(ctx, requested)
+            real = steps_module.installed_languages
+            steps_module.installed_languages = lambda dest: installed
+            try:
+                Check().language(ctx, requested, recorded)
+            finally:
+                steps_module.installed_languages = real
         return ctx.lang, ctx.languages, warnings
+
+    def test_the_installed_romfs_comes_before_the_recorded_list(self):
+        # a US-to-JP replacement stopped after the extraction: the RomFS is JP, the recorded list still US
+        self.assertEqual(self.resolve('ja', state={'languages': self.US}, installed=self.JP)[:2], ('ja', self.JP))
+        self.assertEqual(self.resolve(None, state={'languages': self.US}, installed=self.JP)[0], 'ja')
+
+    def test_a_recorded_language_the_files_lack_gives_way(self):
+        self.assertEqual(self.resolve(None, self.US, recorded='fr')[0], 'fr')
+        self.assertEqual(self.resolve(None, self.JP, recorded='fr')[0], 'ja')
+        self.assertEqual(self.resolve('zh-TW', self.JP, recorded='fr')[0], 'zh-TW')
 
     def test_default_follows_the_release(self):
         self.assertEqual(self.resolve(None, self.US)[0], 'en-US')
@@ -304,6 +320,92 @@ class CheckLanguageTest(unittest.TestCase):
         with self.assertRaises(InstallError) as e:
             self.resolve(None)
         self.assertEqual(e.exception.id, 'check.lang_missing')
+
+
+class LanguageWindowTest(unittest.TestCase):
+    """installer/gui.py: the language list follows the chosen game files (with a stand-in for the probe process) and
+    the install folder's recorded language."""
+    US = ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'ko']
+    JP = ['ja', 'zh-CN', 'zh-TW']
+
+    def setUp(self):
+        try:
+            import tkinter as tk
+            from installer import gui
+        except ImportError:
+            self.skipTest('no tkinter')
+        gui.fix_tcl_paths()
+        try:
+            self.root = tk.Tk()
+        except tk.TclError:
+            self.skipTest('no display')
+        self.addCleanup(self.root.destroy)
+        self.root.withdraw()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        for name in ('us.nsp', 'jp.nsp', 'prod.keys'):
+            (self.dir / name).write_bytes(b'x')
+        self.made = []
+        made = self.made
+
+        class Probe:
+            def __init__(self, python, inputs, cwd=None):
+                self.inputs, self.result = inputs, None
+                made.append(self)
+
+            def done(self):
+                return self.result is not None
+
+        real, gui.LanguageProbe = gui.LanguageProbe, Probe
+        self.addCleanup(setattr, gui, 'LanguageProbe', real)
+        self.app = gui.App(self.root, layouts.find(ROOT), remember=False)
+
+    def choose(self, base, start=True):
+        self.app.vars['base'].set(str(self.dir / base) if base else '')
+        self.app.vars['keys'].set(str(self.dir / 'prod.keys'))
+        if start:
+            self.app.start_probe()
+
+    def finish(self, probe, languages):
+        probe.result = {'type': 'languages', 'languages': languages, 'release': 'r'}
+        self.app.poll_probe()
+
+    def test_returning_to_the_files_shown_drops_the_other_read(self):
+        self.choose('us.nsp')
+        a = self.made[-1]
+        self.finish(a, self.US)
+        self.choose('jp.nsp')
+        b = self.made[-1]
+        self.assertIsNot(a, b)
+        self.choose('us.nsp')   # A, B, A: no new read, and B's result must not land on A
+        self.assertEqual(len(self.made), 2)
+        self.assertIsNone(self.app.probe)
+        self.finish(b, self.JP)
+        self.assertEqual(self.app.languages, self.US)
+        self.assertEqual(self.app.selected_lang(), 'en-US')
+
+    def test_a_result_for_files_no_longer_chosen_is_dropped(self):
+        self.choose('us.nsp')
+        self.finish(self.made[-1], self.US)
+        self.choose('jp.nsp')
+        b = self.made[-1]
+        self.choose('us.nsp', start=False)   # the field changed; its own read waits for the debounce
+        self.finish(b, self.JP)
+        self.assertEqual(self.app.languages, self.US)
+
+    def test_the_install_folders_language_is_kept(self):
+        jp, us = self.dir / 'jp-install', self.dir / 'us-install'
+        for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
+            folder.mkdir()
+            statefile.save(folder, statefile.empty('r0') | {'lang': lang, 'languages': langs})
+        self.choose(None)
+        self.app.vars['dest'].set(str(jp))
+        self.app.start_probe()
+        self.assertEqual(self.app.selected_lang(), 'ja')
+        self.app.vars['dest'].set(str(us))   # fr is checked against the JP list first, then the list becomes US
+        self.app.start_probe()
+        self.assertEqual(self.app.selected_lang(), 'fr')
 
 
 class CatalogTest(unittest.TestCase):
