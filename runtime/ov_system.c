@@ -1008,15 +1008,37 @@ static void ov_aoc_count(Cpu *c) { ret_x(c, (uint64_t)fs_aoc_list(NULL, 0, 0)); 
 static const char languages[][8] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru", "zh-TW",
                                     "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
 #define NLANG ((int)(sizeof languages / sizeof *languages))
-static void ov_language_count(Cpu *c) { ret_x(c, NLANG); }   // int GetAvailableLanguageCodeCount()
-// int GetAvailableLanguageCodes(LanguageCode *out, int count)
+
+// Whether this install offers code to the game: the game's own table has it, spelled the same way (game_codes, so
+// zh-Hans, zh-Hant and pt-BR are out, and so are nl, pt and ru, which no release has), and the installed files have
+// its text. The game builds its list of languages from the codes it is offered and matches each one against its own
+// table, so a code whose folder is missing would leave the game on a black screen (GitHub issue 107).
+static int offered(const char *code) {
+    const char *g = game_code(code);
+    return g && !strcmp(g, code) && ov_language_shipped(code);
+}
+
+// The codes this install offers, in languages order. When out is not NULL, up to max of them are written there, 8 bytes
+// each, and the number written is returned; when out is NULL, the number offered is returned.
+int ov_offered_languages(char (*out)[8], int max) {
+    int k = 0;
+    for (int i = 0; i < NLANG; i++) {
+        if (!offered(languages[i])) continue;
+        if (out) {
+            if (k >= max) break;
+            memcpy(out[k], languages[i], 8);
+        }
+        k++;
+    }
+    return k;
+}
+
+static void ov_language_count(Cpu *c) { ret_x(c, ov_offered_languages(NULL, 0)); }   // int GetAvailableLanguageCodeCount()
+// int GetAvailableLanguageCodes(LanguageCode *out, int count): the game asks for 15, the size of its own table
 static void ov_language_codes(Cpu *c) {
-    char *out = arg_p(c, 0);
+    char (*out)[8] = arg_p(c, 0);
     int n = (int)arg_x(c, 1);
-    if (n > NLANG) n = NLANG;
-    if (!out || n < 0) n = 0;
-    for (int i = 0; i < n; i++) memcpy(out + 8 * i, languages[i], 8);
-    ret_x(c, (uint64_t)n);
+    ret_x(c, out ? (uint64_t)ov_offered_languages(out, n) : 0);
 }
 
 // ngc::ProfanityFilter: Initialize and SetMaskMode succeed; MaskProfanityWordsInText(int *count, char *, uint32)
