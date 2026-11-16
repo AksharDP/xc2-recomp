@@ -7,14 +7,14 @@
 // Sticks are -32767..32767, up is +y. XC2_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // The same for host UI (the text entry): never blocked. input_block(1) while a text entry is open: input_poll then
-// reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released.
+// reports nothing; input_block(0) when it closes: nothing until all buttons and stick directions are released, or 1 s.
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 void input_block(int on);
 // How much faster than a full right-stick deflection the mouse turns the camera this frame, 1..8 (1 without the mouse):
 // frame_rate.c scales the camera turn by it.
 float input_camera_boost(void);
 // The in-game menu (ui/menu.h): input_menu(1) when it opens (input_poll reports nothing, the cursor is released), (0) when
-// it closes (nothing until every button and stick direction is released). Independent of input_block.
+// it closes (nothing until every button and stick direction is released, or for at most 1 s). Independent of input_block.
 void input_menu(int open);
 // The gamepad alone, for the menu: Switch button bits and the left stick (up +y). 0 without a connected gamepad.
 // Minus+Plus combo and the neutral pad while the menu is open (input_map.c, window-system free): *held is the caller's memory
