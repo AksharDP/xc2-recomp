@@ -17,22 +17,45 @@
 #include "platform/platform.h"
 
 #define RING_WORDS (1u << 21)   // 16 MiB: a part of a submission is ~1-2 MiB of packets in the town
-static uint64_t ring[RING_WORDS];
-static volatile uint64_t head, tail;   // words published by the producer / consumed by the recorder
-static volatile int32_t sleeping;         // the recorder waits for wake_ev
-static PlatEvent wake_ev;              // auto-reset
-static uint64_t put_h;                 // producer: words written (published up to head)
+// One recorder: its ring, its thread and the producer's side. rec0 serves the submitting or replay thread; a replay
+// worker that records parts of its own (vk_exec.c) gets one of its own from rec_own. Each thread reaches its recorder
+// through rtls (the recorder thread too, for the consumer's fields), rec0 when it has none; the names below are macros
+// over the fields of that recorder.
+typedef struct {
+    uint64_t *ring;
+    volatile uint64_t head, tail;        // words published by the producer / consumed by the recorder
+    volatile int32_t sleeping;           // the recorder waits for wake_ev
+    PlatEvent wake_ev;                   // auto-reset
+    uint64_t put_h;                      // producer: words written (published up to head)
+    VkCommandBuffer ring_cb;             // the recorder's copy of rec_cb, the command buffer its packets go into
+    PlatThread *thread;
+    volatile int32_t part_open;          // 1 from rec_begin of a recorded part until its end (rec_end, rec_end_cb)
+    struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } stats;   // producer's
+} Rec;
+static uint64_t ring0[RING_WORDS];
+static Rec rec0 = {.ring = ring0};
+static _Thread_local Rec *rtls;
+static inline Rec *rr(void) {
+    Rec *r = rtls;
+    return r ? r : &rec0;
+}
+#define ring (rr()->ring)
+#define head (rr()->head)
+#define tail (rr()->tail)
+#define sleeping (rr()->sleeping)
+#define wake_ev (rr()->wake_ev)
+#define put_h (rr()->put_h)
+#define ring_cb (rr()->ring_cb)
+#define rec_thread (rr()->thread)
+#define part_open (rr()->part_open)
+#define RS_ (rr()->stats)
 // The part being recorded (set while the recorder is idle) and whether rec_begin started the recorder for it. Per
 // thread: only the thread that called rec_begin queues into the ring, so a thread recording another command buffer at
 // the same time (a thread recording a part of the replay of its own) sees no part here and makes its calls at once.
 static _Thread_local VkCommandBuffer rec_cb;
 static _Thread_local int rec_live;
-static VkCommandBuffer ring_cb;        // the recorder's copy of rec_cb, the command buffer its packets go into
-static PlatThread *rec_thread;
-static int rec_prio;                   // the submitting thread's priority, which the recorder takes
-
-// Producer statistics, logged by rec_stats_log.
-static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } RS_;
+static int rec_prio;                   // the submitting thread's priority, which the recorders take
+static int rec_mode = -1;              // XC2_VK_RECORDER as rec_begin read it (-1: not yet)
 
 enum {
     R_PAD, R_BeginQuery, R_BeginRendering, R_BindDescriptorSets, R_BindIndexBuffer, R_BindPipeline, R_BindVertexBuffers2,
@@ -58,7 +81,6 @@ static void exec_packet(uint32_t op, void *p);
 // is open (XC2_REC_SPIN, default 4096). Between parts the recorder has nothing to wait for, and XC2_REC_SPIN_IDLE
 // (default 4096, as before) lowers the spin there: a 4096-pause spin is a fraction of a millisecond of a core.
 static int spin_open = 4096, spin_idle = 4096;
-static volatile int32_t part_open;   // 1 from rec_begin of a recorded part until its end (rec_end, rec_end_cb)
 
 static void spin_knobs(void) {
     const char *e = cfg_get("XC2_REC_SPIN");
@@ -68,7 +90,7 @@ static void spin_knobs(void) {
 }
 
 static void rec_main(void *arg) {
-    (void)arg;
+    rtls = arg ? arg : &rec0;   // the recorder this thread consumes for
     plat_thread_priority(rec_prio);
     uint64_t t = 0;
     for (;;) {
@@ -145,37 +167,53 @@ void rec_drain(void) {
 }
 
 void rec_begin(VkCommandBuffer cb) {
-    static int mode = -1;
-    if (mode < 0) {
+    if (rec_mode < 0) {
         // Default off on AMD GPUs: with the recorder their drivers lost the device within the first frames or at menu
         // opens, 1 boot in 3 on an RX 9070 XT, and XC2_VK_RECORDER=0 ended it for three users (TotK Recomp issue #5);
         // under RADV the kernel saw an illegal opcode at the end of a command buffer (TotK Recomp issue #40). Letting
         // the recorder end its own parts (rec_end_cb) fixed the white scene on an RX 6700 XT; the default stays off
         // until more AMD cards run it.
         const char *set = cfg_get("XC2_VK_RECORDER");
-        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
-        if (!mode && vk_caps.amd && !(set && *set))
+        rec_mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
+        if (!rec_mode && vk_caps.amd && !(set && *set))
             rt_log("vk_rec: no recorder thread on AMD GPUs (XC2_VK_RECORDER=1 turns it on)");
-        if (mode) {
+        if (rec_mode) {
             spin_knobs();
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();
             rec_thread = plat_thread_new(rec_main, NULL, "vk recorder");
             if (!rec_thread) {
                 rt_log("vk_rec: no recorder thread: the replay makes its Vulkan calls itself");
-                mode = 0;
+                rec_mode = 0;
             } else {
                 rt_log("vk_rec: the replay's Vulkan commands are made by a recorder thread%s",
-                       mode == 2 ? " in the B blocks (XC2_AB)" : "");
+                       rec_mode == 2 ? " in the B blocks (XC2_AB)" : "");
             }
         }
     }
     RS_.parts++;
-    if (!RT_KNOB_ON(mode)) return;
+    if (!RT_KNOB_ON(rec_mode)) return;
     RS_.parts_on++;
     rec_cb = ring_cb = cb;   // the recorder is idle: rec_end drained it; head's release publishes ring_cb with the packets
     rec_live = 1;
     __atomic_store_n(&part_open, 1, __ATOMIC_RELAXED);
+}
+
+int rec_own(void) {
+    if (rtls) return 1;
+    if (rec_mode <= 0) return 0;   // no recorder (or not decided yet: rec_begin of the replay thread decides)
+    Rec *r = calloc(1, sizeof *r);
+    if (!r) rt_fatal("vk_rec: out of memory (worker recorder)");
+    rtls = r;   // the field macros below name r's fields from here on
+    if (!(ring = malloc(sizeof(uint64_t) * RING_WORDS))) rt_fatal("vk_rec: out of memory (worker ring)");
+    plat_event_init(&wake_ev, 0, 0);
+    if (!(rec_thread = plat_thread_new(rec_main, r, "vk recorder (worker)"))) {
+        free(ring);
+        rtls = NULL;
+        free(r);
+        return 0;
+    }
+    return 1;
 }
 
 void rec_end(void) {

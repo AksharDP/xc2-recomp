@@ -1109,8 +1109,8 @@ static void pre_op(VkExec *ex, uint32_t op, const void *a) {
 
 static int serial_only(uint32_t op) { return op == OP_RENDER_COND; }
 
-// Samples-passed counting as the ops leave it (vk_exec_xfer.c reset_counter, oq_report), for the pre-walk: parts are
-// cut only where nothing is counted, so a reset, the draws it counts and the report stay in one part.
+// Samples-passed counting as the ops leave it (vk_exec_xfer.c reset_counter, oq_report), for the pre-walk: each part
+// starts counting as the ops before it leave it.
 typedef struct { int counting, reported, keep; } OqSim;
 
 static void oq_sim(OqSim *s, uint32_t op, const void *a) {
@@ -1127,18 +1127,23 @@ static void oq_sim(OqSim *s, uint32_t op, const void *a) {
 typedef struct { VkExec ex; int i0, i1; } Part;   // ops [i0, i1) of the list, recorded with ex
 static struct {
     int n, prio;
+    int rec;   // XC2_REPLAY_WORKER_REC (default 1): each worker has a recorder thread of its own
+    int cutc;  // XC2_REPLAY_CUT_COUNTING (default 1): parts may be cut inside samples-passed counting regions
     PlatMutex lock;
     PlatCond cv, done_cv;
     Part parts[PAR_MAX];
     int nparts, next, done;   // the workers' parts of the submission being recorded: handed out, finished
     OpList ops;
-    uint64_t subs, nparts_all, tried, maxrun, alldraws;
+    uint64_t subs, nparts_all, tried, maxrun, alldraws, block[2];
     uint64_t ns[4];   // pre-walk, the replay thread's part, its wait for the workers, the workers' parts (summed)
 } W = {.n = -1, .lock = PLAT_MUTEX_INIT, .cv = PLAT_COND_INIT, .done_cv = PLAT_COND_INIT};
 
 static void part_record(Part *p) {
     VkExec *ex = &p->ex;
     ex->cb = vk_sync_worker_begin(ex->fence);
+    // The worker's Vulkan calls go to a recorder thread of its own, as the replay thread's go to its recorder: the
+    // driver's work is about half of a part's time otherwise.
+    if (W.rec) rec_own(), rec_begin(ex->cb);
     x_cur = ex;
     vk_exec_draw_new_cb();
     for (int i = p->i0; i < p->i1; i++) {
@@ -1149,10 +1154,10 @@ static void part_record(Part *p) {
     vk_exec_pass_end(ex);
     vk_exec_barrier(ex);
     views_release(ex);
-    free(ex->views), free(ex->oq_seg);   // the part's counting ended within it: its segments went with their reports
-    ex->views = NULL, ex->cap_views = 0, ex->oq_seg = NULL, ex->oq_capseg = 0;
+    free(ex->views);   // the part's query segments stay for vk_exec_oq_flush
+    ex->views = NULL, ex->cap_views = 0;
     x_cur = NULL;
-    vkEndCommandBuffer(ex->cb);
+    if (!W.rec || !rec_end_cb(ex->cb, 0, 0)) vkEndCommandBuffer(ex->cb);
 }
 
 static void worker_main(void *arg) {
@@ -1179,6 +1184,8 @@ static int par_workers(void) {
         if (W.n < 0) W.n = 0;
         if (W.n > PAR_MAX - 1) W.n = PAR_MAX - 1;
         W.prio = plat_thread_priority_get();
+        W.rec = rt_knob("REPLAY_WORKER_REC", "1");
+        W.cutc = rt_knob("REPLAY_CUT_COUNTING", "1");
         for (int i = 0; i < W.n; i++)
             if (!plat_thread_new(worker_main, NULL, "vk replay worker")) W.n = i;
         if (W.n) rt_log("vk: replay parts recorded by %d worker threads and the replay thread (XC2_REPLAY_WORKERS)", W.n);
@@ -1195,10 +1202,11 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
         double s = (double)W.subs;
         rt_log("vk: parallel replay: %llu of the last 1000 submissions in parts, %.2f parts each; per such submission "
                "%.3f ms pre-walk, %.3f ms the replay thread's part, %.3f ms waiting for the workers, %.3f ms in the "
-               "workers' parts (sum); longest run of draws between render target changes %.0f%% of the draws",
+               "workers' parts (sum); longest run of draws between render target changes %.0f%% of the draws; cuts blocked by counting %llu, by transform feedback %llu",
                (unsigned long long)W.subs, (double)W.nparts_all / s, W.ns[0] / s / 1e6, W.ns[1] / s / 1e6,
-               W.ns[2] / s / 1e6, W.ns[3] / s / 1e6, W.alldraws ? 100.0 * (double)W.maxrun / (double)W.alldraws : 0.0);
-        W.subs = W.nparts_all = W.maxrun = W.alldraws = 0, memset(W.ns, 0, sizeof W.ns);
+               W.ns[2] / s / 1e6, W.ns[3] / s / 1e6, W.alldraws ? 100.0 * (double)W.maxrun / (double)W.alldraws : 0.0,
+               (unsigned long long)W.block[0], (unsigned long long)W.block[1]);
+        W.subs = W.nparts_all = W.maxrun = W.alldraws = W.block[0] = W.block[1] = 0, memset(W.ns, 0, sizeof W.ns);
     }
     uint64_t t0 = kern_now_ns();
     W.ops.n = 0;
@@ -1217,9 +1225,9 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
     int want = nw + 1;
     if (draws / want < PAR_MIN_DRAWS) want = draws / PAR_MIN_DRAWS;
     if (want < 2) return 0;
-    if (ex->oq_counting || ex->oq_nseg || ex->xfb_active) return 0;   // carried in: they stay on X
-    OqSim oq = {0, ex->oq_reported, vk_exec_oq_keep()};
-    int reported[PAR_MAX] = {0};
+    if (ex->xfb_active) return 0;   // carried in: it stays on X
+    OqSim oq = {ex->oq_counting, ex->oq_reported, vk_exec_oq_keep()};
+    int reported[PAR_MAX] = {0}, counting[PAR_MAX] = {0};
     int per = draws / want, k = 1, since = 0, run = 0, maxrun = 0;   // run: draws since the last place a cut could go
     for (int i = 0; i < W.ops.n; i++) {   // measurement only: the longest run of draws no cut can divide
         const op_hdr *h = W.ops.op[i];
@@ -1235,11 +1243,17 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
     for (int i = 0; i < W.ops.n; i++) {
         const op_hdr *h = W.ops.op[i];
         const void *a = nvn_op_payload(h);
-        if (h->op == OP_SET_RT && k < want && since >= per && !oq.counting && !cur->xfb_active &&
+        if (h->op == OP_SET_RT && k < want && since >= per && memcmp(&cur->rt, a, sizeof cur->rt)) {
+            if (oq.counting && !W.cutc) W.block[0]++;
+            if (cur->xfb_active) W.block[1]++;
+        }
+        // Cuts may fall inside a samples-passed counting region: each part opens queries of its own and
+        // vk_exec_oq_flush hands their segments to the completion thread in part order.
+        if (h->op == OP_SET_RT && k < want && since >= per && (W.cutc || !oq.counting) && !cur->xfb_active &&
             memcmp(&cur->rt, a, sizeof cur->rt)) {
             W.parts[k - 1].i1 = i;
             W.parts[k].ex = *cur, W.parts[k].i0 = i;
-            reported[k] = oq.reported;
+            reported[k] = oq.reported, counting[k] = oq.counting;
             k++, since = 0;
         }
         vk_prog_between_ops(&cur->prog);
@@ -1257,13 +1271,18 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
         e->views = NULL, e->nviews = e->cap_views = 0;
         e->nfbl = 0, e->fbl_mask = 0, e->fb_dirty = 0, e->fb_fs = NULL, e->nsnap = 0, e->snap_keep = 0, e->snap_now = 0;
         e->pass_serial = ps + (uint32_t)p * 0x10000u;
-        e->oq_counting = 0, e->oq_open = -1, e->oq_lost = 0, e->oq_seg = NULL, e->oq_nseg = e->oq_capseg = 0;
-        if (p) e->oq_reported = reported[p];
+        e->oq_open = -1, e->oq_lost = 0, e->oq_seg = NULL, e->oq_nseg = e->oq_capseg = 0;
+        e->oq_defer = NULL, e->oq_ndefer = e->oq_capdefer = 0;
+        if (p) e->oq_reported = reported[p], e->oq_counting = counting[p];
+        vk_exec_oq_defer(e);
     }
-    // The last part on X: its command buffer, fence, view list and segment array stay.
+    // Part 0 goes on with the slots the submission carried in; their segment closes in part order (vk_exec_oq_flush).
+    W.parts[0].ex.oq_seg = ex->oq_seg, W.parts[0].ex.oq_nseg = ex->oq_nseg, W.parts[0].ex.oq_capseg = ex->oq_capseg;
+    W.parts[0].ex.oq_lost = ex->oq_lost;
+    // The last part on X: its command buffer, fence, view list and deferral array stay; it starts a fresh segment array.
     VkExec last = W.parts[k - 1].ex;
     last.cb = ex->cb, last.fence = ex->fence, last.views = ex->views, last.cap_views = ex->cap_views, last.nviews = 0;
-    last.oq_seg = ex->oq_seg, last.oq_capseg = ex->oq_capseg;
+    last.oq_defer = ex->oq_defer, last.oq_capdefer = ex->oq_capdefer;
     int i0 = W.parts[k - 1].i0, i1 = W.parts[k - 1].i1;
     uint64_t t1 = kern_now_ns();
     plat_mutex_lock(&W.lock);
@@ -1282,6 +1301,15 @@ static int record_parallel(VkExec *ex, const uint64_t *handles, int n) {
     W.nparts = W.next = 0;
     W.ns[0] += t1 - t0, W.ns[1] += t2 - t1, W.ns[2] += kern_now_ns() - t2;
     plat_mutex_unlock(&W.lock);
+    VkExec *pp[PAR_MAX];
+    for (int p = 0; p < k - 1; p++) pp[p] = &W.parts[p].ex;
+    pp[k - 1] = ex;
+    vk_exec_oq_flush(pp, k);
+    for (int p = 0; p < k - 1; p++) {
+        VkExec *e = &W.parts[p].ex;
+        free(e->oq_seg), free(e->oq_defer);
+        e->oq_seg = NULL, e->oq_defer = NULL;
+    }
     VkCommandBuffer cbs[PAR_MAX];
     for (int p = 0; p < k - 1; p++) cbs[p] = W.parts[p].ex.cb;
     vk_sync_parts(cbs, k - 1);

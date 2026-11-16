@@ -133,7 +133,7 @@ static int oq_keep;                      // replay: the game reported twice with
 static uint32_t oq_epoch = 1;            // bumped by vk_exec_xfer_shutdown: the VkExec counting state is reset
 static uint64_t oq_count;                // completion thread: samples since the last reset
 // The rest of the replay's counting state is in VkExec (oq_*), so that each part of a submission recorded on its own
-// thread (vk_exec.c, parallel parts) has its own; the parts are cut where no counting is going on.
+// thread (vk_exec.c, parallel parts) has its own; vk_exec_oq_flush hands the parts' segments on in part order.
 
 static void oq_sync(VkExec *ex) {
     if (ex->oq_epoch == oq_epoch) return;
@@ -187,13 +187,23 @@ static void oq_close(VkExec *ex) {
 void vk_exec_oq_draw(VkExec *ex) {
     oq_sync(ex);
     if (!ex->oq_counting || ex->oq_open >= 0) return;
-    uint32_t q = oq_next % OQ_N;
-    if (__atomic_load_n(&oq_busy[q], __ATOMIC_ACQUIRE)) {
-        warn_once(W_QUERY, "occlusion query ring full: draws left uncounted");
-        ex->oq_lost = 1;
-        return;
+    // Parts recorded at once take slots from the same ring: a busy slot means a full ring only if no other thread took
+    // it since oq_next was read, and the slot is taken only if oq_next has not moved.
+    uint32_t n = __atomic_load_n(&oq_next, __ATOMIC_ACQUIRE), q;
+    for (;;) {
+        q = n % OQ_N;
+        if (__atomic_load_n(&oq_busy[q], __ATOMIC_ACQUIRE)) {
+            uint32_t now = __atomic_load_n(&oq_next, __ATOMIC_ACQUIRE);
+            if (now != n) {
+                n = now;
+                continue;
+            }
+            warn_once(W_QUERY, "occlusion query ring full: draws left uncounted");
+            ex->oq_lost = 1;
+            return;
+        }
+        if (__atomic_compare_exchange_n(&oq_next, &n, n + 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) break;
     }
-    q = __atomic_fetch_add(&oq_next, 1, __ATOMIC_RELAXED) % OQ_N;   // the slot looked at may have been taken meanwhile
     oq_busy[q] = 1;
     vkCmdBeginQuery(ex->cb, oq_pool, q, oq_flags);
     ex->recorded++;
@@ -256,7 +266,68 @@ static void oq_segment(VkExec *ex, uint64_t addr, int reset) {
     s->addr = addr, s->reset = reset, s->lost = ex->oq_lost, s->n = ex->oq_nseg;
     if (ex->oq_nseg) memcpy(s->q, ex->oq_seg, sizeof *s->q * ex->oq_nseg);
     ex->oq_nseg = 0, ex->oq_lost = 0;
-    vk_completion_add(ex->fence, oq_cb, s);
+    if (!ex->oq_deferring) {
+        vk_completion_add(ex->fence, oq_cb, s);
+        return;
+    }
+    if (ex->oq_ndefer == ex->oq_capdefer) {
+        ex->oq_capdefer = ex->oq_capdefer ? ex->oq_capdefer * 2 : 8;
+        if (!(ex->oq_defer = realloc(ex->oq_defer, sizeof(void *) * ex->oq_capdefer))) rt_fatal("vk: out of memory");
+    }
+    ((OqSegment **)ex->oq_defer)[ex->oq_ndefer++] = s;
+}
+
+// Parallel parts (vk_exec.c): a part's segments wait in its VkExec until every part is recorded, and the query slots
+// a part closed after its last report or reset belong to the next segment, which a later part closes. In part order,
+// those slots go in front of the next part's first segment (or, past the last part, stay in its VkExec as the slots
+// the submission carries on), and the segments go to the completion thread, which sums them in that order.
+void vk_exec_oq_defer(VkExec *ex) {
+    oq_ready();   // the pool is set up here, before parts may race to set it up
+    ex->oq_deferring = 1, ex->oq_ndefer = 0;
+}
+
+void vk_exec_oq_flush(VkExec *const *parts, int n) {
+    uint32_t *carry = NULL, ncarry = 0;
+    int lost = 0;
+    for (int p = 0; p < n; p++) {
+        VkExec *ex = parts[p];
+        for (uint32_t i = 0; i < ex->oq_ndefer; i++) {
+            OqSegment *s = ((OqSegment **)ex->oq_defer)[i];
+            if (ncarry) {
+                OqSegment *m = malloc(sizeof *m + sizeof *m->q * (ncarry + s->n));
+                if (!m) rt_fatal("vk: out of memory");
+                *m = *s, m->n = ncarry + s->n, m->lost |= lost;
+                memcpy(m->q, carry, sizeof *m->q * ncarry);
+                memcpy(m->q + ncarry, s->q, sizeof *m->q * s->n);
+                free(s), s = m, ncarry = 0, lost = 0;
+            }
+            vk_completion_add(ex->fence, oq_cb, s);
+        }
+        ex->oq_ndefer = 0, ex->oq_deferring = 0;
+        if (p == n - 1) break;
+        if (ex->oq_nseg) {   // the part's open segment goes on in the next part
+            uint32_t *c = realloc(carry, sizeof *c * (ncarry + ex->oq_nseg));
+            if (!c) rt_fatal("vk: out of memory");
+            carry = c;
+            memcpy(carry + ncarry, ex->oq_seg, sizeof *c * ex->oq_nseg);
+            ncarry += ex->oq_nseg;
+        }
+        lost |= ex->oq_lost;
+    }
+    VkExec *last = parts[n - 1];
+    if (ncarry) {   // in front of the slots the last part leaves open
+        uint32_t need = ncarry + last->oq_nseg;
+        if (need > last->oq_capseg) {
+            last->oq_seg = realloc(last->oq_seg, sizeof *last->oq_seg * need);
+            if (!last->oq_seg) rt_fatal("vk: out of memory");
+            last->oq_capseg = need;
+        }
+        memmove(last->oq_seg + ncarry, last->oq_seg, sizeof *last->oq_seg * last->oq_nseg);
+        memcpy(last->oq_seg, carry, sizeof *carry * ncarry);
+        last->oq_nseg = need;
+        last->oq_lost |= lost;
+    }
+    free(carry);
 }
 
 static void reset_counter(VkExec *ex, const p_reset_counter *p) {

@@ -16,6 +16,9 @@
 #pragma once
 
 void rec_begin(VkCommandBuffer cb);   // the submitting thread, sub_lock held
+// A replay worker (vk_exec.c parallel parts): the calling thread's rec_begin, rec_end_cb and calls go to a recorder of
+// its own from now on. 0 when the recorder is off (the thread then makes its calls itself).
+int rec_own(void);
 void rec_end(void);                   // waits for the recorder; no-op when rec_begin did not start it
 // The end of part cb: the breadcrumb crumb (0: none, vk_crumbs.c), then vkEndCommandBuffer, both made by the recorder
 // when it records cb, and the wait for it (1); otherwise rec_end and the breadcrumb, and the caller ends cb (0).

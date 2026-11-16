@@ -99,6 +99,9 @@ typedef struct VkExec {
     int oq_counting, oq_reported, oq_open, oq_lost;
     uint32_t *oq_seg, oq_nseg, oq_capseg;
     uint32_t oq_epoch;
+    int oq_deferring;                    // parallel parts: closed segments wait in oq_defer (vk_exec_oq_flush)
+    void *oq_defer;
+    uint32_t oq_ndefer, oq_capdefer;
     p_render_cond render_cond;           // last OP_RENDER_COND
     int has_render_cond;
 
@@ -238,3 +241,7 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
 int vk_exec_oq_keep(void);   // the game reported twice without a reset: counting stays on for good
+// Parallel parts: ex's samples-passed segments wait for vk_exec_oq_flush, which hands those of the n parts (in
+// submission order; the last one carries on) to the completion thread in order, joining counting across part ends.
+void vk_exec_oq_defer(VkExec *ex);
+void vk_exec_oq_flush(VkExec *const *parts, int n);
