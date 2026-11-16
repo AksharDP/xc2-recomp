@@ -1996,13 +1996,14 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     return !diff && !bd;
 }
 
-// Writes allocated set s from its packed descriptors d: through the layout's update template, or with the write
-// structs w[i0..i1) when it has none.
-static void write_set(const VkPipeInfo *info, uint32_t s, VkDescriptorSet set, const VkDescSlot *d, VkWriteDescriptorSet *w,
-                      uint32_t i0, uint32_t i1) {
+// Writes allocated set s from its packed descriptors d (dbytes of them): through the layout's update template, made by
+// the recorder in order before the set's bind into cb (vk_rec.h rec_update_tpl), or with the write structs w[i0..i1)
+// when it has none.
+static void write_set(VkCommandBuffer cb, const VkPipeInfo *info, uint32_t s, VkDescriptorSet set, const VkDescSlot *d,
+                      uint32_t dbytes, VkWriteDescriptorSet *w, uint32_t i0, uint32_t i1) {
     if (i1 == i0) return;
     if (info->tpl[s]) {
-        vk_pipeline_update_tpl_fn()(vk_ctx()->device, set, info->tpl[s], d);
+        rec_update_tpl(vk_pipeline_update_tpl_fn(), cb, vk_ctx()->device, set, info->tpl[s], d, dbytes);
         return;
     }
     for (uint32_t k = i0; k < i1; k++) w[k].dstSet = set;
@@ -2151,14 +2152,14 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             }
         } else if (!gfx || s > 1) {
             VkDescriptorSet set = alloc_set(ex, s ? info->set_layout1 : info->set_layout);
-            write_set(info, s, set, ds, w, i0, i1);
+            write_set(ex->cb, info, s, set, ds, dbytes, w, i0, i1);
             vkCmdBindDescriptorSets(ex->cb, info->bind_point, info->layout, s, 1, &set, 0, NULL);
         } else {
             VkDescriptorSetLayout sl = s ? info->set_layout1 : info->set_layout;
             VkDescriptorSet set = B.ds_last[s];
             if (!set || B.ds_last_layout[s] != sl || DS.n[s] != dbytes || memcmp(DS.sig[s], ds, dbytes)) {
                 set = alloc_set(ex, sl);
-                write_set(info, s, set, ds, w, i0, i1);
+                write_set(ex->cb, info, s, set, ds, dbytes, w, i0, i1);
                 B.ds_last[s] = set, B.ds_last_layout[s] = sl, DS.n[s] = dbytes;
                 memcpy(DS.sig[s], ds, dbytes);
                 BS.set_new++;

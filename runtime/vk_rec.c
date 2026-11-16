@@ -39,7 +39,7 @@ enum {
     R_SetDepthWriteEnable, R_SetFrontFace, R_SetPrimitiveRestartEnable, R_SetPrimitiveTopology,
     R_SetRasterizerDiscardEnable, R_SetScissorWithCount, R_SetStencilCompareMask, R_SetStencilOp, R_SetStencilReference,
     R_SetStencilTestEnable, R_SetStencilWriteMask, R_SetViewportWithCount, R_WriteTimestamp, R_WriteTimestamp2,
-    R_PushTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_XfbBind,
+    R_PushTpl, R_UpdateTpl, R_Push, R_VertexInput, R_Bool, R_PolygonMode, R_BlendEnable, R_BlendEquation, R_WriteMask, R_XfbBind,
     R_XfbMark, R_EndCb,
 };
 
@@ -490,6 +490,22 @@ void rec_push_tpl(PFN_vkCmdPushDescriptorSetWithTemplateKHR fn, VkCommandBuffer 
     pub();
 }
 
+// Not a command: the write of an allocated set, queued in front of the bind that follows it, so the driver's walk of
+// the template runs on the recorder (about 4 % of the replay thread when it ran there). The set is the replay's own
+// until its command buffer completes, and only the recorder touches it after this call; its pool is reset only after
+// rec_end_cb waited for the recorder.
+typedef struct { PFN_vkUpdateDescriptorSetWithTemplate fn; VkDevice dev; VkDescriptorSet set;
+                 VkDescriptorUpdateTemplate tpl; const void *data; } A_UpdateTpl;
+void rec_update_tpl(PFN_vkUpdateDescriptorSetWithTemplate fn, VkCommandBuffer cb, VkDevice dev, VkDescriptorSet set,
+                    VkDescriptorUpdateTemplate tpl, const void *data, uint32_t bytes) {
+    if (!OWNED(cb)) { fn(dev, set, tpl, data); return; }
+    A_UpdateTpl *a = put(R_UpdateTpl, sizeof *a + bytes);
+    uint8_t *at = (uint8_t *)(a + 1);
+    *a = (A_UpdateTpl){fn, dev, set, tpl, NULL};
+    a->data = tail_copy(&at, data, bytes);
+    pub();
+}
+
 typedef struct { PFN_vkCmdPushDescriptorSetKHR fn; VkPipelineBindPoint bp; VkPipelineLayout l; uint32_t set, n;
                  VkWriteDescriptorSet *w; } A_Push;
 void rec_push(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout,
@@ -644,6 +660,7 @@ static void exec_packet(uint32_t op, void *p) {
     case R_PipelineBarrier2: vkCmdPipelineBarrier2(cb, p); break;
     case R_BeginRendering: vkCmdBeginRendering(cb, p); break;
     case R_PushTpl: { A_PushTpl *a = p; a->fn(cb, a->tpl, a->l, a->set, a->data); break; }
+    case R_UpdateTpl: { A_UpdateTpl *a = p; a->fn(a->dev, a->set, a->tpl, a->data); break; }
     case R_Push: { A_Push *a = p; a->fn(cb, a->bp, a->l, a->set, a->n, a->w); break; }
     case R_VertexInput: { A_VertexInput *a = p; a->fn(cb, a->nb, a->b, a->na, a->v); break; }
     case R_Bool: { A_Bool *a = p; a->fn(cb, a->v); break; }
