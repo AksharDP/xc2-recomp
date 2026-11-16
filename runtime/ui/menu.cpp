@@ -458,13 +458,14 @@ static void row_gpu(void) {
     opt_choice_list("XC2_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
 }
 
-// The game language: one entry per language XCX ships (a Switch code that names it), each under its own name. The
-// Switch's Portuguese is not among them.
+// The game language: one entry per Switch language the menu offers (a Switch code that names it), each under its own
+// name. The Switch's Portuguese is not among them, nor Russian: XC2 has no Russian text, and choosing it left the
+// game on a black screen (GitHub issue 107).
 static void row_game_lang(void) {
     static const struct { const char *code; UiTextId name; } langs[] = {
         {"en-US", UI_MENU_LANGNAME_EN}, {"ja", UI_MENU_LANGNAME_JA}, {"fr", UI_MENU_LANGNAME_FR},
         {"de", UI_MENU_LANGNAME_DE}, {"it", UI_MENU_LANGNAME_IT}, {"es", UI_MENU_LANGNAME_ES},
-        {"nl", UI_MENU_LANGNAME_NL}, {"ru", UI_MENU_LANGNAME_RU},
+        {"nl", UI_MENU_LANGNAME_NL},
         {"zh-CN", UI_MENU_LANGNAME_ZH_HANS}, {"zh-TW", UI_MENU_LANGNAME_ZH_HANT}, {"ko", UI_MENU_LANGNAME_KO},
     };
     enum { N = sizeof langs / sizeof *langs + 1 };

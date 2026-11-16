@@ -51,7 +51,7 @@ def main(argv=None):
     # extend: RecompLauncher passes one --dlc=FILE per add-on it was given; the plain form takes them all in one option
     ap.add_argument('--dlc', type=Path, nargs='*', action='extend', help='add-on content NSPs (optional)')
     ap.add_argument('--keys', type=Path, help='prod.keys')
-    ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, ru, ...)')
+    ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, fr, ...)')
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
     ap.add_argument('--root', type=Path, help='release folder or repository (default: the folder above installer/)')
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '

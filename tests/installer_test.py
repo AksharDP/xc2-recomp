@@ -201,8 +201,8 @@ class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 
     def test_example_line_is_activated(self):
-        out = ini.set_language(self.EXAMPLE, 'ru')
-        self.assertIn('\nlang = ru\n', out)
+        out = ini.set_language(self.EXAMPLE, 'fr')
+        self.assertIn('\nlang = fr\n', out)
         self.assertNotIn('# lang', out)
         self.assertIn('# locale = en-US', out)
 
@@ -211,6 +211,12 @@ class IniTest(unittest.TestCase):
         out = ini.set_language(text, 'de')
         self.assertEqual(out, '[display]\nvk_present = fifo\n[language]\n  lang =  de\nfps60 = 0\n')
         self.assertEqual(ini.get_language(out), 'de')
+
+    def test_russian_is_not_offered(self):
+        # The game has no Russian text; asking for it gave a black screen (GitHub issue 107).
+        self.assertNotIn('ru', ini.LANGUAGES)
+        self.assertIn('ru', ini.DROPPED_LANGUAGES)
+        self.assertFalse(set(ini.DROPPED_LANGUAGES) & set(ini.LANGUAGES))
 
     def test_missing_section_is_added(self):
         self.assertEqual(ini.set_language('fps60 = 0\n', 'fr'), 'fps60 = 0\n\n[language]\nlang = fr\n')

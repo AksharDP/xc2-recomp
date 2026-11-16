@@ -88,7 +88,8 @@ def windows_ui_language():
 
 
 def default_game_language(ui):
-    return 'ru' if ui == 'ru' else 'en-US'
+    """en-US for every window language: the game has no Russian text, so a Russian window still installs English."""
+    return 'en-US'
 
 
 def gib(n):

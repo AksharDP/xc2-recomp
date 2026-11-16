@@ -53,7 +53,8 @@ int ov_handheld(void) {
     return (int)h;
 }
 
-// The Switch language for a BCP 47 tag; en-US for a language the game does not ship.
+// The Switch language for a BCP 47 tag; en-US for a language the game does not ship. Russian is one of those: XC2 has
+// no Russian text, and asking for it leaves the game on a black screen (GitHub issue 107).
 static const char *switch_language(const char *tag) {
     char lang[8] = "", region[4] = "", script[8] = "";
     size_t n = strcspn(tag, "-_");
@@ -73,9 +74,9 @@ static const char *switch_language(const char *tag) {
         p += k;
     }
     if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
-        !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
+        !strcmp(lang, "ko") || !strcmp(lang, "pt"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
-             : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : !strcmp(lang, "ko") ? "ko" : "pt";
+             : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ko") ? "ko" : "pt";
     if (!strcmp(lang, "fr")) return !strcmp(region, "CA") ? "fr-CA" : "fr";
     if (!strcmp(lang, "es")) return *region && strcmp(region, "ES") ? "es-419" : "es";
     if (!strcmp(lang, "zh"))
@@ -87,15 +88,16 @@ static const char *switch_language(const char *tag) {
     return "en-US";
 }
 
-// The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale).
+// The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale). XC2_LANG
+// takes every Switch code but ru, which the game does not ship (see switch_language).
 const char *ov_language(void) {
-    static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru",
+    static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt",
                                         "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
     const char *code = cfg_get("XC2_LANG");   // no fixed default: XC2_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
             if (!strcmp(code, codes[i])) return codes[i];
-        rt_fatal("XC2_LANG '%s' is not a Switch language code", code);
+        rt_fatal("XC2_LANG '%s' is not a Switch language code the game ships", code);
     }
     const char *tag = cfg_get("XC2_LOCALE");
     char sys[85] = "en-US";

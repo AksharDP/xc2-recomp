@@ -209,7 +209,7 @@ class FormTest(unittest.TestCase):
 
     def test_installed_folder_needs_only_itself(self):
         out = self.dir / 'out'
-        statefile.save(self._mkdir(out), statefile.empty('r0') | {'lang': 'ru'})
+        statefile.save(self._mkdir(out), statefile.empty('r0') | {'lang': 'de'})
         form = Form(dest=str(out))
         self.assertTrue(form.update_mode())
         self.assertEqual(form.problems(), [])
