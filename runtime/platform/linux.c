@@ -1208,13 +1208,6 @@ static void locale_tag(const char *const *names, int n, char *tag, size_t cap) {
     tag[k] = 0;
 }
 
-const char *plat_ui_language(void) {
-    static char tag[32];
-    static const char *const names[] = {"LC_ALL", "LC_MESSAGES", "LANG"};
-    if (!tag[0]) locale_tag(names, 3, tag, sizeof tag);
-    return tag;
-}
-
 const char *plat_user_locale(void) {
     static char tag[32];
     static const char *const names[] = {"LC_ALL", "LC_TIME", "LANG"};

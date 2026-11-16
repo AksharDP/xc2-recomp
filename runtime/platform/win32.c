@@ -1006,19 +1006,6 @@ size_t plat_getenv(const char *name, char *out, size_t cap) {
 
 uint32_t plat_thread_id(void) { return GetCurrentThreadId(); }
 
-const char *plat_ui_language(void) {
-    static char tag[LOCALE_NAME_MAX_LENGTH];
-    static int done;
-    if (!done) {
-        wchar_t w[LOCALE_NAME_MAX_LENGTH];
-        LCID lcid = GetUserDefaultUILanguage();
-        int n = LCIDToLocaleName(lcid, w, LOCALE_NAME_MAX_LENGTH, 0);
-        if (n <= 0 || !WideCharToMultiByte(CP_UTF8, 0, w, -1, tag, sizeof tag, NULL, NULL)) tag[0] = 0;
-        done = 1;
-    }
-    return tag;
-}
-
 const char *plat_user_locale(void) {
     static char tag[LOCALE_NAME_MAX_LENGTH];
     static int done;

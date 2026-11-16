@@ -862,36 +862,30 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English and Russian text, the software keyboard keeps its
-// game-language rows, and menu_text follows XC2_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has English text, the software keyboard has a row per game language
+// (each Switch code of ov_system.c maps to one), and the menu and overlay are English.
 static void probe_menu_text(void) {
-    static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko"};
-    for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
-        CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id), "menu text id %d lacks en or ru", id);
-        CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id), "menu text id %d is empty", id);
-    }
-    CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("ru", UI_TEXT_COUNT), "an id past the catalog gives text");
-    // other languages fall back to English for the menu, and keep their own keyboard texts
+    static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "zh-Hans", "zh-Hant", "ko"};
+    for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++)
+        CHECK(ui_text_defined("en", (UiTextId)id) && *ui_text_in("en", (UiTextId)id), "menu text id %d lacks English", id);
+    CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("en", UI_TEXT_COUNT), "an id past the catalog gives text");
+    // the other rows fall back to English for the menu and keep their own keyboard texts
     CHECK(!strcmp(ui_text_in("ja", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)), "ja menu text is not English");
-    CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
-          !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
+    CHECK(!strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") && !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK") &&
+          !strcmp(ui_text_in("ko", UI_SWKBD_OK), "확인"), "keyboard texts changed");
+    // every game language has its own keyboard row, and a dropped one (ru) falls back to English
+    static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "zh-TW", "en-GB", "fr-CA", "es-419"};
+    for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
+        CHECK(ui_text_defined(ui_text_lang(codes[i]), UI_SWKBD_OK), "no keyboard row for %s", codes[i]);
+    CHECK(!ui_text_defined("ru", UI_SWKBD_OK) && !strcmp(ui_text_in("ru", UI_SWKBD_OK), "OK"), "a Russian row is left");
     // language names: the same string in every row
     for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_KO; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
-    CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
     // the overlay formats keep their conversions
-    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f"),
+    CHECK(strstr(menu_text(UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(menu_text(UI_MENU_OV_MAX_MS), "%.1f"),
           "overlay format lost its conversion");
-    // menu_text follows the setting live
-    cfg_set("XC2_MENU_LANG", "ru");
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("ru", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=ru");
-    cfg_set("XC2_MENU_LANG", "en");
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
-    cfg_set("XC2_MENU_LANG", "");
-    const char *sys = plat_ui_language();
-    int ru = !strncmp(sys, "ru", 2);
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(ru ? "ru" : "en", UI_MENU_CONTINUE), "menu_text auto ignores the system language");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text is not English");
 }
 
 static void probe_main(Cpu *c) {

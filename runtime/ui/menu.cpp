@@ -252,10 +252,10 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
-// and Chinese language names merged in from a system font when there is one (each language is named in its own script).
+// Roboto Medium (Latin, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean and Chinese
+// language names merged in from a system font when there is one (each language is named in its own script).
 // Made again when the window height changes; the old texture goes after the queue is idle (CreateFontsTexture).
-static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
+static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
     {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
@@ -306,7 +306,7 @@ extern "C" void menu_vk_release(void) {
 // XC2_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (XC2_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. xc2.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -642,13 +642,6 @@ static void tab_controls(float scale) {
     binds_after_page();
 }
 
-static void tab_menu(float scale) {
-    opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("XC2_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
-    opt_end();
-}
-
 // ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
 static bool g_modal;   // the reset confirmation is open: B and Esc close it, not the menu; L / R stay on the page
 
@@ -924,8 +917,8 @@ static void tab_mods(float scale) {
 }
 
 static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,     UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,     UI_MENU_TAB_ADVANCED,
-                                              UI_MENU_TAB_MODS,     UI_MENU_TAB_CHEATS};
+                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,
+                                              UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -977,7 +970,6 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             case TAB_GAME: tab_game(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
-            case TAB_MENU: tab_menu(scale); break;
             case TAB_ADVANCED: tab_advanced(scale); break;
             case TAB_MODS: tab_mods(scale); break;
             case TAB_CHEATS: tab_cheats(scale); break;

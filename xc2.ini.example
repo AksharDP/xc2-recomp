@@ -183,9 +183,6 @@
 # game_langs = en-US en-GB fr fr-CA de it es es-419 ko
 # System mode reported to the game: docked or handheld.
 # operation_mode = docked
-# Language of the settings menu and the overlay: en or ru. Default: the Windows display language, English if it is
-# neither.
-# menu_lang = en
 
 [audio]
 # none mixes without opening an audio device.
