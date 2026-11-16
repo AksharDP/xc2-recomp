@@ -212,10 +212,11 @@ class IniTest(unittest.TestCase):
         self.assertEqual(out, '[display]\nvk_present = fifo\n[language]\n  lang =  de\nfps60 = 0\n')
         self.assertEqual(ini.get_language(out), 'de')
 
-    def test_russian_is_not_offered(self):
-        # The game has no Russian text; asking for it gave a black screen (GitHub issue 107).
-        self.assertNotIn('ru', ini.LANGUAGES)
-        self.assertIn('ru', ini.DROPPED_LANGUAGES)
+    def test_languages_without_text_are_not_offered(self):
+        # Neither release has Dutch, Portuguese or Russian text; asking for one gave a black screen (GitHub issue 107).
+        for code in ('nl', 'pt', 'pt-BR', 'ru'):
+            self.assertNotIn(code, ini.LANGUAGES)
+            self.assertIn(code, ini.DROPPED_LANGUAGES)
         self.assertFalse(set(ini.DROPPED_LANGUAGES) & set(ini.LANGUAGES))
 
     def test_missing_section_is_added(self):

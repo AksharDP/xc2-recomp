@@ -9,11 +9,12 @@ import os
 import re
 from pathlib import Path
 
-# runtime/ov_system.c: the codes XC2_LANG accepts. Russian is not one: the game has no Russian text (GitHub issue 107).
-LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'nl', 'pt', 'pt-BR', 'ko',
+# runtime/ov_system.c: the codes XC2_LANG accepts. Dutch, Portuguese and Russian are not among them: neither the US nor
+# the JP release has their text, and the game shows a black screen when asked for one (GitHub issue 107).
+LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'ko',
              'zh-CN', 'zh-TW', 'zh-Hans', 'zh-Hant')
 # Codes older installers offered; an update of an install recorded with one of them switches it to en-US.
-DROPPED_LANGUAGES = ('ru',)
+DROPPED_LANGUAGES = ('nl', 'pt', 'pt-BR', 'ru')
 # Their text falls back to the Switch shared fonts (runtime/ov_system.c), which the installer does not extract.
 NEED_SHARED_FONTS = ('ko', 'zh-CN', 'zh-TW', 'zh-Hans', 'zh-Hant')
 

@@ -109,7 +109,7 @@ static const CfgMeta metas[] = {
     {"CUTSCENE_30", "1", "1|mixed|0", RESTART},
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
-    {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
+    {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE},

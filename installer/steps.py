@@ -246,7 +246,7 @@ class Check(Step):
             raise InstallError('check.dest_not_empty', path=str(dest))
         lang = ctx.options.lang or ctx.state.get('lang')
         if not ctx.options.lang and lang in ini.DROPPED_LANGUAGES:
-            lang = 'en-US'   # an install recorded with a language the game lacks (ru) is updated to English
+            lang = 'en-US'   # an install recorded with a language the game lacks (nl, pt, ru) is updated to English
         if not lang:
             raise InstallError('check.lang_missing')
         if lang not in ini.LANGUAGES:
