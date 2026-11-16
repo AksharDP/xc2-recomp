@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "callcap.h"
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
@@ -591,7 +592,10 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
 static uint32_t *gen_chunk[GEN_CHUNKS];
 static uint32_t gen_now;                 // last generation handed out
 static PlatMutex gen_lock = PLAT_MUTEX_INIT;
-static uint64_t gen_pages[1024];
+// The written pages one query returns (gen_lock held): 64K pages, 256 MiB of them, so one call answers the ranges the
+// capture and the texture checks query.
+#define GEN_PAGES_CAP (1u << 16)
+static uint64_t *gen_pages;
 // The newest generation stamped on any page of each 2 MiB region (the write-watch snapshot regions below): the mirror
 // sync skips regions with nothing newer than its pool's mirror.
 #define REG_SHIFT 21
@@ -602,11 +606,22 @@ static uint32_t reg_max[RT_ADDRESS_LIMIT >> REG_SHIFT];
 static uint64_t ww_calls, ww_bytes, ww_ticks, ww_dirty_calls, ww_dirty_ticks, ww_pages;
 
 static uint64_t ww_query(uint64_t addr, uint64_t size) {
-    uint64_t t0 = qpc();
-    uint64_t n = mem_written_pages(addr, size, gen_pages, sizeof gen_pages / sizeof *gen_pages);
+    if (!gen_pages && !(gen_pages = malloc(GEN_PAGES_CAP * sizeof *gen_pages)))
+        rt_fatal("vk: out of memory for the write-watch query");
+    uint64_t t0 = qpc(), c0 = callcap_on() ? callcap_now() : 0;
+    uint64_t n = mem_written_pages(addr, size, gen_pages, GEN_PAGES_CAP);
     uint64_t dt = qpc() - t0;
     ww_ticks += dt, ww_calls++, ww_bytes += size;
     if (n && n != UINT64_MAX) ww_dirty_calls++, ww_dirty_ticks += dt, ww_pages += n;
+    if (c0 && n != UINT64_MAX) {   // XC2_CALLCAP (callcap.h CC_WWQUERY): the range and the pages found written in it
+        uint64_t ns = callcap_now() - c0;
+        static uint32_t *idx;   // gen_lock held
+        if (!idx && !(idx = malloc(GEN_PAGES_CAP * sizeof *idx))) return n;
+        for (uint64_t k = 0; k < n; k++) idx[k] = (uint32_t)((gen_pages[k] - addr) >> 12);
+        CcWwQuery q = {size, n, GEN_PAGES_CAP};
+        CcBlob b[2] = {{&q, sizeof q}, {idx, n * sizeof *idx}};
+        callcap_add(CC_WWQUERY, ns, b, 2);
+    }
     return n;
 }
 
@@ -666,21 +681,19 @@ static void stamp_range(uint64_t lo, uint64_t hi, uint32_t g) {
     for (uint64_t a = lo; a < hi; a += 1ull << GEN_PAGE_SHIFT) stamp_page(a, g);
 }
 
-// Write-watch query of [lo, hi), stamping its written pages with g (gen_lock held exclusively). One query returns at most
-// as many pages as gen_pages holds, and every call walks its whole range again. A range with more written pages than
-// that was walked once per gen_pages-full of them, so a load that wrote tens of thousands of pages in one range (the
-// title and load stalls of the mirror capture, 40-60 ms a frame) walked it dozens of times. The range goes in pieces of
-// QUERY_PIECE bytes instead: a piece holds at most 1024 pages, one call answers it, and nothing is walked twice.
-// 0 when the range is not write-watched.
-#define QUERY_PIECE (4ull << 20)
+// Write-watch query of [lo, hi), stamping its written pages with g (gen_lock held exclusively). One call over the whole
+// range: a call costs about 0.7 us on top of its walk, and the streaming captures queried a 654 MiB pool in 164 pieces of
+// 4 MiB (offline, 656 MiB with up to 2048 pages written: 0.82 instead of 0.93 ms). A call that fills gen_pages asks
+// again over the same range: the query resets the bits of the pages it returns and keeps the others, so the next call
+// returns the rest whatever order GetWriteWatch lists pages in (it does not document one). That walks the range again
+// only after 256 MiB were written. 0 when the range is not write-watched.
 static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
-    for (uint64_t c = lo; c < hi; c += QUERY_PIECE) {
-        uint64_t e = c + QUERY_PIECE < hi ? c + QUERY_PIECE : hi;
-        uint64_t n = ww_query(c, e - c);
+    for (;;) {
+        uint64_t n = ww_query(lo, hi - lo);
         if (n == UINT64_MAX) return 0;
         for (uint64_t k = 0; k < n; k++) stamp_page(gen_pages[k], g);
+        if (n < GEN_PAGES_CAP) return 1;
     }
-    return 1;
 }
 
 void vk_guest_written(uint64_t addr, uint64_t size) {

@@ -603,6 +603,19 @@ void vk_exec_image_gone(VkImage image) {
 typedef struct { uint64_t serial; int stage; int used; GfxShaderAnswers a; const GfxShader *s; } ShaderEnt;
 static ShaderEnt shader_tab[SHADER_SETS][SHADER_WAYS];
 
+// The code of stage entry i for the CPU to read: a released program's copy holds its own (VkProgCopy).
+static const uint8_t *stage_code(const prog_t *p, uint32_t i) {
+    return p->magic == VK_PROG_COPY_MAGIC ? ((const VkProgCopy *)p)->code[i] : (const uint8_t *)(uintptr_t)p->sd[i].data;
+}
+
+// The guest address of the code find_stage returned, which the GPU reads (through the submit-time captures).
+static uint64_t stage_code_addr(const prog_t *p, const uint8_t *code) {
+    if (p->magic == VK_PROG_COPY_MAGIC)
+        for (uint32_t i = 0; i < p->nstage && i < 6; i++)
+            if (((const VkProgCopy *)p)->code[i] == code) return p->sd[i].data;
+    return (uint64_t)(uintptr_t)code;
+}
+
 static int find_stage_scan(const prog_t *p, int nvn_stage, const uint8_t **ctl, const uint8_t **code, uint32_t *len) {
     for (uint32_t i = 0; i < p->nstage && i < 6; i++) {
         const uint8_t *c = p->sd[i].control;
@@ -611,7 +624,7 @@ static int find_stage_scan(const prog_t *p, int nvn_stage, const uint8_t **ctl, 
         memcpy(&st, c + 0x714, 4);
         if ((int)st != nvn_stage) continue;
         memcpy(len, c + 0x704, 4);
-        *ctl = c, *code = (const uint8_t *)(uintptr_t)p->sd[i].data;
+        *ctl = c, *code = stage_code(p, i);
         return 1;
     }
     return 0;
@@ -639,7 +652,7 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
     }
     int i = m->idx[nvn_stage];
     if (i < 0) return 0;
-    *ctl = p->sd[i].control, *code = (const uint8_t *)(uintptr_t)p->sd[i].data, *len = m->len[nvn_stage];
+    *ctl = p->sd[i].control, *code = stage_code(p, i), *len = m->len[nvn_stage];
     return 1;
 }
 
@@ -1108,7 +1121,20 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
-            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
+            uint64_t guest = stage_code_addr(ex->prog, code);
+            if (c1 < len && guest != (uint64_t)(uintptr_t)code) {
+                // A released program's copy (vk_prog_resolve): the game may have reused the guest code range since,
+                // so the constants come from the copied code, not from the range bind_range would read.
+                uint64_t n = len - c1 < max ? len - c1 : max;
+                VkBuffer buf;
+                VkDeviceSize off;
+                RS.volatile_ = 1;   // a new scratch offset per draw, as bind_range's copies
+                uint8_t *dst = scratch(ex, n, &buf, &off);
+                memcpy(dst, code + c1, n);
+                count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, n);
+                return (VkDescriptorBufferInfo){buf, off, n};
+            }
+            if (c1 < len && bind_range(ex, stage_code_addr(ex->prog, code) + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
                 return bi;
         }
     } else if (slot >= 3 && slot - 3 < 18) {
@@ -2991,7 +3017,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_BIND_PROGRAM: {
         const p_bind_program *b = payload;
-        ex->prog = b->prog, ex->prog_stages = b->stages;
+        ex->prog = vk_prog_resolve(b->prog), ex->prog_stages = b->stages;   // a released program's copy
         bind_gen++;
         break;
     }
