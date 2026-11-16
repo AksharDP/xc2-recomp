@@ -339,8 +339,6 @@ static inline char *plat_last_sep(const char *path) {
 }
 // Environment variable as UTF-8 into out; its length, or 0 when unset, empty or too long for cap.
 size_t plat_getenv(const char *name, char *out, size_t cap);
-// The user's UI language as a BCP-47 tag ("ru-RU", "en-US"); "" when the system gives none. Valid for the process.
-const char *plat_ui_language(void);
 // The user's regional format (locale) as a BCP-47 tag; "" when the system gives none. Valid for the process.
 const char *plat_user_locale(void);
 uint32_t plat_thread_id(void);                            // id of the calling thread, for unique file names

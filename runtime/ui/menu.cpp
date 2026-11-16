@@ -34,6 +34,7 @@ extern "C" {
 #include "ui_text.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+int ov_language_shipped(const char *code);   // ov.h (pulls in gfx.h)
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
@@ -251,9 +252,10 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic, dashes and quotes) at 26 px per 1080 lines, with the glyphs of the Japanese, Korean
-// and Chinese language names merged in from a system font when there is one (each language is named in its own script).
-// Made again when the window height changes; the old texture goes after the queue is idle (CreateFontsTexture).
+// Roboto Medium (Latin, Cyrillic for mod folder names, dashes and quotes) at 26 px per 1080 lines, with the glyphs of
+// the Japanese, Korean and Chinese language names merged in from a system font when there is one (each language is
+// named in its own script). Made again when the window height changes; the old texture goes after the queue is idle
+// (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
 static const struct { const char *lang; UiTextId name; } kCjk[] = {
     {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
@@ -305,7 +307,7 @@ extern "C" void menu_vk_release(void) {
 // XC2_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (XC2_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. xc2.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_ADVANCED, TAB_MODS, TAB_CHEATS, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -458,27 +460,30 @@ static void row_gpu(void) {
     opt_choice_list("XC2_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
 }
 
-// The game language: one entry per language XCX ships (a Switch code that names it), each under its own name. The
-// Switch's Portuguese is not among them.
+// The game language: one entry per language the installed game files have text for (ov_language_shipped, from
+// XC2_GAME_LANGS: the Americas and Europe release has English, French, German, Italian, Spanish and Korean, the
+// Japanese one Japanese and Chinese), each under its own name. A language the files lack left the game on a black
+// screen (GitHub issue 107); Dutch, Portuguese and Russian are in no release.
 static void row_game_lang(void) {
     static const struct { const char *code; UiTextId name; } langs[] = {
         {"en-US", UI_MENU_LANGNAME_EN}, {"ja", UI_MENU_LANGNAME_JA}, {"fr", UI_MENU_LANGNAME_FR},
         {"de", UI_MENU_LANGNAME_DE}, {"it", UI_MENU_LANGNAME_IT}, {"es", UI_MENU_LANGNAME_ES},
-        {"nl", UI_MENU_LANGNAME_NL}, {"ru", UI_MENU_LANGNAME_RU},
         {"zh-CN", UI_MENU_LANGNAME_ZH_HANS}, {"zh-TW", UI_MENU_LANGNAME_ZH_HANT}, {"ko", UI_MENU_LANGNAME_KO},
     };
-    enum { N = sizeof langs / sizeof *langs + 1 };
-    const char *vals[N], *names[N];
+    enum { MAX = sizeof langs / sizeof *langs + 1 };
+    const char *vals[MAX], *names[MAX];
     vals[0] = "";
     names[0] = menu_text(UI_MENU_GAME_LANG_AUTO);
     const char *now = cfg_value("XC2_LANG");
-    int cur = *now ? -1 : 0;
-    for (int i = 1; i < N; i++) {
-        vals[i] = langs[i - 1].code;
-        names[i] = menu_text(langs[i - 1].name);
-        if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[i]))) cur = i;   // en-GB is English too
+    int cur = *now ? -1 : 0, n = 1;
+    for (const auto &l : langs) {
+        if (!ov_language_shipped(l.code)) continue;
+        vals[n] = l.code;
+        names[n] = menu_text(l.name);
+        if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[n]))) cur = n;   // en-GB is English too
+        n++;
     }
-    opt_choice_list("XC2_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
+    opt_choice_list("XC2_LANG", UI_MENU_GAME_LANG, vals, names, n, UI_MENU_GAME_LANG_DESC, cur);
 }
 
 // The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.
@@ -636,13 +641,6 @@ static void tab_controls(float scale) {
     binds_rows(scale);
     opt_end();
     binds_after_page();
-}
-
-static void tab_menu(float scale) {
-    opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("XC2_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
-    opt_end();
 }
 
 // ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
@@ -920,8 +918,8 @@ static void tab_mods(float scale) {
 }
 
 static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_GAME,     UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,     UI_MENU_TAB_ADVANCED,
-                                              UI_MENU_TAB_MODS,     UI_MENU_TAB_CHEATS};
+                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_ADVANCED, UI_MENU_TAB_MODS,
+                                              UI_MENU_TAB_CHEATS};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
@@ -973,7 +971,6 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             case TAB_GAME: tab_game(scale); break;
             case TAB_SOUND: tab_sound(scale); break;
             case TAB_CONTROLS: tab_controls(scale); break;
-            case TAB_MENU: tab_menu(scale); break;
             case TAB_ADVANCED: tab_advanced(scale); break;
             case TAB_MODS: tab_mods(scale); break;
             case TAB_CHEATS: tab_cheats(scale); break;

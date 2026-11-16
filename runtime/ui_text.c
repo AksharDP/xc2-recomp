@@ -1,12 +1,9 @@
 // Catalog of the text the host shows the player (ui_text.h). One array per catalog language, indexed by UiTextId: a new
 // string gets an id in ui_text.h and an entry in every language that has one (a missing entry falls back to English).
-// The software keyboard has every language; the menu has English and Russian.
-#include <stdatomic.h>
+// The software keyboard has each game language (runtime/ov_system.c game_codes); the menu and the overlay are English.
 #include <string.h>
 
-#include "cfg.h"
 #include "ov.h"
-#include "platform/platform.h"
 #include "ui_text.h"
 
 typedef struct { const char *lang; const char *const *text; } Row;
@@ -15,7 +12,6 @@ typedef struct { const char *lang; const char *const *text; } Row;
 #define LANG_NAMES \
     [UI_MENU_LANGNAME_EN] = "English", [UI_MENU_LANGNAME_JA] = "日本語", [UI_MENU_LANGNAME_FR] = "Français", \
     [UI_MENU_LANGNAME_DE] = "Deutsch", [UI_MENU_LANGNAME_IT] = "Italiano", [UI_MENU_LANGNAME_ES] = "Español", \
-    [UI_MENU_LANGNAME_NL] = "Nederlands", [UI_MENU_LANGNAME_RU] = "Русский", \
     [UI_MENU_LANGNAME_ZH_HANS] = "简体中文", [UI_MENU_LANGNAME_ZH_HANT] = "繁體中文", [UI_MENU_LANGNAME_KO] = "한국어"
 
 // SWKBD: TITLE, PROMPT, DEFAULT_NAME (at most 9 UTF-16 units, no '@' '%' '\'), OK, CANCEL, PAD_HINT.
@@ -28,7 +24,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
 
     [UI_MENU_TITLE] = "Settings",
     [UI_MENU_TAB_SCREEN] = "Screen", [UI_MENU_TAB_GAME] = "Game", [UI_MENU_TAB_SOUND] = "Sound",
-    [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_MENU] = "Menu", [UI_MENU_TAB_ADVANCED] = "Advanced",
+    [UI_MENU_TAB_CONTROLS] = "Controls", [UI_MENU_TAB_ADVANCED] = "Advanced",
     [UI_MENU_CONTINUE] = "Continue", [UI_MENU_QUIT] = "Quit game",
     [UI_MENU_CAPTURE_FRAME] = "Capture frame", [UI_MENU_CAPTURE_CLIP] = "Record frames",
     [UI_MENU_CAPTURE_STOP] = "Stop recording", [UI_MENU_CAPTURE_OPEN] = "Open capture folder", [UI_MENU_CAPTURE_COPY] = "Copy capture folder path",
@@ -196,9 +192,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_PAD_LPADDLE2] = "Left back button 2", [UI_PAD_RPADDLE2] = "Right back button 2",
     [UI_PAD_CROSS] = "Cross", [UI_PAD_CIRCLE] = "Circle", [UI_PAD_SQUARE] = "Square", [UI_PAD_TRIANGLE] = "Triangle",
 
-    [UI_MENU_MENU_LANG] = "Menu language", [UI_MENU_MENU_LANG_DESC] = "Language of this menu and the overlay.",
-    [UI_MENU_MENU_LANG_AUTO] = "Automatic (from Windows)",
-
     [UI_MENU_ADV_WARNING] = "These settings are for testing and troubleshooting. Change them only when you know why.",
     [UI_MENU_GROUP_SCHED] = "Scheduling", [UI_MENU_GROUP_SHADERS] = "Shaders and pipelines",
     [UI_MENU_GROUP_TEXMEM] = "Textures and memory", [UI_MENU_GROUP_FIXES] = "Render fixes",
@@ -353,342 +346,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
 };
 
-static const char *const text_ru[UI_TEXT_COUNT] = {
-    SWKBD("Ввод текста", "Введите имя", "Лошадь", "ОК", "Отмена", "Контроллер: A — ОК, B — отмена"),
-
-    [UI_MENU_TITLE] = "Настройки",
-    [UI_MENU_TAB_SCREEN] = "Экран", [UI_MENU_TAB_GAME] = "Игра", [UI_MENU_TAB_SOUND] = "Звук",
-    [UI_MENU_TAB_CONTROLS] = "Управление", [UI_MENU_TAB_MENU] = "Меню", [UI_MENU_TAB_ADVANCED] = "Дополнительно",
-    [UI_MENU_CONTINUE] = "Продолжить", [UI_MENU_QUIT] = "Выйти из игры",
-    [UI_MENU_CAPTURE_FRAME] = "Снять кадр", [UI_MENU_CAPTURE_CLIP] = "Записать кадры",
-    [UI_MENU_CAPTURE_STOP] = "Остановить запись", [UI_MENU_CAPTURE_OPEN] = "Открыть папку съёмок", [UI_MENU_CAPTURE_COPY] = "Скопировать путь к папке съёмок",
-    [UI_MENU_GROUP_CAPTURE] = "Съёмка для отладки",
-    [UI_MENU_CAPTURE_HINT] = "«Снять кадр» сохраняет состояние рендерера и следующий кадр. «Записать кадры» продолжает до остановки. Всё пишется в папку captures; воспроизведение: xc2.exe --replay <папка>.",
-    [UI_MENU_ON] = "Вкл.", [UI_MENU_OFF] = "Выкл.", [UI_MENU_AUTO] = "Автоматически",
-    [UI_MENU_DEFAULT_MARK] = "по умолчанию",
-    [UI_MENU_AFTER_RESTART] = "после перезапуска", [UI_MENU_SET_BY_ENV] = "задано переменной окружения",
-    [UI_MENU_SAVE_FAILED] = "не удалось сохранить настройки",
-    [UI_MENU_VERSION] = "XC2 Recomp %s, игра %s",
-
-    [UI_MENU_FULLSCREEN] = "Полный экран", [UI_MENU_FULLSCREEN_DESC] = "Игра на весь экран; F11 переключает режим.",
-    [UI_MENU_WINDOW_SIZE] = "Размер окна", [UI_MENU_WINDOW_SIZE_DESC] = "Размер окна игры вне полноэкранного режима.",
-    [UI_MENU_WINDOW_SIZE_CUSTOM] = "Другой",
-    [UI_MENU_PRESENT] = "Вывод кадров", [UI_MENU_PRESENT_DESC] = "Как готовые кадры попадают на экран.",
-    [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "Вертикальная синхронизация",
-    [UI_MENU_PRESENT_IMMEDIATE] = "Без ожидания",
-    [UI_MENU_PRESENT_IN_USE] = "сейчас: %s",
-    [UI_MENU_GPU] = "Видеокарта", [UI_MENU_GPU_DESC] = "Устройство Vulkan, которое рисует игру.",
-    [UI_MENU_GPU_AUTO] = "Автоматически",
-    [UI_MENU_PERF_OVERLAY] = "Индикатор производительности",
-    [UI_MENU_PERF_OVERLAY_DESC] = "Частота кадров в правом верхнем углу. «Полный» добавляет время кадров с графиком, "
-                                  "загрузку ЦП, GPU и памяти, температуры и ожидания потока отрисовки. F10 переключает "
-                                  "режимы.",
-    [UI_MENU_PERF_OFF] = "Выкл.", [UI_MENU_PERF_FPS] = "FPS", [UI_MENU_PERF_FULL] = "Полный",
-    [UI_PERF_LINE_FPS] = "%.0f к/с", [UI_PERF_LINE_FPS_FG] = "%.0f / %.0f к/с",
-    [UI_MENU_GRAPHICS] = "Изображение",
-    [UI_MENU_OUTPUT_RES] = "Разрешение игры",
-    [UI_MENU_OUTPUT_RES_DESC] = "Размер, в котором игра рисует картинку и интерфейс; свой у игры 1280 × 720. Выше него игре нужно больше "
-                                "видеопамяти и времени GPU.",
-    [UI_MENU_RENDER_SCALE] = "Масштаб 3D-отрисовки",
-    [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; игра растягивает её до этого размера. "
-                                  "«Как в игре» оставляет его динамическому разрешению игры (от 70 до 100 %); процент "
-                                  "фиксирует его. "
-                                  "Для суперсэмплинга задайте разрешение игры выше разрешения окна. Применяется после "
-                                  "перезапуска.",
-    [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (динамически)",
-    [UI_MENU_UPSCALER] = "Масштабирование под окно",
-    [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR сохраняет края и "
-                              "детали чётче билинейного.",
-    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Билинейное",
-    [UI_MENU_PICTURE_FIT] = "Пропорции картинки",
-    [UI_MENU_PICTURE_FIT_DESC] = "Когда форма окна отличается от формы разрешения игры (игра 16:9 на экране Steam Deck "
-                                 "16:10), сохранять пропорции картинки с чёрными полосами или растягивать её на всё окно.",
-    [UI_MENU_PICTURE_FIT_KEEP] = "Сохранять (полосы)", [UI_MENU_PICTURE_FIT_STRETCH] = "Растягивать",
-    [UI_MENU_SHARPNESS] = "Резкость FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
-    [UI_MENU_FSR3] = "AMD FSR",
-    [UI_MENU_FSR3_DESC] = "Заменяет временное сглаживание и масштабирование игры на AMD FSR, который поднимает "
-                          "пониженный масштаб 3D до разрешения игры. Нужны файлы amd_fidelityfx_loader_vk.dll и "
-                          "amd_fidelityfx_upscaler_vk.dll рядом с игрой либо более старый amd_fidelityfx_vk.dll.",
-    [UI_MENU_FSR_VERSION] = "Версия FSR",
-    [UI_MENU_FSR_VERSION_DESC] = "Какой апскейлер запросить у библиотеки AMD. «Авто» берёт самый новый, который "
-                                  "поддерживают видеокарта и драйвер: FSR Upscaling 4.1 на Radeon RX 6000 и новее со "
-                                  "свежим драйвером, иначе FSR 3.1.",
-    [UI_MENU_FSR_VERSION_AUTO] = "Авто", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
-    [UI_MENU_FRAME_GEN] = "Генерация кадров FSR",
-    [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation показывает промежуточный кадр между двумя нарисованными, и "
-                               "экран идёт примерно вдвое быстрее. Нужен включённый AMD FSR: из него берутся глубина, "
-                               "векторы движения и картинка без интерфейса; частоту кадров ставьте около половины "
-                               "частоты экрана. По умолчанию выключено.",
-
-    [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
-    [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду; часы игры идут по нему. По умолчанию 120. Выше 60 — экспериментальный "
-                               "режим.",
-    [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
-    [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
-    [UI_MENU_FPS_DISPLAY] = "Как у монитора", [UI_MENU_FPS_DISPLAY_HZ] = "Как у монитора (%.0f Гц)",
-    [UI_MENU_CUTSCENE_FPS] = "Частота кадров в роликах",
-    [UI_MENU_CUTSCENE_FPS_DESC] = "30 кадров: все ролики в 30, как на консоли. Смешанно: большинство игровых роликов с "
-                                  "ограничением частоты кадров, остальные и видео в 30. Ограничение: все ролики с "
-                                  "ограничением (экспериментально). Действует после перезапуска.",
-    [UI_MENU_CUTSCENE_30] = "30 кадров", [UI_MENU_CUTSCENE_MIXED] = "Смешанно", [UI_MENU_CUTSCENE_LIMIT] = "Ограничение",
-    [UI_MENU_REALTIME] = "Скорость игры по часам",
-    [UI_MENU_REALTIME_DESC] = "Игра идёт по реальному времени, медленный кадр её не замедляет.",
-    [UI_MENU_CLOTH_REALTIME] = "Ткань по часам",
-    [UI_MENU_CLOTH_REALTIME_DESC] = "Ткань и волосы тоже идут по реальному времени.",
-    [UI_MENU_HIGHFPS_FIX] = "Исправление физики на высоком FPS",
-    [UI_MENU_HIGHFPS_FIX_DESC] = "Исправляет физику, которая ломается при частоте выше 30 кадров в секунду.",
-    [UI_MENU_GAME_LANG] = "Язык игры", [UI_MENU_GAME_LANG_DESC] = "Язык текста и озвучки игры.",
-    [UI_MENU_GAME_LANG_AUTO] = "Автоматически",
-    [UI_MENU_OPERATION_MODE] = "Режим консоли",
-    [UI_MENU_OPERATION_MODE_DESC] = "Игра считает, что консоль в док-станции или в портативном режиме.",
-    [UI_MENU_MODE_DOCKED] = "В док-станции", [UI_MENU_MODE_HANDHELD] = "Портативный",
-
-    [UI_MENU_VOLUME] = "Громкость", [UI_MENU_VOLUME_DESC] = "Общая громкость игры.",
-
-    [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
-    [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
-    [UI_MENU_RUMBLE_STRENGTH_DESC] = "Насколько сильно вибрирует контроллер.",
-    [UI_MENU_RUMBLE_CURVE] = "Кривая вибрации",
-    [UI_MENU_RUMBLE_CURVE_DESC] = "Чем ниже значение, тем сильнее слабая вибрация.",
-    [UI_MENU_RUMBLE_TRIGGERS] = "Вибрация триггеров (Xbox)",
-    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Вибрация и в триггерах контроллера Xbox.",
-    [UI_MENU_PAD_LAYOUT] = "Раскладка кнопок",
-    [UI_MENU_PAD_LAYOUT_DESC] = "Какая кнопка работает как A. Nintendo: правая, как на Switch. Xbox: нижняя, как "
-                                "подписано на контроллере Xbox (крест на контроллере PlayStation). Автоматически: "
-                                "Nintendo для контроллеров с подписями Nintendo, Xbox для остальных.",
-    [UI_MENU_PAD_LAYOUT_AUTO] = "Автоматически", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (A справа)",
-    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A снизу)", [UI_MENU_PAD_LAYOUT_IN_USE] = "сейчас: %s",
-    [UI_MENU_PROMPTS] = "Подсказки кнопок",
-    [UI_MENU_PROMPTS_DESC] = "Какие кнопки игра показывает в тексте и меню. Автоматически: по подключённому "
-                             "контроллеру (клавиатура, если его нет). Xbox и PlayStation следуют раскладке кнопок. "
-                             "Нужно установленное дополнительное содержимое. Применяется при следующем запуске.",
-    [UI_MENU_PROMPTS_AUTO] = "Автоматически", [UI_MENU_PROMPTS_SWITCH] = "Switch (как в игре)",
-    [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_KEYBOARD] = "Клавиатура",
-    [UI_MENU_LSTICK_DEADZONE] = "Мёртвая зона левого стика", [UI_MENU_RSTICK_DEADZONE] = "Мёртвая зона правого стика",
-    [UI_MENU_STICK_DEADZONE_DESC] = "Насколько нужно отклонить стик геймпада, чтобы игра это заметила. Увеличьте, если персонаж или камера двигаются сами: отпустите стик, посмотрите «стик сейчас» и поставьте мёртвую зону на несколько процентов выше.",
-    [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
-    [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
-    [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
-    [UI_MENU_WALK_KEY] = "Клавиша шага",
-    [UI_MENU_WALK_KEY_DESC] = "Удерживайте: стики клавиатуры отклоняются частично, и персонаж идёт, а не бежит. "
-                              "Насколько — задаёт сила шага. Контроллер и мышь не затрагиваются.",
-    [UI_MENU_WALK_KEY_TAKEN] = "также %s",
-    [UI_MENU_WALK_SCALE] = "Сила шага",
-    [UI_MENU_WALK_SCALE_DESC] = "Отклонение стиков клавиатуры при удержании клавиши шага. Половина — шаг, полное "
-                                "отклонение — бег.",
-
-    [UI_BINDS_HELP] = "Выберите ячейку и нажмите A или Enter, затем клавишу, кнопку мыши или кнопку контроллера. "
-                      "Delete или X очищает ячейку. Занятая клавиша переходит сюда; кнопка контроллера меняется "
-                      "местами с той, которую заменяет.",
-    [UI_BINDS_COL_KEY1] = "Клавиша 1", [UI_BINDS_COL_KEY2] = "Клавиша 2", [UI_BINDS_COL_PAD] = "Контроллер",
-    [UI_BINDS_GROUP_BUTTONS] = "Кнопки", [UI_BINDS_GROUP_MOVE] = "Движение", [UI_BINDS_GROUP_CAMERA] = "Камера",
-    [UI_BINDS_PRESS_KEY] = "Нажмите клавишу или кнопку мыши для «%s»",
-    [UI_BINDS_PRESS_PAD] = "Нажмите кнопку контроллера для «%s»",
-    [UI_BINDS_CANCEL_HINT] = "Esc отменяет, или подождите %d с",
-    [UI_BINDS_TAKEN] = "%s: убрано с «%s»", [UI_BINDS_SWAPPED] = "«%s» и «%s» поменялись местами",
-    [UI_BINDS_RESET] = "Сбросить все кнопки",
-    [UI_BINDS_RESET_DESC] = "Вернуть клавиши и кнопки контроллера по умолчанию. Снова действует раскладка кнопок выше: "
-                            "переназначенные кнопки контроллера остаются на своих местах до "
-                            "этого сброса.",
-    [UI_BIND_A] = "A", [UI_BIND_B] = "B", [UI_BIND_X] = "X", [UI_BIND_Y] = "Y",
-    [UI_BIND_LCLICK] = "Нажатие левого стика", [UI_BIND_RCLICK] = "Нажатие правого стика", [UI_BIND_L] = "L",
-    [UI_BIND_R] = "R", [UI_BIND_ZL] = "ZL", [UI_BIND_ZR] = "ZR", [UI_BIND_PLUS] = "Плюс", [UI_BIND_MINUS] = "Минус",
-    [UI_BIND_LEFT] = "Крестовина влево", [UI_BIND_UP] = "Крестовина вверх", [UI_BIND_RIGHT] = "Крестовина вправо",
-    [UI_BIND_DOWN] = "Крестовина вниз",
-    [UI_BIND_LSTICK_LEFT] = "Влево", [UI_BIND_LSTICK_UP] = "Вперёд", [UI_BIND_LSTICK_RIGHT] = "Вправо",
-    [UI_BIND_LSTICK_DOWN] = "Назад",
-    [UI_BIND_RSTICK_LEFT] = "Камера влево", [UI_BIND_RSTICK_UP] = "Камера вверх",
-    [UI_BIND_RSTICK_RIGHT] = "Камера вправо", [UI_BIND_RSTICK_DOWN] = "Камера вниз",
-    [UI_BIND_DESC_A] = "Взаимодействие, подобрать, поговорить.", [UI_BIND_DESC_B] = "Бег, отмена, назад.",
-    [UI_BIND_DESC_X] = "Прыжок.", [UI_BIND_DESC_Y] = "Атака.", [UI_BIND_DESC_LCLICK] = "Присесть.",
-    [UI_BIND_DESC_RCLICK] = "Вид от первого лица.", [UI_BIND_DESC_L] = "Способности.",
-    [UI_BIND_DESC_R] = "Бросок оружия.", [UI_BIND_DESC_ZL] = "Щит, захват цели.", [UI_BIND_DESC_ZR] = "Лук.",
-    [UI_BIND_DESC_PLUS] = "Меню, инвентарь.", [UI_BIND_DESC_MINUS] = "Карта.",
-    [UI_BIND_DESC_DPAD] = "Быстрый выбор.",
-    [UI_BIND_DESC_MOVE] = "Двигает Линка, как левый стик. Левый стик контроллера тоже всегда работает.",
-    [UI_BIND_DESC_CAMERA] = "Поворачивает камеру, как правый стик. Мышь и правый стик контроллера тоже всегда "
-                            "работают.",
-    [UI_KEY_SPACE] = "Пробел", [UI_KEY_TAB] = "Tab", [UI_KEY_LSHIFT] = "Левый Shift", [UI_KEY_LCTRL] = "Левый Ctrl",
-    [UI_KEY_UP] = "Стрелка вверх", [UI_KEY_DOWN] = "Стрелка вниз", [UI_KEY_LEFT] = "Стрелка влево",
-    [UI_KEY_RIGHT] = "Стрелка вправо",
-    [UI_KEY_MOUSE_L] = "ЛКМ", [UI_KEY_MOUSE_R] = "ПКМ", [UI_KEY_MOUSE_M] = "СКМ", [UI_KEY_MOUSE_X1] = "Мышь 4",
-    [UI_KEY_MOUSE_X2] = "Мышь 5",
-    [UI_KEY_ENTER] = "Enter", [UI_KEY_BACKSPACE] = "Backspace", [UI_KEY_RSHIFT] = "Правый Shift",
-    [UI_KEY_RCTRL] = "Правый Ctrl", [UI_KEY_LALT] = "Alt", [UI_KEY_CAPSLOCK] = "Caps Lock", [UI_KEY_INSERT] = "Insert",
-    [UI_KEY_DELETE] = "Delete", [UI_KEY_HOME] = "Home", [UI_KEY_END] = "End", [UI_KEY_PAGEUP] = "Page Up",
-    [UI_KEY_PAGEDOWN] = "Page Down", [UI_KEY_NUM_FMT] = "Num %s",
-    [UI_PAD_SOUTH] = "Нижняя кнопка", [UI_PAD_EAST] = "Правая кнопка", [UI_PAD_WEST] = "Левая кнопка",
-    [UI_PAD_NORTH] = "Верхняя кнопка", [UI_PAD_LSTICK] = "Левый стик", [UI_PAD_RSTICK] = "Правый стик",
-    [UI_PAD_L] = "Левый бампер", [UI_PAD_R] = "Правый бампер", [UI_PAD_START] = "Start", [UI_PAD_BACK] = "Back",
-    [UI_PAD_DPAD_LEFT] = "Крестовина влево", [UI_PAD_DPAD_UP] = "Крестовина вверх",
-    [UI_PAD_DPAD_RIGHT] = "Крестовина вправо", [UI_PAD_DPAD_DOWN] = "Крестовина вниз", [UI_PAD_ZL] = "Левый курок",
-    [UI_PAD_ZR] = "Правый курок",
-    [UI_PAD_LPADDLE1] = "Левая задняя кнопка", [UI_PAD_RPADDLE1] = "Правая задняя кнопка",
-    [UI_PAD_LPADDLE2] = "Левая задняя кнопка 2", [UI_PAD_RPADDLE2] = "Правая задняя кнопка 2",
-    [UI_PAD_CROSS] = "Крест", [UI_PAD_CIRCLE] = "Круг", [UI_PAD_SQUARE] = "Квадрат", [UI_PAD_TRIANGLE] = "Треугольник",
-
-    [UI_MENU_MENU_LANG] = "Язык меню", [UI_MENU_MENU_LANG_DESC] = "Язык этого меню и индикатора.",
-    [UI_MENU_MENU_LANG_AUTO] = "Автоматически (из Windows)",
-
-    [UI_MENU_ADV_WARNING] = "Эти настройки нужны для тестов и поиска неполадок. Меняйте их, только если знаете зачем.",
-    [UI_MENU_GROUP_SCHED] = "Планирование", [UI_MENU_GROUP_SHADERS] = "Шейдеры и конвейеры",
-    [UI_MENU_GROUP_TEXMEM] = "Текстуры и память", [UI_MENU_GROUP_FIXES] = "Исправления графики",
-    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "Диагностика",
-    [UI_MENU_ASYNC_PREEMPT] = "Вытеснение на виртуальных ядрах",
-    [UI_MENU_ASYNC_PREEMPT_DESC] = "Позволяет потоку игры прервать другой поток на том же виртуальном ядре.",
-    [UI_MENU_PREEMPT_OFF] = "Выкл.", [UI_MENU_PREEMPT_ON] = "Вкл.", [UI_MENU_PREEMPT_INHERIT] = "Только наследование",
-    [UI_MENU_REPLAY_ASYNC] = "Подготовка кадра для GPU в отдельном потоке",
-    [UI_MENU_REPLAY_ASYNC_DESC] = "Кадр для GPU готовится в отдельном потоке, а не в потоке игры. Добавляет до одного кадра задержки. Если не задано, включено только там, где буферы GPU копируются при отправке.",
-    [UI_MENU_FREE_CORES] = "Ограничение виртуальных ядер",
-    [UI_MENU_FREE_CORES_DESC] = "На каждом виртуальном ядре работает один поток, как на консоли.",
-    [UI_MENU_CORE_FLOAT] = "Распределять потоки ядра 1",
-    [UI_MENU_CORE_FLOAT_DESC] = "Рабочие потоки, которые игра закрепляет за виртуальным ядром 1, могут работать на любом "
-                                "свободном виртуальном ядре. Сглаживает замедление при загрузке области, например при "
-                                "входе в город или выходе из него. Экспериментально.",
-    [UI_MENU_TIMER_1MS] = "Таймер Windows 1 мс",
-    [UI_MENU_TIMER_1MS_DESC] = "Повышает точность системного таймера до 1 мс для ровного темпа кадров.",
-    [UI_MENU_PIPE_WAIT] = "Обработка ожидающих отрисовок",
-    [UI_MENU_PIPE_WAIT_DESC] = "«По умолчанию» — текущее планирование с отдельным потоком для ожидающих отрисовок; «Старый способ» — прежнее планирование.",
-    [UI_MENU_PIPE_WAIT_DEFAULT] = "По умолчанию", [UI_MENU_PIPE_WAIT_DRAW] = "Старый способ",
-    [UI_MENU_PIPE_SKIP] = "Пропуск отрисовок при сборке конвейера",
-    [UI_MENU_PIPE_SKIP_DESC] = "Какие отрисовки отбрасываются, а не ждут свой конвейер.",
-    [UI_MENU_PIPE_SKIP_STRICT] = "Строго", [UI_MENU_PIPE_SKIP_ANY] = "Любые",
-    [UI_MENU_PIPE_SKIP_FULLSCREEN] = "Полноэкранные проходы",
-    [UI_MENU_LIB_PREBUILD] = "Предсборка библиотек стадий",
-    [UI_MENU_LIB_PREBUILD_DESC] = "Заранее собирает библиотеки стадий шейдеров в фоне.",
-    [UI_MENU_LIB_PREBUILD_THREADS] = "Потоки предсборки библиотек",
-    [UI_MENU_LIB_PREBUILD_THREADS_DESC] = "Сколько потоков занято предсборкой; «Автоматически» — по числу ядер процессора.",
-    [UI_MENU_PIPE_PREBUILD] = "Предсборка конвейеров",
-    [UI_MENU_PIPE_PREBUILD_DESC] = "Заранее собирает известные конвейеры.",
-    [UI_MENU_PREWARM_XLATE] = "Прогрев транслятора",
-    [UI_MENU_PREWARM_XLATE_DESC] = "Потоки, которые при запуске переводят известные шейдеры; «Автоматически» — половина потоков процессора, не больше 16.",
-    [UI_MENU_GPL] = "Библиотека графических конвейеров",
-    [UI_MENU_GPL_DESC] = "Использует расширение Vulkan для библиотек конвейеров; выключите, если драйвер с ним сбоит.",
-    [UI_MENU_ASTC] = "Распаковка текстур ASTC", [UI_MENU_ASTC_DESC] = "Где распаковываются сжатые текстуры ASTC.",
-    [UI_MENU_ASTC_AUTO] = "Автоматически", [UI_MENU_ASTC_GPU] = "Шейдер GPU", [UI_MENU_ASTC_NATIVE] = "Аппаратно",
-    [UI_MENU_ASTC_CPU] = "Процессор",
-    [UI_MENU_MEMORY] = "Режим памяти GPU", [UI_MENU_MEMORY_DESC] = "Как память игры передаётся видеокарте.",
-    [UI_MENU_MEMORY_AUTO] = "Автоматически", [UI_MENU_MEMORY_IMPORT] = "Импорт", [UI_MENU_MEMORY_MIRROR] = "Зеркало",
-    [UI_MENU_MEMORY_VERIFY] = "Проверка",
-    [UI_MENU_TEX_ALIAS] = "Наследование содержимого текстур", [UI_MENU_TEX_ALIAS_DESC] = "Новая текстура поверх памяти живой текстуры получает её содержимое, а не пустую.",
-    [UI_MENU_LOD_GUARD] = "Защита LOD", [UI_MENU_LOD_GUARD_DESC] = "Не даёт объектам мелькать не на своём месте, а дальнему плану — на кадр становиться плоским: ждёт, пока игра допишет данные уровней детализации, и только потом их читает GPU.",
-    [UI_MENU_FIX_C0] = "Исправление константного буфера",
-    [UI_MENU_FIX_C0_DESC] = "Заполняет зарезервированный драйвером банк констант c0 (размеры хранилищ, размер запуска, размер точки, базовый экземпляр) вместо чтения нулей.",
-    [UI_MENU_FIX_ZERO] = "Обнулять новую память GPU",
-    [UI_MENU_FIX_ZERO_DESC] = "Новые пулы памяти GPU заполняются нулями, как память Switch.",
-    [UI_MENU_BIND_SKIP] = "Пропуск повторных привязок",
-    [UI_MENU_BIND_SKIP_DESC] = "Оптимизация: пропускает неизменившиеся привязки.",
-    [UI_MENU_SHADER_MEMO] = "Память шейдеров", [UI_MENU_SHADER_MEMO_DESC] = "Оптимизация: запоминает поиск шейдеров.",
-    [UI_MENU_PIPE_MEMO] = "Память конвейера", [UI_MENU_PIPE_MEMO_DESC] = "Оптимизация: повторяет конвейер прошлой отрисовки, если её состояние не изменилось.",
-    [UI_MENU_TEX_MEMO] = "Память привязок текстур", [UI_MENU_TEX_MEMO_DESC] = "Оптимизация: запоминает дескрипторы текстур между отрисовками.",
-    [UI_MENU_DESC_TEMPLATE] = "Шаблоны дескрипторов",
-    [UI_MENU_DESC_TEMPLATE_DESC] = "Оптимизация: обновляет дескрипторы пачками.",
-    [UI_MENU_PUSH_SKIP] = "Пропуск повторных push-констант",
-    [UI_MENU_PUSH_SKIP_DESC] = "Оптимизация: пропускает неизменившиеся push-константы.",
-    [UI_MENU_SPLIT_DRAWS] = "Ранняя отправка работы GPU",
-    [UI_MENU_SPLIT_DRAWS_DESC] = "Отправляет работу GPU частями через каждые N отрисовок между проходами, чтобы GPU начинал раньше; 0 — выключено.",
-    [UI_MENU_VK_VALIDATION] = "Слой проверки",
-    [UI_MENU_VK_VALIDATION_DESC] = "Проверяет каждый вызов Vulkan и сильно замедляет игру.",
-    [UI_MENU_VK_VALIDATION_MISSING] = "Слой проверки не установлен.",
-    [UI_MENU_VK_DYN_VERTEX] = "Динамическое состояние вершин",
-    [UI_MENU_VK_DYN_VERTEX_DESC] = "Принудительно включает или выключает динамический ввод вершин; по умолчанию зависит от GPU.",
-    [UI_MENU_VK_DYN_A2C] = "Динамический alpha to coverage",
-    [UI_MENU_VK_DYN_A2C_DESC] = "Принудительно включает или выключает динамический alpha to coverage. По умолчанию "
-                                "выключен на драйвере AMD для RDNA 2 и более старых GPU, который применяет alpha to "
-                                "coverage, даже когда он выключен, и включён на остальных.",
-    [UI_MENU_VK_SUBGROUP_PIN] = "Фиксировать размер подгруппы",
-    [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Фиксирует размер подгруппы шейдера.",
-    [UI_MENU_TRACE] = "Журнал производительности", [UI_MENU_TRACE_DESC] = "Пишет время кадров в файл.",
-    [UI_MENU_FLIGHT] = "Запись последних кадров (для отчёта о фризе)",
-    [UI_MENU_FLIGHT_DESC] = "Хранит короткую историю и сохраняет её, когда кадр подвисает.",
-    [UI_MENU_FLIGHT_SPIKE_MS] = "Порог подвисания (мс)",
-    [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Время кадра, которое считается подвисанием.",
-    [UI_MENU_INPUT_RECORD] = "Запись ввода",
-    [UI_MENU_INPUT_RECORD_DESC] = "Пишет ваш ввод в файл для отчёта об ошибке.",
-    [UI_MENU_OPEN_LOG] = "Открыть папку журналов", [UI_MENU_OPEN_LOG_COPY] = "Скопировать путь к папке журналов", [UI_MENU_OPEN_LOG_DESC] = "Показывает папку с файлами журнала.",
-    [UI_MENU_COPY_INFO] = "Копировать сведения о системе",
-    [UI_MENU_COPY_INFO_DESC] = "Копирует в буфер обмена видеокарту, драйвер, процессор, память и изменённые настройки.",
-    [UI_MENU_COPY_INFO_DONE] = "Скопировано", [UI_MENU_ACTION_FAILED] = "не получилось",
-    [UI_MENU_RESET] = "Сбросить все настройки", [UI_MENU_RESET_DESC] = "Действует на все вкладки.",
-    [UI_MENU_RESET_CONFIRM] = "Сбросить все настройки к значениям по умолчанию?", [UI_MENU_RESET_YES] = "Сбросить",
-    [UI_MENU_RESET_NO] = "Отмена",
-
-    [UI_MENU_TAB_MODS] = "Моды", [UI_MENU_MODS_INSTALLED] = "Установленные моды",
-    [UI_MENU_MODS_NONE] = "Модов пока нет. Распакуйте мод в папку mods, каждый мод в свою папку, как их берут "
-                          "эмуляторы (romfs, exefs, cheats или папка atmosphere мода для SD-карты), и перезапустите игру.",
-    [UI_MENU_MODS_OPEN] = "Открыть папку модов",
-    [UI_MENU_MODS_OPEN_DESC] = "Показывает папку, из которой игра загружает моды. Если её нет, она будет создана.",
-    [UI_MENU_MODS_ROW_DESC] = "Заменяет файлов игры: %u. Добавляет новых файлов: %u.",
-    [UI_MENU_MODS_OVERRIDDEN] = "%u его файлов берутся из мода %s, он выше в списке.",
-    [UI_MENU_MODS_MOVE_HINT] = "Верхняя кнопка или Ctrl+Вверх поднимает мод, левая кнопка или Ctrl+Вниз опускает. Если "
-                               "два мода меняют один файл, побеждает верхний. Изменения действуют после перезапуска.",
-    [UI_MENU_MODS_EMPTY] = "В этой папке нет файлов romfs, exefs или cheats.",
-    [UI_MENU_MODS_SUBSDK] = "Этот мод приносит свой код игры (плагин subsdk или заменённый main). Порт не загружает "
-                            "модули кода, поэтому весь мод остаётся выключенным.",
-    [UI_MENU_MODS_EXEFS_LATER] = "Этот мод меняет код игры (exefs), а игра собрана без этих патчей. Запустите установку "
-                                 "ещё раз, чтобы собрать их; до тех пор весь мод остаётся выключенным.",
-    [UI_MENU_MODS_BAD_NAME] = "В имени папки есть символ |, которым список модов разделяет имена. Переименуйте папку.",
-    [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "Этот мод меняет код игры (exefs) так, как порт применить не может, поэтому мод "
-                                       "остаётся выключенным целиком. %s",
-    [UI_MENU_MODS_EXEFS_OTHER] = "Его патчи кода (exefs) сделаны для другой версии игры.",
-    [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
-    [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
-                                      "который остаётся выключенным, пока мод включён.",
-    [UI_MENU_MODS_OTHER_VERSION] = "Файлов патчей кода для другой версии игры: %u, они пропущены.",
-    [UI_MENU_MODS_UNUSED] = "не используется",
-    [UI_MENU_MODS_CHEATS] = "Читов: %d. Они включаются на вкладке «Читы».",
-    [UI_MENU_MODS_CHEATS_FILE] = "Читы для этой версии игры читаются при запуске из cheats\\%s в этом моде.",
-    [UI_MENU_TAB_CHEATS] = "Читы",
-    [UI_MENU_CHEATS_NONE] = "Для этой версии игры читов нет. Читы мода — это файл читов Atmosphere в его папке cheats с "
-                            "именем по сборке игры: %s. После добавления перезапустите игру.",
-    [UI_MENU_CHEATS_MOD] = "%s — читов: %d",
-    [UI_MENU_CHEATS_UNBUILT] = "Некоторые читы или патчи кода ваших модов меняют код игры и не собраны в неё. "
-                               "Запустите установку на эту папку ещё раз, чтобы собрать их.",
-    [UI_MENU_CHEAT_CODE_DESC] = "Меняет код игры. Включается и выключается сразу.",
-    [UI_MENU_CHEAT_KEY_DESC] = "Меняет код игры, пока вы держите %s. Включается и выключается сразу.",
-    [UI_MENU_CHEAT_DATA_DESC] = "Пока включён, записывает память игры каждый кадр.",
-    [UI_MENU_CHEAT_MASTER] = "всегда вкл.", [UI_MENU_CHEAT_MASTER_DESC] = "Главный код файла: включён всегда.",
-    [UI_MENU_CHEAT_RESTORE] = "не нужен",
-    [UI_MENU_CHEAT_RESTORE_DESC] = "Он только возвращает исходный код игры. Выключение чита уже делает это.",
-    [UI_MENU_CHEAT_REBUILD] = "после установки",
-    [UI_MENU_CHEAT_REBUILD_DESC] = "Этот чит меняет код игры и появился или изменился после сборки игры. Запустите "
-                                   "установку ещё раз, чтобы собрать его.",
-    [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
-    [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
-    [UI_MENU_CHEATS_BUILTIN] = "Встроенные читы",
-    [UI_MENU_CHEAT_GOD_MODE] = "Режим бога",
-    [UI_MENU_CHEAT_GOD_MODE_DESC] = "Отряд не получает урона. Включается и выключается сразу.",
-    [UI_MENU_CHEAT_INSTA_KILL] = "Мгновенное убийство",
-    [UI_MENU_CHEAT_INSTA_KILL_DESC] = "Удары отряда наносят 9999 урона. Большинство врагов падает с одного "
-                                      "удара, у противников с большим запасом здоровья уйдёт несколько. "
-                                      "Включается и выключается сразу.",
-    [UI_MENU_CHEAT_ONE_DAMAGE] = "Единица урона",
-    [UI_MENU_CHEAT_ONE_DAMAGE_DESC] = "Удары отряда наносят 1 урона, и враги держатся, пока вы что-то пробуете. "
-                                      "Если включено и мгновенное убийство, действует оно. "
-                                      "Включается и выключается сразу.",
-    [UI_MENU_CHEATS_OPEN] = "Открыть папку модов",
-    [UI_MENU_CHEATS_OPEN_DESC] = "Файлы читов лежат в папке cheats мода: mods\\<мод>\\cheats\\<build id>.txt. "
-                                 "Показывает папку модов; если её нет, она будет создана.",
-
-    [UI_MENU_OV_FPS] = "%.0f FPS", [UI_MENU_OV_FPS_FG] = "%.0f / %.0f FPS", [UI_MENU_OV_FRAME_MS] = "%.1f мс", [UI_MENU_OV_GAME_PCT] = "игра %.0f%%",
-    [UI_MENU_OV_MAX_MS] = "макс. %.1f мс",
-    [UI_MENU_OV_GPU] = "GPU", [UI_MENU_OV_CPU] = "ЦП", [UI_MENU_OV_RAM] = "ОЗУ", [UI_MENU_OV_VRAM] = "Видеопамять",
-    [UI_MENU_OV_TEMP] = "Температура", [UI_MENU_OV_POWER] = "Мощность", [UI_MENU_OV_CLOCK] = "Частота",
-    [UI_MENU_OV_NONE] = "-",
-    [UI_MENU_OV_REPLAY] = "Подготовка кадра для GPU", [UI_MENU_OV_GPU_TIME] = "Занятость GPU за кадр",
-    [UI_MENU_OV_PIPE_WAIT] = "Ожидания конвейеров",
-    [UI_MENU_OV_SHADER_WAIT] = "Ожидания шейдеров", [UI_MENU_OV_TEX_UPLOADS] = "Загрузки текстур", [UI_MENU_OV_TEX_TIME] = "Время загрузки текстур",
-    [UI_MENU_OV_FMT_PCT] = "%.0f%%", [UI_MENU_OV_FMT_TEMP] = "%.0f °C", [UI_MENU_OV_FMT_POWER] = "%.0f Вт",
-    [UI_MENU_OV_FMT_MHZ] = "%.0f МГц", [UI_MENU_OV_FMT_GB] = "%.1f ГБ", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f ГБ",
-    [UI_MENU_OV_GAME_GB] = "игра %.1f ГБ", [UI_MENU_OV_FMT_MS] = "%.2f мс", [UI_MENU_OV_PER_FRAME] = "%.1f за кадр",
-    [UI_MENU_OV_WINDOW] = "Окно", [UI_MENU_OV_OUTPUT] = "Изображение игры", [UI_MENU_OV_SCENE] = "3D-сцена",
-    [UI_MENU_OV_SCALING] = "Масштабирование", [UI_MENU_OV_LIMIT] = "Лимит кадров", [UI_MENU_OV_PRESENT] = "Вывод кадров",
-    [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
-    [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
-    [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
-};
-
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
 SWKBD_ONLY(text_ja, "文字入力", "名前を入力してください", "ウマ", "OK", "キャンセル", "コントローラー: A = OK、B = キャンセル");
 SWKBD_ONLY(text_fr, "Saisie de texte", "Entrez un nom", "Cheval", "OK", "Annuler", "Manette : A = OK, B = Annuler");
@@ -696,22 +353,18 @@ SWKBD_ONLY(text_de, "Texteingabe", "Gib einen Namen ein", "Pferd", "OK", "Abbrec
 SWKBD_ONLY(text_it, "Inserimento testo", "Inserisci un nome", "Cavallo", "OK", "Annulla", "Controller: A = OK, B = Annulla");
 SWKBD_ONLY(text_es, "Introducir texto", "Introduce un nombre", "Caballo", "Aceptar", "Cancelar",
            "Mando: A = Aceptar, B = Cancelar");
-SWKBD_ONLY(text_nl, "Tekstinvoer", "Voer een naam in", "Paard", "OK", "Annuleren", "Controller: A = OK, B = Annuleren");
-SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
 SWKBD_ONLY(text_zh_hans, "文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消");
 SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
 SWKBD_ONLY(text_ko, "문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소");
 
 static const Row rows[] = {
     {"en", text_en}, {"ja", text_ja}, {"fr", text_fr}, {"de", text_de}, {"it", text_it}, {"es", text_es},
-    {"nl", text_nl}, {"pt", text_pt}, {"ru", text_ru}, {"zh-Hans", text_zh_hans}, {"zh-Hant", text_zh_hant},
-    {"ko", text_ko},
+    {"zh-Hans", text_zh_hans}, {"zh-Hant", text_zh_hant}, {"ko", text_ko},
 };
 
 const char *ui_text_lang(const char *code) {
     static const struct { const char *code, *lang; } map[] = {
-        {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-419", "es"}, {"pt-BR", "pt"},
-        {"zh-CN", "zh-Hans"}, {"zh-TW", "zh-Hant"},
+        {"en-US", "en"}, {"en-GB", "en"}, {"fr-CA", "fr"}, {"es-419", "es"}, {"zh-CN", "zh-Hans"}, {"zh-TW", "zh-Hant"},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++)
         if (!strcmp(code, map[i].code)) return map[i].lang;
@@ -736,23 +389,4 @@ const char *ui_text_in(const char *lang, UiTextId id) {
 
 const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language()), id); }
 
-// The menu language, re-read when cfg_version changes. XC2_MENU_LANG "ru" or "en"; anything else (unset included)
-// follows the system UI language: Russian for "ru", "ru-RU", ..., else English.
-static const char *resolve_menu_lang(void) {
-    const char *v = cfg_value("XC2_MENU_LANG");
-    if (v && !strcmp(v, "ru")) return "ru";
-    if (v && !strcmp(v, "en")) return "en";
-    const char *sys = plat_ui_language();
-    return sys && (!strcmp(sys, "ru") || !strncmp(sys, "ru-", 3)) ? "ru" : "en";
-}
-
-const char *menu_text(UiTextId id) {
-    static _Atomic(const char *) lang = "en";
-    static _Atomic unsigned seen = ~0u;
-    unsigned v = cfg_version();
-    if (v != atomic_load_explicit(&seen, memory_order_relaxed)) {
-        atomic_store_explicit(&lang, resolve_menu_lang(), memory_order_relaxed);
-        atomic_store_explicit(&seen, v, memory_order_relaxed);
-    }
-    return ui_text_in(atomic_load_explicit(&lang, memory_order_relaxed), id);
-}
+const char *menu_text(UiTextId id) { return ui_text_in("en", id); }

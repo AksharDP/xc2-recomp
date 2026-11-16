@@ -1,11 +1,11 @@
 """The installer window: python -m installer.gui
 
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
-install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Decisions live in guilogic.py;
-this file only draws. The window text is in installer/text/<en|ru>.json under "ui.*" and "launcher.*" ids.
+install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Once the base game and the
+keys are chosen it runs `python -m installer.probe` on them, and the language list holds only the languages those game
+files have text for (the two releases differ). Decisions live in guilogic.py; this file only draws. The window text is in installer/text/en.json under "ui.*" and "launcher.*" ids.
 
-    --selftest [--shots DIR]   build every screen in both languages and close by itself (PNG per screen with --shots)
-    --lang en|ru               window language (default: the Windows display language)
+    --selftest [--shots DIR]   build every screen and close by itself (PNG per screen with --shots)
 """
 import argparse
 import json
@@ -25,10 +25,11 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import preferences
-from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, Model, Process,
-                       amount, default_game_language, describe_event, parse_line, windows_ui_language)
+from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog, Form, LanguageProbe, Model, Process,
+                       amount, default_game_language, describe_event, parse_line, probe_inputs)
 
 POLL_MS = 100
+PROBE_DELAY_MS = 500   # after the last edit of a game file or keys path, so typing a path does not start a probe per key
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
 COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808080', FAILED: '#c01c28'}
 PAD = 14
@@ -44,12 +45,12 @@ def fix_tcl_paths():
 
 
 class App:
-    def __init__(self, root, ui_lang, layout, run_args=None, remember=True):
+    def __init__(self, root, layout, run_args=None, remember=True):
         """Build the setup window and restore saved paths unless this is a self-test."""
         self.root, self.layout = root, layout
         # the release runs under pythonw, which has no console: an error in a button's callback would vanish silently
         root.report_callback_exception = self.callback_error
-        self.cat = Catalog(ui_lang)
+        self.cat = Catalog()
         self.model = Model()
         self.process = None
         self.closing = False
@@ -67,7 +68,14 @@ class App:
             'dest': tk.StringVar(value=saved['dest']),
         }
         self.vars['lang'] = tk.StringVar()
-        self.lang_code = default_game_language(ui_lang)
+        self.lang_code = default_game_language()
+        self.languages = None            # the languages of the chosen game files (LanguageProbe); None while unknown
+        self.probe = None                # the LanguageProbe running, or None
+        self.probe_for = None            # the inputs the shown languages are of (guilogic.probe_inputs)
+        self.probe_for_dest = None       # after a failed read: the install folder whose recorded languages show
+        self.probe_after = None
+        self.probe_status = ('ui.langs_hint', {})   # the line under the language box: (text id, params)
+        self.probe_done_status = self.probe_status   # that line for probe_for, put back when its files are chosen again
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
 
@@ -94,12 +102,6 @@ class App:
         version = ttk.Label(top, style='Version.TLabel')
         self.bind_text(version, 'text', 'ui.version', version=layout.release)
         version.pack(side='left', padx=(10, 0), pady=(6, 0))
-        sw = ttk.Frame(top)
-        sw.pack(side='right')
-        self.ui_var = tk.StringVar(value=self.cat.lang)
-        for code in UI_LANGUAGES:
-            ttk.Radiobutton(sw, text=code.upper(), value=code, variable=self.ui_var, style='Toolbutton',
-                            command=self.switch_language).pack(side='left', padx=1)
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
@@ -108,8 +110,11 @@ class App:
             for name in ('base', 'update', 'dlc', 'keys', 'dest'):
                 self.vars[name].trace_add('write', self.queue_preferences_save)
         self.vars['dest'].trace_add('write', lambda *_: self.refresh_form())
+        for name in ('base', 'update', 'keys', 'dest'):   # dest: an install folder's recorded languages
+            self.vars[name].trace_add('write', self.queue_probe)
         self.refresh_form()
         self.show('form')
+        self.queue_probe()
 
     # ---- text -----------------------------------------------------------------------------------------------------
 
@@ -127,38 +132,33 @@ class App:
         self.bind_text(w, 'text', id)
         return w
 
-    def retext(self):
-        self.root.title(self.cat('ui.title'))
-        for widget, option, id, params in self.bound:
-            widget.configure(**{option: self.cat(id, **params)})
-        self.fill_languages()
-        self.refresh_form()
-        self.refresh_run()
-        self.refresh_finish()
-        self.render_log()
-
-    def switch_language(self):
-        self.cat.set_language(self.ui_var.get())
-        code = self.selected_lang()
-        self.retext()
-        self.vars['lang'].set(self.lang_label(code))
-        self.fit()
-
     def lang_label(self, code):
         return self.cat('lang.' + code)
 
+    def offered(self):
+        """The languages the list holds: those of the chosen game files once read, else every one the game knows."""
+        return list(self.languages) if self.languages else list(ini.LANGUAGES)
+
     def fill_languages(self):
         code = self.selected_lang()
-        self.lang_box.configure(values=[self.lang_label(c) for c in ini.LANGUAGES])
+        offered = self.offered()
+        recorded = None if self.lang_touched else self.recorded_lang()
+        if recorded in offered:   # an update keeps the language the install has, unless the user picked another
+            code = recorded
+        elif code not in offered:   # chosen before the files were read, or for the other release: their default
+            code = ini.default_language(offered)
+        self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
+        self.lang_code = code
+        status_id, params = self.probe_status
+        self.langs_label.configure(text=self.cat(status_id, **params))
 
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
         shown = self.vars['lang'].get()
         for code in ini.LANGUAGES:
-            for lang in UI_LANGUAGES:
-                if shown == Catalog(lang)('lang.' + code):
-                    return code
+            if shown == self.lang_label(code):
+                return code
         return self.lang_code
 
     # ---- screens --------------------------------------------------------------------------------------------------
@@ -226,10 +226,12 @@ class App:
         self.lang_box.grid(row=i, column=1, sticky='w', pady=4)
         self.lang_touched = False
         self.lang_box.bind('<<ComboboxSelected>>', lambda _e: setattr(self, 'lang_touched', True))
+        self.langs_label = ttk.Label(grid, foreground='#606060', wraplength=480, justify='left')
+        self.langs_label.grid(row=i + 1, column=1, columnspan=2, sticky='w', pady=(0, 4))
         self.fill_languages()
-        self.label(grid, 'ui.dest').grid(row=i + 1, column=0, sticky='w', pady=4)
-        ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 1, column=1, sticky='ew', pady=4)
-        self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 1, column=2, padx=(8, 0))
+        self.label(grid, 'ui.dest').grid(row=i + 2, column=0, sticky='w', pady=4)
+        ttk.Entry(grid, textvariable=self.vars['dest']).grid(row=i + 2, column=1, sticky='ew', pady=4)
+        self.button(grid, 'ui.browse', self.pick_dest).grid(row=i + 2, column=2, padx=(8, 0))
         self.update_hint = ttk.Label(f, wraplength=620, justify='left')
         self.update_hint.pack(anchor='w', pady=(8, 0))
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=620, justify='left')
@@ -290,7 +292,82 @@ class App:
 
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), dlc=tuple(self.dlc_paths()),
-                    keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get())
+                    keys=self.vars['keys'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
+                    languages=tuple(self.languages or ()))
+
+    # ---- the languages of the game files ---------------------------------------------------------------------------
+
+    def queue_probe(self, *_):
+        if self.probe_after is not None:
+            self.root.after_cancel(self.probe_after)
+        self.probe_after = self.root.after(PROBE_DELAY_MS, self.start_probe)
+
+    def start_probe(self):
+        """Read the languages of the chosen game files, unless they are the ones already shown or being read."""
+        self.probe_after = None
+        inputs = self.current_inputs()
+        if inputs is None:
+            self.probe, self.probe_for = None, None
+            self.set_languages(self.recorded_languages(), ('ui.langs_hint', {}))
+            self.probe_done_status = self.probe_status
+            return
+        dest = self.vars['dest'].get()
+        if inputs == self.probe_for and self.probe_for_dest in (None, dest):
+            # back to the files shown: a read of other files started since is dropped
+            if self.probe is not None:
+                self.probe = None
+                self.probe_status = self.probe_done_status
+                self.fill_languages()
+            return
+        if self.probe and self.probe.inputs == inputs:
+            return
+        self.probe = LanguageProbe(self.layout.python, inputs, cwd=self.layout.root)
+        self.probe_status = ('ui.langs_checking', {})
+        self.fill_languages()
+        self.root.after(POLL_MS, self.poll_probe)
+
+    def poll_probe(self):
+        probe = self.probe
+        if probe is None:
+            return
+        if not probe.done():
+            self.root.after(POLL_MS, self.poll_probe)
+            return
+        self.probe = None
+        if probe.inputs != self.current_inputs():   # the fields changed while it ran; their own read is queued
+            return
+        self.probe_for, self.probe_for_dest = probe.inputs, None
+        e = probe.result
+        if e['type'] == 'languages' and e.get('languages'):
+            self.set_languages(e['languages'], ('ui.langs_found', {'release': e.get('release', ''),
+                                                                   'known': ', '.join(e['languages'])}))
+        else:   # the list shown is the install folder's, so another folder reads again
+            self.probe_for_dest = self.vars['dest'].get()
+            reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
+            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
+        self.probe_done_status = self.probe_status
+
+    def current_inputs(self):
+        return probe_inputs(self.vars['base'].get(), self.vars['update'].get(), self.vars['keys'].get())
+
+    def recorded_languages(self):
+        """The languages an install folder recorded (xc2-install.json), shown before the game files are chosen."""
+        state = self.form().installed_state()
+        return (state or {}).get('languages') or None
+
+    def recorded_lang(self):
+        """The game language the install folder has (xc2-install.json), or None."""
+        state = self.form().installed_state()
+        return ini.recorded_language(state.get('lang')) if state else None
+
+    def set_languages(self, languages, status):
+        """Offer languages (None: every one) and show status under the list; a choice they lack gives way to their
+        default (fill_languages)."""
+        self.lang_touched = self.lang_touched and self.selected_lang() in (languages or ini.LANGUAGES)
+        self.languages = list(languages) if languages else None
+        self.probe_status = status
+        self.fill_languages()
+        self.fit()
 
     def queue_preferences_save(self, *_):
         """Debounce writes so editing a path does not sync the file on every keystroke."""
@@ -329,8 +406,9 @@ class App:
         state = form.installed_state()
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
-            if state.get('lang') in ini.LANGUAGES and not self.lang_touched:
-                self.vars['lang'].set(self.lang_label(state['lang']))
+            recorded = ini.recorded_language(state.get('lang'))
+            if recorded in self.offered() and not self.lang_touched:
+                self.vars['lang'].set(self.lang_label(recorded))
         else:
             self.update_hint.configure(text='')
         self.fit()
@@ -616,12 +694,12 @@ def grab(root, path):
 
 
 def selftest(layout, shots=None):
-    """Every screen in both languages; the window closes itself. Returns 0 when nothing raised."""
+    """Every screen; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
     root = tk.Tk()
     root.geometry('+60+40')
-    app = App(root, 'en', layout, remember=False)
-    steps, mixed = [], []
+    app = App(root, layout, remember=False)
+    steps = []
 
     def shot(name):
         root.update()
@@ -630,70 +708,58 @@ def selftest(layout, shots=None):
             grab(root, Path(shots) / f'{name}.png')
 
     def run_all():
-        for lang in UI_LANGUAGES:
-            app.ui_var.set(lang)
-            app.switch_language()
-            tag = lang
-            app.vars['dest'].set('Z:/selftest/XC2')
-            app.vars['base'].set('Z:/selftest/xc2.nsp')
-            app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
-            app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
-            app.vars['keys'].set('Z:/selftest/prod.keys')
-            app.show('form')
-            app.start()   # missing files: shows the problems
-            steps.append(app.form_error.cget('text'))
-            shot(f'form-{tag}')
-            app.model = Model()
-            app.clear_log()
-            app.build_step_rows(app.model.steps)
-            app.show('run')
-            for e in SAMPLE_RUN:
-                app.feed(json.dumps(e))
-            app.log_open = False
-            app.toggle_log()
-            app.refresh_run()
-            shot(f'run-{tag}')
-            if lang == 'en':   # the log follows the window language: no English line may remain after the switch
-                app.ui_var.set('ru')
-                app.switch_language()
-                text = app.log.get('1.0', 'end')
-                mixed.append('Checking' in text or 'Extracting' not in text and 'Распаковка' not in text)
-                app.ui_var.set('en')
-                app.switch_language()
-            app.model = Model()
-            for e in SAMPLE_OK:
-                app.model.apply(e)
-            app.model.dest = 'Z:/selftest/XC2'
-            app.model.finish(0)
-            app.refresh_finish()
-            app.show('finish')
-            shot(f'finish-ok-{tag}')
-            app.model = Model()
-            for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
-                                        'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
-                                       {'type': 'end', 'result': 'failed', 'seconds': 3}]:
-                app.model.apply(e)
-            app.model.finish(1)
-            app.refresh_finish()
-            shot(f'finish-failed-{tag}')
-            app.model = Model()
-            app.model.finish(3)
-            app.refresh_finish()
-            shot(f'finish-cancelled-{tag}')
-            app.toggle_log()
+        app.vars['dest'].set('Z:/selftest/XC2')
+        app.vars['base'].set('Z:/selftest/xc2.nsp')
+        app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
+        app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
+        app.vars['keys'].set('Z:/selftest/prod.keys')
+        app.show('form')
+        app.start()   # missing files: shows the problems
+        steps.append(app.form_error.cget('text'))
+        shot('form')
+        app.model = Model()
+        app.clear_log()
+        app.build_step_rows(app.model.steps)
+        app.show('run')
+        for e in SAMPLE_RUN:
+            app.feed(json.dumps(e))
+        app.log_open = False
+        app.toggle_log()
+        app.refresh_run()
+        shot('run')
+        app.model = Model()
+        for e in SAMPLE_OK:
+            app.model.apply(e)
+        app.model.dest = 'Z:/selftest/XC2'
+        app.model.finish(0)
+        app.refresh_finish()
+        app.show('finish')
+        shot('finish-ok')
+        app.model = Model()
+        for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
+                                    'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
+                                   {'type': 'end', 'result': 'failed', 'seconds': 3}]:
+            app.model.apply(e)
+        app.model.finish(1)
+        app.refresh_finish()
+        shot('finish-failed')
+        app.model = Model()
+        app.model.finish(3)
+        app.refresh_finish()
+        shot('finish-cancelled')
+        app.toggle_log()
         root.destroy()
 
     root.after(200, run_all)
     root.after(60000, root.destroy)   # never leaves a window open
     root.mainloop()
-    return 0 if len(steps) == len(UI_LANGUAGES) and all(steps) and mixed == [False] else 1
+    return 0 if len(steps) == 1 and all(steps) else 1
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--shots', type=Path)
-    ap.add_argument('--lang', choices=UI_LANGUAGES)
     ap.add_argument('--root', type=Path)
     args = ap.parse_args(argv)
     layout = layouts.find(args.root)
@@ -701,7 +767,7 @@ def main(argv=None):
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, args.lang or windows_ui_language(), layout)
+    App(root, layout)
     root.mainloop()
     return 0
 

@@ -6,7 +6,7 @@
 //
 // Environment:
 //   XC2_LANG=<Switch language code>   the game's language as given ("ja", "en-GB", "zh-Hant", ...)
-//   XC2_LOCALE=<BCP 47 tag>           else the language for this locale ("pt-BR"), else the Windows user locale;
+//   XC2_LOCALE=<BCP 47 tag>           else the language for this locale ("de-AT"), else the Windows user locale;
 //                                      a language the game does not ship becomes en-US
 //   XC2_OPERATION_MODE=docked|handheld   operation and performance mode reported to the game (default docked)
 //   XC2_ASSUME_FOCUS=0|1              1 (default): GetCurrentFocusState always reports in focus, so the game keeps
@@ -53,7 +53,60 @@ int ov_handheld(void) {
     return (int)h;
 }
 
-// The Switch language for a BCP 47 tag; en-US for a language the game does not ship.
+// The Switch language codes the game knows: its own code table in main (3.0.1: built at 0x6c03b0) lists these and
+// no zh-Hans, zh-Hant or pt-BR, which are newer than its SDK. It turns the code into the folder of its text (gb, fr,
+// ge, it, sp, cn, kr, nl, pt, ru, tw, jp; tools/xc2_languages.py) and stores it at boot without checking that the folder
+// exists, so a language the game files lack leaves the game on a black screen (GitHub issue 107). No release has nl,
+// pt or ru, so they are left out; which of the rest an install has is XC2_GAME_LANGS (ov_language_shipped).
+static const char *const game_codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "zh-TW", "en-GB",
+                                         "fr-CA", "es-419"};
+#define N_GAME_CODES (sizeof game_codes / sizeof *game_codes)
+
+// The entry of game_codes equal to code, else NULL. zh-Hans and zh-Hant, which earlier versions wrote to xc2.ini,
+// are the game's zh-CN and zh-TW.
+static const char *game_code(const char *code) {
+    if (!strcmp(code, "zh-Hans")) code = "zh-CN";
+    if (!strcmp(code, "zh-Hant")) code = "zh-TW";
+    for (size_t i = 0; i < N_GAME_CODES; i++)
+        if (!strcmp(code, game_codes[i])) return game_codes[i];
+    return NULL;
+}
+
+// Whether the installed game files have text for code. XC2_GAME_LANGS is the list of the codes they have, separated by
+// spaces or commas (the installer writes it from the archive, tools/xc2_languages.py); unset, every code counts.
+int ov_language_shipped(const char *code) {
+    const char *list = cfg_get("XC2_GAME_LANGS");
+    if (!list || !*list) return 1;
+    size_t n = strlen(code);
+    for (const char *p = list; *p;) {
+        p += strspn(p, " ,");
+        size_t k = strcspn(p, " ,");
+        if (k && k == n && !strncmp(p, code, n)) return 1;
+        p += k;
+    }
+    return 0;
+}
+
+// The language for a request the game files lack: en-US when they have it, else the first known code of
+// XC2_GAME_LANGS (ja on the Japanese release), else en-US.
+static const char *shipped_fallback(void) {
+    if (ov_language_shipped("en-US")) return "en-US";
+    const char *list = cfg_get("XC2_GAME_LANGS");
+    for (const char *p = list; p && *p;) {
+        p += strspn(p, " ,");
+        size_t k = strcspn(p, " ,");
+        char one[8] = "";
+        if (k && k < sizeof one) {
+            memcpy(one, p, k);
+            const char *code = game_code(one);
+            if (code) return code;
+        }
+        p += k;
+    }
+    return "en-US";
+}
+
+// The Switch language for a BCP 47 tag; en-US for a language no release ships.
 static const char *switch_language(const char *tag) {
     char lang[8] = "", region[4] = "", script[8] = "";
     size_t n = strcspn(tag, "-_");
@@ -72,38 +125,55 @@ static const char *switch_language(const char *tag) {
         }
         p += k;
     }
-    if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
-        !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
-        return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
-             : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : !strcmp(lang, "ko") ? "ko" : "pt";
+    if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "ko"))
+        return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it" : "ko";
     if (!strcmp(lang, "fr")) return !strcmp(region, "CA") ? "fr-CA" : "fr";
     if (!strcmp(lang, "es")) return *region && strcmp(region, "ES") ? "es-419" : "es";
     if (!strcmp(lang, "zh"))
         return !strcmp(script, "Hant") || !strcmp(region, "TW") || !strcmp(region, "HK") || !strcmp(region, "MO")
-                   ? "zh-Hant" : "zh-Hans";
+                   ? "zh-TW" : "zh-CN";
     if (!strcmp(lang, "en"))
         return !strcmp(region, "GB") || !strcmp(region, "IE") || !strcmp(region, "AU") || !strcmp(region, "NZ")
                    ? "en-GB" : "en-US";
     return "en-US";
 }
 
-// The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale).
+// The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale), one the
+// installed game files have text for: a language they lack becomes shipped_fallback, as a console only offers a game
+// the languages it supports. XC2_LANG takes the codes of game_codes (and zh-Hans, zh-Hant for zh-CN, zh-TW); any other
+// value, such as the ru, nl or pt that earlier versions offered, also becomes shipped_fallback, with a log line.
 const char *ov_language(void) {
-    static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru",
-                                        "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
+    const char *want;
     const char *code = cfg_get("XC2_LANG");   // no fixed default: XC2_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
-        for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
-            if (!strcmp(code, codes[i])) return codes[i];
-        rt_fatal("XC2_LANG '%s' is not a Switch language code", code);
+        want = game_code(code);
+        if (!want) {
+            const char *got = shipped_fallback();
+            static int logged;
+            if (!logged) {
+                logged = 1;
+                rt_log("oe: XC2_LANG '%s' is not a language the game has; the game runs in %s", code, got);
+            }
+            return got;
+        }
+    } else {
+        const char *tag = cfg_get("XC2_LOCALE");
+        char sys[85] = "en-US";
+        if (!tag || !*tag) {
+            if (*plat_user_locale()) snprintf(sys, sizeof sys, "%s", plat_user_locale());
+            tag = sys;
+        }
+        want = switch_language(tag);
     }
-    const char *tag = cfg_get("XC2_LOCALE");
-    char sys[85] = "en-US";
-    if (!tag || !*tag) {
-        if (*plat_user_locale()) snprintf(sys, sizeof sys, "%s", plat_user_locale());
-        tag = sys;
+    if (ov_language_shipped(want)) return want;
+    const char *got = shipped_fallback();
+    static const char *logged;
+    if (logged != want) {
+        logged = want;
+        rt_log("oe: the game files have no %s text (XC2_GAME_LANGS %s); the game runs in %s", want,
+               cfg_get("XC2_GAME_LANGS"), got);
     }
-    return switch_language(tag);
+    return got;
 }
 
 // LanguageCode GetDesiredLanguage(): char[8] in x0

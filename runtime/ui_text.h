@@ -1,5 +1,5 @@
 // Text the host shows the player (runtime/ui_text.c): one catalog, keyed by stable ids. The software keyboard reads it
-// in the game's language (ui_text); the menu and the performance overlay read it in the menu language (menu_text).
+// in the game's language (ui_text); the menu and the performance overlay are English (menu_text).
 #pragma once
 
 typedef enum {
@@ -11,10 +11,10 @@ typedef enum {
     UI_SWKBD_CANCEL,
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
-    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English and Russian texts.
+    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
-    UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU,
+    UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS,
     UI_MENU_TAB_ADVANCED,
     UI_MENU_CONTINUE, UI_MENU_QUIT,
     UI_MENU_CAPTURE_FRAME, UI_MENU_CAPTURE_CLIP, UI_MENU_CAPTURE_STOP, UI_MENU_CAPTURE_OPEN, UI_MENU_CAPTURE_COPY,   // the Advanced tab's capture buttons
@@ -101,13 +101,9 @@ typedef enum {
     UI_PAD_ZR, UI_PAD_LPADDLE1, UI_PAD_RPADDLE1, UI_PAD_LPADDLE2, UI_PAD_RPADDLE2,
     UI_PAD_CROSS, UI_PAD_CIRCLE, UI_PAD_SQUARE, UI_PAD_TRIANGLE,
 
-    // Menu tab
-    UI_MENU_MENU_LANG, UI_MENU_MENU_LANG_DESC, UI_MENU_MENU_LANG_AUTO,
-
-    // Language names, each in its own language and the same in every row (game language and menu language lists)
+    // Game language names, each in its own language and the same in every row (the Game tab's language list)
     UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_JA, UI_MENU_LANGNAME_FR, UI_MENU_LANGNAME_DE, UI_MENU_LANGNAME_IT,
-    UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_NL, UI_MENU_LANGNAME_RU, UI_MENU_LANGNAME_ZH_HANS,
-    UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO,
+    UI_MENU_LANGNAME_ES, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_KO,
 
     // Advanced
     UI_MENU_ADV_WARNING,
@@ -204,14 +200,13 @@ typedef enum {
 
 // UTF-8 text for id in the language of ov_language(); English when the catalog has no row for that language.
 const char *ui_text(UiTextId id);
-// The same for an explicit catalog language ("en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans",
-// "zh-Hant", "ko"); an empty entry gives the English text.
+// The same for an explicit catalog language ("en", "ja", "fr", "de", "it", "es", "zh-Hans", "zh-Hant", "ko": the
+// game's languages); an empty entry gives the English text.
 const char *ui_text_in(const char *lang, UiTextId id);
 // 1 when the row of lang has its own text for id (no fallback to English), for the probe.
 int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
 
-// Menu text: ui_text_in(menu language, id). The menu language is XC2_MENU_LANG ("en" / "ru"); unset, Russian when the
-// system UI language is Russian, else English. Follows a live change of the setting.
+// Menu and overlay text: ui_text_in("en", id).
 const char *menu_text(UiTextId id);

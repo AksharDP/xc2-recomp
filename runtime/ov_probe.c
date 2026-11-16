@@ -262,25 +262,80 @@ static char *lang(void) {
 
 static void set_env(const char *name, const char *value) { plat_setenv(name, value); }   // NULL removes it
 
+// The language settings probe_oe sets through the environment. Their xc2.ini values (an installed folder has lang and
+// game_langs) are taken out of memory for the probe, so a case that leaves one unset sees it unset, and put back after;
+// the probe never saves the file.
+// The environment holds each under its name and the legacy XCX_ one, which cfg reads when the XC2_ one is unset.
+static const char *const kLangKeys[] = {"XC2_LANG", "XC2_LOCALE", "XC2_GAME_LANGS"};
+static const char *const kLangLegacy[] = {"XCX_LANG", "XCX_LOCALE", "XCX_GAME_LANGS"};
+enum { N_LANG_KEYS = sizeof kLangKeys / sizeof *kLangKeys };
+
+static char *env_take(const char *name) {   // its value (a copy), and removes it
+    const char *v = getenv(name);
+    char *kept = v ? strdup(v) : NULL;
+    set_env(name, NULL);
+    return kept;
+}
+
+static void lang_keys_isolate(char *env[2 * N_LANG_KEYS], char *file[N_LANG_KEYS]) {
+    for (int i = 0; i < N_LANG_KEYS; i++) {
+        env[i] = env_take(kLangKeys[i]);
+        env[N_LANG_KEYS + i] = env_take(kLangLegacy[i]);
+        file[i] = cfg_is_set(kLangKeys[i]) ? strdup(cfg_get(kLangKeys[i])) : NULL;   // not a device profile's value
+    }
+    cfg_reset(kLangKeys, N_LANG_KEYS);
+}
+
+static void lang_keys_restore(char *env[2 * N_LANG_KEYS], char *file[N_LANG_KEYS]) {
+    for (int i = 0; i < N_LANG_KEYS; i++) {
+        set_env(kLangKeys[i], NULL);
+        if (file[i]) cfg_set(kLangKeys[i], file[i]);
+        set_env(kLangKeys[i], env[i]);
+        set_env(kLangLegacy[i], env[N_LANG_KEYS + i]);
+        free(env[i]);
+        free(env[N_LANG_KEYS + i]);
+        free(file[i]);
+    }
+}
+
 static void probe_oe(void) {
-    char *keep_lang = cfg_get("XC2_LANG") ? strdup(cfg_get("XC2_LANG")) : NULL;
-    char *keep_locale = cfg_get("XC2_LOCALE") ? strdup(cfg_get("XC2_LOCALE")) : NULL;
-    static const struct { const char *lang, *locale, *want; } cases[] = {
-        {NULL, "en-US", "en-US"}, {NULL, "be-BY", "en-US"}, {NULL, "xx", "en-US"},     {NULL, "ja-JP", "ja"},
-        {NULL, "fr-CA", "fr-CA"}, {NULL, "es-MX", "es-419"}, {NULL, "es_ES", "es"},     {NULL, "zh-Hant-TW", "zh-Hant"},
-        {NULL, "zh-CN", "zh-Hans"}, {NULL, "en-GB", "en-GB"}, {NULL, "ru", "ru"},       {"ja", "fr-FR", "ja"},
-        {"en-US", NULL, "en-US"}};
+    char *keep_env[2 * N_LANG_KEYS], *keep_file[N_LANG_KEYS];
+    lang_keys_isolate(keep_env, keep_file);
+    // shipped: XC2_GAME_LANGS, as the installer writes it for the Americas and Europe (US) or the Japanese release (JP)
+    static const char US[] = "en-US en-GB fr fr-CA de it es es-419 ko", JP[] = "ja zh-CN zh-TW";
+    static const struct { const char *lang, *locale, *shipped, *want; } cases[] = {
+        {NULL, "en-US", NULL, "en-US"}, {NULL, "be-BY", NULL, "en-US"}, {NULL, "xx", NULL, "en-US"},
+        {NULL, "ja-JP", NULL, "ja"}, {NULL, "fr-CA", NULL, "fr-CA"}, {NULL, "es-MX", NULL, "es-419"},
+        {NULL, "es_ES", NULL, "es"}, {NULL, "zh-Hant-TW", NULL, "zh-TW"}, {NULL, "zh-CN", NULL, "zh-CN"},
+        {NULL, "en-GB", NULL, "en-GB"}, {NULL, "ru-RU", NULL, "en-US"}, {"ja", "fr-FR", NULL, "ja"},
+        {NULL, "nl-NL", NULL, "en-US"}, {NULL, "pt-BR", NULL, "en-US"}, {NULL, "pt-PT", NULL, "en-US"},
+        {"en-US", NULL, NULL, "en-US"}, {"zh-Hans", NULL, NULL, "zh-CN"}, {"zh-Hant", NULL, NULL, "zh-TW"},
+        // a language the installed release lacks becomes its default: en-US on US, ja on JP
+        {NULL, "ja-JP", US, "en-US"}, {NULL, "zh-TW", US, "en-US"}, {NULL, "ko-KR", US, "ko"}, {"de", NULL, US, "de"},
+        {NULL, "en-US", JP, "ja"}, {"fr", NULL, JP, "ja"}, {NULL, "zh-HK", JP, "zh-TW"}, {"zh-Hans", NULL, JP, "zh-CN"},
+        {NULL, "de-DE", "zh-CN,ko", "zh-CN"},
+        // codes earlier versions offered (still in old xc2.ini files) and typos run in the release default
+        {"ru", NULL, US, "en-US"}, {"nl", NULL, NULL, "en-US"}, {"pt-BR", "fr-FR", JP, "ja"}, {"xx", NULL, US, "en-US"}};
     int bad = 0;
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         set_env("XC2_LANG", cases[i].lang);
         set_env("XC2_LOCALE", cases[i].locale);
+        set_env("XC2_GAME_LANGS", cases[i].shipped);
         const char *got = lang();
         if (strcmp(got, cases[i].want)) {
             bad++;
-            printf("  FAIL: language for XC2_LANG=%s XC2_LOCALE=%s is %s, not %s\n", cases[i].lang ? cases[i].lang : "",
-                   cases[i].locale ? cases[i].locale : "", got, cases[i].want);
+            printf("  FAIL: language for XC2_LANG=%s XC2_LOCALE=%s XC2_GAME_LANGS=%s is %s, not %s\n",
+                   cases[i].lang ? cases[i].lang : "", cases[i].locale ? cases[i].locale : "",
+                   cases[i].shipped ? cases[i].shipped : "", got, cases[i].want);
         }
     }
+    set_env("XC2_GAME_LANGS", NULL);
+    CHECK(ov_language_shipped("ja") && ov_language_shipped("ko"), "without XC2_GAME_LANGS a language is missing");
+    set_env("XC2_GAME_LANGS", US);
+    CHECK(ov_language_shipped("ko") && ov_language_shipped("en-GB") && !ov_language_shipped("ja") &&
+              !ov_language_shipped("en") && !ov_language_shipped("zh-CN"),
+          "ov_language_shipped does not match whole codes of XC2_GAME_LANGS");
+    set_env("XC2_GAME_LANGS", NULL);
     set_env("XC2_LANG", NULL);
     set_env("XC2_LOCALE", NULL);
     char sys[16];
@@ -288,10 +343,7 @@ static void probe_oe(void) {
     set_env("XC2_LOCALE", "en-US");
     char def[16];
     snprintf(def, sizeof def, "%s", lang());
-    set_env("XC2_LANG", keep_lang);
-    set_env("XC2_LOCALE", keep_locale);
-    free(keep_lang);
-    free(keep_locale);
+    lang_keys_restore(keep_env, keep_file);
     checks++;
     failures += bad > 0;
     printf("oe: language %s by default (en-US locale), %s for this user's locale; %d locale/XC2_LANG cases %s\n",
@@ -843,36 +895,30 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has its own English and Russian text, the software keyboard keeps its
-// game-language rows, and menu_text follows XC2_MENU_LANG.
+// The host catalog (ui_text.c): every menu id has English text, the software keyboard has a row per game language
+// (each Switch code of ov_system.c maps to one), and the menu and overlay are English.
 static void probe_menu_text(void) {
-    static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "nl", "pt", "ru", "zh-Hans", "zh-Hant", "ko"};
-    for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
-        CHECK(ui_text_defined("en", (UiTextId)id) && ui_text_defined("ru", (UiTextId)id), "menu text id %d lacks en or ru", id);
-        CHECK(*ui_text_in("en", (UiTextId)id) && *ui_text_in("ru", (UiTextId)id), "menu text id %d is empty", id);
-    }
-    CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("ru", UI_TEXT_COUNT), "an id past the catalog gives text");
-    // other languages fall back to English for the menu, and keep their own keyboard texts
+    static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "zh-Hans", "zh-Hant", "ko"};
+    for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++)
+        CHECK(ui_text_defined("en", (UiTextId)id) && *ui_text_in("en", (UiTextId)id), "menu text id %d lacks English", id);
+    CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("en", UI_TEXT_COUNT), "an id past the catalog gives text");
+    // the other rows fall back to English for the menu and keep their own keyboard texts
     CHECK(!strcmp(ui_text_in("ja", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)), "ja menu text is not English");
-    CHECK(!strcmp(ui_text_in("ru", UI_SWKBD_OK), "ОК") && !strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") &&
-          !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK"), "keyboard texts changed");
+    CHECK(!strcmp(ui_text_in("de", UI_SWKBD_CANCEL), "Abbrechen") && !strcmp(ui_text_in("en", UI_SWKBD_OK), "OK") &&
+          !strcmp(ui_text_in("ko", UI_SWKBD_OK), "확인"), "keyboard texts changed");
+    // every game language has its own keyboard row, and a dropped one (ru) falls back to English
+    static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "zh-TW", "en-GB", "fr-CA", "es-419"};
+    for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
+        CHECK(ui_text_defined(ui_text_lang(codes[i]), UI_SWKBD_OK), "no keyboard row for %s", codes[i]);
+    CHECK(!ui_text_defined("ru", UI_SWKBD_OK) && !strcmp(ui_text_in("ru", UI_SWKBD_OK), "OK"), "a Russian row is left");
     // language names: the same string in every row
     for (int id = UI_MENU_LANGNAME_EN; id <= UI_MENU_LANGNAME_KO; id++)
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
-    CHECK(!strcmp(ui_text_in("en", UI_MENU_LANGNAME_RU), "Русский"), "Russian is not shown as Russian");
     // the overlay formats keep their conversions
-    CHECK(strstr(ui_text_in("ru", UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(ui_text_in("ru", UI_MENU_OV_MAX_MS), "%.1f"),
+    CHECK(strstr(menu_text(UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(menu_text(UI_MENU_OV_MAX_MS), "%.1f"),
           "overlay format lost its conversion");
-    // menu_text follows the setting live
-    cfg_set("XC2_MENU_LANG", "ru");
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("ru", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=ru");
-    cfg_set("XC2_MENU_LANG", "en");
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text did not follow MENU_LANG=en");
-    cfg_set("XC2_MENU_LANG", "");
-    const char *sys = plat_ui_language();
-    int ru = !strncmp(sys, "ru", 2);
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in(ru ? "ru" : "en", UI_MENU_CONTINUE), "menu_text auto ignores the system language");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text is not English");
 }
 
 static void probe_main(Cpu *c) {
