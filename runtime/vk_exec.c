@@ -1053,7 +1053,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     split_draws = part_start = 0;
     part_t0 = kern_now_ns();
     x_here = 1;
-    if (n) vk_mem_mirror_begin(mcap), vk_usnap_begin(ucap, fence);
+    if (n) vk_mem_mirror_begin(mcap, fence), vk_usnap_begin(ucap, fence);
     for (int i = 0; i < n; i++) {
         if (!handles[i]) rt_fatal("vk: command handle %d of a submission is null", i);
         if (vk_dump_armed) vk_dump_note("replay handle %d/%d %#llx", i, n, (unsigned long long)handles[i]);
