@@ -15,7 +15,8 @@
 // thread is in a long kernel call, is written as `tstall <tid> <ms into the window> <ms stopping> <rip>...` with the
 // chain where the thread stopped) and, after a present at least <ms> after the previous one, writes
 // that interval's samples (plus the 20 ms before) to <XC2_PROFILE>.f<frame>: the profile format, one `stack 1` line per
-// sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time. At most 256 dumps,
+// sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time (`twait` in place of
+// `tstack` for a repeated chain of a thread that used no cycles, so a script can tell running from waiting). At most 256 dumps,
 // 0.25 s apart or more; XC2_PROFILE_FRAMES=w<lo>-<hi> leaves the loading frames out.
 #include <windows.h>
 #include <psapi.h>
@@ -71,7 +72,8 @@ static int64_t world_lo, world_hi;  // XC2_PROFILE_FRAMES=w<lo>-<hi>: only while
 #define SLOW_RING (1u << 15)        // XC2_PROFILE_SLOW: about 0.5 s of samples of every thread
 #define SLOW_DUMPS 256
 #define SLOW_GAP_NS 250000000ull   // dumps at least this far apart (prof_sampler_frame)
-typedef struct { uint64_t t; DWORD tid; uint32_t depth; uint64_t rip[PROF_DEPTH]; } Sample;
+// wait: the thread used no cycles since its previous sample, which the sample repeats (written as twait, not tstack)
+typedef struct { uint64_t t; DWORD tid; uint32_t depth, wait; uint64_t rip[PROF_DEPTH]; } Sample;
 static Sample ring[SLOW_RING];
 static uint64_t ring_n;
 #define STALL_RING 1024
@@ -194,7 +196,7 @@ static void slow_dump(void) {
             for (uint64_t k = first; k < ring_n; k++) {
                 const Sample *s = &ring[k & (SLOW_RING - 1)];
                 if (s->t < lo || s->t > hi) continue;
-                if (pass) fprintf(f, "tstack %lu %.1f", s->tid, (s->t - lo) / 1e6);
+                if (pass) fprintf(f, "%s %lu %.1f", s->wait ? "twait" : "tstack", s->tid, (s->t - lo) / 1e6);
                 else fprintf(f, "stack 1");
                 for (uint32_t d = 0; d < s->depth; d++) fprintf(f, " %llx", (unsigned long long)s->rip[d]);
                 fputc('\n', f);
@@ -241,7 +243,7 @@ static DWORD WINAPI sampler_main(void *arg) {
             uint64_t cyc = 0;
             if (slow_ns && t->depth && QueryThreadCycleTime(t->h, &cyc) && cyc == t->cycles) {   // still waiting
                 Sample *s = &ring[ring_n++ & (SLOW_RING - 1)];
-                s->t = now, s->tid = t->tid, s->depth = t->depth;
+                s->t = now, s->tid = t->tid, s->depth = t->depth, s->wait = 1;
                 memcpy(s->rip, t->last, t->depth * sizeof *t->last);
                 continue;
             }
@@ -268,7 +270,7 @@ static DWORD WINAPI sampler_main(void *arg) {
             if (d) count_stack(chain, d);
             if (slow_ns) {
                 Sample *s = &ring[ring_n++ & (SLOW_RING - 1)];
-                s->t = now, s->tid = t->tid, s->depth = d ? d : 1;
+                s->t = now, s->tid = t->tid, s->depth = d ? d : 1, s->wait = 0;
                 memcpy(s->rip, chain, s->depth * sizeof *chain);
                 if (stop_ns > 2000000) {
                     Sample *w = &stalls[stall_n++ & (STALL_RING - 1)];
