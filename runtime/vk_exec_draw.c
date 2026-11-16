@@ -1121,6 +1121,18 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
+            uint64_t guest = stage_code_addr(ex->prog, code);
+            if (c1 < len && guest != (uint64_t)(uintptr_t)code) {
+                // A released program's copy (vk_prog_resolve): the game may have reused the guest code range since,
+                // so the constants come from the copied code, not from the range bind_range would read.
+                uint64_t n = len - c1 < max ? len - c1 : max;
+                VkBuffer buf;
+                VkDeviceSize off;
+                uint8_t *dst = scratch(ex, n, &buf, &off);
+                memcpy(dst, code + c1, n);
+                count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, n);
+                return (VkDescriptorBufferInfo){buf, off, n};
+            }
             if (c1 < len && bind_range(ex, stage_code_addr(ex->prog, code) + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
                 return bi;
         }
