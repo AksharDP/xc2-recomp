@@ -115,6 +115,7 @@ static struct {
     void *vpool[17];
     NVNbufferRange vin[16];              // the ranges they were resolved from, under vk_mem_gen vgen
     uint64_t vgen;
+    uint64_t vserial;                    // vbuf_serial when vin was taken
     int vb_valid;
     uint8_t support[SUPPORT_BYTES];      // last support buffer and where it lives
     float sup_in[3];                     // the support_fill arguments it was filled from
@@ -183,6 +184,7 @@ static const VkPipeInfo *rs_last;        // the last lookup
 static const RsList *rs_last_l;
 
 static uint32_t c0_dim[3], c0_binst;     // the dispatch size and base instance of the draw or dispatch being bound
+static uint64_t vbuf_serial;            // bumped by every OP_BIND_VBUF (bind_vertex_buffers)
 static uint64_t bind_gen = 1;            // bumped by every bind op that writes ex->prog, ubo, ssbo, tex or img
 
 static void cb_done(void *arg) {   // completion thread
@@ -2255,6 +2257,15 @@ static void bind_vertex_buffers(VkExec *ex) {
     // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none.
     uint64_t gen = vk_mem_gen();
     int same_gen = B.vb_valid && B.vgen == gen;
+    // No OP_BIND_VBUF since the bound set was made (vbuf_serial) and no pool change: every stream resolves as before,
+    // so nothing is recorded unless a stride of the bind changed (strides are part of it without dynamic vertex input).
+    // The walk below copies and compares about 1 KiB a draw.
+    if (same_gen && B.vserial == vbuf_serial) {
+        int same = 1;
+        for (int b = 0; b < 16 && !dyn && same; b++) same = B.vstr[b] == ex->pipe.vstream[b].stride;
+        if (same) return;
+    }
+    B.vserial = vbuf_serial;
     for (int b = 0; b < 17; b++) {
         vb[b] = Z.zbuf, vo[b] = 0, vsz[b] = ZERO_BYTES, vstr[b] = b < 16 ? ex->pipe.vstream[b].stride : 0;
         if (b == VK_PIPE_ZERO_BINDING) continue;
@@ -3095,6 +3106,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         const p_bind_vbuf *b = payload;
         if (b->first < 0 || b->n < 0 || b->first + b->n > 16) break;
         memcpy(&ex->vbuf[b->first], b->r, sizeof(NVNbufferRange) * (size_t)b->n);
+        vbuf_serial++;
         break;
     }
     case OP_BIND_UBO: {
