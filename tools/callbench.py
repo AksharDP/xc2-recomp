@@ -47,7 +47,7 @@ def runtime_dir(spec):
 
 def build(rt):
     """The bench program compiled from runtime folder rt (rebuilt when any input changed)."""
-    inputs = [SRC] + [rt / f for f in RUNTIME_FILES] + sorted(rt.glob('*.h')) + [rt / 'ov_inflate.c']
+    inputs = [SRC, ROOT / 'runtime' / 'callcap.h'] + [rt / f for f in RUNTIME_FILES] + sorted(rt.glob('*.h')) + [rt / 'ov_inflate.c']
     key = hashlib.sha256(b''.join(p.read_bytes() for p in inputs if p.is_file())).hexdigest()[:16]
     exe = OUT / f'callbench-{key}{".exe" if build_game.WIN else ""}'
     if exe.is_file():

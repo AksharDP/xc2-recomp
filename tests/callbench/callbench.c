@@ -25,7 +25,9 @@
 #include <time.h>
 #endif
 
-#include "callcap.h"
+// The capture format is this checkout's, whatever runtime the bench is built from: a runtime from an older revision
+// brings its own code under test, and its callcap.h is skipped by the include guard.
+#include "../../runtime/callcap.h"
 #include "tex.h"
 
 #include "ov_inflate.c"

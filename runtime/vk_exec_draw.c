@@ -1128,6 +1128,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
                 uint64_t n = len - c1 < max ? len - c1 : max;
                 VkBuffer buf;
                 VkDeviceSize off;
+                RS.volatile_ = 1;   // a new scratch offset per draw, as bind_range's copies
                 uint8_t *dst = scratch(ex, n, &buf, &off);
                 memcpy(dst, code + c1, n);
                 count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, n);
