@@ -146,6 +146,13 @@ site xc2res main 833070 sha:6b6ffaeb00aaefe0 1e203820 @page:x9 bd408923 1e230800
 # as for the markers above) instead. Each fcvtzs wrote w8, as the load does, and the getters' s0 is not read after.
 site xc2res main 697a94 sha:372d2d31a82e7a44 @page:x8 b9408108
 site xc2res main 697ab4 sha:6dc6f3c2ab1239d4 @page:x8 b9408508
+# The game's integer screen size (main+0x697ca8 width, main+0x697cd4 height) has the same mix-up: it returns the
+# layout library's frame size, and its only callers combine it with interface objects' 1280x720 positions. They
+# are main+0x390000 (a position measured from the right and bottom edges), main+0x4077c8 (an object stretched to
+# the screen and centred on it) and main+0x48e540 (objects placed at the screen's right or bottom edge). The
+# conversions to integers return the page's +0x80/+0x84 instead; w0 is the return value and s0 is not read after.
+site xc2res main 697cc8 sha:f85e577a5474b33a @page:x0 b9408000
+site xc2res main 697cf4 sha:0696c9531b1e3417 @page:x0 b9408400
 site xc2res main 6c2bd8 sha:2b4fceb6018b7f4f @page:x9 b9408129
 site xc2res main 6c2be8 sha:673c02dc4db9f003 @page:x10 b940854a
 site xc2res main 6c2bf8 sha:720baacc72f3a511 @page:x10 b940854a
