@@ -140,13 +140,22 @@ static const char *switch_language(const char *tag) {
 
 // The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale), one the
 // installed game files have text for: a language they lack becomes shipped_fallback, as a console only offers a game
-// the languages it supports. XC2_LANG takes the codes of game_codes (and zh-Hans, zh-Hant for zh-CN, zh-TW).
+// the languages it supports. XC2_LANG takes the codes of game_codes (and zh-Hans, zh-Hant for zh-CN, zh-TW); any other
+// value, such as the ru, nl or pt that earlier versions offered, also becomes shipped_fallback, with a log line.
 const char *ov_language(void) {
     const char *want;
     const char *code = cfg_get("XC2_LANG");   // no fixed default: XC2_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
         want = game_code(code);
-        if (!want) rt_fatal("XC2_LANG '%s' is not a Switch language code the game knows", code);
+        if (!want) {
+            const char *got = shipped_fallback();
+            static int logged;
+            if (!logged) {
+                logged = 1;
+                rt_log("oe: XC2_LANG '%s' is not a language the game has; the game runs in %s", code, got);
+            }
+            return got;
+        }
     } else {
         const char *tag = cfg_get("XC2_LOCALE");
         char sys[85] = "en-US";

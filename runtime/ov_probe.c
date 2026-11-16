@@ -278,7 +278,9 @@ static void probe_oe(void) {
         // a language the installed release lacks becomes its default: en-US on US, ja on JP
         {NULL, "ja-JP", US, "en-US"}, {NULL, "zh-TW", US, "en-US"}, {NULL, "ko-KR", US, "ko"}, {"de", NULL, US, "de"},
         {NULL, "en-US", JP, "ja"}, {"fr", NULL, JP, "ja"}, {NULL, "zh-HK", JP, "zh-TW"}, {"zh-Hans", NULL, JP, "zh-CN"},
-        {NULL, "de-DE", "zh-CN,ko", "zh-CN"}};
+        {NULL, "de-DE", "zh-CN,ko", "zh-CN"},
+        // codes earlier versions offered (still in old xc2.ini files) and typos run in the release default
+        {"ru", NULL, US, "en-US"}, {"nl", NULL, NULL, "en-US"}, {"pt-BR", "fr-FR", JP, "ja"}, {"xx", NULL, US, "en-US"}};
     int bad = 0;
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         set_env("XC2_LANG", cases[i].lang);
