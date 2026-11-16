@@ -128,12 +128,13 @@ def main():
     for kind in sorted(set(times['base']) | set(times['cand'])):
         b, c = times['base'].get(kind), times['cand'].get(kind)
         cb, cc = cover['base'].get(kind), cover['cand'].get(kind)
-        if b and c and len(b) == len(c) == a.rounds and cb == cc and len(cb) == 1:   # the same calls replayed each time
+        # the same calls each time: every round of both ran every call (a skip could leave out different calls)
+        if b and c and len(b) == len(c) == a.rounds and cb == cc and len(cb) == 1 and next(iter(cb))[1] == 0:
             mb, mc = statistics.median(b), statistics.median(c)
             print(f'  {kind:10} base {mb:8.3f}  cand {mc:8.3f}' + (f'  cand/base {mc / mb:.3f}' if mb else ''))
             compared += 1
         else:
-            print(f'  {kind:10} not the same calls replayed in every round of both: no comparison')
+            print(f'  {kind:10} calls skipped or not replayed in every round of both: no comparison')
     if not compared:
         sys.exit('callbench: no kind of call ran in both benches')
     sys.exit(1 if differ['cand'] else 0)
