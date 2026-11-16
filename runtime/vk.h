@@ -256,6 +256,7 @@ void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU wri
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void *cap);
+int vk_mem_shadow_captures(void);   // shadow storage with submit-time captures (XC2_SHADOW_CAPTURE)
 int vk_mem_snapshots(void);   // the mirrors with staged captures are on: every buffer read can be a submit-time copy
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);
@@ -406,6 +407,9 @@ uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size);   // newest recor
 uint64_t vk_texture_stale_refusals(void);   // GPU-written sources of another shape refused by a new texture (entry_of), since start
 void vk_texture_write_back(uint64_t addr, uint64_t size);   // writes those images back into their storage (waits)
 void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc);   // vk_pool_fini: drop the images there
+// Waits until every deswizzle uploads deferred to the helper threads (XC2_TEX_ASYNC) has written its staging buffer;
+// vk_upload_flush calls it before submitting the batch. Any thread.
+void vk_texture_jobs_wait(void);
 void vk_texture_stats(uint64_t *images, uint64_t *uploads, uint64_t *reuploads);
 // Entries now, live and released (TextureFinalize, kept until sweep_released), with the bytes of their own memory
 // (images not bound into pool memory).
@@ -453,6 +457,17 @@ void rdoc_after_present(uint64_t frame);
 void vk_present_drain(void);               // returns once every queued present was submitted to gfx_queue
 int vk_replay_async(void);                 // XC2_REPLAY_ASYNC (default: vk_mem_snapshots): submissions replay on the replay thread
 void vk_program_release(const prog_t *p);  // GfxBackend.program_release: vk_pipeline.c; weak no-op in vk_backend.c
+// A program the game released while queued submissions may still read it (vk_backend.c, vk_be_program_release): a
+// host copy of the object, its control sections and its code, which the replay of those submissions binds instead.
+// p.magic is VK_PROG_COPY_MAGIC; p.sd[i].control points into the copy, p.sd[i].data stays the guest address (the
+// GPU reads c1 constants there through the submit-time captures), code[i] is the copy of the code there.
+#define VK_PROG_COPY_MAGIC 0x59504f43u
+typedef struct { prog_t p; const prog_t *orig; uint64_t need; const uint8_t *code[6]; } VkProgCopy;
+// Replay thread: the program a bind of p means in the submission being replayed, the copy or p itself.
+const prog_t *vk_prog_resolve(const prog_t *p);
+// Replay thread, between ops: when a copy was made since the last call, *bound becomes what it now resolves to and
+// the copying call is told (it waits for that, since the op before may have read the program itself).
+void vk_prog_between_ops(const prog_t **bound);
 void vk_backend_shutdown(void);            // presents, vk_sync_shutdown, vk_mem_shutdown, vk_shutdown in that order
 
 // ---- pipelines (vk_pipeline.c)

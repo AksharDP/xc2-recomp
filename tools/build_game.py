@@ -132,6 +132,13 @@ def use_lto(jobs):
                                '"-Wl,--thinlto-cache-dir=$builddir/lto-cache"']
 
 
+# A profile in this place (ignored by git: a profile is the game's own code paths, counted) is used by every v301 build
+# that names no other and passes no --no-pgo, so a player who trained one (--pgo-generate, play, llvm-profdata merge)
+# keeps it in each rebuild without the flag. A held-out recording of the user's play (8 rounds, 2026-11-15) ran 0.63 ms
+# faster per frame (se 0.25) with a profile of three other recordings.
+DEFAULT_PGO = ROOT / 'build' / 'pgo' / 'default.profdata'
+
+
 def use_pgo(generate, profdata):
     """Profile-guided optimization of the generated code, in two builds. --pgo-generate instruments the generated code
     and links the profile runtime; the game writes LLVM_PROFILE_FILE (default default_%m.profraw in the working
@@ -1077,7 +1084,9 @@ def main():
                      help='instrument the generated C for profile-guided optimization; the game writes LLVM_PROFILE_FILE '
                           'at exit (see use_pgo)')
     pgo.add_argument('--pgo-use', type=Path, metavar='PROFDATA',
-                     help='compile the generated C with this profile (llvm-profdata merge of --pgo-generate runs)')
+                     help='compile the generated C with this profile (llvm-profdata merge of --pgo-generate runs); default '
+                          f'{DEFAULT_PGO.relative_to(ROOT).as_posix()} when that file exists')
+    pgo.add_argument('--no-pgo', action='store_true', help=f'do not use {DEFAULT_PGO.relative_to(ROOT).as_posix()}')
     ap.add_argument('--allow-stale-translator', action='store_true',
                     help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
@@ -1142,6 +1151,10 @@ def main():
     if args.pgo_generate and args.runtime_lib:
         # The prebuilt library was compiled without XC2_PGO_GENERATE, so plat_exit would never write the profile
         sys.exit('--pgo-generate needs the runtime compiled here, not --runtime-lib')
+    if not (args.pgo_generate or args.pgo_use or args.no_pgo or args.make_runtime_lib) and DEFAULT_PGO.is_file() \
+            and args.version == 'v301':
+        args.pgo_use = DEFAULT_PGO
+        print(f'build_game: profile-guided optimization with {flag_path(DEFAULT_PGO)} (--no-pgo builds without it)')
     if args.pgo_generate or args.pgo_use:
         use_pgo(args.pgo_generate, args.pgo_use.resolve() if args.pgo_use else None)
     if args.make_runtime_lib:

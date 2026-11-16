@@ -23,20 +23,30 @@
 // wrote the original software. If you use this software in a product, an acknowledgment in the product documentation
 // would be appreciated but is not required. 2. Altered source versions must be plainly marked as such, and must not be
 // misrepresented as being the original software. 3. This notice may not be removed or altered from any source
-// distribution. (Jean-loup Gailly, Mark Adler.) Altered: guest struct layouts, guest message pointers, and the host
-// call wrapper, stats and check mode around it.
+// distribution. (Jean-loup Gailly, Mark Adler.) Altered: guest struct layouts, guest message pointers, the copy of a
+// match from the output (fills and words instead of bytes, the same bytes written), and the host call wrapper, stats
+// and check mode around it.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
+// tests/callbench compiles this file with CALLBENCH defined: inflate_fast alone, without the host call around it.
+#ifdef CALLBENCH
+#define OV_INFLATE_KERNEL 1
+#else
+#include "callcap.h"
 #include "cfg.h"
 #include "host.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
 #endif
-
 #ifdef RT_PATCH_PAGE
+#define OV_INFLATE_KERNEL 1
+#endif
+#endif
+
+#ifdef OV_INFLATE_KERNEL
 
 #define GUEST_INFLATE_FAST 0x70008acf00ull   // 3.0.1 main: inflate_fast (only 3.0.1 and 3.0.0 JP have the patch site)
 #define HOST_INFLATE_FAST (RT_PATCH_PAGE + 0xfd0)
@@ -207,17 +217,30 @@ static void inflate_fast(uint64_t strm_a, unsigned start) {
                         if (len > 1) *++out = *++from;
                     }
                 } else {
-                    from = out - dist;   // copy from the output; the minimum length is three
-                    do {
-                        *++out = *++from;
-                        *++out = *++from;
-                        *++out = *++from;
-                        len -= 3;
-                    } while (len > 2);
-                    if (len) {
-                        *++out = *++from;
-                        if (len > 1) *++out = *++from;
+                    // Copy from the output; the minimum length is three. zlib copies a byte at a time, and with a
+                    // distance of 1 (a quarter of the match bytes in XC2's archives) each byte waits for the store
+                    // before it. Altered: a fill for distance 1 and whole words from 8 on; the bytes written are the
+                    // same and none past out + len.
+                    uint8_t *o = out + 1;
+                    const uint8_t *s = o - dist;
+                    if (dist >= 8) {
+                        if (len >= 8) {   // words, the last one ending exactly at o + len
+                            uint8_t *stop = o + len;
+                            do { memcpy(o, s, 8); o += 8; s += 8; } while (o + 8 <= stop);
+                            memcpy(stop - 8, stop - 8 - dist, 8);
+                        } else if (len >= 4) {   // two words of 4 that overlap
+                            memcpy(o, s, 4);
+                            memcpy(o + len - 4, s + len - 4, 4);
+                        } else {
+                            o[0] = s[0]; o[1] = s[1]; o[2] = s[2];
+                        }
+                    } else if (dist == 1) {
+                        memset(o, s[0], len);
+                    } else {   // 2 to 7: each byte may be one this copy wrote
+                        unsigned k = 0;
+                        do o[k] = s[k]; while (++k < len);
                     }
+                    out += len;
                 }
             } else if ((op & 64) == 0) {   // second-level distance code
                 here = dcode[here.val + (hold & ((1U << op) - 1))];
@@ -254,6 +277,7 @@ static void inflate_fast(uint64_t strm_a, unsigned start) {
     wr32(st + ST_BITS, bits);
 }
 
+#ifndef CALLBENCH
 static struct {
     uint64_t calls, out, ns, guest_ns, checked, mismatches;
 } S;
@@ -322,6 +346,47 @@ static void check_call(Cpu *c, uint64_t strm_a, unsigned start) {
     count(made, ns);
 }
 
+// XC2_CALLCAP (callcap.h CC_INFLATE): the call's inputs, inflate_fast run on them and timed, and its result.
+static void capture_call(uint64_t strm_a, unsigned start) {
+    GStream *strm = (GStream *)(uintptr_t)strm_a;
+    uint64_t st = strm->state;
+    uint32_t made = start - strm->avail_out;
+    CcInflateIn in = {start, strm->avail_in, strm->avail_out, rd32(st + ST_BITS), rd32(st + ST_WSIZE), rd32(st + ST_WHAVE),
+                      rd32(st + ST_WNEXT), rd32(st + ST_LENBITS), rd32(st + ST_DISTBITS), rd32(st + ST_SANE),
+                      made < 32768 ? made : 32768, 0, rd64(st + ST_HOLD)};
+    in.window_n = rd64(st + ST_WINDOW) ? in.wsize : 0;
+    uint64_t out0 = strm->next_out;
+    // The inputs before the call: it consumes the input and may write over the window's bytes it reads.
+    CcBlob b[7] = {{&in, sizeof in},
+                   {(const void *)(uintptr_t)rd64(st + ST_LENCODE), 4 * CC_LCODES},
+                   {(const void *)(uintptr_t)rd64(st + ST_DISTCODE), 4 * CC_DCODES},
+                   {(const void *)(uintptr_t)rd64(st + ST_WINDOW), in.window_n},
+                   {(const void *)(uintptr_t)(out0 - in.back), in.back},
+                   {(const void *)(uintptr_t)strm->next_in, in.avail_in}};
+    uint64_t total = 0;
+    for (int i = 0; i < 6; i++) total += b[i].n;
+    uint8_t *copy = malloc(total ? total : 1);
+    if (!copy) {
+        uint64_t t0 = kern_now_ns();
+        inflate_fast(strm_a, start);
+        count(in.avail_out - strm->avail_out, kern_now_ns() - t0);
+        return;
+    }
+    for (uint64_t i = 0, o = 0; i < 6; o += b[i].n, i++) {
+        if (b[i].n) memcpy(copy + o, b[i].p, b[i].n);
+        b[i].p = copy + o;
+    }
+    uint64_t t0 = kern_now_ns();
+    inflate_fast(strm_a, start);
+    uint64_t ns = kern_now_ns() - t0;
+    CcInflateOut out = {strm->avail_in, strm->avail_out, rd32(st + ST_BITS), rd32(st + ST_MODE), rd64(st + ST_HOLD),
+                        cc_hash((const void *)(uintptr_t)out0, in.avail_out - strm->avail_out)};
+    b[6] = (CcBlob){&out, sizeof out};
+    callcap_add(CC_INFLATE, ns, b, 7);
+    free(copy);
+    count(in.avail_out - strm->avail_out, ns);
+}
+
 // x0 strm, w1 start (inflate's avail_out on entry).
 static void inflate_fast_host(Cpu *c) {
     uint64_t strm_a = c->x[0];
@@ -330,6 +395,8 @@ static void inflate_fast_host(Cpu *c) {
     if (d) __atomic_store_n(d, *d + 1, __ATOMIC_RELAXED);
     if (check_mode()) {
         check_call(c, strm_a, start);
+    } else if (callcap_on()) {
+        capture_call(strm_a, start);
     } else {
         uint32_t avail = ((GStream *)(uintptr_t)strm_a)->avail_out;
         uint64_t t0 = kern_now_ns();
@@ -344,5 +411,6 @@ static void inflate_fast_host(Cpu *c) {
 }
 
 __attribute__((constructor)) static void inflate_register(void) { rt_register_host(HOST_INFLATE_FAST, inflate_fast_host); }
+#endif   // CALLBENCH
 
 #endif

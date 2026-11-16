@@ -603,6 +603,19 @@ void vk_exec_image_gone(VkImage image) {
 typedef struct { uint64_t serial; int stage; int used; GfxShaderAnswers a; const GfxShader *s; } ShaderEnt;
 static ShaderEnt shader_tab[SHADER_SETS][SHADER_WAYS];
 
+// The code of stage entry i for the CPU to read: a released program's copy holds its own (VkProgCopy).
+static const uint8_t *stage_code(const prog_t *p, uint32_t i) {
+    return p->magic == VK_PROG_COPY_MAGIC ? ((const VkProgCopy *)p)->code[i] : (const uint8_t *)(uintptr_t)p->sd[i].data;
+}
+
+// The guest address of the code find_stage returned, which the GPU reads (through the submit-time captures).
+static uint64_t stage_code_addr(const prog_t *p, const uint8_t *code) {
+    if (p->magic == VK_PROG_COPY_MAGIC)
+        for (uint32_t i = 0; i < p->nstage && i < 6; i++)
+            if (((const VkProgCopy *)p)->code[i] == code) return p->sd[i].data;
+    return (uint64_t)(uintptr_t)code;
+}
+
 static int find_stage_scan(const prog_t *p, int nvn_stage, const uint8_t **ctl, const uint8_t **code, uint32_t *len) {
     for (uint32_t i = 0; i < p->nstage && i < 6; i++) {
         const uint8_t *c = p->sd[i].control;
@@ -611,7 +624,7 @@ static int find_stage_scan(const prog_t *p, int nvn_stage, const uint8_t **ctl, 
         memcpy(&st, c + 0x714, 4);
         if ((int)st != nvn_stage) continue;
         memcpy(len, c + 0x704, 4);
-        *ctl = c, *code = (const uint8_t *)(uintptr_t)p->sd[i].data;
+        *ctl = c, *code = stage_code(p, i);
         return 1;
     }
     return 0;
@@ -639,7 +652,7 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
     }
     int i = m->idx[nvn_stage];
     if (i < 0) return 0;
-    *ctl = p->sd[i].control, *code = (const uint8_t *)(uintptr_t)p->sd[i].data, *len = m->len[nvn_stage];
+    *ctl = p->sd[i].control, *code = stage_code(p, i), *len = m->len[nvn_stage];
     return 1;
 }
 
@@ -1014,16 +1027,29 @@ static int glow_c4(VkExec *ex, const p_bind_buf *b, uint64_t max, VkDescriptorBu
     int full = glow_full_on() && glow_prim == NVN_DRAW_PRIMITIVE_QUADS && fabs(pw - ow) <= 0.01 * ow &&
                fabs(ph - oh) <= 0.01 * oh;
     if (!half && !full) return 0;
-    uint8_t head[GLOW_HEAD];
-    if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
-    float x0, y1, x15, y16;
-    memcpy(&x0, head + 0x00, 4);
-    memcpy(&y1, head + 0x14, 4);
-    memcpy(&x15, head + 0xf0, 4);
-    memcpy(&y16, head + 0x104, 4);
-    // The entries read 2/output: doubled over the output size they are 1.
-    int data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
+    // The answer per block and snapshot generation. The snapshot arena is device memory the CPU reaches through the
+    // BAR, written sequentially and read uncached, and the draws of a pass at half the output bind one c4 block after
+    // another: the replay spent about 1 ms of a streaming frame reading the same 264 bytes for each. vk_usnap_gen
+    // changes at every submission and at every GPU write that drops snapshot bytes, so a kept answer was read from the
+    // bytes the draw would read. A block the snapshot lacks is read from guest memory each time, and not kept.
+    static struct { uint64_t addr, gen; int data; } memo[64];
+    uint64_t gen = vk_usnap_gen();
+    int k = (int)((b->addr >> 8) & 63), snap = vk_usnap_host(b->addr, GLOW_HEAD) != NULL, data;
+    if (snap && memo[k].addr == b->addr && memo[k].gen == gen) {
+        data = memo[k].data;
+    } else {
+        uint8_t head[GLOW_HEAD];
+        if (!glow_read(b->addr, GLOW_HEAD, head)) return 0;
+        float x0, y1, x15, y16;
+        memcpy(&x0, head + 0x00, 4);
+        memcpy(&y1, head + 0x14, 4);
+        memcpy(&x15, head + 0xf0, 4);
+        memcpy(&y16, head + 0x104, 4);
+        // The entries read 2/output: doubled over the output size they are 1.
+        data = fabs((double)x0 * ow / 2 - 1) < 1e-3 && fabs((double)x15 * ow / 2 - 1) < 1e-3 &&
                fabs((double)y1 * oh / 2 - 1) < 1e-3 && fabs((double)y16 * oh / 2 - 1) < 1e-3;
+        if (snap) memo[k].addr = b->addr, memo[k].gen = gen, memo[k].data = data;
+    }
     if (!data) return 0;
     double sx = ow / 1280.0, sy = oh / 720.0;
     // Each distinct target size is logged once (the first 16), so stderr.txt lists what was scaled.
@@ -1095,7 +1121,20 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
-            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
+            uint64_t guest = stage_code_addr(ex->prog, code);
+            if (c1 < len && guest != (uint64_t)(uintptr_t)code) {
+                // A released program's copy (vk_prog_resolve): the game may have reused the guest code range since,
+                // so the constants come from the copied code, not from the range bind_range would read.
+                uint64_t n = len - c1 < max ? len - c1 : max;
+                VkBuffer buf;
+                VkDeviceSize off;
+                RS.volatile_ = 1;   // a new scratch offset per draw, as bind_range's copies
+                uint8_t *dst = scratch(ex, n, &buf, &off);
+                memcpy(dst, code + c1, n);
+                count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, n);
+                return (VkDescriptorBufferInfo){buf, off, n};
+            }
+            if (c1 < len && bind_range(ex, stage_code_addr(ex->prog, code) + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
                 return bi;
         }
     } else if (slot >= 3 && slot - 3 < 18) {
@@ -2325,6 +2364,8 @@ static int pipe_memo_on(void) {
     return PM.on;
 }
 
+static const GfxShader *draw_vs;   // the vertex shader of the draw prepare_draw last set up (quad_split)
+
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     glow_prim = prim;
@@ -2400,6 +2441,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (fbl == FB_SKIP) return 0;   // a copy this draw samples could not be had: it is not made (feedback_snapshot)
     VkPipeState s = ex->pipe;
     s.vs = vs, s.fs = fs;
+    draw_vs = vs;
     s.feedback = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0));
     s.prim = (uint8_t)prim;
     s.depth_minus_w = (uint8_t)(nvn_depth_minus_w() != 0);
@@ -2547,6 +2589,108 @@ static void xfb_end(VkExec *ex, const VkMemSpan *sp, uint64_t bytes) {
     ex->xfb_written += bytes;
 }
 
+// The XC2_QUAD_SPLIT setting: the subdivision (2..64), or 0 when it is off. Read once.
+static int quad_split_n(void) {
+    static int split = -1;
+    if (split < 0) {
+        const char *e = cfg_get("XC2_QUAD_SPLIT");
+        split = e ? atoi(e) : 0;
+        if (split < 2) split = 0;
+        if (split > 64) split = 64;
+        if (split) rt_log("vk: XC2_QUAD_SPLIT=%d: small position-only quad draws are subdivided", split);
+    }
+    return split;
+}
+
+// XC2_QUAD_SPLIT=<n> (experiment, 2..64, default off): a quad draw of 4 to 16 quads whose vertex shader
+// reads only a float3 position at location 0 is drawn as an n x n grid of triangles per quad, the grid's positions
+// blended from the quad's corners (exact for a flat quad). XC2's cloud sea composite (prog of vs 3e88e05082ee22fc) draws
+// the whole sea surface as 6 such quads tens of thousands of units wide, partly behind the camera; on Mesa GPUs the
+// attributes interpolated across those triangles move with the game's sub-pixel camera jitter, and the sea's distance
+// and colour shimmer. corner holds the 4 * q vertex numbers (base vertex added). Returns 0 when the draw does not
+// qualify (the caller draws it as two triangles per quad). The corner positions are read here, when the command buffer
+// is recorded, not when the GPU runs the draw: a position buffer the game rewrites between the record and the submit
+// gives the positions it held at record time, which is the same for the static sea this is for.
+static int quad_split(VkExec *ex, const uint32_t *corner, uint32_t q, uint32_t inst, uint32_t base_instance) {
+    int split = quad_split_n();
+    if (!split || q < 4 || q > 16 || inst != 1) return 0;
+    static int rej;
+#define QS_NO(...) do { if (q > 1 && rej < 12) rej++, rt_log("vk: quad split skips %u quads of prog %llu: " __VA_ARGS__); return 0; } while (0)
+    // The vertex format first: it is a load, and most quad draws (the UI's) fail it; the shader's inputs are a walk.
+    unsigned long long pg = ex->prog ? ex->prog->serial : 0;
+    va_st va;
+    memcpy(&va, &ex->pipe.vattr[0], sizeof va);
+    if (va.fmt != 0x22 || va.stream >= 16) QS_NO("format %#x stream %u", q, pg, (unsigned)va.fmt, (unsigned)va.stream);
+    static const GfxShader *last_vs;   // the last vertex shader asked and its answer: the sea draws repeat each frame
+    static uint32_t last_in;
+    static int last_sys;
+    if (draw_vs != last_vs) {
+        GfxShaderIo io[32];
+        last_in = draw_vs ? gfx_shader_inputs(draw_vs, io) : 0;
+        last_sys = draw_vs ? gfx_shader_builtin_inputs(draw_vs) : 1;
+        last_vs = draw_vs;
+    }
+    uint32_t in = last_in;
+    // A builtin input (VertexIndex and the like) has no Location, so the mask above does not show it: a shader that reads
+    // the vertex number would see different numbers on the grid's vertices, so such a draw keeps the normal path.
+    if (in != 1u || last_sys) QS_NO("inputs %#x%s", q, pg, in, last_sys ? " with a builtin input" : "");
+    // A position stream with a divisor is read per instance, so every vertex of the draw sees one position; the grid
+    // would read the corners per vertex instead and draw a different shape.
+    if (ex->pipe.vstream[va.stream].divisor) QS_NO("stream %u has divisor %u", q, pg, (unsigned)va.stream,
+                                                   (unsigned)ex->pipe.vstream[va.stream].divisor);
+    uint32_t vs = ex->pipe.vstream[va.stream].stride;
+    uint64_t vbase = ex->vbuf[va.stream].address;
+    if (vs < va.offset + 12 || !vbase || nvn_gpu_only(vbase))
+        QS_NO("stride %u offset %u base %#llx gpu-only %d", q, pg, vs, (unsigned)va.offset, (unsigned long long)vbase, vbase ? nvn_gpu_only(vbase) : -1);
+    // The corners are read on the CPU: their bytes must be backed by CPU-visible memory and lie in the bound range, as
+    // bind_vertex_buffers resolves the stream (a device-local or unbacked stream keeps the normal path).
+    uint32_t maxc = 0;
+    for (uint32_t i = 0; i < 4 * q; i++)
+        if (corner[i] > maxc) maxc = corner[i];
+    uint64_t need = (uint64_t)maxc * vs + va.offset + 12, bound = ex->vbuf[va.stream].size;
+    VkMemSpan sp;
+    if (!vk_mem_resolve(vbase, need, &sp) || sp.alloc || sp.avail < need || (bound && bound < need))
+        QS_NO("corners up to %#llx bytes past %#llx are not in CPU-visible bound memory", q, pg, (unsigned long long)need,
+              (unsigned long long)vbase);
+#undef QS_NO
+    uint32_t g = (uint32_t)split + 1, nv = q * g * g, ni = q * (uint32_t)split * (uint32_t)split * 6;
+    VkBuffer vb, ib;
+    VkDeviceSize vo, io_;
+    uint8_t *v = scratch(ex, (uint64_t)nv * vs, &vb, &vo);
+    memset(v, 0, (size_t)nv * vs);
+    for (uint32_t k = 0; k < q; k++) {
+        float c[4][3];
+        for (int j = 0; j < 4; j++)
+            memcpy(c[j], (const void *)(uintptr_t)(vbase + (uint64_t)corner[4 * k + (uint32_t)j] * vs + va.offset), 12);
+        for (uint32_t y = 0; y < g; y++)
+            for (uint32_t x = 0; x < g; x++) {   // u from corner 0 to 1, w from 1 to 2 (corners 0, 1, 2, 3 in order)
+                double u = (double)x / split, w = (double)y / split;
+                float p[3];
+                for (int a = 0; a < 3; a++)
+                    p[a] = (float)((1 - u) * (1 - w) * c[0][a] + u * (1 - w) * c[1][a] + u * w * c[2][a] + (1 - u) * w * c[3][a]);
+                memcpy(v + (size_t)(k * g * g + y * g + x) * vs + va.offset, p, 12);
+            }
+    }
+    uint32_t *ix = (uint32_t *)scratch(ex, (uint64_t)ni * 4, &ib, &io_);
+    uint32_t m = 0;
+    for (uint32_t k = 0; k < q; k++)
+        for (uint32_t y = 0; y < (uint32_t)split; y++)
+            for (uint32_t x = 0; x < (uint32_t)split; x++) {   // the winding of (0, 1, 2), (0, 2, 3)
+                uint32_t a = k * g * g + y * g + x, b = a + 1, cc = a + g + 1, dd = a + g;
+                ix[m++] = a, ix[m++] = b, ix[m++] = cc, ix[m++] = a, ix[m++] = cc, ix[m++] = dd;
+            }
+    VkDeviceSize sz = (VkDeviceSize)nv * vs, st = vs;
+    vkCmdBindVertexBuffers2(ex->cb, va.stream, 1, &vb, &vo, &sz, vk_pipeline_vertex_input_dynamic() ? NULL : &st);
+    vkCmdBindIndexBuffer(ex->cb, ib, io_, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(ex->cb, ni, 1, 0, 0, base_instance);
+    ex->recorded += 3;
+    B.vb_valid = 0;   // the next draw binds the game's vertex buffers again
+    static int told;
+    if (told < 8) told++, rt_log("vk: quad split: %u quads of prog %llu into %u triangles", q,
+                                 (unsigned long long)(ex->prog ? ex->prog->serial : 0), ni / 3);
+    return 1;
+}
+
 static void op_draw(VkExec *ex, const p_draw *d) {
     c0_binst = (uint32_t)d->base_instance;
     if (d->count <= 0 || (ex->xfb_active && !xfb_draw_ok(d->prim, 0)) || !prepare_draw(ex, d->prim, d->count, 0)) return;
@@ -2561,7 +2705,13 @@ static void op_draw(VkExec *ex, const p_draw *d) {
         xfb_end(ex, &sp, bytes);
         return;
     }
-    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
+    uint32_t qc[64];
+    int split_try = d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4 && n / 4 <= 16 && quad_split_n();
+    if (split_try) {
+        for (uint32_t i = 0; i < n / 4 * 4; i++) qc[i] = first + i;
+    }
+    if (split_try && quad_split(ex, qc, n / 4, inst, (uint32_t)d->base_instance)) {
+    } else if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && n >= 4) {   // quads become two triangles each
         uint32_t q = n / 4;
         uint32_t *ix = malloc(sizeof *ix * 6 * q);
         if (!ix) rt_fatal("vk: out of memory");
@@ -2621,9 +2771,17 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         if (!q) return;
         vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
         vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, 24ull * q);
-        uint32_t *ix = malloc(sizeof *ix * 6 * (size_t)q);
-        if (!ix) rt_fatal("vk: out of memory");
         const void *src = (const void *)(uintptr_t)d->ibuf;
+        if (q <= 16 && quad_split_n()) {
+            uint32_t qc[64];
+            for (uint32_t i = 0; i < 4 * q; i++)
+                qc[i] = (uint32_t)d->base_vertex + (d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE ? ((const uint8_t *)src)[i]
+                                                  : d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? ((const uint16_t *)src)[i]
+                                                  : ((const uint32_t *)src)[i]);
+            if (quad_split(ex, qc, q, d->instances > 0 ? (uint32_t)d->instances : 1, (uint32_t)d->base_instance)) return;
+        }
+        uint32_t *ix = malloc(sizeof *ix * 6 * (size_t)q);   // after quad_split, which needs none
+        if (!ix) rt_fatal("vk: out of memory");
         for (uint32_t i = 0; i < q; i++) {
             static const uint8_t k[6] = {0, 1, 2, 0, 2, 3};
             for (int j = 0; j < 6; j++) {
@@ -2859,7 +3017,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_BIND_PROGRAM: {
         const p_bind_program *b = payload;
-        ex->prog = b->prog, ex->prog_stages = b->stages;
+        ex->prog = vk_prog_resolve(b->prog), ex->prog_stages = b->stages;   // a released program's copy
         bind_gen++;
         break;
     }

@@ -906,6 +906,10 @@ static uint64_t n_parts, n_subs;
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
         split_n = cfg_int("XC2_SPLIT_DRAWS");
+        // With shadow-storage captures the replay has a thread of its own, and each part is a submit ioctl on its
+        // time: on the Steam Deck (RADV) a quarter of the replay thread was in ioctl, and one part per submission gave
+        // 57.5 fps against 55.5 over a moving camera in town, with no worse frames. Set XC2_SPLIT_DRAWS to split anyway.
+        if (!cfg_is_set("XC2_SPLIT_DRAWS") && vk_mem_shadow_captures()) split_n = 0;
         if (split_n < 0) split_n = 0;
         int us = cfg_int("XC2_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
@@ -929,6 +933,7 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
             rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
         const void *a = nvn_op_payload(h);
+        vk_prog_between_ops(&ex->prog);   // a program released meanwhile: its copy from here on
         switch (h->op) {
         case OP_END: return;
         case OP_BEGIN: break;
@@ -1036,6 +1041,7 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
     ex->cb = cb;
     ex->fence = fence;
+    ex->prog = vk_prog_resolve(ex->prog);   // the program carried over, as this submission sees it
     ex->recorded = 0;
     ex->in_pass = 0;
     ex->dirty = VK_EXEC_DIRTY_ALL;

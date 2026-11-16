@@ -119,7 +119,8 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    ```
    Train on play that covers the scenes you care about (an `XC2_INPUT_RECORD` recording replays the same play); the
    instrumented game runs at about half speed. After the generated C changes, train again: functions the old profile
-   does not know get no profile.
+   does not know get no profile. A profile saved as `build\pgo\default.profdata` is used by every v301 build that
+   names no other, so it stays on through rebuilds; `--no-pgo` builds without it.
    `--patches` builds in the frame-rate, resolution and other patch sets, switchable at run time. The link copies
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
 
@@ -234,6 +235,22 @@ to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; fa
 For XC2 (`v301`) the census reads the shader archives in `bf2.ard`: the engine's `.wishp` libraries by default,
 models and effects too with `--all`.
 `tools\xlate_smoke.py` checks the translator alone, without game files.
+
+### Timing runtime functions without the game
+
+With `XC2_CALLCAP=<folder>` the game records, for each frame over `XC2_CALLCAP_MS` (default 10) ms, the calls that
+frame made to `inflate_fast` (the host zlib loop), `nvn_deswizzle`, the write-watch query of the mirror capture and
+`mem_copy_par`: each call's inputs, its time and its result (or a hash of it), one `.ccap` file per frame
+(`runtime/callcap.h` has the format). It stops after `XC2_CALLCAP_FILES` (default 300) files; a frame holds at most
+`XC2_CALLCAP_MB` (default 256) MiB. Capturing copies and hashes every input, so frames run slower while it is on, and
+the files hold game data: keep them under `build/`.
+
+`python tools\callbench.py <folder>` compiles `tests\callbench\callbench.c` with this checkout's runtime code and replays
+every call: the time per frame there, the time the game measured, and how many results differ from the game's (any is
+a failure, exit 1). `--runtime <dir or git rev>` builds from another runtime; `--base <rev> --cand <rev>` runs both in
+alternate rounds and compares the median per kind, so a change to one of these functions is judged on the game's own
+data in seconds. Copies are replayed on cold buffers of the captured size and alignment (the bytes are not recorded),
+and write-watch queries on a region of the captured size with the same pages written.
 
 ## Reverse engineering (optional)
 
