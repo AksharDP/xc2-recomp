@@ -138,6 +138,14 @@ site xc2res main 833090 sha:09434673fdbacb66 2d410be0 @page:x8 bd408903 1e230800
 # free until main+0x833084, and s3 is not read again before main+0x833094 writes it.
 site xc2res main 83303c sha:ced4720d09bbcb83 1e233821 @page:x8 bd408904 1e240821
 site xc2res main 833070 sha:6b6ffaeb00aaefe0 1e203820 @page:x9 bd408923 1e230800
+# Speech balloons on the field (issue 47): the game keeps an interface object's rectangle in the interface's 1280x720
+# units, and the clamp that keeps a balloon inside the screen (main+0x697a54, called from main+0x6862c4) takes the
+# screen from the layout library's screen size (main+0x8269ec width, main+0x826a04 height), which is the frame's.
+# Above 1280x720 the balloon could run past the right and bottom edges: 1920 units of room at 1920x1080, where only
+# 1280 are on screen. The conversions of the two sizes to integers read the page's +0x80/+0x84 (the interface size,
+# as for the markers above) instead. Each fcvtzs wrote w8, as the load does, and the getters' s0 is not read after.
+site xc2res main 697a94 sha:372d2d31a82e7a44 @page:x8 b9408108
+site xc2res main 697ab4 sha:6dc6f3c2ab1239d4 @page:x8 b9408508
 site xc2res main 6c2bd8 sha:2b4fceb6018b7f4f @page:x9 b9408129
 site xc2res main 6c2be8 sha:673c02dc4db9f003 @page:x10 b940854a
 site xc2res main 6c2bf8 sha:720baacc72f3a511 @page:x10 b940854a
