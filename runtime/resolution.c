@@ -136,6 +136,23 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
 }
 void res_heapdef_served(void) {}
 
+// A game resolution wider than 16:9 (patches-v301.txt, set xc2wide): the layout library fits the 1280x720 design by
+// height and holds its left edge on the screen's, so the interface filled a 16:9 region at the left. +0x8c is the left
+// edge in clip space for the design centred instead, -1280 * fit / width (-1 at 16:9). Markers on the 3D scene move
+// with it and miss their objects, so XC2_HUD_CENTER is off by default (patches-v301.txt). At 16:9 and narrower shapes
+// the set stays off: the fit is by width there and the left edge is already the screen's.
+static void wide_hud(uint8_t *page) {
+    int set = rt_patch_set("xc2wide");
+    if (set < 0) return;
+    int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W;
+    float left = wide ? (float)(-(double)XC2_W * X.h / XC2_H / X.w) : -1.0f;
+    memcpy(page + 0x8c, &left, sizeof left);
+    int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
+    rt_patch_switch(set, on);
+    if (on) rt_log("resolution: interface centred in the %ux%u frame (XC2_HUD_CENTER=1; markers sit right of their objects)", X.w, X.h);
+    else if (wide) rt_log("resolution: interface at the left of the %ux%u frame, as the game places it", X.w, X.h);
+}
+
 static int xc2_res_init(void) {
     uint8_t *page = rt_patch_page();
     if (!xc2_decide() || !page) return 0;
@@ -148,6 +165,7 @@ static int xc2_res_init(void) {
     memcpy(page + 0x70, v, sizeof v);
     float pivot = (float)XC2_H / X.h;   // +0x88: rotated interface panes' pivot back in interface units
     memcpy(page + 0x88, &pivot, sizeof pivot);
+    wide_hud(page);
     R.xc2 = 1;
     R.on = X.w != XC2_W || X.h != XC2_H;
     rt_patch_switch(set, R.on);

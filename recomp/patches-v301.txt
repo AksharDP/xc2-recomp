@@ -203,6 +203,26 @@ site xc2res main 328d98 sha:7a9b8cb2e9b8523b 52805a00
 site xc2res main 329110 sha:447542af428abcce 5280a000
 site xc2res main 329120 sha:89126e7f267c2d70 52805a00
 
+# xc2wide (XC2_HUD_CENTER, resolution.c): the interface in the middle of a game resolution wider than 16:9 (21:9,
+# 32:9). The layout library fits its 1280x720 design to the frame by the smaller of width / 1280 and height / 720 (the
+# screen object at [[main+0xb84720]+0x58], filled by main+0x83919c: +0x558 the fit, +0x564 2 * fit and +0x568
+# -2 * fit * W / H, with positions divided by the frame width W), and each pane's matrix maps design x to the screen as
+# 2 * fit * x / W - 1. The -1 holds the design's left edge on the screen's, so on a wider frame the interface sat in a
+# 16:9 region at the left and the right of the screen was empty. The four builders of those matrices (main+0x829b94,
+# +0x82cbec, +0x82ef1c, +0x82f014) load the -1 from the page's +0x8c instead, -1280 * fit / W: the design's centre on
+# the screen's. x10 is free at each site (written or clobbered by a call before any read).
+# The builders draw text (main+0x82cbec) and pictures (main+0x82ef1c) of every layout alike, so markers on the 3D scene
+# (talk and shop icons, field balloons) move with the rest: they are placed across the camera viewport (page +0x80,
+# wider than 1280 here) with the left edge at 0, and under the centred interface they sit (viewport - 1280) / 2 units
+# right of their objects. The code that turns their projected positions into interface units is not found yet: the
+# world-to-screen (main+0x6c3aa0) is not on their path (an offset there moved none of them). Until it is, the set is
+# off by default; XC2_HUD_CENTER=1 turns it on, and at 16:9 and narrower shapes resolution.c leaves it off.
+set xc2wide XC2_HUD_CENTER 0
+site xc2wide main 829c1c sha:00c55613fdd90219 @page:x10 bd408d41
+site xc2wide main 82cd00 sha:eb04d7399bb85ba8 @page:x10 bd408d41
+site xc2wide main 82efc4 sha:bc09d16b1be02939 @page:x10 bd408d45
+site xc2wide main 82f144 sha:1163f8d0d7e07740 @page:x10 bd408d42
+
 # xc2scale (XC2_RENDER_SCALE, resolution.c): the share of the frame the 3D scene draws in. XC2 takes it from
 # /monolib/shader/lib_nx.ini, parsed by main+0x716e68: red_sclX/Y (1.0, +0x1928/+0x192c of the shader settings) and
 # red_hdsclX/Y (0.75 handheld, +0x193c/+0x1940) when red_Auto is off, and with red_Auto=on (shipped) a dynamic share
