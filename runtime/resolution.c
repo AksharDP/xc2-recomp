@@ -138,9 +138,12 @@ void res_heapdef_served(void) {}
 
 // A game resolution wider than 16:9 (patches-v301.txt, set xc2wide): the layout library fits the 1280x720 design by
 // height and holds its left edge on the screen's, so the interface filled a 16:9 region at the left. +0x8c is the left
-// edge in clip space for the design centred instead, -1280 * fit / width (-1 at 16:9). Markers on the 3D scene move
-// with it and miss their objects, so XC2_HUD_CENTER is off by default (patches-v301.txt). At 16:9 and narrower shapes
-// the set stays off: the fit is by width there and the left edge is already the screen's.
+// edge in clip space for the design centred instead, -1280 * fit / width (-1 at 16:9); the values after it place the
+// markers, stretch full-screen layers, keep captured panes (the minimap) in place and move the field HUD to the frame's
+// edges (patches-v301.txt). XC2_HUD_CENTER is off by default. At 16:9 and narrower shapes the set stays off: the fit is
+// by width there and the left edge is already the screen's.
+static uint8_t *hud_page;   // set while xc2wide is on
+
 static void wide_hud(uint8_t *page) {
     int set = rt_patch_set("xc2wide");
     if (set < 0) return;
@@ -160,10 +163,36 @@ static void wide_hud(uint8_t *page) {
     // the left edge): (1 + left) / 2, for the capture region of the minimap and other captured panes
     float bounds = wide ? (float)((1.0 + left) / 2) : 0.0f;
     memcpy(page + 0xa0, &bounds, sizeof bounds);
+    // +0xa4..+0xc4: edge anchoring in the field. An element whose origin lies more than 40 % of the design's half
+    // width from the middle moves by the full distance from the design's edge to the frame's (s_max, 1 + left in clip
+    // units); below 30 % it stays; in between the move grows linearly: shift(u) = sign(u) * min(s_max, max(0, |u| - a)
+    // * m). The compass at the top (its destination marker and name reach about 30 %) stays whole below the ramp, and
+    // the corner groups (minimap, clock, Blade Switch, the battle's party list and arts) lie past it and move whole.
+    // +0xb0 is 1 in the field and 0 in menus (res_hud_frame), +0xb4 counts the frame's full-width pictures. The marker
+    // callers place markers in interface units by the inverse, centred on 640: the same shape with the slope
+    // m / (1 + m) and the limits in interface units.
+    float h = -left, s_max = 1.0f - h, a = 0.3f * h, m = s_max / (0.1f * h), k = h / (XC2_W / 2.0f);
+    float anchor[9] = {a, m, s_max, 1.0f, 0.0f, XC2_W / 2.0f, a / k, m / (1.0f + m), s_max / k};
+    if (!wide) memset(anchor, 0, sizeof anchor);
+    memcpy(page + 0xa4, anchor, sizeof anchor);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
-    if (on) rt_log("resolution: interface centred in the %ux%u frame (XC2_HUD_CENTER=1)", X.w, X.h);
+    hud_page = on ? page : NULL;
+    if (on) rt_log("resolution: interface centred in the %ux%u frame, field HUD at its edges (XC2_HUD_CENTER=1)", X.w, X.h);
     else if (wide) rt_log("resolution: interface at the left of the %ux%u frame, as the game places it", X.w, X.h);
+}
+
+void res_hud_frame(void) {
+    if (!hud_page) return;
+    // +0xb4 sums the stretch minus one (+0x9c) of every full-width picture drawn, so it counts them. The field draws 1
+    // to 4 (fades and overlays), a menu 16 to 32 (its background, header and bars; the Skip Travel menu, measured):
+    // above 8 the interface stays a whole 16:9 block
+    float seen, unit, field;
+    memcpy(&seen, hud_page + 0xb4, sizeof seen);
+    memcpy(&unit, hud_page + 0x9c, sizeof unit);
+    field = seen > 8.0f * unit ? 0.0f : 1.0f;
+    memcpy(hud_page + 0xb0, &field, sizeof field);
+    memset(hud_page + 0xb4, 0, sizeof seen);
 }
 
 static int xc2_res_init(void) {
