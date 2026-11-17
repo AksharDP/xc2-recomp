@@ -138,6 +138,24 @@ static const char *switch_language(const char *tag) {
     return "en-US";
 }
 
+// XC2 turns the console's language into the folder of its text, "gb" for both English codes, and derives the names of
+// the images whose text is baked in from the same code: the D-pad help pages (mnu103_bhelp_1/2, chelp, fhelp_1/2), the
+// title logo, the chapter end cards. Those images ship as one set per language, suffixed _us, _fr, _ge, _it, _sp, _cn,
+// _kr and _tw, and the release has no _gb set, so with English (US) nothing matches and the game falls back to the
+// unsuffixed file, which is the Japanese one (GitHub issue 169). English is therefore reported as en-GB, the code whose
+// images this release ships; both English codes read the same "gb" text. The Japanese release has no en-GB text, so
+// nothing changes there.
+static const char *english_images(const char *code) {
+    if (strcmp(code, "en-US") || !ov_language_shipped("en-GB")) return code;
+    static int logged;
+    if (!logged) {
+        logged = 1;
+        rt_log("oe: English runs as en-GB: its baked-text images (the D-pad help pages, the title logo) ship as the "
+               "\"us\" set, which the game asks for under English (UK)");
+    }
+    return "en-GB";
+}
+
 // The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale), one the
 // installed game files have text for: a language they lack becomes shipped_fallback, as a console only offers a game
 // the languages it supports. XC2_LANG takes the codes of game_codes (and zh-Hans, zh-Hant for zh-CN, zh-TW); any other
@@ -148,7 +166,7 @@ const char *ov_language(void) {
     if (code && *code) {
         want = game_code(code);
         if (!want) {
-            const char *got = shipped_fallback();
+            const char *got = english_images(shipped_fallback());
             static int logged;
             if (!logged) {
                 logged = 1;
@@ -165,8 +183,8 @@ const char *ov_language(void) {
         }
         want = switch_language(tag);
     }
-    if (ov_language_shipped(want)) return want;
-    const char *got = shipped_fallback();
+    if (ov_language_shipped(want)) return english_images(want);
+    const char *got = english_images(shipped_fallback());
     static const char *logged;
     if (logged != want) {
         logged = want;
