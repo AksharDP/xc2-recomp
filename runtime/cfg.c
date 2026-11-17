@@ -121,7 +121,7 @@ static const CfgMeta metas[] = {
     {"MOUSE_SENS", "1", "0..10", LIVE},
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     // Advanced: scheduling
-    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"PACE", "grid", "grid|buffer", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART}, {"REPLAY_WORKERS", "0", "0..8", RESTART}, {"REPLAY_WORKER_REC", "1", "0|1", RESTART}, {"REPLAY_CUT_COUNTING", "1", "0|1", RESTART},
+    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"PACE", "grid", "grid|buffer", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART}, {"REPLAY_WORKERS", "2", "0..8", RESTART}, {"REPLAY_WORKER_REC", "1", "0|1", RESTART}, {"REPLAY_CUT_COUNTING", "1", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"CORE_FLOAT", "1", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     {"POWER_THROTTLING", "0", "0|1", RESTART},
     {"PROG_COPY", "1", "0|1", RESTART}, {"WAIT_SPIN_US", "30", "0..200", RESTART},

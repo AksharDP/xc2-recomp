@@ -1051,7 +1051,7 @@ static void views_release(VkExec *ex) {   // the transient views go with the sub
     ex->nviews = 0;
 }
 
-// ---- parallel parts (XC2_REPLAY_WORKERS=<n>, an experiment, default 0)
+// ---- parallel parts (XC2_REPLAY_WORKERS=<n>, default 2; 0 records every submission on the replay thread alone)
 // The ops of a submission are flattened into one list and walked once for their state alone (pre_op): the bound state,
 // render targets and fixed-function state each op leaves, without recording. Before a render target change (a pass
 // boundary) the list is cut into parts of about equal draw counts, each starting with a copy of that state. n worker
