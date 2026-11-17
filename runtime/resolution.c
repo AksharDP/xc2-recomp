@@ -147,9 +147,22 @@ static void wide_hud(uint8_t *page) {
     int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W;
     float left = wide ? (float)(-(double)XC2_W * X.h / XC2_H / X.w) : -1.0f;
     memcpy(page + 0x8c, &left, sizeof left);
+    // +0x90: how far the centred interface moved right, in interface units, (viewport width - 1280) / 2; the
+    // world-to-screen conversions of the markers subtract it so they stay on their objects
+    float shift = wide ? (float)(((double)XC2_H * X.w / X.h - XC2_W) / 2) : 0.0f;
+    memcpy(page + 0x90, &shift, sizeof shift);
+    // +0x98, +0x9c: pictures at least as wide as the design (fades, loading and menu backgrounds) are stretched to the
+    // frame: the width in clip units from which a picture counts (98 % of the design's, 2 * -left), and the stretch
+    // minus one, 1 / -left - 1, which their x row is scaled by about the frame's centre
+    float fill[2] = {wide ? (float)(-2.0 * 0.98 * left) : 4.0f, wide ? (float)(-1.0 / left - 1.0) : 0.0f};
+    memcpy(page + 0x98, fill, sizeof fill);
+    // +0xa0: the same move in the units of the panes' screen bounds (main+0x82aa7c, half the clip-space distance from
+    // the left edge): (1 + left) / 2, for the capture region of the minimap and other captured panes
+    float bounds = wide ? (float)((1.0 + left) / 2) : 0.0f;
+    memcpy(page + 0xa0, &bounds, sizeof bounds);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
-    if (on) rt_log("resolution: interface centred in the %ux%u frame (XC2_HUD_CENTER=1; markers sit right of their objects)", X.w, X.h);
+    if (on) rt_log("resolution: interface centred in the %ux%u frame (XC2_HUD_CENTER=1)", X.w, X.h);
     else if (wide) rt_log("resolution: interface at the left of the %ux%u frame, as the game places it", X.w, X.h);
 }
 

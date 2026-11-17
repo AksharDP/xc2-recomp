@@ -149,8 +149,8 @@
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1280x720 the
 # game's texture heap and memory pool grow with it. A shape wider than 16:9 (21:9 2560x1080 or 3440x1440, 32:9
 # 3840x1080) widens the 3D view, and the game keeps its interface in a 16:9 area at the left. hud_center = 1 moves
-# the interface to the middle (experimental: the markers over people and objects then sit to the right of them). Read
-# at start.
+# the interface to the middle and stretches full-screen layers (fades, loading screens, menu backgrounds) to the
+# frame (experimental: tested on the field, menus and loading screens, not on battles or cutscenes). Read at start.
 # output_res = 1280x720
 # hud_center = 0
 # 3D render scale: the scene's size relative to the game resolution: game (its dynamic resolution) or a fixed
