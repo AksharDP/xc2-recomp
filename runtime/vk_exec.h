@@ -81,6 +81,10 @@ typedef struct VkExec {
     const prog_t *prog;                  // OP_BIND_PROGRAM
     int32_t prog_stages;
     NVNbufferRange vbuf[16];             // OP_BIND_VBUF
+    // Serials the per-draw memos compare (bind_sig, bind_vertex_buffers). They are replay state rather than counters of
+    // a recording thread, so a copy of the state carries them and they only grow.
+    uint64_t bind_gen;                   // bumped by every bind op that writes prog, ubo, ssbo, tex or img
+    uint64_t vbuf_serial;                // bumped by every OP_BIND_VBUF
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
     uint64_t tex[6][128], samp[6][128], img[6][32];   // OP_BIND_TEX / OP_BIND_SAMP / OP_BIND_IMG handles per stage
     p_xfb_bind xfb;                      // OP_XFB_BIND
@@ -89,6 +93,15 @@ typedef struct VkExec {
 
     // ---- vk_exec_xfer.c slots (render enable, conditional rendering): left empty by vk_exec.c
     int render_disabled;                 // OP_RENDER_ENABLE false or a failed OP_RENDER_COND: clears and draws skip
+    // Samples-passed counting (vk_exec_xfer.c): draws are counted, a samples-passed report since the last reset, the
+    // query slot active in the open pass (-1: none), the slots closed since the last report or reset (seg, nseg of
+    // capseg), a draw the segment missed; epoch: vk_exec_xfer.c's when these were last valid (a device restart resets).
+    int oq_counting, oq_reported, oq_open, oq_lost;
+    uint32_t *oq_seg, oq_nseg, oq_capseg;
+    uint32_t oq_epoch;
+    int oq_deferring;                    // parallel parts: closed segments wait in oq_defer (vk_exec_oq_flush)
+    void *oq_defer;
+    uint32_t oq_ndefer, oq_capdefer;
     p_render_cond render_cond;           // last OP_RENDER_COND
     int has_render_cond;
 
@@ -215,6 +228,12 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
 // samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
+int vk_exec_bind_op(VkExec *ex, uint32_t op, const void *payload);   // a bind op of the above applied: 1; else 0
+void vk_exec_upd_seed(const VkExec *ex, const void *const *ups, int n);   // parallel parts: the inline updates before it
+// Parallel parts: the index of the part the calling thread records (-1: none), and a wait until every earlier part is
+// recorded (1 when it waited), for what must see their effects; vk_texture.c waits so before it makes a new texture.
+int vk_exec_part(void);
+int vk_exec_order_wait(void);
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
@@ -226,3 +245,8 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+int vk_exec_oq_keep(void);   // the game reported twice without a reset: counting stays on for good
+// Parallel parts: ex's samples-passed segments wait for vk_exec_oq_flush, which hands those of the n parts (in
+// submission order; the last one carries on) to the completion thread in order, joining counting across part ends.
+void vk_exec_oq_defer(VkExec *ex);
+void vk_exec_oq_flush(VkExec *const *parts, int n);

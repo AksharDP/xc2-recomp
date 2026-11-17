@@ -16,6 +16,9 @@
 #pragma once
 
 void rec_begin(VkCommandBuffer cb);   // the submitting thread, sub_lock held
+// A replay worker (vk_exec.c parallel parts): the calling thread's rec_begin, rec_end_cb and calls go to a recorder of
+// its own from now on. 0 when the recorder is off (the thread then makes its calls itself).
+int rec_own(void);
 void rec_end(void);                   // waits for the recorder; no-op when rec_begin did not start it
 // The end of part cb: the breadcrumb crumb (0: none, vk_crumbs.c), then vkEndCommandBuffer, both made by the recorder
 // when it records cb, and the wait for it (1); otherwise rec_end and the breadcrumb, and the caller ends cb (0).
@@ -26,6 +29,9 @@ void rec_stats_log(void);             // XC2_TRACE=perf: packets, bytes, drains 
 // Extension commands called through device function pointers.
 void rec_push_tpl(PFN_vkCmdPushDescriptorSetWithTemplateKHR fn, VkCommandBuffer cb, VkDescriptorUpdateTemplate tpl,
                   VkPipelineLayout layout, uint32_t set, const void *data, uint32_t bytes);   // data: bytes read by tpl
+// The write of a set allocated for cb, made by the recorder in order with cb's commands (before the bind after it).
+void rec_update_tpl(PFN_vkUpdateDescriptorSetWithTemplate fn, VkCommandBuffer cb, VkDevice dev, VkDescriptorSet set,
+                    VkDescriptorUpdateTemplate tpl, const void *data, uint32_t bytes);
 void rec_push(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout,
               uint32_t set, uint32_t n, const VkWriteDescriptorSet *w);
 void rec_vertex_input(PFN_vkCmdSetVertexInputEXT fn, VkCommandBuffer cb, uint32_t nb,

@@ -1951,20 +1951,29 @@ void *vk_mem_capture(void) {
         // ones not used as buffers yet, so that a first use finds the writes before this submit call already stamped.
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
         int have = 0;
-        for (int i = 0; i < pool_index.n; i++) {
-            const PoolRec *r = pool_index.e[i].buf;
-            if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
-            if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
-            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
-            if (b >= SNAP_REGIONS) continue;
-            if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
-                if (b > run1) run1 = b;
-                continue;
+        static uint64_t (*runs)[2];   // gen_lock: the runs queried, marked in snap_capgen below
+        static int cruns;
+        int nruns = 0;
+        for (int i = 0; i <= pool_index.n; i++) {
+            const PoolRec *r = i < pool_index.n ? pool_index.e[i].buf : NULL;
+            uint64_t a = 0, b = 0;
+            if (r) {
+                if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
+                if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
+                a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+                if (b >= SNAP_REGIONS) continue;
+                if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
+                    if (b > run1) run1 = b;
+                    continue;
+                }
             }
-            if (have) q += snap_regions(run0, run1, 0);
-            run0 = a, run1 = b, have = 1;
+            if (have) {
+                q += snap_regions(run0, run1, 0);
+                if (nruns == cruns) grow((void **)&runs, &cruns, sizeof *runs);
+                runs[nruns][0] = run0, runs[nruns][1] = run1, nruns++;
+            }
+            if (r) run0 = a, run1 = b, have = 1;
         }
-        if (have) q += snap_regions(run0, run1, 0);
         qb = ww_bytes - b0;
         perf_count_by(PERF_CNT_MIRROR_KB, qb >> 10);
         // A capture that queries a large part of the pools (a load, a title screen): say how large, a few times a run.
@@ -1983,6 +1992,10 @@ void *vk_mem_capture(void) {
         }
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
         cap->gen = gen_now;
+        // The regions just queried (frozen ones count: nothing wrote them), as the shadow captures mark theirs: the
+        // replay's texture checks of this submission take their stamps instead of querying them again on its thread.
+        for (int i = 0; i < nruns; i++)
+            for (uint64_t k = runs[i][0]; k <= runs[i][1]; k++) snap_capgen[k] = cap->gen;
     } else if (shadow_cap) {   // the same over the shadow pools, all of them: the replay has not resolved any yet
         cap->shadow = 1;
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
@@ -2081,12 +2094,22 @@ void vk_mem_capture_drop(void *cap) { capture_free(cap); }
 // Replay thread, lazy mirrors: [off, off + n) of r is used as a buffer by the submission being recorded. Each granule
 // of it not used before is queued for the next prologue, whole, as a pool's first use is (vk_mem_mirror_prologue copies
 // it and checks it for a CPU write since the capture).
+// Threads recording parts of one submission at once (the parallel replay, vk_exec.c) share the replay's mirror state:
+// a pool's mirror creation, the first-use list (pend) and the GPU-write list (wbl) change under rep_lock. A granule
+// already used, the common case, is only read.
+static PlatMutex rep_lock = PLAT_MUTEX_INIT;
+
 static void mirror_touch(PoolRec *r, uint64_t off, uint64_t n) {
     uint64_t lim = r->import_hi - r->import_lo;
     if (!r->gsub || off >= lim || !n) return;
     uint64_t end = n > lim - off ? lim : off + n;
+    int locked = 0;
     for (uint64_t g = off >> GRAN_SHIFT, g1 = (end - 1) >> GRAN_SHIFT; g <= g1; g++) {
         if (__atomic_load_n(&r->gsub[g], __ATOMIC_RELAXED)) continue;
+        if (!locked) {   // checked again under the lock: another thread may have queued it meanwhile
+            plat_mutex_lock(&rep_lock), locked = 1;
+            if (__atomic_load_n(&r->gsub[g], __ATOMIC_RELAXED)) continue;
+        }
         // Marked before the copy is queued: a capture that still sees the granule unused skips only writes this
         // granule's copy, which runs later, includes.
         __atomic_store_n(&r->gsub[g], msub ? msub : 1, __ATOMIC_RELEASE);
@@ -2096,12 +2119,18 @@ static void mirror_touch(PoolRec *r, uint64_t off, uint64_t n) {
         plat_inc64(&m_gran_n);
         plat_add64(&m_gran_bytes, (int64_t)(b - a));
     }
+    if (locked) plat_mutex_unlock(&rep_lock);
 }
 
 void vk_mem_use(VkMemSpan *sp, uint64_t n) {
     PoolRec *r = sp->pool;
-    if (r->mstate == MS_NONE) mirror_create(r);
-    if (r->mstate != MS_ON) return;
+    // mirror_create marks the pool refused while it works: a pool not mirrored is looked at again under the lock.
+    if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) != MS_ON) {
+        plat_mutex_lock(&rep_lock);
+        if (r->mstate == MS_NONE) mirror_create(r);
+        plat_mutex_unlock(&rep_lock);
+    }
+    if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) != MS_ON) return;
     sp->buffer = r->mbuf;
     mirror_touch(r, sp->offset, n);
 }
@@ -2124,7 +2153,9 @@ int vk_mem_mirror_probe(uint64_t addr) {
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
     PoolRec *r = sp->pool;
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
+    plat_mutex_lock(&rep_lock);
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
+    plat_mutex_unlock(&rep_lock);
 }
 
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
