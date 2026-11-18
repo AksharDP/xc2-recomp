@@ -297,3 +297,23 @@ site xc2one main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131
 # changes (s1 keeps the product, main+0x1d118 copies s8 to s0 for the call) and no flag is written.
 set xc2qte XC2_QTE_FIX 1
 site xc2qte main 1d114 sha:6cca7c0d6280bafd 1e204028
+
+# xc2pulse (XC2_PULSE_FIX, on): the glow behind the element icon at the centre of the arts cross grew in battle until
+# the next special reset it (issue 48: it reached 161 interface units against its 8 at the start of a two-minute
+# fight, at 30 fps as at 60). The glow is a looping additive animation of a UI object (main+0x670ad4): its keys hold
+# per-step changes, one per 1/30 s, and each frame the sampler main+0x67e324 adds the changes inside the frame's
+# window [position, position + step] to the object's size at +0x30. The size is reset absolutely (main+0x670b18) only
+# when the position is exactly 0.0 (main+0x670b0c to main+0x670b14). The console steps exactly 1/30 s, so every loop
+# lands on 0.0 and re-bases the size. The recomp steps the measured frame time (frame_rate.c), so a loop wraps a little
+# past 0 and the reset is skipped, while the frame that crosses the loop's end drops the rest of its last key (the
+# sampler stops at the last key), the part where the glow shrinks back: each loop leaves its rise behind. A special
+# starts the animation again at exactly 0, which is why it put the glow back to its base size. Masagrator's 60 fps
+# mod shows the same growth on emulators, as it also steps a varying frame time. The replacement of the compare with
+# zero resets when the position is below the step ([x21,#4], in the position's units), the first frame of every loop
+# at any step; at an exact 1/30 s step it is the original test (position 0 is below the step, the next frame's
+# position equals it). The compare becomes ldr s1, [x21, #4]; fcmp s0, s1 and the branch to the additive path
+# (main+0x670b6c) b.ge in place of b.ne, so a NaN position resets as well. s1 is written before it is read on both
+# paths (main+0x670b38, main+0x670b78), and neither callee on the way takes a float argument.
+set xc2pulse XC2_PULSE_FIX 1
+site xc2pulse main 670b10 sha:f6998207a2c97b35 bd4006a1 1e212000
+site xc2pulse main 670b14 sha:828d0405fcd42748 540002ca
