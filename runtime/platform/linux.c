@@ -1208,6 +1208,13 @@ static void locale_tag(const char *const *names, int n, char *tag, size_t cap) {
     tag[k] = 0;
 }
 
+const char *plat_ui_language(void) {
+    static char tag[32];
+    static const char *const names[] = {"LC_ALL", "LC_MESSAGES", "LANG"};
+    if (!tag[0]) locale_tag(names, 3, tag, sizeof tag);
+    return tag;
+}
+
 const char *plat_user_locale(void) {
     static char tag[32];
     static const char *const names[] = {"LC_ALL", "LC_TIME", "LANG"};
@@ -1223,6 +1230,10 @@ int plat_font_path(const char *lang, char *out, size_t cap) {
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
     };
     if (strcmp(lang, "ja") && strcmp(lang, "ko") && strcmp(lang, "zh-Hans") && strcmp(lang, "zh-Hant")) return 0;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
