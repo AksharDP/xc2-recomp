@@ -152,6 +152,7 @@
  "ui.space_two": "Free space needed on {path}: {need} GB (free: {free} GB); on {temp}: {temp_need} GB (free: {temp_free} GB).",
  "ui.amount_bytes": "{done} / {total} GB",
  "ui.amount_chunks": "{done} / {total} parts",
+ "ui.amount_files": "{done} / {total} files",
  "ui.amount_objects": "{done} / {total} files",
  "ui.amount_shaders": "{done} / {total} shaders",
  "ui.amount_other": "{done} / {total} {unit}",

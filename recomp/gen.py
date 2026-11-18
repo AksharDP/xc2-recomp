@@ -32,6 +32,13 @@ import time
 from collections import Counter
 from pathlib import Path
 
+# Single-threaded BLAS before importing numpy: gen.py only does elementwise integer indexing and never calls BLAS,
+# whereas OpenBLAS defaults to spawning CPU-count threads per process (~760 MB committed each on a 32-thread host).
+# In a Pool of N workers that exhausts the commit limit and fails/stalls worker startup.
+for _var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'BLIS_NUM_THREADS',
+             'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ.setdefault(_var, '1')
+
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -692,7 +699,7 @@ def main():
             if r['error']:
                 errors.append(r['error'])
             done_at[r['module']] = time.perf_counter() - t_emit
-            if (i + 1) % 200 == 0 or i + 1 == len(tasks):
+            if i == 0 or (i + 1) % 10 == 0 or i + 1 == len(tasks):
                 print(f'emitted {i + 1}/{len(tasks)} chunks, {time.perf_counter() - t_emit:.0f}s', file=sys.stderr,
                       flush=True)
 
