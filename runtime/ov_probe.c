@@ -322,20 +322,22 @@ static void probe_oe(void) {
     char *keep_env[2 * N_LANG_KEYS], *keep_file[N_LANG_KEYS];
     lang_keys_isolate(keep_env, keep_file);
     // shipped: XC2_GAME_LANGS, as the installer writes it for the Americas and Europe (US) or the Japanese release (JP)
+    // English is reported as en-GB (ov_system.c english_images, GitHub issue 169), hence the en-GB expectations below.
     static const char US[] = "en-US en-GB fr fr-CA de it es es-419 ko", JP[] = "ja zh-CN zh-TW";
     static const struct { const char *lang, *locale, *shipped, *want; } cases[] = {
-        {NULL, "en-US", NULL, "en-US"}, {NULL, "be-BY", NULL, "en-US"}, {NULL, "xx", NULL, "en-US"},
+        {NULL, "en-US", NULL, "en-GB"}, {NULL, "be-BY", NULL, "en-GB"}, {NULL, "xx", NULL, "en-GB"},
         {NULL, "ja-JP", NULL, "ja"}, {NULL, "fr-CA", NULL, "fr-CA"}, {NULL, "es-MX", NULL, "es-419"},
         {NULL, "es_ES", NULL, "es"}, {NULL, "zh-Hant-TW", NULL, "zh-TW"}, {NULL, "zh-CN", NULL, "zh-CN"},
-        {NULL, "en-GB", NULL, "en-GB"}, {NULL, "ru-RU", NULL, "en-US"}, {"ja", "fr-FR", NULL, "ja"},
-        {NULL, "nl-NL", NULL, "en-US"}, {NULL, "pt-BR", NULL, "en-US"}, {NULL, "pt-PT", NULL, "en-US"},
-        {"en-US", NULL, NULL, "en-US"}, {"zh-Hans", NULL, NULL, "zh-CN"}, {"zh-Hant", NULL, NULL, "zh-TW"},
-        // a language the installed release lacks becomes its default: en-US on US, ja on JP
-        {NULL, "ja-JP", US, "en-US"}, {NULL, "zh-TW", US, "en-US"}, {NULL, "ko-KR", US, "ko"}, {"de", NULL, US, "de"},
+        {NULL, "en-GB", NULL, "en-GB"}, {NULL, "ru-RU", NULL, "en-GB"}, {"ja", "fr-FR", NULL, "ja"},
+        {NULL, "nl-NL", NULL, "en-GB"}, {NULL, "pt-BR", NULL, "en-GB"}, {NULL, "pt-PT", NULL, "en-GB"},
+        {"en-US", NULL, NULL, "en-GB"}, {"en-GB", NULL, NULL, "en-GB"},
+        {"zh-Hans", NULL, NULL, "zh-CN"}, {"zh-Hant", NULL, NULL, "zh-TW"},
+        // a language the installed release lacks becomes its default: English on US, ja on JP
+        {NULL, "ja-JP", US, "en-GB"}, {NULL, "zh-TW", US, "en-GB"}, {NULL, "ko-KR", US, "ko"}, {"de", NULL, US, "de"},
         {NULL, "en-US", JP, "ja"}, {"fr", NULL, JP, "ja"}, {NULL, "zh-HK", JP, "zh-TW"}, {"zh-Hans", NULL, JP, "zh-CN"},
         {NULL, "de-DE", "zh-CN,ko", "zh-CN"},
         // codes earlier versions offered (still in old xc2.ini files) and typos run in the release default
-        {"ru", NULL, US, "en-US"}, {"nl", NULL, NULL, "en-US"}, {"pt-BR", "fr-FR", JP, "ja"}, {"xx", NULL, US, "en-US"}};
+        {"ru", NULL, US, "en-GB"}, {"nl", NULL, NULL, "en-GB"}, {"pt-BR", "fr-FR", JP, "ja"}, {"xx", NULL, US, "en-GB"}};
     int bad = 0;
     for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
         set_env("XC2_LANG", cases[i].lang);
