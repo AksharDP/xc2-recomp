@@ -181,8 +181,15 @@ class App:
         self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
         self.lang_code = code
-        status_id, params = self.probe_status
-        self.langs_label.configure(text=self.cat(status_id, **params))
+        self.langs_label.configure(text=self.status_text(self.probe_status))
+
+    def status_text(self, status):
+        """The line under the language box in the active language. A failed read keeps its check id and parameters
+        rather than its text, so a language change translates the reason again (fill_languages runs on every change)."""
+        status_id, params = status
+        if status_id == 'ui.langs_failed':
+            params = {'reason': self.cat(params['check'], **params['check_params'])}
+        return self.cat(status_id, **params)
 
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
@@ -375,8 +382,8 @@ class App:
                                                                    'known': ', '.join(e['languages'])}))
         else:   # the list shown is the install folder's, so another folder reads again
             self.probe_for_dest = self.vars['dest'].get()
-            reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
-            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
+            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {
+                'check': e.get('id', 'check.languages_unreadable'), 'check_params': e.get('params') or {}}))
         self.probe_done_status = self.probe_status
 
     def current_inputs(self):
