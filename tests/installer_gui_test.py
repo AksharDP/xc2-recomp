@@ -412,6 +412,15 @@ class LanguageWindowTest(unittest.TestCase):
         self.assertEqual(self.app.languages, self.US)
         self.assertEqual(self.app.selected_lang(), 'fr')
 
+    def test_a_failed_read_is_translated_after_a_language_change(self):
+        self.choose('us.nsp')
+        self.made[-1].result = {'type': 'error', 'id': 'check.languages_unreadable'}
+        self.app.poll_probe()
+        self.assertIn(Catalog('en')('check.languages_unreadable'), self.app.langs_label.cget('text'))
+        self.app.ui_var.set('zh-Hans')   # the reason is kept as its check id, so the line changes with the language
+        self.app.switch_language()
+        self.assertIn(Catalog('zh-Hans')('check.languages_unreadable'), self.app.langs_label.cget('text'))
+
     def test_the_install_folders_language_is_kept(self):
         jp, us = self.dir / 'jp-install', self.dir / 'us-install'
         for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
