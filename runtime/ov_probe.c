@@ -899,6 +899,13 @@ static void probe_fonts(void) {
 // software keyboard has a row per game language (each Switch code of ov_system.c maps to one), and menu_text follows
 // XC2_MENU_LANG.
 static void probe_menu_text(void) {
+    // menu_text_lang reads XC2_MENU_LANG from the environment (or its XCX_ spelling) before the xc2.ini file, so the
+    // player's own setting would beat the values the checks below set: take the environment out, reset the file's
+    // value, and put both back when the checks are done
+    static const char *const menu_key[] = {"XC2_MENU_LANG"};
+    char *env_keep = env_take("XC2_MENU_LANG"), *legacy_keep = env_take("XCX_MENU_LANG");
+    char *file_keep = cfg_is_set("XC2_MENU_LANG") ? strdup(cfg_get("XC2_MENU_LANG")) : NULL;
+    cfg_reset(menu_key, 1);
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "zh-Hans", "zh-Hant", "ko"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && *ui_text_in("en", (UiTextId)id), "menu text id %d lacks English", id);
@@ -937,6 +944,13 @@ static void probe_menu_text(void) {
     cfg_set("XC2_MENU_LANG", "");
     const char *ml = menu_text_lang();
     CHECK(!strcmp(ml, "en") || !strcmp(ml, "zh-Hans") || !strcmp(ml, "zh-Hant"), "bad auto menu language %s", ml);
+    cfg_reset(menu_key, 1);
+    if (file_keep) cfg_set("XC2_MENU_LANG", file_keep);
+    set_env("XC2_MENU_LANG", env_keep);
+    set_env("XCX_MENU_LANG", legacy_keep);
+    free(env_keep);
+    free(legacy_keep);
+    free(file_keep);
 }
 
 static void probe_main(Cpu *c) {
