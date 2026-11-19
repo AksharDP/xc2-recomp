@@ -32,6 +32,9 @@ static Ov ovs[] = {
     // obs_oe_initialize), not an override, so the probe neither binds nor calls it; the overrides below need nothing it
     // sets up.
     {"oe.GetDesiredLanguage", "_ZN2nn2oe18GetDesiredLanguageEv"},
+    // ov_system.c: nn::settings, the game's list of languages (probe_oe checks the codes it is offered)
+    {"settings.GetAvailableLanguageCodeCount", "_ZN2nn8settings29GetAvailableLanguageCodeCountEv"},
+    {"settings.GetAvailableLanguageCodes", "_ZN2nn8settings25GetAvailableLanguageCodesEPNS0_12LanguageCodeEi"},
     {"oe.SetPerformanceConfiguration", "_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi"},
     {"oe.SetCpuBoostMode", "_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE"},
     {"oe.GetOperationMode", "_ZN2nn2oe16GetOperationModeEv"},
@@ -298,6 +301,23 @@ static void lang_keys_restore(char *env[2 * N_LANG_KEYS], char *file[N_LANG_KEYS
     }
 }
 
+// The codes GetAvailableLanguageCodes gives the game for its 15-entry list (the size of the game's table), written to
+// out separated by spaces. Returns how many it gave.
+static int offered_codes(char *out, size_t cap) {
+    char codes[15][8];
+    memset(codes, 0, sizeof codes);
+    int n = (int)CALL("settings.GetAvailableLanguageCodes", U(codes), 15);
+    out[0] = 0;
+    for (int i = 0; i < n && i < 15; i++) {
+        char one[9];
+        memcpy(one, codes[i], 8);
+        one[8] = 0;
+        if (i) strncat(out, " ", cap - strlen(out) - 1);
+        strncat(out, one, cap - strlen(out) - 1);
+    }
+    return n;
+}
+
 static void probe_oe(void) {
     char *keep_env[2 * N_LANG_KEYS], *keep_file[N_LANG_KEYS];
     lang_keys_isolate(keep_env, keep_file);
@@ -335,6 +355,22 @@ static void probe_oe(void) {
     CHECK(ov_language_shipped("ko") && ov_language_shipped("en-GB") && !ov_language_shipped("ja") &&
               !ov_language_shipped("en") && !ov_language_shipped("zh-CN"),
           "ov_language_shipped does not match whole codes of XC2_GAME_LANGS");
+    // the codes the game is offered (its list is built from them): the game's own table narrowed to the installed text,
+    // in the console's order, so nl, pt and ru never appear, and the count agrees with the list
+    static const struct { const char *shipped, *want; } offers[] = {
+        {NULL, "ja en-US fr de it es zh-CN ko zh-TW en-GB fr-CA es-419"},
+        {US, "en-US fr de it es ko en-GB fr-CA es-419"},
+        {JP, "ja zh-CN zh-TW"},
+    };
+    for (size_t i = 0; i < sizeof offers / sizeof *offers; i++) {
+        set_env("XC2_GAME_LANGS", offers[i].shipped);
+        char got[128];
+        int n = offered_codes(got, sizeof got);
+        int count = (int)CALL("settings.GetAvailableLanguageCodeCount", 0);
+        CHECK(!strcmp(got, offers[i].want), "codes offered for XC2_GAME_LANGS=%s are [%s], not [%s]",
+              offers[i].shipped ? offers[i].shipped : "", got, offers[i].want);
+        CHECK(count == n, "GetAvailableLanguageCodeCount %d, but %d codes were given", count, n);
+    }
     set_env("XC2_GAME_LANGS", NULL);
     set_env("XC2_LANG", NULL);
     set_env("XC2_LOCALE", NULL);
