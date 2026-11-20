@@ -228,6 +228,92 @@ site xc2res main 328d98 sha:7a9b8cb2e9b8523b 52805a00
 site xc2res main 329110 sha:447542af428abcce 5280a000
 site xc2res main 329120 sha:89126e7f267c2d70 52805a00
 
+# xc2wide (XC2_HUD_CENTER, resolution.c): the interface in the middle of a game resolution wider than 16:9 (21:9,
+# 32:9). The layout library fits its 1280x720 design to the frame by the smaller of width / 1280 and height / 720 (the
+# screen object at [[main+0xb84720]+0x58], filled by main+0x83919c: +0x558 the fit, +0x564 2 * fit and +0x568
+# -2 * fit * W / H, with positions divided by the frame width W), and each pane's matrix maps design x to the screen as
+# 2 * fit * x / W - 1. The -1 holds the design's left edge on the screen's, so on a wider frame the interface sat in a
+# 16:9 region at the left and the right of the screen was empty. The four builders of those matrices (main+0x829b94,
+# +0x82cbec, +0x82ef1c, +0x82f014) load the -1 from the page's +0x8c instead, -1280 * fit / W: the design's centre on
+# the screen's. x10 is free at each site (written or clobbered by a call before any read).
+# In the field the HUD then goes to the frame's edges: the site at each translation store (+0xc) adds
+# shift(u) = sign(u) * min(s_max, max(0, |u| - a) * m) times the page's field flag (+0xb0, set per frame by
+# res_hud_frame) to the centred translation u, with a, m and s_max at +0xa4..+0xac (resolution.c wide_hud). The minimap,
+# clock, Blade Switch and the battle's party list and arts lie past the ramp and move whole to their edges; the compass
+# and the middle of the screen stay. min, max and the sign are fmin, fmax and a bit select, so no site writes flags.
+# s16-s19 are scratch in all three builders (s16-s21 are the products' temporaries, unread after these stores).
+# At 16:9 and narrower shapes resolution.c leaves the set off.
+set xc2wide XC2_HUD_CENTER 0
+site xc2wide main 829c1c sha:00c55613fdd90219 @page:x10 bd408d41
+site xc2wide main 829c24 sha:d826a07caca8008c 1e20c010 2d54c951 1e313a10 2f00e411 1e314a10 1e320a10 1e204013 bd000ec0
+site xc2wide main 829c34 sha:baaac0e6eadbf57b 2d55c951 1e315a10 1e320a10 0f046411 2eb11e70 1e302a73 bd000ed3 bd0012c0
+site xc2wide main 82cd00 sha:eb04d7399bb85ba8 @page:x10 bd408d41
+site xc2wide main 82cd08 sha:3e14bf5f04156317 1e20c010 2d54c951 1e313a10 2f00e411 1e314a10 1e320a10 1e204013 bd000ea0
+site xc2wide main 82cd18 sha:ff7361441153a411 2d55c951 1e315a10 1e320a10 0f046411 2eb11e70 1e302a73 bd000eb3 bd0012a0
+site xc2wide main 82efc4 sha:bc09d16b1be02939 @page:x10 bd408d45
+site xc2wide main 82f120 sha:2ce37441f3074713 1e220821 @page:x9 2d535130 1e20c032 7e30e650 0e301e94 1f140421
+site xc2wide main 82f130 sha:b798ae4b3f4f8dfc 1e220821 1f140421
+site xc2wide main 82f144 sha:1163f8d0d7e07740 @page:x10 bd408d42
+site xc2wide main 82f148 sha:141ae56c2aed3d22 1e222881 1f140421
+site xc2wide main 82f14c sha:8e6ab140d3aa06fb 1e20c030 2d54c951 1e313a10 2f00e411 1e314a10 1e320a10 1e204033 bd000c01
+site xc2wide main 82f15c sha:f7ddabaa51421e45 2d55c951 1e315a10 1e320a10 0f046411 2eb11e70 1e302a73 bd000c13 bd001001
+# Pictures as wide as the design or wider (the black of fades and loading screens, menu backgrounds) cover the frame:
+# under the centred interface they would leave the sides of a wider frame showing the scene. The picture builder
+# (main+0x82ef1c) has the picture's size in its matrix, so after it scales x by +0x564 the first site compares the
+# width |x scale| with the page's +0x98 (98 % of the design's width in clip units) and keeps in s18 either 0 or the
+# page's +0x9c, frame width / design width - 1 (fcmge and a bitwise and, no flags); each store of the x row's two scales
+# and its translation (+0x0, +0x4, +0xc) then adds itself times s18, which scales the row about the frame's centre. The
+# +0x8 term is left: its store follows the join with the branch that skips the screen transform. x9 and s16-s18 are
+# free in the builder's tail (s16-s21 are its product's temporaries). The fill site also adds s18 to the page's +0xb4,
+# so +0xb4 counts the full-width pictures in units of +0x9c: res_hud_frame reads it once a frame and treats more than
+# 8 (a menu draws 16 to 32, the field 1 to 4) as a menu, where the edge anchoring stays off. The anchoring here works
+# on the picture's origin, the quad's centre (the quad spans -0.5..0.5 of its size).
+# The window panes' pieces (the band behind "Travel to this destination?" and other dialog bars) take their matrix
+# from main+0x82f014, the product of the pane's matrix with the piece's own, which carries its size: the same test and
+# scale run there on the product's x scale (s1) before its three x stores, with x9 and s16, s18 and s20 free (the
+# function is a leaf that uses x8 and s1-s5).
+site xc2wide main 82efb8 sha:348da3a97df6504d @page:x9 2d534530 1e20c0b2 7e30e652 0e311e52 1f1214a5 bd000005
+site xc2wide main 82efc8 sha:66be2bdadfaa03c5 1f120c63 bd000403 bd40b537 1e322af7 bd00b537
+site xc2wide main 82efd8 sha:76d1fad955ec734f 1f120c63 bd000c03 1e204073 1e20c274 2d54d935 1e353a94
+site xc2wide main 82efe4 sha:0f279ac93f7dccb6 2f00e415 1e354a94 1e360a94 2d55d935 1e355a94 1e360a94 bd001003
+site xc2wide main 82eff0 sha:54f05441a3051c26 0f046415 2eb51e74 bd400c15 1e342ab5 bd000c15 bd001402
+# frame): main+0x83656c takes the pane's screen bounds from main+0x82aa7c, which count from the left edge without the
+# centring, turns them into the capture's region and projection (main+0x8365ec on), renders the children, which the
+# builders above have centred, into it, and draws the texture back at 2 * fit * x / W - 1. Under the centred interface
+# the children fell outside the region and the texture came back at the left-anchored place, so the minimap's frame was
+# empty, its map was drawn oversized and its icons sat left of it. The first two sites add the page's +0xa0, the
+# centring in the bounds' units ((1 + left) / 2), to the region's two x bounds as this function loads them (x9 and s16
+# are free: x9 is written before its next read, s16 before its next read after a call); the third takes the draw-back's
+# -1 (s1, the constant loaded at main+0x8366b8) from the page's +0x8c. The bounds themselves stay as they are: they also
+# decide which panes are culled, and shifting them there hid the minimap.
+site xc2wide main 8365fc sha:6d1ca0bde65c0ef2 bd417ac0 @page:x9 bd40a130 1e302800
+site xc2wide main 836600 sha:fbde52beaf05940f bd4172c2 1e302842 1e222811 1e2e1012 1e323a31 1e20c232 2d54d133 1e333a52
+site xc2wide main 836604 sha:72a45e05933d11d1 2f00e413 1e334a52 1e340a52 2d55d133 1e335a52 1e340a52 bd453303
+site xc2wide main 836608 sha:d6233b520f746991 0f046413 2eb31e32 1e2c1013 1e330a52 1e322800 1e322842 bd455b04
+site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 1e212a41 1e20c034 2d54d935 1e353a94 2f00e415
+site xc2wide main 8367a4 sha:c434714bddf613b7 1e354a94 1e360a94 2d55d935 1e355a94 1e360a94 0f046415 2eb51c34 1e2388d2
+site xc2wide main 8367a8 sha:741ff91953121e8b 1e342821 1e270a10
+# The builders draw text (main+0x82cbec) and pictures (main+0x82ef1c) of every layout alike, so the markers on the 3D
+# scene (talk and shop icons, field balloons) would move with the rest. The game places them across the camera viewport
+# (page +0x80, wider than 1280 here) from its left edge: main+0x3290e8 copies the viewport to [main+0xb87218] each
+# frame, and two world-to-screen conversions (main+0x33d6e4, and main+0x571044 that it falls through to) compute
+# x = (ndc + 1) * viewport width / 2 from it, which under the centred interface lies (viewport - 1280) / 2 units right
+# of the object. That distance, the page's +0x90, is subtracted where the two callers that place markers take the x:
+# main+0x33d50c (both conversions; after its checks for an unset or infinite point, before it rounds the x for the
+# marker) and main+0x347ae4 (main+0x571044, where it loads the point before adding the marker's own offset). In the
+# field the builders then move the marker by the edge shift, so these sites also take its inverse off: the same shape
+# in interface units centred on 640 (+0xb8), with the ramp's start, slope m / (1 + m) and limit at +0xbc..+0xc4, times
+# the field flag. The conversions themselves stay as they are: their other callers (main+0x65060, main+0x6a570) use
+# differences of two points, and shifting main+0x571044 itself hid the minimap. x9 and s2-s6 are free at the first
+# site (x9 is written next, s2-s6 are unused in the function's tail), x10 and s3-s7 at the second (x10 is written
+# before any read, s3-s7 are unused after it).
+site xc2wide main 33d5ec sha:ff0840a900c975f7 @page:x9 bd409122 1e223800 2d570d22 1e223804 1e20c085 1e2338a5 2f00e406
+site xc2wide main 33d5f0 sha:4202b3f8cfcd428f 1e2648a5 2d580d22 1e2208a5 1e2358a5 0f046406 2ea61c85 f9402288
+site xc2wide main 33d5f4 sha:e93831f75d75f8f8 bd40b122 1e2208a5 1e253800 1e380015 1e380036
+site xc2wide main 347af4 sha:c9dd16f47f6ed74a 2d400be1 @page:x10 bd409143 1e233821 2d571143 1e233825 1e20c0a6 1e2438c6
+site xc2wide main 347af8 sha:a3005735d775e28e 2f00e407 1e2748c6 2d581143 1e2308c6 1e2458c6 0f046407 2ea71ca6 1e220120
+site xc2wide main 347afc sha:45ef53093d01ee42 bd40b143 1e2308c6 1e263821 1e202820
+
 # xc2scale (XC2_RENDER_SCALE, resolution.c): the share of the frame the 3D scene draws in. XC2 takes it from
 # /monolib/shader/lib_nx.ini, parsed by main+0x716e68: red_sclX/Y (1.0, +0x1928/+0x192c of the shader settings) and
 # red_hdsclX/Y (0.75 handheld, +0x193c/+0x1940) when red_Auto is off, and with red_Auto=on (shipped) a dynamic share
