@@ -209,16 +209,35 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr));
 _Noreturn void plat_reexec(void);
 
 // A crash in this executable's own code (an access violation, an illegal instruction, a division by zero, a stack
-// overflow) goes to fn, which reports it and must end the process. Faults in other modules (drivers) are left to the
-// OS. The write-fault hook above runs first.
+// overflow) goes to fn, which reports it and must end the process. A fault in another module (a driver, a system DLL)
+// goes to fn only when nothing handles it: Windows gives a DLL's own handlers the first chance, so fn sees it from the
+// unhandled-exception filter; Linux has no such chance, so fn sees it at once. abort() goes to fn too (code 0, what
+// "abort"). The write-fault hook above runs first.
+#define PLAT_CRASH_FRAMES 48
 typedef struct {
     const char *what;          // "access violation", "illegal instruction", ...
     uint32_t code;             // the Windows exception code or the signal number
-    uintptr_t rip, offset;     // the faulting instruction, and its offset in the executable
+    uintptr_t rip, offset;     // the faulting instruction, and its offset in the executable (or in module)
     int access;                // the data access that faulted: 0 read, 1 write, 8 execute; -1 when not an access
     uint64_t addr;             // its address when access >= 0
+    const char *module;        // NULL: the fault is in this executable; else the file name of the module it is in
+    int has_regs;              // regs holds the faulting thread's registers
+    uint64_t regs[17];         // rax rcx rdx rbx rsp rbp rsi rdi r8-r15 rflags, at the fault
+    int nframes;               // the host call stack from the fault, frames[0] = rip (unwound by the platform)
+    uintptr_t frames[PLAT_CRASH_FRAMES];
+    void *os;                  // Windows: the EXCEPTION_POINTERS (plat_crash_dump); NULL elsewhere or for abort
 } PlatCrash;
 void plat_crash_hook(void (*fn)(const PlatCrash *c));
+// The calling thread's host call stack, return addresses from its caller outwards, at most max; the count.
+int plat_backtrace(uintptr_t *out, int max);
+// The file name (no folder) of the loaded module that holds addr, and its load address; 0 when none does.
+int plat_module_at(uintptr_t addr, char *name, size_t cap, uintptr_t *base);
+// The calling thread's name as the OS knows it ("" when it has none).
+void plat_thread_name(char *out, size_t cap);
+// Writes a minidump of this process to path for the crash c (Windows: dbghelp's MiniDumpWriteDump with the thread
+// stacks, the memory they point to and the extra ranges [lo, hi) given; elsewhere nothing). Runs the write on a fresh
+// thread, so a crash on an exhausted stack still gets one. 1 when the file was written.
+int plat_crash_dump(const char *path, const PlatCrash *c, const uint64_t (*ranges)[2], int nranges);
 int plat_mem_read(uint64_t addr, void *out, size_t n);    // copies n bytes, 0 instead of faulting on unmapped memory
 int plat_mem_readable(uint64_t addr, uint64_t n);         // every page of [addr, addr + n) can be read; no fault
 void *plat_aligned_alloc(size_t size, size_t align);      // free with plat_aligned_free; NULL on failure

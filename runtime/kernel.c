@@ -12,6 +12,7 @@
 #define __USE_MINGW_SETJMP_NON_SEH   // setjmp(b) = _setjmp(b, NULL): longjmp restores registers, no SEH unwinding
 #endif
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,7 +113,7 @@ struct RtThread {
     uint64_t dg_host_end;      // as an owner: the return from the host call or SVC it was in at the request
     uint64_t dg_pc, dg_lr;     // as an owner: guest pc and lr at the checkpoint that gave the core up
     int dg_host_kick;          // as an owner: in a host call or SVC at the request
-    uint32_t dg_svc;           // the thread's latest SVC (XC2_CORE_DIAG: what an owner in a host call is in)
+    uint32_t dg_svc;           // the thread's latest SVC (XC2_CORE_DIAG: what an owner in a host call is in; crash report)
     struct DgRel { uint64_t kick, host_end, pc, lr; int host, pre, prio; uint32_t h; } dg_rel;   // as a waiter: the
                                                                                                  // owner that released
 };
@@ -1296,8 +1297,20 @@ static int dump_readable(uint64_t a) { return plat_mem_readable(a, 16); }
 
 // The host stack of thread tid: suspended for the read, unwound through the exe's unwind tables, as exe+offsets.
 // Windows only: elsewhere the dump gives the guest chain alone.
+typedef struct { RtLineFn out; void *ctx; } Sink;
+
+static void sinkf(const Sink *s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void sinkf(const Sink *s, const char *fmt, ...) {
+    char line[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    s->out(s->ctx, line);
+}
+
 #ifdef _WIN32
-static void dump_host_stack(uint32_t tid) {
+static void dump_host_stack(const Sink *s, uint32_t tid) {
     if (tid == GetCurrentThreadId()) return;
     HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
     if (!h) return;
@@ -1311,13 +1324,13 @@ static void dump_host_stack(uint32_t tid) {
     if (!ok) return;
     uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
     char line[512];
-    int n = snprintf(line, sizeof line, "hang:   host");
+    int n = snprintf(line, sizeof line, "  host");
     for (int i = 0; i < 12 && ctx.Rip; i++) {
         HMODULE m = NULL;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                            (LPCWSTR)(uintptr_t)ctx.Rip, &m);
         if (n < (int)sizeof line - 40)
-            n += snprintf(line + n, sizeof line - (size_t)n, (uintptr_t)m == exe ? " exe+%#llx" : " %p",
+            n += snprintf(line + n, sizeof line - (size_t)n, (uintptr_t)m == exe ? " exe+%#llx" : " %#llx",
                           (uintptr_t)m == exe ? (unsigned long long)(ctx.Rip - exe) : (unsigned long long)ctx.Rip);
         DWORD64 base;
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
@@ -1331,55 +1344,76 @@ static void dump_host_stack(uint32_t tid) {
         DWORD64 est;
         RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, f, &ctx, &hd, &est, NULL);
     }
-    rt_log("%s", line);
+    s->out(s->ctx, line);
 }
 #else
-static void dump_host_stack(uint32_t tid) { (void)tid; }
+static void dump_host_stack(const Sink *s, uint32_t tid) { (void)s, (void)tid; }
 #endif
 
-void kern_hang_dump(void) {
+void kern_threads_dump(RtLineFn out, void *ctx, int crash) {
     static const char *const wk[] = {"none", "lock", "condvar", "address", "sync"};
     static const char *const st[S_N] = {"off", "run", "core", "host", "sleep", "sync", "condvar", "lock", "address"};
+    const Sink s = {out, ctx};
     char d[128];
-    lock();
-    for (RtThread *t = g_all; t; t = t->all) {
+    // A crash report must not wait forever on a lock its own thread, or a stopped one, holds: it reads without it.
+    int locked = 1;
+    if (crash) {
+        locked = 0;
+        for (int i = 0; i < 200 && !(locked = plat_mutex_trylock(&G)); i++) plat_sleep_ms(1);
+        if (!locked) sinkf(&s, "the kernel lock is held (by this thread or a stopped one): read without it");
+    } else {
+        lock();
+    }
+    int n = 0;
+    for (RtThread *t = g_all; t && n < 256; t = t->all, n++) {
         if (t->exited) continue;
         const Cpu *c = t->cur ? t->cur : t->cpu;
-        rt_log("hang: thread %#x p%d core %d mask %llx%s%s%s, state %s, wait %s addr %#llx key %#llx obj %#llx, entry %s",
-               t->handle, t->prio, t->cur_core, (unsigned long long)t->mask, t->is_main ? " main" : "",
-               t == g_render ? " render" : "", ap_disabled(t) ? " pdis" : "", st[t->st],
-               (unsigned)t->wkind < 5 ? wk[t->wkind] : "?", (unsigned long long)t->waddr, (unsigned long long)t->wkey,
-               (unsigned long long)t->wobj, ldr_describe(t->entry, d, sizeof d));
-        dump_host_stack(t->tid);
+        // The state is kept only with XC2_TRACE=sched (acct); the wait kind always.
+        sinkf(&s, "thread %#x (host %u) p%d core %d mask %llx%s%s%s%s%s%s, wait %s addr %#llx key %#llx obj "
+                  "%#llx, last svc %#x, entry %s",
+              t->handle, t->tid, t->prio, t->cur_core, (unsigned long long)t->mask, t->is_main ? " main" : "",
+              t == g_render ? " render" : "", ap_disabled(t) ? " pdis" : "", t == tcur ? " CRASHED HERE" : "",
+              rt_trace & RT_TRACE_SCHED ? ", state " : "",
+              rt_trace & RT_TRACE_SCHED ? ((unsigned)t->st < S_N ? st[t->st] : "?") : "",
+              (unsigned)t->wkind < 5 ? wk[t->wkind] : "?",
+              (unsigned long long)t->waddr, (unsigned long long)t->wkey, (unsigned long long)t->wobj, t->dg_svc,
+              ldr_describe(t->entry, d, sizeof d));
+        dump_host_stack(&s, t->tid);
         if (t->wkind == W_CONDVAR && dump_readable(t->wkey - 0x28)) {   // the nn::os object around the condition variable
             const uint32_t *w = (const uint32_t *)(uintptr_t)(t->wkey - 0x28);
-            rt_log("hang:   words before key: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x", w[0], w[1], w[2],
-                   w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
+            sinkf(&s, "  words before key: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x", w[0], w[1], w[2],
+                  w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10]);
         }
-        if (!c) continue;
-        rt_log("hang:   x19 %#llx x20 %#llx x21 %#llx x22 %#llx x23 %#llx x24 %#llx", (unsigned long long)c->x[19],
-               (unsigned long long)c->x[20], (unsigned long long)c->x[21], (unsigned long long)c->x[22],
-               (unsigned long long)c->x[23], (unsigned long long)c->x[24]);
-        rt_log("hang:   pc %s", ldr_describe(c->pc, d, sizeof d));
-        rt_log("hang:   lr %s", ldr_describe(c->x[30], d, sizeof d));
+        if (!c || t == tcur) continue;   // the crashed thread's registers are in the report above
+        sinkf(&s, "  x0 %#llx x1 %#llx x2 %#llx x19 %#llx x20 %#llx x21 %#llx x22 %#llx x23 %#llx x24 %#llx sp %#llx",
+              (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2],
+              (unsigned long long)c->x[19], (unsigned long long)c->x[20], (unsigned long long)c->x[21],
+              (unsigned long long)c->x[22], (unsigned long long)c->x[23], (unsigned long long)c->x[24],
+              (unsigned long long)c->sp);
+        sinkf(&s, "  pc %s", ldr_describe(c->pc, d, sizeof d));
+        sinkf(&s, "  lr %s", ldr_describe(c->x[30], d, sizeof d));
         uint64_t fp = c->x[29];
-        for (int n = 0; n < 16 && fp && !(fp & 7) && dump_readable(fp); n++) {
+        for (int k = 0; k < 16 && fp && !(fp & 7) && dump_readable(fp); k++) {
             uint64_t next = LD64(fp), lr = LD64(fp + 8);
-            rt_log("hang:   frame %2d %s", n, ldr_describe(lr, d, sizeof d));
+            sinkf(&s, "  frame %2d %s", k, ldr_describe(lr, d, sizeof d));
             if (next <= fp || next - fp > (64u << 20)) break;
             fp = next;
         }
     }
     {
         char line[128];   // which core each handle holds: a waiter whose mask includes a free core has a lost grant
-        int n = snprintf(line, sizeof line, "hang: cores");
-        for (int i = 0; i < NCORE && n < (int)sizeof line - 16; i++)
-            n += snprintf(line + n, sizeof line - (size_t)n, " %d:%#x", i,
+        int k = snprintf(line, sizeof line, "cores");
+        for (int i = 0; i < NCORE && k < (int)sizeof line - 16; i++)
+            k += snprintf(line + k, sizeof line - (size_t)k, " %d:%#x", i,
                           g_core_owner[i] ? g_core_owner[i]->handle : 0);
-        rt_log("%s", line);
+        s.out(s.ctx, line);
     }
-    unlock();
+    if (locked) unlock();
 }
+
+static void hang_line(void *ctx, const char *line) { (void)ctx; rt_log("hang: %s", line); }
+
+void kern_hang_dump(void) { kern_threads_dump(hang_line, NULL, 0); }
 
 // XC2_PC_SAMPLE=<ms>: every N ms, every guest thread's state, wait object and guest pc/lr. The hang dump says where a
 // thread waits; this samples over time what a thread that never waits is doing.
@@ -1862,7 +1896,7 @@ static void svc_caller_note(const Cpu *c, uint32_t imm) {
 
 int kern_svc(Cpu *c, uint32_t imm) {
     uint64_t *x = c->x;
-    if (g_diag > 0 && tcur) tcur->dg_svc = imm;
+    if (tcur) tcur->dg_svc = imm;   // XC2_CORE_DIAG and the crash report's thread list
     svc_caller_note(c, imm);
     switch (imm) {
     case 0x08: {   // CreateThread(-> w1 handle; x1 entry, x2 arg, x3 stack top, w4 priority, w5 core)

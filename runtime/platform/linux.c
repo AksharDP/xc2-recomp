@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <linux/fs.h>
@@ -932,26 +933,85 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 }
 
 // One handler for the synchronous faults. A SIGSEGV whose page-fault error code has the write bit set goes to the
-// write-fault hook first (memory.c thaws a frozen region); a fault in this executable's code then goes to the crash
-// hook (main.c); anything else gets the default action. Runs on the thread's signal stack.
+// write-fault hook first (memory.c thaws a frozen region); any other fault, in this executable or a library, then goes
+// to the crash hook (crash.c), and the default action follows if the hook returns. Runs on the thread's signal stack.
 static int (*fault_hook)(uint64_t addr);
 static void (*crash_fn)(const PlatCrash *c);
+
+int plat_backtrace(uintptr_t *out, int max) {
+    void *bt[64];
+    int n = backtrace(bt, max + 1 < 64 ? max + 1 : 64);
+    int k = 0;
+    for (int i = 1; i < n; i++) out[k++] = (uintptr_t)bt[i];   // without plat_backtrace itself
+    return k;
+}
+
+int plat_module_at(uintptr_t addr, char *name, size_t cap, uintptr_t *base) {
+    Dl_info at;
+    if (!dladdr((void *)addr, &at) || !at.dli_fbase) return 0;
+    const char *f = at.dli_fname ? strrchr(at.dli_fname, '/') : NULL;
+    if (cap) snprintf(name, cap, "%s", f ? f + 1 : at.dli_fname ? at.dli_fname : "?");
+    if (base) *base = (uintptr_t)at.dli_fbase;
+    return 1;
+}
+
+void plat_thread_name(char *out, size_t cap) {
+    if (!cap) return;
+    out[0] = 0;
+    char b[16];
+    if (!pthread_getname_np(pthread_self(), b, sizeof b)) snprintf(out, cap, "%s", b);
+}
+
+int plat_crash_dump(const char *path, const PlatCrash *c, const uint64_t (*ranges)[2], int nranges) {
+    (void)path, (void)c, (void)ranges, (void)nranges;
+    return 0;   // a core dump (ulimit -c) is the Linux equivalent
+}
 
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     long err = u->uc_mcontext.gregs[REG_ERR];
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
-    Dl_info at, self;
-    if (crash_fn && dladdr((void *)rip, &at) && dladdr((void *)plat_crash_hook, &self) && at.dli_fbase == self.dli_fbase) {
+    if (crash_fn) {
+        static char mod[256];
+        uintptr_t base = 0, self = 0;
         PlatCrash c = {sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error"
                        : sig == SIGILL ? "illegal instruction" : "arithmetic exception",
-                       (uint32_t)sig, rip, rip - (uintptr_t)self.dli_fbase, -1, 0};
+                       (uint32_t)sig, rip, 0, -1, 0};
+        plat_module_at((uintptr_t)plat_crash_hook, NULL, 0, &self);
+        if (plat_module_at(rip, mod, sizeof mod, &base)) {
+            c.offset = rip - base;
+            if (base != self) c.module = mod;   // a driver or library: no handler of its own runs on Linux
+        } else {
+            c.module = "no module";
+        }
         if (sig == SIGSEGV || sig == SIGBUS)
             c.access = (err & 16) ? 8 : (err & 2) ? 1 : 0, c.addr = (uint64_t)(uintptr_t)si->si_addr;
+        const greg_t *g = u->uc_mcontext.gregs;
+        const greg_t r[17] = {g[REG_RAX], g[REG_RCX], g[REG_RDX], g[REG_RBX], g[REG_RSP], g[REG_RBP],
+                              g[REG_RSI], g[REG_RDI], g[REG_R8],  g[REG_R9],  g[REG_R10], g[REG_R11],
+                              g[REG_R12], g[REG_R13], g[REG_R14], g[REG_R15], g[REG_EFL]};
+        for (int i = 0; i < 17; i++) c.regs[i] = (uint64_t)r[i];
+        c.has_regs = 1;
+        // From the signal frame: backtrace walks through the kernel's trampoline into the interrupted frames.
+        c.frames[0] = rip;
+        c.nframes = 1;
+        uintptr_t bt[PLAT_CRASH_FRAMES];
+        int n = plat_backtrace(bt, PLAT_CRASH_FRAMES), from = n;
+        for (int i = 0; i < n; i++)
+            if (bt[i] == rip || bt[i] == rip + 1) { from = i + 1; break; }
+        for (int i = from; i < n && c.nframes < PLAT_CRASH_FRAMES; i++) c.frames[c.nframes++] = bt[i];
         crash_fn(&c);
     }
     signal(sig, SIG_DFL);   // returns into the faulting instruction, which faults again with the default action
+}
+
+static void abort_handler(int sig) {
+    (void)sig;
+    PlatCrash c = {"abort", 0, 0, 0, -1, 0};
+    c.nframes = plat_backtrace(c.frames, PLAT_CRASH_FRAMES);
+    if (crash_fn) crash_fn(&c);
+    signal(SIGABRT, SIG_DFL);
 }
 
 static void fault_install(void) {
@@ -975,6 +1035,7 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     fault_install();
+    signal(SIGABRT, abort_handler);
 }
 
 void plat_reexec(void) {

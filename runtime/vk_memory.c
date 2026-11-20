@@ -2971,3 +2971,31 @@ void vk_mem_shutdown(void) {
     for (uint64_t i = 0; i < GEN_CHUNKS; i++) free(gen_chunk[i]), gen_chunk[i] = NULL;
     plat_mutex_unlock(&gen_lock);
 }
+
+// ---- crash report (crash.c)
+// Which pool holds guest address a, and how the GPU sees its bytes. Takes pool_lock only when it is free at once: the
+// crashed thread, or one stopped meanwhile, may hold it. 0 when no pool holds a.
+int vk_mem_describe(uint64_t a, char *out, size_t n) {
+    if (!vk_ctx() || !n) return 0;
+    int locked = plat_mutex_trylock_shared(&pool_lock);
+    const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)a, 1);
+    int found = 0;
+    if (e && e->buf) {
+        const PoolRec *r = e->buf;
+        const char *kind = r->kind == POOL_IMPORT ? "imported" : r->kind == POOL_PHYS ? "physical" : "virtual";
+        const char *how = r->kind != POOL_IMPORT ? ""
+                        : r->salloc ? ", shadow storage"
+                        : r->mstate == MS_ON ? (r->mhost ? ", VRAM mirror in host memory" : ", VRAM mirror")
+                        : r->mstate == MS_REFUSED ? ", mirror refused (read live)" : ", read live";
+        char gran[64] = "";
+        if (r->mstate == MS_ON && r->gsub && a >= r->import_lo && ((a - r->import_lo) >> GRAN_SHIFT) < r->ngran)
+            snprintf(gran, sizeof gran, ", granule first used by submission %u",
+                     r->gsub[(a - r->import_lo) >> GRAN_SHIFT]);
+        snprintf(out, n, "NVN %s pool %#llx+%#llx flags %#x, offset %#llx%s%s%s", kind, (unsigned long long)r->lo,
+                 (unsigned long long)r->size, r->flags, (unsigned long long)(a - r->lo), how, gran,
+                 r->bufbound ? ", bound as a buffer" : "");
+        found = 1;
+    }
+    if (locked) plat_mutex_unlock_shared(&pool_lock);
+    return found;
+}
