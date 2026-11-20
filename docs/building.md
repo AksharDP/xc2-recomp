@@ -209,6 +209,7 @@ change passes these, all run with `.venv`:
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention, on several threads; the ABA cases print "known", as the compare-and-swap monitor misses them | no |
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
+| `tests\prompts_keys_test.py` | the remappable keyboard prompt tiles: key names, tile sizes, defaults and file offsets, on made-up layouts | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
 `lift.py`, `simd.py` and `func.py` split their cases into chunks over `--jobs` worker processes (default: every logical
