@@ -1033,7 +1033,9 @@ const char *plat_user_locale(void) {
     return tag;
 }
 
-int plat_font_path(const char *lang, char *out, size_t cap) {
+int plat_font_path(const char *lang, char *out, size_t cap, int *face) {
+    // Windows ships a file per variant, and face 0 is the UI face of each (Microsoft YaHei, Microsoft JhengHei).
+    *face = 0;
     static const struct { const char *lang; const wchar_t *files[3]; } fonts[] = {
         {"ja", {L"YuGothM.ttc", L"meiryo.ttc", L"msgothic.ttc"}},
         {"ko", {L"malgun.ttf", L"gulim.ttc", NULL}},

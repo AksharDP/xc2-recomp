@@ -275,8 +275,9 @@ static int fonts_up(float scale, bool want_hant) {
     int merged = 0;
     for (int i = 0; i < N_LANG; i++) {
         char path[512];
+        int face = 0;
         uint64_t size = 0;
-        if (!plat_font_path(kLangNames[i].lang, path, sizeof path) || !(data[i] = plat_file_read(path, &size))) continue;
+        if (!plat_font_path(kLangNames[i].lang, path, sizeof path, &face) || !(data[i] = plat_file_read(path, &size))) continue;
         merged++;
         ImFontGlyphRangesBuilder b;
         b.AddText(ui_text_in("en", kLangNames[i].name));
@@ -286,6 +287,7 @@ static int fonts_up(float scale, bool want_hant) {
         mc.FontDataOwnedByAtlas = false;
         mc.OversampleH = 1;
         mc.OversampleV = 1;
+        mc.FontNo = face;
         fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, lang_ranges[i].Data);
     }
     ImVector<ImWchar> zh_ranges;
@@ -310,14 +312,19 @@ static int fonts_up(float scale, bool want_hant) {
             }
         b.BuildRanges(&zh_ranges);
     }
-    const char *zh_order[2] = {want_hant ? "zh-Hant" : "zh-Hans", want_hant ? "zh-Hans" : "zh-Hant"};
+    // ImGui keeps the last glyph loaded for a codepoint (ImFont::BuildLookupTable), so the alternate variant goes
+    // first and the preferred one last: its shapes win where the two share a character.
+    const char *zh_order[2] = {want_hant ? "zh-Hans" : "zh-Hant", want_hant ? "zh-Hant" : "zh-Hans"};
     char prev_path[512] = "";
+    int prev_face = -1;
     for (int i = 0; i < 2; i++) {
         char path[512];
+        int face = 0;
         uint64_t size = 0;
-        if (!plat_font_path(zh_order[i], path, sizeof path)) continue;
-        if (prev_path[0] && !strcmp(prev_path, path)) continue;
+        if (!plat_font_path(zh_order[i], path, sizeof path, &face)) continue;
+        if (prev_path[0] && !strcmp(prev_path, path) && prev_face == face) continue;
         snprintf(prev_path, sizeof prev_path, "%s", path);
+        prev_face = face;
         uint8_t *buf = plat_file_read(path, &size);
         if (!buf) continue;
         data[N_LANG + i] = buf;
@@ -327,6 +334,7 @@ static int fonts_up(float scale, bool want_hant) {
         mc.FontDataOwnedByAtlas = false;
         mc.OversampleH = 1;
         mc.OversampleV = 1;
+        mc.FontNo = face;
         fa->AddFontFromMemoryTTF(buf, (int)size, 26.0f * scale, &mc, zh_ranges.Data);
     }
     vk_queue_lock();   // the upload submits on the queue and waits for it
