@@ -1222,8 +1222,64 @@ const char *plat_user_locale(void) {
     return tag;
 }
 
+// Big-endian readers for the font tables: the files are big-endian on every host.
+static uint32_t font_rd32(const unsigned char *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+static unsigned font_rd16(const unsigned char *p) { return (unsigned)p[0] << 8 | p[1]; }
+
+// The face of a TrueType collection whose family name ends in the region tag ("JP", "KR", "SC", "TC"). The Noto CJK
+// collection holds one face per region plus a monospace set, and their order is not a contract, so the name picks
+// the face rather than a fixed index. A plain font file, or a collection with no matching name (the WenQuanYi
+// fallback covers every region in one face), gives face 0.
+static int ttc_region_face(const char *path, const char *tag) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char hdr[12], offs[256 * 4], dir[256 * 16], rec[512 * 12], str[512];
+    int face = 0;
+    if (fread(hdr, 1, sizeof hdr, f) != sizeof hdr || memcmp(hdr, "ttcf", 4)) goto out;
+    uint32_t n = font_rd32(hdr + 8);
+    if (!n || n > 256) goto out;
+    if (fread(offs, 4, n, f) != n) goto out;
+    for (uint32_t i = 0; i < n; i++) {
+        // Table offsets are absolute in the collection, not relative to the face: faces share tables.
+        if (fseek(f, font_rd32(offs + 4 * i), SEEK_SET)) continue;
+        if (fread(hdr, 1, 12, f) != 12) continue;
+        unsigned nt = font_rd16(hdr + 4);
+        if (!nt || nt > 256 || fread(dir, 16, nt, f) != nt) continue;
+        uint32_t no = 0, nl = 0;
+        for (unsigned t = 0; t < nt; t++)
+            if (!memcmp(dir + 16 * t, "name", 4)) {
+                no = font_rd32(dir + 16 * t + 8);
+                nl = font_rd32(dir + 16 * t + 12);
+                break;
+            }
+        if (!no || nl < 6 || fseek(f, no, SEEK_SET) || fread(hdr, 1, 6, f) != 6) continue;
+        unsigned count = font_rd16(hdr + 2), soff = font_rd16(hdr + 4);
+        if (!count || count > 512 || (uint32_t)soff + count * 12 > nl || fread(rec, 12, count, f) != count) continue;
+        for (unsigned r = 0; r < count; r++) {
+            const unsigned char *p = rec + 12 * r;
+            unsigned pid = font_rd16(p), eid = font_rd16(p + 2), lid = font_rd16(p + 4), nid = font_rd16(p + 6);
+            unsigned len = font_rd16(p + 8), ro = font_rd16(p + 10);
+            if (pid != 3 || eid != 1 || lid != 0x409 || (nid != 1 && nid != 4)) continue;   // Windows Unicode, family or full name
+            if (len < 6 || len > sizeof str || (uint32_t)soff + ro + len > nl) continue;
+            if (fseek(f, no + soff + ro, SEEK_SET) || fread(str, 1, len, f) != len) continue;
+            unsigned chars = len / 2;   // UTF-16BE: the ASCII characters of the name are every second byte
+            if (chars >= 3 && !str[2 * (chars - 3)] && str[2 * (chars - 3) + 1] == ' ' &&
+                !str[2 * (chars - 2)] && str[2 * (chars - 2) + 1] == tag[0] &&
+                !str[2 * (chars - 1)] && str[2 * (chars - 1) + 1] == tag[1]) {
+                face = (int)i;
+                goto out;
+            }
+        }
+    }
+out:
+    fclose(f);
+    return face;
+}
+
 // Noto CJK as the common distributions and SteamOS install it; one collection covers every CJK language.
-int plat_font_path(const char *lang, char *out, size_t cap) {
+int plat_font_path(const char *lang, char *out, size_t cap, int *face) {
     static const char *files[] = {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -1235,9 +1291,17 @@ int plat_font_path(const char *lang, char *out, size_t cap) {
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
     };
+    *face = 0;
     if (strcmp(lang, "ja") && strcmp(lang, "ko") && strcmp(lang, "zh-Hans") && strcmp(lang, "zh-Hant")) return 0;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
-        if (plat_file_exists(files[i])) return snprintf(out, cap, "%s", files[i]) < (int)cap;
+        if (plat_file_exists(files[i])) {
+            // The shared collection holds a face per region; the single-region Noto file and WenQuanYi have one
+            // face for the language and stay at 0.
+            const char *tag = !strcmp(lang, "ja") ? "JP" : !strcmp(lang, "ko") ? "KR"
+                            : !strcmp(lang, "zh-Hans") ? "SC" : "TC";
+            *face = ttc_region_face(files[i], tag);
+            return snprintf(out, cap, "%s", files[i]) < (int)cap;
+        }
     return 0;
 }
 
