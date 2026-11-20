@@ -2,12 +2,13 @@
 
 gui.py draws; everything it decides lives here so tests/installer_gui_test.py runs it headless.
 
-    Catalog      text of an id (installer/text/en.json, the window's only language)
+    Catalog      text of an id in the window language (installer/text/<lang>.json), English when that lacks it
     Form         what the player entered; command() and problems() build and check the CLI call
     LanguageProbe  runs `python -m installer.probe` on the chosen game files in a thread: the languages they have
     Model        folds the CLI's JSON events (events.py) into step states, progress, space, errors and the result
     Process      runs `python -m installer ...`, cancels it with Ctrl+Break and feeds lines to a queue
 """
+import ctypes
 import json
 import os
 import queue
@@ -24,10 +25,14 @@ from . import state as statefile
 from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
-UI_LANGUAGES = ('en',)   # the window's languages: a catalog installer/text/<lang>.json each
+UI_LANGUAGES = ('zh-Hans', 'zh-Hant', 'en')   # the window's languages: a catalog installer/text/<lang>.json each
 STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
-PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
+PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.',
+               'release': 'param.region.', 'base': 'param.region.', 'update': 'param.region.',
+               'dlc': 'param.region.', 'game': 'param.region.', 'region': 'param.region.'}
+LANG_ZH = 0x04   # primary language id of Chinese in a Windows LANGID
+SUBLANG_ZH_TRADITIONAL = (0x01, 0x03, 0x05)   # Traditional (TW), Hong Kong, Macau
 
 
 def load_texts(lang):
@@ -74,9 +79,29 @@ def flat(value):
     return ', '.join(str(v) for v in value) if isinstance(value, (list, tuple)) else value
 
 
-def default_game_language():
-    """en-US until the game files are read; the probe then picks the default of their languages
-    (ini.default_language)."""
+def system_ui_language():
+    """'zh-Hans', 'zh-Hant' or 'en' from the OS display language (Windows; elsewhere LC_ALL, LC_MESSAGES or LANG)."""
+    if os.name != 'nt':
+        loc = (os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or '').lower()
+        if not loc.startswith('zh'):
+            return 'en'
+        return 'zh-Hant' if ('hant' in loc or any(t in loc for t in ('_tw', '-tw', '_hk', '-hk', '_mo', '-mo'))) else 'zh-Hans'
+    try:
+        langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+    except (AttributeError, OSError):
+        return 'en'
+    if (langid & 0x3ff) != LANG_ZH:
+        return 'en'
+    return 'zh-Hant' if ((langid >> 10) & 0x3f) in SUBLANG_ZH_TRADITIONAL else 'zh-Hans'
+
+
+def default_game_language(ui_lang='en'):
+    """Default game language before the game files are read; the probe then keeps it if offered or falls back to
+    ini.default_language."""
+    if ui_lang == 'zh-Hans':
+        return 'zh-CN'
+    if ui_lang == 'zh-Hant':
+        return 'zh-TW'
     return 'en-US'
 
 

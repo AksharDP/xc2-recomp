@@ -173,6 +173,7 @@ static int g_failed_flag() { return g_failed.load(std::memory_order_relaxed); }
 static int g_vk_ok;               // back end initialised for g_vk_fmt
 static VkFormat g_vk_fmt;
 static float g_font_scale;        // the scale of the uploaded font atlas; 0 when none is uploaded
+static bool g_font_hant;          // true when the uploaded atlas prefers Traditional Chinese glyphs
 static float g_style_scale;       // the scale the style was last sized for
 static ImGuiStyle g_base_style;   // the menu's style at 1080 lines
 static uint64_t g_last_ns;
@@ -252,38 +253,81 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic for mod folder names, dashes and quotes) at 26 px per 1080 lines, with the glyphs of
-// the Japanese, Korean and Chinese language names merged in from a system font when there is one (each language is
-// named in its own script). Made again when the window height changes; the old texture goes after the queue is idle
-// (CreateFontsTexture).
+// Roboto Medium (Latin, Cyrillic for mod folder names, dashes and quotes) at 26 px per 1080 lines, with Japanese and
+// Korean language names and Chinese glyphs (UI catalog, common Simplified Chinese, CJK punctuation, and mod/cheat
+// names) merged in from system fonts when available. Made again when the window height or Chinese variant changes;
+// the old texture goes after the queue is idle (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
-static const struct { const char *lang; UiTextId name; } kCjk[] = {
-    {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
-    {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
+static const ImWchar kCjkPunct[] = {0x3000, 0x303F, 0xFF00, 0xFFEF, 0};
+static const struct { const char *lang; UiTextId name; } kLangNames[] = {
+    {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO},
 };
 
-static int fonts_up(float scale) {
-    enum { N = sizeof kCjk / sizeof *kCjk };
+static int fonts_up(float scale, bool want_hant) {
+    enum { N_LANG = sizeof kLangNames / sizeof *kLangNames, N_MAX = N_LANG + 2 };
     ImFontAtlas *fa = ImGui::GetIO().Fonts;
     fa->Clear();
     ImFontConfig fc;
     fc.FontDataOwnedByAtlas = false;
     fa->AddFontFromMemoryTTF((void *)roboto_ttf, (int)sizeof roboto_ttf, 26.0f * scale, &fc, kRanges);
-    uint8_t *data[N] = {};
-    ImVector<ImWchar> ranges[N];
+    uint8_t *data[N_MAX] = {};
+    ImVector<ImWchar> lang_ranges[N_LANG];
     int merged = 0;
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < N_LANG; i++) {
         char path[512];
         uint64_t size = 0;
-        if (!plat_font_path(kCjk[i].lang, path, sizeof path) || !(data[i] = plat_file_read(path, &size))) continue;
+        if (!plat_font_path(kLangNames[i].lang, path, sizeof path) || !(data[i] = plat_file_read(path, &size))) continue;
         merged++;
         ImFontGlyphRangesBuilder b;
-        b.AddText(ui_text_in("en", kCjk[i].name));
-        b.BuildRanges(&ranges[i]);
+        b.AddText(ui_text_in("en", kLangNames[i].name));
+        b.BuildRanges(&lang_ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
         mc.FontDataOwnedByAtlas = false;
-        fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, ranges[i].Data);
+        mc.OversampleH = 1;
+        mc.OversampleV = 1;
+        fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, lang_ranges[i].Data);
+    }
+    ImVector<ImWchar> zh_ranges;
+    {
+        ImFontGlyphRangesBuilder b;
+        b.AddRanges(fa->GetGlyphRangesChineseSimplifiedCommon());
+        b.AddRanges(kCjkPunct);
+        for (int id = 0; id < UI_TEXT_COUNT; id++) {
+            const char *s = ui_text_in("zh-Hans", (UiTextId)id);
+            if (s && *s) b.AddText(s);
+            const char *t = ui_text_in("zh-Hant", (UiTextId)id);
+            if (t && *t) b.AddText(t);
+        }
+        for (int i = 0; i < mods_count(); i++)
+            if (const ModInfo *m = mods_at(i))
+                if (m->name[0]) b.AddText(m->name);
+        for (int i = 0; i < cheats_count(); i++)
+            if (const CheatInfo *c = cheats_info(i)) {
+                if (c->mod && *c->mod) b.AddText(c->mod);
+                if (c->name && *c->name) b.AddText(c->name);
+                if (c->note && *c->note) b.AddText(c->note);
+            }
+        b.BuildRanges(&zh_ranges);
+    }
+    const char *zh_order[2] = {want_hant ? "zh-Hant" : "zh-Hans", want_hant ? "zh-Hans" : "zh-Hant"};
+    char prev_path[512] = "";
+    for (int i = 0; i < 2; i++) {
+        char path[512];
+        uint64_t size = 0;
+        if (!plat_font_path(zh_order[i], path, sizeof path)) continue;
+        if (prev_path[0] && !strcmp(prev_path, path)) continue;
+        snprintf(prev_path, sizeof prev_path, "%s", path);
+        uint8_t *buf = plat_file_read(path, &size);
+        if (!buf) continue;
+        data[N_LANG + i] = buf;
+        merged++;
+        ImFontConfig mc;
+        mc.MergeMode = true;
+        mc.FontDataOwnedByAtlas = false;
+        mc.OversampleH = 1;
+        mc.OversampleV = 1;
+        fa->AddFontFromMemoryTTF(buf, (int)size, 26.0f * scale, &mc, zh_ranges.Data);
     }
     vk_queue_lock();   // the upload submits on the queue and waits for it
     int ok = ImGui_ImplVulkan_CreateFontsTexture();
@@ -291,8 +335,10 @@ static int fonts_up(float scale) {
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
-    rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
+    rt_log("menu: font atlas at %.1f px (%s), merged %d system fonts", 26.0f * scale,
+           want_hant ? "zh-Hant" : "zh-Hans", merged);
     g_font_scale = ok ? scale : 0;
+    g_font_hant = want_hant;
     return ok;
 }
 
@@ -557,6 +603,9 @@ static void tab_game(float scale) {
     static const UiTextId cut[] = {UI_MENU_CUTSCENE_30, UI_MENU_CUTSCENE_MIXED, UI_MENU_CUTSCENE_LIMIT};
     opt_choice("XC2_CUTSCENE_30", UI_MENU_CUTSCENE_FPS, cut, 3, UI_MENU_CUTSCENE_FPS_DESC);
     row_game_lang();
+    static const UiTextId menu_langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_ZH_HANS,
+                                          UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_EN};
+    opt_choice("XC2_MENU_LANG", UI_MENU_MENU_LANG, menu_langs, 4, UI_MENU_MENU_LANG_DESC);
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("XC2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_end();
@@ -1287,7 +1336,8 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     uint64_t t0 = plat_now_ns();
     if (!g_ctx_ok) make_context();
     float scale = menu_scale(t->height);
-    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale))) {
+    bool want_hant = !strcmp(menu_text_lang(), "zh-Hant");
+    if (!vk_up(t) || ((g_font_scale != scale || g_font_hant != want_hant) && !fonts_up(scale, want_hant))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
         set_open(0);

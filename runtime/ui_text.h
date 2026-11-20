@@ -1,5 +1,5 @@
 // Text the host shows the player (runtime/ui_text.c): one catalog, keyed by stable ids. The software keyboard reads it
-// in the game's language (ui_text); the menu and the performance overlay are English (menu_text).
+// in the game's language (ui_text); the menu and the performance overlay read it in the menu language (menu_text).
 #pragma once
 
 typedef enum {
@@ -11,7 +11,7 @@ typedef enum {
     UI_SWKBD_CANCEL,
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
-    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English texts.
+    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English, Simplified and Traditional Chinese texts.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS,
@@ -53,6 +53,7 @@ typedef enum {
     UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC,
     UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC,
     UI_MENU_GAME_LANG, UI_MENU_GAME_LANG_DESC, UI_MENU_GAME_LANG_AUTO,
+    UI_MENU_MENU_LANG, UI_MENU_MENU_LANG_DESC, UI_MENU_MENU_LANG_AUTO,
     UI_MENU_OPERATION_MODE, UI_MENU_OPERATION_MODE_DESC, UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD,
 
     // Sound
@@ -208,5 +209,8 @@ int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
 
-// Menu and overlay text: ui_text_in("en", id).
+// Menu and overlay text: ui_text_in(menu language, id). Follows XC2_MENU_LANG ("zh-Hans" / "zh-Hant" / "en"), or the
+// system UI language when unset.
 const char *menu_text(UiTextId id);
+// The resolved catalog language currently used by menu_text ("zh-Hans", "zh-Hant" or "en").
+const char *menu_text_lang(void);

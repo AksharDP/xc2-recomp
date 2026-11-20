@@ -427,20 +427,28 @@ class LanguageWindowTest(unittest.TestCase):
 
 
 class CatalogTest(unittest.TestCase):
-    def test_the_window_is_english_only(self):
+    def test_catalog_completeness_and_placeholders(self):
         catalogs = sorted(p.stem for p in (ROOT / 'installer' / 'text').glob('*.json'))
-        self.assertEqual(catalogs, ['en'])
+        self.assertEqual(catalogs, ['en', 'zh-Hans', 'zh-Hant'])
         self.assertEqual(Catalog('ru').lang, 'en')   # a language without a catalog falls back to English
+        en = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
+        for lang in ('zh-Hans', 'zh-Hant'):
+            other = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
+            self.assertEqual(set(other), set(en), f'{lang}.json keys differ from en.json')
+            for k, v in en.items():
+                self.assertEqual(set(re.findall(r'\{(\w+)\}', other[k])), set(re.findall(r'\{(\w+)\}', v)),
+                                 f'{lang}.json placeholder mismatch for {k}')
 
     def test_every_id_the_window_uses_exists(self):
-        cat = Catalog('en')
         ids = ['ui.' + n for n in ('title', 'start', 'cancel', 'open_folder', 'notice', 'space_one', 'space_two',
                                    'process_died', 'result_ok', 'result_failed', 'result_cancelled', 'langs_hint',
                                    'langs_checking', 'langs_found', 'langs_failed', 'lang_not_in_game')]
         ids += [f'step.{s}' for s in ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
         ids += ['ui.state_' + n for n in ('started', 'done', 'skipped', 'pending', 'running', 'failed')]
         ids += ['lang.' + c for c in ini.LANGUAGES]
-        self.assertEqual([i for i in ids if not cat.has(i)], [])
+        for lang in ('en', 'zh-Hans', 'zh-Hant'):
+            cat = Catalog(lang)
+            self.assertEqual([i for i in ids if not cat.has(i)], [], f'missing ids in {lang}')
 
     def test_codes_become_names(self):
         cat = Catalog('en')
@@ -454,6 +462,9 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(cat('check.lang_not_in_game', lang='en-US', known='ja, zh-CN, zh-TW'),
                          'These game files have no English (US) text. Their languages: Japanese, '
                          'Chinese (Simplified, China), Chinese (Traditional, Taiwan).')
+        zh = Catalog('zh-Hans')
+        self.assertIn('日版', zh('ui.langs_found', release='Japan', known='ja, zh-CN'))
+        self.assertIn('简体中文（中国大陆）', zh('ui.langs_found', release='Japan', known='ja, zh-CN'))
 
     def test_fallback_and_params(self):
         cat = Catalog('en')
