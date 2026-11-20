@@ -487,6 +487,12 @@ uint64_t plat_counter_hz(void) { return 1000000000u; }
 // inherit it from the thread that creates them.
 void plat_timer_1ms(void) { prctl(PR_SET_TIMERSLACK, 1000ul, 0, 0, 0); }
 
+int plat_perf_core_setup(char *why, size_t n) {
+    snprintf(why, n, "not done on Linux");
+    return 0;
+}
+int plat_thread_perf_core(void) { return -1; }
+
 int plat_no_power_throttling(void) { return 0; }   // Linux has no per-process power-saving mode to opt out of
 
 // clock_nanosleep wakes within the timer slack (50 us by default) of its deadline; the last PLAT_SPIN_NS are spent
