@@ -18,17 +18,24 @@
 
 #define RING_WORDS (1u << 21)   // 16 MiB: a part of a submission is ~1-2 MiB of packets in the town
 static uint64_t ring[RING_WORDS];
-static volatile uint64_t head, tail;   // words published by the producer / consumed by the recorder
-static volatile int32_t sleeping;         // the recorder waits for wake_ev
+// The queue state, a cache line per writer. The recorder spins on head while it waits for packets, so a line
+// the producer writes on every packet and the recorder reads goes back and forth between their cores: with
+// head and tail adjacent (the linker's order of these statics), handing packets over cost TotK 6% of its
+// replay thread in the fort, more than building the descriptors (TotK Recomp runtime/vk_rec.c, MIT).
+static struct {
+    _Alignas(64) volatile uint64_t head;      // words published by the producer; the recorder reads it
+    _Alignas(64) volatile uint64_t tail;      // words consumed by the recorder; the producer reads it when it seems full
+    _Alignas(64) volatile int32_t sleeping;   // the recorder waits for wake_ev; written only around a sleep
+    _Alignas(64) uint64_t put_h;              // producer only: words written (published up to head)
+} Q;
 static PlatEvent wake_ev;              // auto-reset
-static uint64_t put_h;                 // producer: words written (published up to head)
 static VkCommandBuffer rec_cb;         // the part being recorded (set while the recorder is idle)
 static int rec_live;                   // producer: rec_begin started the recorder for rec_cb
 static PlatThread *rec_thread;
 static int rec_prio;                   // the submitting thread's priority, which the recorder takes
 
 // Producer statistics, logged by rec_stats_log.
-static struct { uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } RS_;
+static struct { _Alignas(64) uint64_t packets, words, drains, fallbacks, drain_ns, full_waits, parts, parts_on; } RS_;
 
 enum {
     R_PAD, R_BeginQuery, R_BeginRendering, R_BindDescriptorSets, R_BindIndexBuffer, R_BindPipeline, R_BindVertexBuffers2,
@@ -55,28 +62,50 @@ static void exec_packet(uint32_t op, void *p);
 // (default 4096, as before) lowers the spin there: a 4096-pause spin is a fraction of a millisecond of a core.
 static int spin_open = 4096, spin_idle = 4096;
 static volatile int32_t part_open;   // 1 from rec_begin of a recorded part until its end (rec_end, rec_end_cb)
+static uint64_t rec_spin_ns;         // XC2_REC_SPIN_US (rec_main); 0: the pause-count spins above
+static int rec_spin_ab;              // XC2_REC_SPIN_US=ab: the timed poll in the B blocks of XC2_AB only
 
 static void spin_knobs(void) {
     const char *e = cfg_get("XC2_REC_SPIN");
     if (e && *e) spin_open = atoi(e);
     e = cfg_get("XC2_REC_SPIN_IDLE");
     if (e && *e) spin_idle = atoi(e);
+    // A pause takes 8-150 cycles depending on the CPU, so a pause count is not a time: poll for a fixed
+    // 60 us by default (XC2_REC_SPIN_US; 0 keeps the pause counts). With fewer than 6 logical processors
+    // the pauses stay: the recorder there is mostly asleep when a batch goes out (TotK Recomp vk_rec.c).
+    const char *sp = cfg_get("XC2_REC_SPIN_US");
+    rec_spin_ab = sp && !strcmp(sp, "ab");
+    int spin_us = sp && *sp && !rec_spin_ab ? atoi(sp) : 60;
+    rec_spin_ns = spin_us > 0 && plat_cpu_count() >= 6 ? (uint64_t)spin_us * 1000 : 0;
 }
 
 static void rec_main(void *arg) {
     (void)arg;
     plat_thread_priority(rec_prio);
+    perf_core_thread(PCORE_RECORDER);
     uint64_t t = 0;
     for (;;) {
-        uint64_t h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
+        uint64_t h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
         if (t == h) {
-            int spin = __atomic_load_n(&part_open, __ATOMIC_RELAXED) ? spin_open : spin_idle;
-            for (int i = 0; i < spin && t == h; i++) _mm_pause(), h = __atomic_load_n(&head, __ATOMIC_ACQUIRE);
+            // Poll for the next packets before sleeping: a sleep costs the producer an event set and the
+            // recorder an OS wake-up. The poll is timed (XC2_REC_SPIN_US) because a pause takes 8-150
+            // cycles depending on the CPU: 4096 of them are ~140 us on a Coffee Lake i7, a few us on Zen 4.
+            if (rec_spin_ns && (!rec_spin_ab || rt_ab())) {
+                uint64_t t0 = now_ns();
+                for (unsigned i = 1; t == h; i++) {
+                    _mm_pause();
+                    h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
+                    if (!(i & 31) && now_ns() - t0 >= rec_spin_ns) break;
+                }
+            } else {
+                int spin = __atomic_load_n(&part_open, __ATOMIC_RELAXED) ? spin_open : spin_idle;
+                for (int i = 0; i < spin && t == h; i++) _mm_pause(), h = __atomic_load_n(&Q.head, __ATOMIC_ACQUIRE);
+            }
             if (t == h) {
-                __atomic_store_n(&sleeping, 1, __ATOMIC_SEQ_CST);
-                h = __atomic_load_n(&head, __ATOMIC_SEQ_CST);
+                __atomic_store_n(&Q.sleeping, 1, __ATOMIC_SEQ_CST);
+                h = __atomic_load_n(&Q.head, __ATOMIC_SEQ_CST);
                 if (t == h) plat_event_wait_ns(&wake_ev, 2000000);   // a missed wake costs at most 2 ms
-                __atomic_store_n(&sleeping, 0, __ATOMIC_RELAXED);
+                __atomic_store_n(&Q.sleeping, 0, __ATOMIC_RELAXED);
                 continue;
             }
         }
@@ -85,9 +114,9 @@ static void rec_main(void *arg) {
             uint32_t op = (uint32_t)(w & 0xffff), n = (uint32_t)(w >> 32);
             if (op != R_PAD) exec_packet(op, &ring[t % RING_WORDS + 1]);
             t += n;
-            if ((k & 63) == 63) __atomic_store_n(&tail, t, __ATOMIC_RELEASE);
+            if ((k & 63) == 63) __atomic_store_n(&Q.tail, t, __ATOMIC_RELEASE);
         }
-        __atomic_store_n(&tail, t, __ATOMIC_RELEASE);
+        __atomic_store_n(&Q.tail, t, __ATOMIC_RELEASE);
     }
     return;
 }
@@ -96,45 +125,45 @@ static void rec_main(void *arg) {
 
 static void wake(void) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
+    if (__atomic_load_n(&Q.sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
 }
 
 static void wait_space(uint64_t need) {
-    if (put_h + need - __atomic_load_n(&tail, __ATOMIC_ACQUIRE) <= RING_WORDS) return;
+    if (Q.put_h + need - __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE) <= RING_WORDS) return;
     RS_.full_waits++;
-    __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
+    __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
     wake();
-    while (put_h + need - __atomic_load_n(&tail, __ATOMIC_ACQUIRE) > RING_WORDS) _mm_pause();
+    while (Q.put_h + need - __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE) > RING_WORDS) _mm_pause();
 }
 
 // Room for a packet of bytes of arguments; the caller fills it and calls pub().
 static void *put(uint32_t op, size_t bytes) {
-    uint64_t n = 1 + (bytes + 7) / 8, pos = put_h % RING_WORDS;
+    uint64_t n = 1 + (bytes + 7) / 8, pos = Q.put_h % RING_WORDS;
     if (n > RING_WORDS / 4) rt_fatal("vk_rec: a packet of %llu bytes", (unsigned long long)bytes);
     if (pos + n > RING_WORDS) {
         uint64_t pad = RING_WORDS - pos;
         wait_space(pad);
         ring[pos] = (uint64_t)R_PAD | pad << 32;
-        put_h += pad, pos = 0;
+        Q.put_h += pad, pos = 0;
     }
     wait_space(n);
     ring[pos] = (uint64_t)op | n << 32;
-    put_h += n;
+    Q.put_h += n;
     RS_.packets++, RS_.words += n;
     return &ring[pos + 1];
 }
 
 static void pub(void) {
-    __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
-    if (__atomic_load_n(&sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
+    __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&Q.sleeping, __ATOMIC_RELAXED)) plat_event_set(&wake_ev);
 }
 
 void rec_drain(void) {
-    if (!rec_thread || __atomic_load_n(&tail, __ATOMIC_ACQUIRE) == put_h) return;
+    if (!rec_thread || __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE) == Q.put_h) return;
     uint64_t t0 = now_ns();
-    __atomic_store_n(&head, put_h, __ATOMIC_RELEASE);
+    __atomic_store_n(&Q.head, Q.put_h, __ATOMIC_RELEASE);
     wake();
-    for (int i = 0; __atomic_load_n(&tail, __ATOMIC_ACQUIRE) != put_h; i++)
+    for (int i = 0; __atomic_load_n(&Q.tail, __ATOMIC_ACQUIRE) != Q.put_h; i++)
         if (i < 20000) _mm_pause();
         else plat_yield();
     RS_.drains++, RS_.drain_ns += now_ns() - t0;
@@ -163,6 +192,9 @@ void rec_begin(VkCommandBuffer cb) {
             } else {
                 rt_log("vk_rec: the replay's Vulkan commands are made by a recorder thread%s",
                        mode == 2 ? " in the B blocks (XC2_AB)" : "");
+                if (rec_spin_ns)
+                    rt_log("vk_rec: the recorder polls %llu us before it sleeps%s (XC2_REC_SPIN_US)",
+                           (unsigned long long)(rec_spin_ns / 1000), rec_spin_ab ? " in the B blocks" : "");
             }
         }
     }

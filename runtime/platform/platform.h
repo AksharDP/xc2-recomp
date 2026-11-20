@@ -86,6 +86,11 @@ uint64_t plat_now_ns(void);               // monotonic, high resolution, arbitra
 uint64_t plat_counter(void);              // the OS's raw monotonic counter (QPC on Windows), plat_counter_hz per second
 uint64_t plat_counter_hz(void);
 void plat_timer_1ms(void);                // asks the OS for timed waits accurate to 1 ms or better (call before threads)
+// Hybrid CPUs: finds the performance-core logical processors the process may use, once, before any thread asks; returns
+// their count (0: none to prefer, why says which case). plat_thread_perf_core: the calling thread prefers them; 1 done,
+// 0 refused, -1 nothing selected.
+int plat_perf_core_setup(char *why, size_t n);
+int plat_thread_perf_core(void);
 // Asks the OS never to run the process in a power-saving mode (Windows EcoQoS: low clocks, efficiency cores, timer
 // requests ignored) while its window is not in front; 1 when the request took. A no-op elsewhere.
 int plat_no_power_throttling(void);
