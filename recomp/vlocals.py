@@ -62,6 +62,7 @@ RET = re.compile(r'(?:__attribute__\(\(musttail\)\)\s*)?\breturn\b[^;]*;')
 RET_BLOCK = re.compile(r'(\{ [^{}]*?(?:__attribute__\(\(musttail\)\) )?return\b[^;]*; \})')
 LANE = re.compile(r'\(\((\w+) \*\)&c->v\[')
 WHOLE = re.compile(r'c->v\[')
+VHI64A = re.compile(r'\bVHI64\(')
 USES = re.compile(r'\b(' + '|'.join(['VSET', 'VLSET', 'VGET', 'VLANE', 'VS8', 'VS16', 'VS32', 'VS64', 'VSF32', 'VSF64',
                                      'VHI64', 'VREG', 'VQ', 'VW', 'FP_SETS', 'FP_SETD', 'SV_FOP_S', 'SV_FOP_D']
                                     + sorted(HELPERS)) + r')\(')
@@ -122,12 +123,30 @@ def accessors(t):
     """c->v forms of emitted C -> the RT_VLOCALS accessors of runtime/simd.h"""
     out, i = [], 0
     while True:
-        m1, m2 = LANE.search(t, i), WHOLE.search(t, i)
-        m = min((x for x in (m1, m2) if x), key=lambda x: x.start(), default=None)
+        m1, m2, m3 = LANE.search(t, i), WHOLE.search(t, i), VHI64A.search(t, i)
+        m = min((x for x in (m1, m2, m3) if x), key=lambda x: x.start(), default=None)
         if not m:
             out.append(t[i:])
             return ''.join(out)
         out.append(t[i:m.start()])
+        if m is m3:
+            # VHI64(n) reads lane 1; an assignment to it is not assignable under RT_VLOCALS (a cast subscript), so
+            # turn it into a VLSET lane write, which also marks the register dirty (recomp/simd_c.py FMOV Vd.D[1], Xn).
+            j, d = m.end(), 1   # VHI64's argument is a register number; find its ')' (_close tracks only [] brackets)
+            while d:
+                d += {'(': 1, ')': -1}.get(t[j], 0)
+                j += 1
+            e = j
+            a = re.match(r'\s*=(?!=)', t[e:])
+            if a:
+                se = _stmt_end(t, e + a.end())
+                out.append(f'VLSET({accessors(t[m.end():e - 1]).strip()}, vu64, 1, '
+                           f'{accessors(t[e + a.end():se]).strip()})')
+                i = se
+            else:
+                out.append(t[m.start():e])
+                i = e
+            continue
         if m is m1:
             e = _close(t, m.end())
             if m.group(1) not in LANE_T or t[e:e + 2] != ')[':

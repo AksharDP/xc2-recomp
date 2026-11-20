@@ -305,9 +305,10 @@ int plat_perf_core_setup(char *why, size_t n) {
         SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
         if (!i->Size) break;
         if (i->Type == CpuSetInformation) {
-            int perf = i->CpuSet.EfficiencyClass > lo;
-            int allowed = !filter || (i->CpuSet.Group == 0 && i->CpuSet.LogicalProcessorIndex < 64 &&
-                                      (proc >> i->CpuSet.LogicalProcessorIndex) & 1);
+            int perf = i->CpuSet.EfficiencyClass == hi;   // only the highest class; a middle class on a 3-class CPU is not a P-core
+            int reserved = i->CpuSet.Allocated && !i->CpuSet.AllocatedToTargetProcess;   // another process owns this set
+            int allowed = !reserved && (!filter || (i->CpuSet.Group == 0 && i->CpuSet.LogicalProcessorIndex < 64 &&
+                                                    (proc >> i->CpuSet.LogicalProcessorIndex) & 1));
             perf ? np++ : ne++;
             if (allowed) perf ? ok_p++ : ok_e++;
             if (allowed && perf) {

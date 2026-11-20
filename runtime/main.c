@@ -635,11 +635,16 @@ int main(int argc, char **argv) {
     // runs (XC2_BACKGROUND_WINDOW) and a game left running behind a browser are.
     if (!cfg_bool("XC2_POWER_THROTTLING") && !plat_no_power_throttling()) rt_log("cpu: power throttling opt-out refused");
     // Hybrid CPUs: the threads every frame goes through prefer the P-cores (perf_core_thread). XC2_PCORE=0: off.
-    if (rt_knob("PCORE", "1")) {
+    // The preference is set once per thread at its start, so it cannot follow the A/B blocks: XC2_PCORE=ab applies it
+    // to the whole run (both arms). rt_knob returns 2 for "ab"; RT_KNOB_ON is wrong here because rt_ab() is 0 before
+    // the world clock starts, which would turn the preference off for the whole run.
+    int pcore = rt_knob("PCORE", "1");
+    if (pcore) {
         char why[160];
         int n = plat_perf_core_setup(why, sizeof why);
         if (n) rt_log("power: %s; the game's main and render threads and the vk replay, recorder and present threads "
-                      "prefer the %d P-core ones (XC2_PCORE=0 turns it off)", why, n);
+                      "prefer the %d P-core ones (XC2_PCORE=0 turns it off)%s", why, n,
+                      pcore == 2 ? "; XC2_PCORE=ab: applied to both A/B arms" : "");
         else rt_log("power: %s: no P-core preference", why);
     } else {
         rt_log("power: XC2_PCORE=0: no P-core preference");
