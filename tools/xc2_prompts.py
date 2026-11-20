@@ -13,7 +13,8 @@ console's colours), a blue rim and a glow. Sets, one folder each:
   xbox, playstation                    gamepad layout Xbox (XC2_PAD_LAYOUT, runtime/input_map.h): Switch A is the
                                        bottom button, Xbox A, PlayStation cross
   xbox_nintendo, playstation_nintendo  Nintendo layout: Switch A is the right button, Xbox B, PlayStation circle
-  keyboard                             the default keys and mouse buttons (runtime/input_map.c DEFAULT_KEYS)
+  keyboard                             the default keys, with the bound key of each action drawn at runtime
+                                       (runtime/prompts_keys.c and keyboard/keys.dat; stick and d-pad clusters stay)
 Only the texture blocks under a replaced cell are re-encoded; every other byte of a layout stays the game's.
 
 The text gets one change too, in the set "text" that every redrawn set shares. Menu/msproj/bf2.msbp names a tag for
@@ -595,6 +596,234 @@ class Painter:
         return self.cache[key]
 
 
+# ---- remappable keyboard tiles
+#
+# The keyboard set is drawn once, at install time, from the keys of DEFAULT_KEYS. A player who remaps in the Controls
+# tab keeps those icons unless the runtime can put a different key in a cell. keys.dat holds, for every key the menu can
+# bind, the encoded texture blocks of that key in each style the set uses (row order), and for every cell of every
+# redrawn layout the file offsets of the blocks to overwrite. The runtime copies a tile over those offsets when it
+# serves a layout. Stick clusters and the d-pad are four keys in one cell and keep their default art: the blocks of
+# overlapping keys cannot be replaced one at a time.
+
+# runtime/input_map.c key_names, in order. prompts_keys_test.py checks this against the C table.
+KEY_NAMES = (
+    'a b c d e f g h i j k l m n o p q r s t u v w x y z '
+    '0 1 2 3 4 5 6 7 8 9 space tab lshift lctrl up down left right '
+    'mouse_l mouse_r mouse_m mouse_x1 mouse_x2 enter backspace rshift rctrl lalt capslock insert delete home end '
+    'pageup pagedown f2 f3 f4 f5 f6 f7 f9 f12 num0 num1 num2 num3 num4 num5 num6 num7 num8 num9 '
+    'num_add num_sub num_mul num_div num_decimal minus equals lbracket rbracket semicolon apostrophe comma period '
+    'slash backslash grave').split()
+
+# B_SL_LEFT..B_SL_DOWN follow B_LEFT..B_DOWN in input_map.h; the stick directions the keys drive are not prompts.
+ACTION_IDS = {'A': 0, 'B': 1, 'X': 2, 'Y': 3, 'LCLICK': 4, 'RCLICK': 5, 'L': 6, 'R': 7, 'ZL': 8, 'ZR': 9,
+              'PLUS': 10, 'MINUS': 11, 'LEFT': 12, 'UP': 13, 'RIGHT': 14, 'DOWN': 15}
+CELL_ACTIONS = {'A': 'A', 'B': 'B', 'X': 'X', 'Y': 'Y', 'L3': 'LCLICK', 'R3': 'RCLICK', 'L': 'L', 'R': 'R',
+                'ZL': 'ZL', 'ZR': 'ZR', 'plus': 'PLUS', 'minus': 'MINUS', 'up': 'UP', 'down': 'DOWN',
+                'left': 'LEFT', 'right': 'RIGHT'}
+
+# The default keys of each action (input_map.c DEFAULT_KEYS), and the key whose icon the set was baked with (KEYS).
+# ZL and ZR have two default keys; the baked set uses Z and F, so the runtime must keep those until a bind changes.
+DEFAULT_KEYS = {'A': ('e',), 'B': ('lshift',), 'X': ('space',), 'Y': ('mouse_l',), 'LCLICK': ('lctrl',),
+                'RCLICK': ('c',), 'L': ('q',), 'R': ('r',), 'ZL': ('mouse_r', 'z'), 'ZR': ('f', 'x'),
+                'PLUS': ('tab',), 'MINUS': ('m',), 'LEFT': ('1',), 'UP': ('2',), 'RIGHT': ('3',), 'DOWN': ('4',)}
+BAKED_KEY = {'A': 'e', 'B': 'lshift', 'X': 'space', 'Y': 'mouse_l', 'LCLICK': 'lctrl', 'RCLICK': 'c',
+             'L': 'q', 'R': 'r', 'ZL': 'z', 'ZR': 'f', 'PLUS': 'tab', 'MINUS': 'm', 'LEFT': '1', 'UP': '2',
+             'RIGHT': '3', 'DOWN': '4'}
+
+# A 5x7 font for the keys with no icon in the Kenney set. Each glyph is seven rows of five bits, top first.
+FONT = {
+    'A': (0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11), 'B': (0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e),
+    'C': (0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e), 'D': (0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e),
+    'E': (0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f), 'F': (0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10),
+    'G': (0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f), 'H': (0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11),
+    'I': (0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e), 'J': (0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c),
+    'K': (0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11), 'L': (0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f),
+    'M': (0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11), 'N': (0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11),
+    'O': (0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e), 'P': (0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10),
+    'Q': (0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d), 'R': (0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11),
+    'S': (0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e), 'T': (0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04),
+    'U': (0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e), 'V': (0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04),
+    'W': (0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11), 'X': (0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11),
+    'Y': (0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04), 'Z': (0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f),
+    '0': (0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e), '1': (0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e),
+    '2': (0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f), '3': (0x1f, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0e),
+    '4': (0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02), '5': (0x1f, 0x10, 0x1e, 0x01, 0x01, 0x11, 0x0e),
+    '6': (0x06, 0x10, 0x20, 0x1e, 0x11, 0x11, 0x0e), '7': (0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08),
+    '8': (0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e), '9': (0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c),
+    '+': (0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00), '-': (0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00),
+    '*': (0x00, 0x0a, 0x04, 0x1f, 0x04, 0x0a, 0x00), '/': (0x01, 0x02, 0x02, 0x04, 0x08, 0x10, 0x10),
+    '.': (0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c), ',': (0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c, 0x08),
+    ':': (0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x00), '(': (0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02),
+    ')': (0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08), '_': (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f),
+    '=': (0x00, 0x00, 0x1f, 0x00, 0x1f, 0x00, 0x00), "'": (0x04, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00),
+    '?': (0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04), '!': (0x04, 0x04, 0x04, 0x04, 0x00, 0x04, 0x04),
+    '#': (0x0a, 0x0a, 0x1f, 0x0a, 0x1f, 0x0a, 0x0a), '[': (0x0e, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0e),
+    ']': (0x0e, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0e), ';': (0x00, 0x0c, 0x0c, 0x00, 0x0c, 0x0c, 0x08),
+    '\\': (0x10, 0x10, 0x08, 0x04, 0x02, 0x02, 0x02), '`': (0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00),
+}
+
+# The menu's names for keys whose Kenney icon has another name.
+ICON_FILES = {'lshift': 'keyboard_shift', 'rshift': 'keyboard_shift', 'lctrl': 'keyboard_ctrl',
+              'rctrl': 'keyboard_ctrl', 'mouse_l': 'mouse_left'}
+
+# Short labels for keys the menu names by a word; letters and digits use the character on the key itself.
+LABELS = {'space': 'SPACE', 'tab': 'TAB', 'lshift': 'SHIFT', 'rshift': 'SHIFT', 'lctrl': 'CTRL', 'rctrl': 'CTRL',
+          'lalt': 'ALT', 'enter': 'ENTER', 'backspace': 'BKSP', 'capslock': 'CAPS', 'insert': 'INS',
+          'delete': 'DEL', 'home': 'HOME', 'end': 'END', 'pageup': 'PGUP', 'pagedown': 'PGDN',
+          'up': 'UP', 'down': 'DOWN', 'left': 'LEFT', 'right': 'RIGHT', 'mouse_r': 'RMB', 'mouse_m': 'MMB',
+          'mouse_x1': 'X1', 'mouse_x2': 'X2', 'num_add': 'NUM+', 'num_sub': 'NUM-', 'num_mul': 'NUM*',
+          'num_div': 'NUM/', 'num_decimal': 'NUM.', 'minus': '-', 'equals': '=', 'lbracket': '[', 'rbracket': ']',
+          'semicolon': ';', 'apostrophe': "'", 'comma': ',', 'period': '.', 'slash': '/', 'backslash': '\\',
+          'grave': '`'}
+
+
+def keycap(name, size=64):
+    """A white keycap with a dark label, in the shape the styled() pass expects (like the Kenney icons)."""
+    label = LABELS.get(name, name.upper())[:7]
+    scale = max(1, min(5, (size - 16) // (len(label) * 6 + 1), (size - 16) // 8))
+    gw, gh = len(label) * 6 * scale, 7 * scale
+    x0, y0 = (size - gw) // 2, (size - 8 - gh) // 2
+    out = blank(size, size)
+    edge, radius = 3, 6
+    for y in range(size):
+        for x in range(size):
+            dx = max(edge + radius - x, x - (size - 1 - edge - radius), 0)
+            dy = max(edge + radius - y, y - (size - 1 - edge - radius), 0)
+            if dx * dx + dy * dy <= radius * radius and edge <= x < size - edge and edge <= y < size - edge:
+                out[y][x] = WHITE + (255,)
+    for i, ch in enumerate(label):
+        for row, bits in enumerate(FONT.get(ch, ())):
+            for col in range(5):
+                if bits >> (4 - col) & 1:
+                    for sy in range(scale):
+                        for sx in range(scale):
+                            x, y = x0 + (i * 6 + col) * scale + sx, y0 + row * scale + sy
+                            if 0 <= x < size and 0 <= y < size:
+                                out[y][x] = (0, 0, 0, 255)
+    return out
+
+
+def key_icon(name, size):
+    """The Kenney icon of a key when the set has one, a drawn keycap otherwise, resampled to size."""
+    vendored = ICON_FILES.get(name) or ('keyboard_' + name if (ICONS / 'keyboard' / ('keyboard_' + name + '.png')).is_file() else None)
+    if vendored:
+        return icon('keyboard', vendored, size)
+    return resample(keycap(name), size)
+
+
+def styled_key(name, size, palette=False, h=None):
+    src = key_icon(name, size)
+    if h:
+        src = resample(src, size, h)
+    if palette:
+        return styled(src, face=TEAL, letters=WHITE, rim=darker(TEAL), scale=size / 64, glow=False)
+    return styled(src, letters=INK, scale=size / 64)
+
+
+# (name, width, height) of every tile style. All are whole BC3 blocks; push draws a disc inside a 64x40 window.
+TILE_STYLES = (('atlas64', 64, 64), ('atlas24', 24, 24), ('palette72', 72, 72), ('push', 64, 40),
+               ('circle96', 96, 96), ('plus32', 32, 32))
+
+
+def tile_image(name, style, ring=None):
+    if style == 3:   # the battle palette's tilted disc, as push() composes it
+        top = styled_key(name, 56, palette=True, h=34)
+        size = (64, 40)
+        side = [[darker(q[:3], 0.6) + (q[3],) for q in row] for row in top]
+        return over(over(blank(*size), side, 4, 10), top, 4, 3)
+    if style == 4:   # the disc's ring and halo show through the icon, as circle() draws it
+        return over([row[:] for row in ring], styled_key(name, 96), 0, 0)
+    w, h = TILE_STYLES[style][1:]
+    return styled_key(name, w, palette=style == 2)
+
+
+def encode_blocks(px):
+    """BC3 blocks of rows of RGBA, in row order, as Image.encode writes them."""
+    out = bytearray()
+    for by in range(len(px) // 4):
+        for bx in range(len(px[0]) // 4):
+            pix = [px[min(by * 4 + i // 4, len(px) - 1)][min(bx * 4 + i % 4, len(px[0]) - 1)] for i in range(16)]
+            out += bc3_alpha_encode([p[3] for p in pix])
+            out += bc1_encode([p[:3] for p in pix], [p[3] / 255 for p in pix])
+    return bytes(out)
+
+
+def patch_specs(blob, path):
+    """(action, style, texture index, x, y, width, height) of every replaceable cell of a keyboard layout."""
+    texs = textures(blob)
+    if path in ('/menu/image/button.wilay', '/menu/image/font_icon.wilay'):
+        size = texs[-1].w // 8
+        style = 0 if size == 64 else 1
+        return [(ACTION_IDS[CELL_ACTIONS[cell]], style, -1, col * size, row * size, size, size)
+                for cell, (col, row) in CELLS.items() if cell in CELL_ACTIONS]
+    if path in ('/menu/image/mnu032_button_icon.wilay', '/menu/image/mnu032_button_icon_new.wilay'):
+        return [(ACTION_IDS[action], 2, 0, k * 72, 0, 72, 72) for k, action in enumerate('ABXY')]
+    if path == '/menu/image/mnu032_button_push_main.wilay':
+        return [(ACTION_IDS[action], 3, 2 + k, 16, 16, 64, 40) for k, action in enumerate('AABBXXYY')]
+    if path == '/menu/image/mnu032_btn_circle.wilay':
+        c = texs[0].w // 2
+        return [(ACTION_IDS['B'], 4, 0, c - 48, c - 48, 96, 96)]
+    if path == '/menu/image/mnu001_btn.wilay':
+        return [(ACTION_IDS['PLUS'], 5, 0, 0, 0, 32, 32)]
+    return []
+
+
+def write_key_tiles(set_dir, arc):
+    """keys.dat: every bindable key's blocks per style, and the file offsets each cell replaces."""
+    circle = arc.read('/menu/image/mnu032_btn_circle.wilay')
+    tex = textures(circle)[0]
+    c = tex.w // 2
+    px = Image(circle, tex).px
+    ring = px[c - 46][c]
+    base = [[ring if (x - c + 0.5) ** 2 + (y - c + 0.5) ** 2 <= 40 ** 2 else px[y][x]
+             for x in range(c - 48, c + 48)] for y in range(c - 48, c + 48)]
+    tiles = [b''.join(encode_blocks(tile_image(name, s, base)) for name in KEY_NAMES)
+             for s in range(len(TILE_STYLES))]
+    files, patches = [], []
+    for rel in LAYOUTS:
+        blob = (set_dir / rel.lstrip('/')).read_bytes()
+        specs = patch_specs(blob, rel)
+        if not specs:
+            continue
+        texs = textures(blob)
+        fi = len(files)
+        files.append(rel.lstrip('/'))
+        for action, style, ti, x, y, w, h in specs:
+            tex = texs[ti]
+            wb, _, offs = tex.offsets()
+            at = []
+            for by in range(y // 4, (y + h) // 4):
+                for bx in range(x // 4, (x + w) // 4):
+                    at.append(tex.start + offs[by * wb + bx])
+            patches.append((fi, action, style, at))
+    out = bytearray()
+    put = lambda fmt, *v: out.extend(struct.pack('<' + fmt, *v))
+    hash32 = 2166136261
+    for tile in tiles:
+        for b in tile:
+            hash32 = (hash32 ^ b) * 16777619 & 0xffffffff
+    put('4sHHHHII', b'XC2K', 2, len(KEY_NAMES), len(TILE_STYLES), len(files), len(patches), hash32)
+    for a in sorted(ACTION_IDS, key=ACTION_IDS.get):
+        out.append(KEY_NAMES.index(BAKED_KEY[a]))
+    for a in sorted(ACTION_IDS, key=ACTION_IDS.get):
+        ids = [KEY_NAMES.index(k) for k in DEFAULT_KEYS[a]]
+        out.extend(bytes([len(ids)] + ids + [0] * (4 - len(ids))))
+    for name in KEY_NAMES:
+        out.extend(name.encode('ascii').ljust(32, b'\0'))
+    for s, (_, w, h) in enumerate(TILE_STYLES):
+        put('HH', len(tiles[s]) // len(KEY_NAMES), (w // 4) * (h // 4))
+    for tile in tiles:
+        out.extend(tile)
+    for rel in files:
+        out.extend(rel.encode('ascii').ljust(256, b'\0'))
+    for fi, action, style, at in patches:
+        put('HHBBH', fi, len(at), action, style, 0)
+        for offset in at:
+            put('I', offset)
+    (set_dir / 'keys.dat').write_bytes(bytes(out))
+    print(f'keyboard: {len(KEY_NAMES)} keys, {len(patches)} replaceable cells ({len(out)} bytes of tiles)')
+
+
 # ---- the layouts
 
 # button.wilay and font_icon.wilay: an atlas of 8x4 cells, 64 and 24 pixels; (column, row) of each button
@@ -803,6 +1032,7 @@ def main():
         lines.append(f'{TEXT_SET}\t{path.lstrip("/")}\t{len(new)}\t{hashlib.sha256(new).hexdigest()}')
         print(f'{path}: click prompts')
     (out / 'manifest.tsv').write_text('\n'.join(lines) + '\n')
+    write_key_tiles(out / SETS['keyboard'][0], arc)
 
 
 if __name__ == '__main__':

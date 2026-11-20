@@ -10,13 +10,14 @@
 #include "input.h"
 #include "input_map.h"
 #include "platform/platform.h"
+#include "prompts_keys.h"
 
 enum { MAX_FILES = 32 };
 
 static PlatOnce once = PLAT_ONCE_INIT;
 static char dir[1200];               // prompts/<set> of the chosen set, "" for the game's own prompts
 static char text_dir[1200];          // prompts/text, the text every redrawn set shares
-static struct { char *path; const char *dir; } files[MAX_FILES];   // the paths from the manifest and their folder
+static struct { char *path; const char *dir; int keyboard; } files[MAX_FILES];   // the paths from the manifest and their folder
 static int nfiles;
 
 // The set XC2_PROMPTS and the gamepad pick: a folder of tools/xc2_prompts.py, NULL for the game's own prompts.
@@ -84,6 +85,8 @@ static void init(void *arg) {
         tab[1 + strcspn(tab + 1, "\t")] = 0;
         files[nfiles].path = strdup(tab + 1);
         files[nfiles].dir = from;
+        // text/ is shared by every set and has no keys.dat: a call for one of its files must not mark the set failed.
+        files[nfiles].keyboard = !strcmp(set, "keyboard") && from == dir;
         if (!files[nfiles].path) rt_fatal("prompts manifest");
         nfiles++;
     }
@@ -105,8 +108,12 @@ int prompts_file(const char *rel, char *out, size_t cap) {
     while (*rel == '/') rel++;
     for (int i = 0; i < nfiles; i++)
         if (!strcmp(files[i].path, rel)) {
-            int n = snprintf(out, cap, "%s/%s", files[i].dir, rel);
-            return n > 0 && (size_t)n < cap && plat_fs_kind(out) == PLAT_FS_FILE;
+            char src[1200];
+            int n = snprintf(src, sizeof src, "%s/%s", files[i].dir, rel);
+            if (n <= 0 || (size_t)n >= sizeof src) return 0;
+            if (files[i].keyboard && prompts_keys_file(rel, files[i].dir, src, out, cap)) return 1;
+            int m = snprintf(out, cap, "%s", src);
+            return m > 0 && (size_t)m < cap && plat_fs_kind(out) == PLAT_FS_FILE;
         }
     return 0;
 }
