@@ -1432,8 +1432,8 @@ static void dirty_frame(uint64_t frame) {
 //   bytes are newer than the submit call when the CPU wrote the pool since; such a submission is a live read
 //   (m_live_fence, nvn_reads_snapshot), and the frame guard covers it.
 // - GPU -> guest: what the replay writes into a mirror (storage buffers its shaders write, buffer copies, fills,
-//   uniform updates, texture-to-buffer copies: vk_mem_gpu_wrote) goes back into the imported buffer at the end of the
-//   submission, exact byte ranges, before the fence signals (vk_mem_mirror_end).
+//   uniform updates, texture-to-buffer copies: vk_mem_gpu_wrote) goes back to guest memory at the submission's fence,
+//   before the fence counts as done: the bytes of those ranges the submission changed (the diff write-back, below).
 // - XC2_MEMORY=verify: every submission also copies up to VERIFY_BYTES of mirror pages, round robin, into host memory;
 //   at its fence the pages the CPU has not written since their sync are compared with guest memory.
 // A pool whose mirror would not fit the VRAM budget gets its mirror in host memory instead (issue 28: a 420 MiB pool on
@@ -1444,7 +1444,9 @@ static void dirty_frame(uint64_t frame) {
 // - Write-backs in flight: guest memory gets a write-back's bytes only when the GPU runs it, so the bytes of a capture
 //   that a write-back of a submission not complete at the capture (fence above MCap.done) touches are stale; the
 //   mirror already holds the GPU's bytes there (the replay records submissions in order), and the prologue leaves those
-//   bytes out (apply_capture). The CPU cannot have written them since without waiting for that fence.
+//   bytes out (apply_capture). The CPU may have written some of them meanwhile (a range is the whole bound storage range,
+//   and the game reuses memory the GPU still writes): the diff write-back keeps those writes in guest memory and has
+//   their pages captured again once the fence is done.
 // - Staged uploads (XC2_MIRROR_STAGE, on): with 0, or past STAGE_MAX bytes of a capture, the capture keeps only the
 //   ranges, and the GPU copies them from guest memory when it runs the prologue (a live read).
 // - Lazy granules (XC2_MIRROR_LAZY, on): a mirror keeps only the 64 KiB granules the replay has used as a buffer
@@ -1525,6 +1527,10 @@ struct StageArena {
 };
 typedef struct { PoolRec *r; uint64_t lo, hi, fence; } WbFlight;
 static int mirror_stage = 1;
+static int mirror_wb_diff = 1;         // XC2_MIRROR_WB: only the bytes the GPU changed go back (diff write-back, below)
+typedef struct { uint64_t lo, hi, fence; } WbRedo;
+static int nwredo;                     // redo_lock (read without it as a hint): pages the diff write-back has the
+static void wb_redo_take(void);        // first capture after their fence copy again
 static StageArena *stage_free;         // stage_lock: arenas the GPU is done with
 static int stage_nfree;                // stage_lock: arenas on stage_free
 static PlatMutex stage_lock = PLAT_MUTEX_INIT;
@@ -1625,6 +1631,10 @@ static void mirror_mode(int discrete) {
     if (mirror_gap < 0) mirror_gap = 0;
     mirror_stage = rt_knob("MIRROR_STAGE", "1") == 1;
     mirror_lazy = rt_knob("MIRROR_LAZY", "1") == 1;
+    const char *wb = cfg_get("XC2_MIRROR_WB");
+    mirror_wb_diff = !(wb && !strcmp(wb, "full"));
+    if (vk_mirror_on && !mirror_wb_diff)
+        rt_log("mem: mirror write-backs copy each range whole (XC2_MIRROR_WB=full): CPU writes made in flight are reverted");
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
     const char *fi = cfg_get("XC2_FREEZE_IDLE");
@@ -1982,6 +1992,7 @@ void *vk_mem_capture(void) {
             }
         }
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
+        if (__atomic_load_n(&nwredo, __ATOMIC_RELAXED)) wb_redo_take();
         cap->gen = gen_now;
     } else if (shadow_cap) {   // the same over the shadow pools, all of them: the replay has not resolved any yet
         cap->shadow = 1;
@@ -2159,9 +2170,300 @@ static void freeze_pass(void) {
     }
 }
 
+// ---- diff write-back of the mirrors (XC2_MIRROR_WB: diff, the default, or full)
+// What the replay writes into a mirror goes back to guest memory with its submission (vk_mem_gpu_wrote ranges). A
+// recorded range is the whole bound storage range, often far more than the shader stores, and the CPU keeps writing
+// guest memory while the replay runs up to a frame behind: the game's heap, part of which is a mirrored pool, hands a
+// freed block to the next allocation and writes its header and footer while a submission that wrote the old block's
+// range is still in flight. A copy of the whole range put the mirror's older bytes over those writes (issue 158: the
+// footer of a 0x608-byte block read back as stale bytes, and the block's free crashed in the game's allocator at
+// main+0x6e7850). As the shadow storage does (its diff write-back, above), only the bytes the GPU changed go back:
+// - each prologue copies the ranges recorded since the last one, without the bytes an earlier prologue of the
+//   submission copied, out of the mirror into a readback buffer (before): the part it precedes is the first to write them;
+// - the end of the submission copies its ranges out of the mirror into another readback buffer (after), not into guest
+//   memory;
+// - at the fence, wb_done (queued at the start of the submission, ahead of the completion work that reports the writes to
+//   the texture cache and the captures) copies into guest memory the bytes where before and after differ.
+// A page whose guest bytes then differ from after holds CPU writes the mirror may lack (a capture taken while the
+// write-back was in flight left those bytes out, apply_capture): the first capture taken after the fence copies it again
+// (wb_redo_take). A merged range over WB_DIFF_MAX is still copied whole by the GPU; XC2_MIRROR_WB=full copies every range
+// whole, as before.
+#define WB_DIFF_MAX (32ull << 20)
+typedef struct { VkBuffer buf; VmaAllocation alloc; const uint8_t *map; } WbBuf;
+typedef struct { uint64_t lo, hi, off; int b; } WbPiece;   // guest [lo, hi): its bytes at off in bufs[b]
+typedef struct {
+    uint64_t fence;
+    WbBuf *bufs;
+    WbPiece *before, *after;   // before: disjoint, in the order the prologues copied them
+    int nbufs, cbufs, nbefore, cbefore, nafter, cafter;
+} WbJob;
+typedef struct { PoolRec *r; uint64_t lo, hi; } WbNew;   // a guest range of r's mirror
+static WbJob *wbj;                     // replay: the job of the submission being recorded
+static int wsnap_n;                    // replay: wbl entries the prologues went through, and the size the last of them
+static uint64_t wsnap_last;            // had then (range_add may extend it)
+static WbNew *wnew;                    // replay: the ranges one prologue copies
+static int nwnew, cwnew;
+static WbRedo *wredo;                  // redo_lock: pages for the first capture taken once their fence is done
+static int cwredo;
+static PlatMutex redo_lock = PLAT_MUTEX_INIT;
+static volatile int64_t m_wb_changed, m_wb_kept, m_wb_redo, m_wb_whole;   // since the last summary
+
+// A host-visible buffer the GPU copies mirror bytes into and the completion thread reads; its index in j->bufs, -1 when
+// the allocation failed.
+static int wb_buf(WbJob *j, uint64_t size) {
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                             .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    WbBuf b = {0};
+    if (vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &b.buf, &b.alloc, &info) != VK_SUCCESS) {
+        static int warned;
+        if (!warned++) rt_log("mem: a mirror write-back buffer of %.1f MiB failed: its ranges are copied back whole",
+                              size / 1048576.0);
+        return -1;
+    }
+    b.map = info.pMappedData;
+    if (j->nbufs == j->cbufs) grow((void **)&j->bufs, &j->cbufs, sizeof *j->bufs);
+    j->bufs[j->nbufs] = b;
+    return j->nbufs++;
+}
+
+// Queues into wnew the parts of guest [lo, hi) of r that no before piece from index i on holds.
+static void wb_uncovered(PoolRec *r, uint64_t lo, uint64_t hi, int i) {
+    for (; i < wbj->nbefore; i++) {
+        const WbPiece *p = &wbj->before[i];
+        if (p->lo < hi && p->hi > lo) {
+            if (p->lo > lo) wb_uncovered(r, lo, p->lo, i + 1);
+            if (p->hi < hi) wb_uncovered(r, p->hi, hi, i + 1);
+            return;
+        }
+    }
+    if (nwnew == cwnew) grow((void **)&wnew, &cwnew, sizeof *wnew);
+    wnew[nwnew++] = (WbNew){r, lo, hi};
+}
+
+static int wnew_cmp(const void *x, const void *y) {
+    const WbNew *a = x, *b = y;
+    return a->lo < b->lo ? -1 : a->lo > b->lo;
+}
+
+// Replay: the ranges the prologue being recorded has to copy into before pieces.
+static int wb_unsnapped(void) {
+    return wbj && (nwbl > wsnap_n || (wsnap_n && wbl[wsnap_n - 1].size != wsnap_last));
+}
+
+// Replay, in a prologue after its copies into the mirrors: records the copy of the new ranges' bytes out of the mirrors.
+// Returns the commands recorded.
+static int wb_snapshot(VkCommandBuffer cb) {
+    if (!wb_unsnapped()) return 0;
+    nwnew = 0;
+    for (int i = wsnap_n ? wsnap_n - 1 : 0; i < nwbl; i++) {
+        PoolRec *r = wbl[i].r;
+        uint64_t lim = r->import_hi - r->import_lo, lo = wbl[i].off, hi = wbl[i].off + wbl[i].size;
+        if (hi > lim) hi = lim;
+        if (lo < hi && hi - lo <= WB_DIFF_MAX) wb_uncovered(r, r->import_lo + lo, r->import_lo + hi, 0);
+    }
+    wsnap_n = nwbl;
+    wsnap_last = nwbl ? wbl[nwbl - 1].size : 0;
+    if (!nwnew) return 0;
+    qsort(wnew, (size_t)nwnew, sizeof *wnew, wnew_cmp);
+    int m = 0;   // entries recorded in one part may overlap: merge them (within one pool)
+    for (int i = 0; i < nwnew; i++) {
+        if (m && wnew[m - 1].r == wnew[i].r && wnew[i].lo <= wnew[m - 1].hi) {
+            if (wnew[i].hi > wnew[m - 1].hi) wnew[m - 1].hi = wnew[i].hi;
+            continue;
+        }
+        wnew[m++] = wnew[i];
+    }
+    nwnew = m;
+    uint64_t need = 0;
+    for (int i = 0; i < nwnew; i++) need += (wnew[i].hi - wnew[i].lo + 15) & ~15ull;
+    int b = wb_buf(wbj, need);
+    if (b < 0) return 0;   // these ranges get no before piece: wb_done copies them back whole
+    mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+             VK_ACCESS_2_TRANSFER_READ_BIT);   // after the prologue's copies into the mirrors
+    int rec = 1;
+    uint64_t off = 0;
+    for (int i = 0; i < nwnew;) {
+        PoolRec *r = wnew[i].r;
+        int k = 0;
+        for (; i < nwnew && wnew[i].r == r; i++) {
+            if (k == cregions) grow((void **)&mregions, &cregions, sizeof *mregions);
+            mregions[k++] = (VkBufferCopy){wnew[i].lo - r->import_lo, off, wnew[i].hi - wnew[i].lo};
+            if (wbj->nbefore == wbj->cbefore) grow((void **)&wbj->before, &wbj->cbefore, sizeof *wbj->before);
+            wbj->before[wbj->nbefore++] = (WbPiece){wnew[i].lo, wnew[i].hi, off, b};
+            off += (wnew[i].hi - wnew[i].lo + 15) & ~15ull;
+        }
+        vkCmdCopyBuffer(cb, r->mbuf, wbj->bufs[b].buf, (uint32_t)k, mregions);
+        rec++;
+    }
+    return rec;
+}
+
+static MRange *wtmp, *wbig;   // replay: wb_after's merged ranges, and those copied whole
+static int cwtmp, cwbig;
+
+// Replay, at the end of a submission (vk_mem_mirror_end): records the copy of its ranges, merged, out of the mirrors into
+// an after buffer; a range over WB_DIFF_MAX (or every range, when the buffer fails) into guest memory, whole, as before.
+// Returns the commands recorded.
+static int wb_after(VkCommandBuffer cb) {
+    while (cwtmp < nwbl) grow((void **)&wtmp, &cwtmp, sizeof *wtmp);
+    memcpy(wtmp, wbl, sizeof *wtmp * (size_t)nwbl);   // a copy: the last prologue still reads wbl in its order
+    qsort(wtmp, (size_t)nwbl, sizeof *wtmp, range_cmp);
+    int m = 0, nbig = 0, rec = 0;
+    for (int i = 0; i < nwbl; i++) {
+        uint64_t lim = wtmp[i].r->import_hi - wtmp[i].r->import_lo, hi = wtmp[i].off + wtmp[i].size;
+        if (hi > lim) hi = lim;
+        if (wtmp[i].off >= hi) continue;
+        if (m && wtmp[m - 1].r == wtmp[i].r && wtmp[i].off <= wtmp[m - 1].off + wtmp[m - 1].size) {
+            if (hi > wtmp[m - 1].off + wtmp[m - 1].size) wtmp[m - 1].size = hi - wtmp[m - 1].off;
+            continue;
+        }
+        wtmp[m++] = (MRange){wtmp[i].r, wtmp[i].off, hi - wtmp[i].off};
+    }
+    uint64_t need = 0;
+    for (int i = 0; i < m; i++)
+        if (wtmp[i].size <= WB_DIFF_MAX) need += (wtmp[i].size + 15) & ~15ull;
+    int b = need ? wb_buf(wbj, need) : -1;
+    uint64_t off = 0;
+    for (int i = 0; i < m;) {
+        PoolRec *r = wtmp[i].r;
+        int k = 0;
+        for (; i < m && wtmp[i].r == r; i++) {
+            const MRange *x = &wtmp[i];
+            if (b < 0 || x->size > WB_DIFF_MAX) {
+                if (nbig == cwbig) grow((void **)&wbig, &cwbig, sizeof *wbig);
+                wbig[nbig++] = *x;
+                continue;
+            }
+            if (k == cregions) grow((void **)&mregions, &cregions, sizeof *mregions);
+            mregions[k++] = (VkBufferCopy){x->off, off, x->size};
+            if (wbj->nafter == wbj->cafter) grow((void **)&wbj->after, &wbj->cafter, sizeof *wbj->after);
+            wbj->after[wbj->nafter++] = (WbPiece){r->import_lo + x->off, r->import_lo + x->off + x->size, off, b};
+            mrep.wb_bytes += x->size;
+            off += (x->size + 15) & ~15ull;
+        }
+        if (!k) continue;
+        vkCmdCopyBuffer(cb, r->mbuf, wbj->bufs[b].buf, (uint32_t)k, mregions);
+        mrep.wb_copies += (uint64_t)k;
+        rec++;
+    }
+    if (nbig) {
+        uint64_t whole = 0, copies = 0;
+        rec += copy_ranges(cb, wbig, nbig, 0, &whole, &copies, NULL, NULL, NULL);
+        mrep.wb_bytes += whole, mrep.wb_copies += copies;
+        plat_add64(&m_wb_whole, (int64_t)whole);
+    }
+    return rec;
+}
+
+static int piece_cmp(const void *x, const void *y) {
+    const WbPiece *a = x, *b = y;
+    return a->lo < b->lo ? -1 : a->lo > b->lo;
+}
+
+static void wb_redo_add(uint64_t lo, uint64_t hi, uint64_t fence) {
+    plat_mutex_lock(&redo_lock);
+    if (nwredo && wredo[nwredo - 1].hi == lo && wredo[nwredo - 1].fence == fence) wredo[nwredo - 1].hi = hi;
+    else {
+        if (nwredo == cwredo) grow((void **)&wredo, &cwredo, sizeof *wredo);
+        wredo[nwredo++] = (WbRedo){lo, hi, fence};
+    }
+    plat_mutex_unlock(&redo_lock);
+}
+
+// Completion thread, at the submission's fence: the bytes of each after range that differ from the before pieces go
+// into guest memory; a range part no piece holds goes whole.
+static void wb_done(void *arg) {
+    WbJob *j = arg;
+    VkCtx *c = vk_ctx();
+    for (int i = 0; i < j->nbufs; i++) vmaInvalidateAllocation(c->vma, j->bufs[i].alloc, 0, VK_WHOLE_SIZE);
+    qsort(j->before, (size_t)j->nbefore, sizeof *j->before, piece_cmp);
+    int64_t changed = 0, kept = 0, redo = 0;
+    for (int i = 0; i < j->nafter; i++) {
+        const WbPiece *a = &j->after[i];
+        const uint8_t *am = j->bufs[a->b].map + a->off;
+        uint8_t *g = (uint8_t *)(uintptr_t)a->lo;
+        int thawed = 0;
+        int lo = 0, hi = j->nbefore;   // the first piece that ends past a->lo
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if (j->before[mid].hi <= a->lo) lo = mid + 1;
+            else hi = mid;
+        }
+        for (uint64_t x = a->lo; x < a->hi;) {
+            const WbPiece *p = lo < j->nbefore && j->before[lo].lo < a->hi ? &j->before[lo] : NULL;
+            uint64_t y = p ? (p->lo > x ? p->lo : p->hi) : a->hi;   // the end of the gap before p, or of p
+            if (y > a->hi) y = a->hi;
+            const uint8_t *src = am + (x - a->lo);
+            if (!p || p->lo > x) {   // no before bytes: all of them
+                if (!thawed++) mem_thaw(a->lo, a->hi - a->lo);
+                memcpy(g + (x - a->lo), src, y - x);
+                changed += (int64_t)(y - x);
+            } else {
+                const uint8_t *bm = j->bufs[p->b].map + p->off + (x - p->lo);
+                uint8_t *dst = g + (x - a->lo);
+                uint64_t n = y - x;
+                for (uint64_t k = 0; k < n;) {   // runs of changed bytes, 8 at a time where whole words match
+                    if (k + 8 <= n && !memcmp(src + k, bm + k, 8)) { k += 8; continue; }
+                    if (src[k] == bm[k]) { k++; continue; }
+                    uint64_t e = k;
+                    while (e < n && src[e] != bm[e]) e++;
+                    if (!thawed++) mem_thaw(a->lo, a->hi - a->lo);
+                    memcpy(dst + k, src + k, e - k);
+                    changed += (int64_t)(e - k);
+                    k = e;
+                }
+                if (y == p->hi) lo++;
+            }
+            x = y;
+        }
+        // Pages where guest memory keeps CPU bytes the GPU did not change: the mirror may lack them.
+        for (uint64_t pg = a->lo & ~0xfffull; pg < a->hi; pg += 0x1000) {
+            uint64_t s = pg > a->lo ? pg : a->lo, e = pg + 0x1000 < a->hi ? pg + 0x1000 : a->hi;
+            const uint8_t *gm = g + (s - a->lo), *mm = am + (s - a->lo);
+            if (!memcmp(gm, mm, e - s)) continue;
+            for (uint64_t k = 0; k < e - s; k++) kept += gm[k] != mm[k];
+            wb_redo_add(s, e, j->fence);
+            redo++;
+        }
+    }
+    plat_add64(&m_wb_changed, changed);
+    plat_add64(&m_wb_kept, kept);
+    plat_add64(&m_wb_redo, redo);
+    for (int i = 0; i < j->nbufs; i++) vmaDestroyBuffer(c->vma, j->bufs[i].buf, j->bufs[i].alloc);
+    free(j->bufs), free(j->before), free(j->after), free(j);
+}
+
+// Submitting thread in vk_mem_capture, pool_lock shared and cap_lock held: queues the redo pages whose fence is done into
+// the capture. The completion thread adds them before it marks their fence done, so a capture that sees the fence done
+// sees them; one that does not leaves them for the next.
+static void wb_redo_take(void) {
+    plat_mutex_lock(&redo_lock);
+    uint64_t done = vk_sync_fence_done();
+    int n = 0;
+    for (int i = 0; i < nwredo; i++) {
+        const WbRedo *w = &wredo[i];
+        if (w->fence > done) {
+            wredo[n++] = *w;
+            continue;
+        }
+        for (int k = 0; k < nm; k++) {   // a pool finalized since has left the list: its pages go
+            PoolRec *r = mlist[k];
+            if (w->lo < r->import_lo || w->lo >= r->import_hi) continue;
+            uint64_t hi = w->hi < r->import_hi ? w->hi : r->import_hi;
+            capture_add(r, w->lo - r->import_lo, hi - w->lo);
+            break;
+        }
+    }
+    nwredo = n;
+    plat_mutex_unlock(&redo_lock);
+}
+
 // The replay, at the start of a submission's recording: cap is its capture (vk_mem_capture), taken in its submit call;
-// the first prologue copies it into the mirrors.
-void vk_mem_mirror_begin(void *cap) {
+// the first prologue copies it into the mirrors. fence: the value the submission signals.
+void vk_mem_mirror_begin(void *cap, uint64_t fence) {
     if (cur) capture_free(cur);   // a submission recorded without a prologue (none in vk_sync.c)
     s_sub++;
     if (shadow_cap && cap) {   // captures apply in queue order: later ones were taken after these write-backs
@@ -2184,9 +2486,16 @@ void vk_mem_mirror_begin(void *cap) {
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
     mepoch = vk_texture_epoch();
     mrep.subs++;
+    if (mirror_wb_diff) {   // the last submission's prologues are recorded: its ranges are done with
+        nwbl = wsnap_n = 0;
+        wsnap_last = 0;
+        if (!(wbj = calloc(1, sizeof *wbj))) rt_fatal("vk: out of memory (mirror write-back)");
+        wbj->fence = fence;
+        vk_completion_add(fence, wb_done, wbj);   // first: ahead of the completion work recorded for this submission
+    }
 }
 
-int vk_mem_mirror_pending(void) { return npend || cur; }
+int vk_mem_mirror_pending(void) { return npend || cur || wb_unsnapped(); }
 
 // The GPU reads every buffer of the mirrors as of the submit call: no pool stays imported, the captures are staged,
 // and no submission that read guest memory later (a first use, a capture past STAGE_MAX) may still run.
@@ -2228,13 +2537,15 @@ static int range_clean(const PoolRec *r, uint64_t off, uint64_t size, uint32_t s
     return !dirty;
 }
 
-// Records the copy of [lo, hi) of r's mirror from the arena at src, leaving out what write-backs from wbf index i on
-// touch.
-static void put_staged(PoolRec *r, uint64_t lo, uint64_t hi, uint64_t src, int i, int *k) {
+// Records the copy of [lo, hi) of r's mirror from the arena at src, leaving out what write-backs of earlier submissions
+// (wbf index i on, fence below the one of the submission whose capture this is) touch. vk_mem_mirror_end runs before the
+// last part's prologue, so the submission's own write-backs are on wbf already: its capture holds the bytes they start
+// from, and leaving them out kept the CPU's writes before the submit call out of the mirror (issue 158).
+static void put_staged(PoolRec *r, uint64_t lo, uint64_t hi, uint64_t src, int i, int *k, uint64_t fence) {
     for (; i < nwbf; i++)
-        if (wbf[i].r == r && wbf[i].lo < hi && wbf[i].hi > lo) {
-            if (wbf[i].lo > lo) put_staged(r, lo, wbf[i].lo, src, i + 1, k);
-            if (wbf[i].hi < hi) put_staged(r, wbf[i].hi, hi, src + (wbf[i].hi - lo), i + 1, k);
+        if (wbf[i].r == r && wbf[i].fence < fence && wbf[i].lo < hi && wbf[i].hi > lo) {
+            if (wbf[i].lo > lo) put_staged(r, lo, wbf[i].lo, src, i + 1, k, fence);
+            if (wbf[i].hi < hi) put_staged(r, wbf[i].hi, hi, src + (wbf[i].hi - lo), i + 1, k, fence);
             mrep.left_out += (wbf[i].hi < hi ? wbf[i].hi : hi) - (wbf[i].lo > lo ? wbf[i].lo : lo);
             return;
         }
@@ -2253,7 +2564,7 @@ static void apply_capture(VkCommandBuffer cb, MCap *c, uint64_t fence) {
             const CRange *x = &c->c[i];
             mrep.upload_bytes += x->size;
             if (x->src != CAP_LIVE) {
-                put_staged(r, x->off, x->off + x->size, x->src, 0, &ks);
+                put_staged(r, x->off, x->off + x->size, x->src, 0, &ks, fence);
                 continue;
             }
             if (kd == cregions) grow((void **)&mregions, &cregions, sizeof *mregions);
@@ -2375,7 +2686,7 @@ static void apply_shadow(VkCommandBuffer cb, MCap *c, uint64_t fence) {
 }
 
 void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
-    if (!npend && !cur) return;
+    if (!npend && !cur && !wb_unsnapped()) return;
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     if (npend) {   // first uses
@@ -2411,6 +2722,8 @@ void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
         else apply_capture(cb, cur, fence);
         capture_free(cur), cur = NULL;
     }
+    wb_snapshot(cb);   // the mirror's bytes the part's GPU writes will change, before it runs
+    // The final barrier also orders the part's writes after the before copies' reads.
     mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     mrep.prologues++;
@@ -2528,11 +2841,12 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
             wbf[nwbf++] = (WbFlight){wbl[i].r, wbl[i].off, wbl[i].off + wbl[i].size, fence};
         }
         mrep.wb_ranges += (uint64_t)nwbl;
-        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, NULL, NULL, NULL) + 2;
+        if (wbj) rec += wb_after(cb) + 2;
+        else rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, NULL, NULL, NULL) + 2;
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-        nwbl = 0;
+        if (!wbj) nwbl = 0;   // diff: the last part's prologue, recorded after this, still copies its before bytes
     }
     if (mirror_verify) rec += verify_record(cb, fence);
     plat_mutex_lock(&mirror_stat_lock);
@@ -2582,12 +2896,18 @@ static void mirror_log(uint64_t frame) {
                  (long long)plat_xchg64(&v_pages, 0), (long long)plat_xchg64(&v_skipped, 0),
                  (long long)plat_xchg64(&v_mismatch, 0));
     double sb = (double)plat_xchg64(&m_stage_bytes, 0), sd = (double)plat_xchg64(&m_stage_direct, 0);
+    char wbd[160] = "";
+    if (mirror_wb_diff)
+        snprintf(wbd, sizeof wbd, " (changed by the GPU %.3f MiB, CPU bytes written in flight kept %.1f KiB in %.1f pages "
+                 "captured again, copied whole %.3f MiB)", (double)plat_xchg64(&m_wb_changed, 0) / f / M,
+                 (double)plat_xchg64(&m_wb_kept, 0) / f / 1024.0, (double)plat_xchg64(&m_wb_redo, 0) / f,
+                 (double)plat_xchg64(&m_wb_whole, 0) / f / M);
     rt_log("mem: mirror frame %llu: pools %lld, %.1f MiB device-local; in host memory %lld (%.1f MiB); stay imported: "
            "budget %lld (%.1f MiB), untracked "
            "%lld, overlapping %lld, failed %lld; per frame: submits %.2f, captures %.2f of %.1f pools, upload %.3f MiB "
            "in %.1f ranges (staged %.3f MiB, %.1f ranges read on the GPU, %.3f MiB left out for write-backs in flight; "
            "staging arenas %lld, %.1f MiB), first use %.2f pools %.3f MiB, prologues with a live read %.2f, write-back %.3f MiB in %.1f "
-           "ranges, flush calls %.1f (%.3f MiB), queries %.1f at capture (%.1f MiB) + %.1f at first use, prologues "
+           "ranges%s, flush calls %.1f (%.3f MiB), queries %.1f at capture (%.1f MiB) + %.1f at first use, prologues "
            "%.2f, capture cpu %.3f ms%s",
            (unsigned long long)frame, (long long)m_live_n, m_live_bytes / M, (long long)m_host_n, m_host_bytes / M,
            (long long)m_refused_n[MR_BUDGET],
@@ -2595,7 +2915,7 @@ static void mirror_log(uint64_t frame) {
            (long long)m_refused_n[MR_ALLOC], a.subs / f, a.captures / f, a.cap_pools / f, a.upload_bytes / f / M,
            a.upload_copies / f, sb / f / M, sd / f, a.left_out / f / M, (long long)m_stage_arena_n,
            m_stage_arena_bytes / M, a.first_n / f, a.first_bytes / f / M, a.live_subs / f,
-           a.wb_bytes / f / M, a.wb_copies / f, fc / f, fb / f / M, a.cap_queries / f, a.cap_qbytes / f / M,
+           a.wb_bytes / f / M, a.wb_copies / f, wbd, fc / f, fb / f / M, a.cap_queries / f, a.cap_qbytes / f / M,
            a.create_queries / f, a.prologues / f, qpc_ms(a.cap_t) / f, ver);
 }
 
@@ -2956,7 +3276,11 @@ void vk_mem_shutdown(void) {
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);
     pool_index.n = 0;
-    nm = npend = nwbl = 0;   // mirrors went with their pools
+    nm = npend = nwbl = wsnap_n = 0;   // mirrors went with their pools
+    wbj = NULL;   // its completion owns it
+    plat_mutex_lock(&redo_lock);
+    nwredo = 0;
+    plat_mutex_unlock(&redo_lock);
     plat_mutex_lock(&shadow_lock);
     for (int i = 0; i < nspend; i++) snap_release(spend[i].snap);
     nstouch = nspend = nsdone = 0;   // shadows too, and the write-backs a capture may predate
