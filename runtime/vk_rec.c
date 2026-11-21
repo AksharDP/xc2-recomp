@@ -56,10 +56,12 @@ static uint64_t now_ns(void) { return plat_now_ns(); }
 
 static void exec_packet(uint32_t op, void *p);
 
-// How long the recorder spins on an empty ring before it sleeps on wake_ev, in pauses. A part that is open may publish
-// its next packet at any moment, and a sleep costs the scheduler's wake-up latency, so the spin stays long while a part
-// is open (XC2_REC_SPIN, default 4096). Between parts the recorder has nothing to wait for, and XC2_REC_SPIN_IDLE
-// (default 4096, as before) lowers the spin there: a 4096-pause spin is a fraction of a millisecond of a core.
+// How long the recorder polls an empty ring before it sleeps on wake_ev. A part that is open may publish its next
+// packet at any moment, and a sleep costs the scheduler's wake-up latency. By default the poll is timed: 60 us
+// (XC2_REC_SPIN_US), the same inside and between parts. With XC2_REC_SPIN_US=0, with fewer than 6 logical processors,
+// and in the A blocks of XC2_REC_SPIN_US=ab, it counts pauses instead: XC2_REC_SPIN (default 4096) while a part is
+// open, XC2_REC_SPIN_IDLE (default 4096) between parts, where the recorder has nothing to wait for; these two have no
+// effect while the timed poll applies.
 static int spin_open = 4096, spin_idle = 4096;
 static volatile int32_t part_open;   // 1 from rec_begin of a recorded part until its end (rec_end, rec_end_cb)
 static uint64_t rec_spin_ns;         // XC2_REC_SPIN_US (rec_main); 0: the pause-count spins above
