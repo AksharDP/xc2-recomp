@@ -11,8 +11,12 @@
 #include <string.h>
 
 #include "host.h"
+#include "input.h"
 #include "input_map.h"
 #include "platform/platform.h"
+
+// Python rounds every product before the sum; a fused multiply-add (x86-64-v3 has it) would not.
+#pragma STDC FP_CONTRACT OFF
 
 typedef struct { uint8_t r, g, b, a; } Rgba;
 typedef struct { int w, h; Rgba *p; } Pix;   // rows of RGBA, p[y * w + x]
@@ -214,11 +218,23 @@ enum { KEY_MOUSE_MOVE = 255 };   // the right stick: the mouse moves the camera
 
 static const char *key_icon_name(int key) { return key == KEY_MOUSE_MOVE ? "mouse_move" : input_key_name(key); }
 
-static const Pix *bank_icon(int key) {
-    const char *name = key_icon_name(key);
+static const Pix *bank_find(const char *name) {
     for (int k = 0; name && k < bank.nkeys; k++)
         if (!strcmp(bank.names[k], name)) return &bank.icons[bank.index[k]];
     return NULL;
+}
+
+// A punctuation key shows the character the keyboard layout in use puts on it, as the Controls tab labels it (bank
+// names "char:<c>"); a character without an icon falls back to the key's US one.
+static const Pix *bank_icon(int key) {
+    uint32_t c = key >= KEY_MINUS && key <= KEY_GRAVE ? input_key_char(key) : 0;
+    if (c > ' ' && c < 0x7f) {
+        char name[8];
+        snprintf(name, sizeof name, "char:%c", c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : (char)c);
+        const Pix *p = bank_find(name);
+        if (p) return p;
+    }
+    return bank_find(key_icon_name(key));
 }
 
 // ---- the buttons: what each prompt shows for a table of bindings

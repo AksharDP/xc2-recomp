@@ -561,6 +561,17 @@ KEY_ICONS = {
     'comma': 'keyboard_comma', 'period': 'keyboard_period', 'slash': 'keyboard_slash_forward',
     'backslash': 'keyboard_slash_back', 'grave': 'keyboard_tilde',
     'mouse_move': 'mouse_move',
+    # The punctuation keys by the character the keyboard layout in use puts there (runtime/input.h input_key_char),
+    # as the Controls tab labels them; a character without an icon falls back to the key's US one above.
+    **{f'char:{c}': f'keyboard_{c}' for c in 'abcdefghijklmnopqrstuvwxyz0123456789'},
+    'char:-': 'keyboard_minus', 'char:=': 'keyboard_equals', 'char:[': 'keyboard_bracket_open',
+    'char:]': 'keyboard_bracket_close', 'char:;': 'keyboard_semicolon', "char:'": 'keyboard_apostrophe',
+    'char:,': 'keyboard_comma', 'char:.': 'keyboard_period', 'char:/': 'keyboard_slash_forward',
+    'char:\\': 'keyboard_slash_back', 'char:`': 'keyboard_tilde', 'char:~': 'keyboard_tilde',
+    'char:!': 'keyboard_exclamation', 'char:?': 'keyboard_question', 'char::': 'keyboard_colon',
+    'char:*': 'keyboard_asterisk', 'char:+': 'keyboard_plus', 'char:<': 'keyboard_bracket_less',
+    'char:>': 'keyboard_bracket_greater', 'char:^': 'keyboard_caret', 'char:"': 'keyboard_quote',
+    'char:_': 'keyboard_underscore',
 }
 # runtime/input_map.c DEFAULT_KEYS (Switch home, capture, SL and SR have no key). With other bind_ lines the runtime
 # draws this set again for the keys bound (runtime/prompts_keys.c), from the icons of KEY_ICONS in prompts/keys/.
