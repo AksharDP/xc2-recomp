@@ -172,7 +172,7 @@ static int bank_load(const uint8_t *d, uint64_t size) {
     uint32_t ni, nk;
     memcpy(&ni, d + 8, 4);
     memcpy(&nk, d + 12, 4);
-    if (ni > 4096 || nk > 4096) return 0;
+    if (!ni || !nk || ni > 4096 || nk > 4096) return 0;   // an empty bank would draw nothing and still be chosen
     bank.icons = calloc(ni ? ni : 1, sizeof(Pix));
     bank.names = calloc(nk ? nk : 1, sizeof *bank.names);
     bank.index = calloc(nk ? nk : 1, sizeof(int));
@@ -530,6 +530,10 @@ static int textures(const uint8_t *blob, size_t len, Tex *out, int max) {
 }
 
 static int tex_decode(Tex *t, const uint8_t *blob, size_t len) {
+    // a damaged footer: refuse sizes the layouts never have, and an image its data cannot hold, before allocating
+    if (t->w > 4096 || t->h > 4096 || (uint64_t)t->wb * t->hb * t->bpe > t->size ||
+        (uint64_t)t->start + t->size > len)
+        return 0;
     t->px = blank((int)t->w, (int)t->h);
     t->dirty = calloc((size_t)t->wb * t->hb, 1);
     if (!t->dirty) rt_fatal("prompts_keys: out of memory");
@@ -609,6 +613,7 @@ static const struct { const char *button; int col, row; } cells[] = {
 static int redraw_atlas(Tex *imgs, int n) {
     Tex *img = &imgs[n - 1];
     int size = img->px.w / 8;
+    if (size < 8 || img->px.w % 8 || img->px.h < 4 * size) return 0;   // not an 8x4 atlas
     for (size_t c = 0; c < sizeof cells / sizeof cells[0]; c++) {
         int b = button_id(cells[c].button);
         if (!has(b)) continue;
@@ -623,6 +628,7 @@ static const int face_buttons[4] = {BT_A, BT_B, BT_X, BT_Y};
 
 // mnu032_button_icon(_new).wilay: the battle palette's A B X Y, 72-pixel cells in a row.
 static int redraw_palette(Tex *imgs, int n) {
+    if (imgs[n - 1].px.w < 4 * 72 || imgs[n - 1].px.h < 72) return 0;
     for (int k = 0; k < 4; k++) {
         if (!has(face_buttons[k])) continue;
         Pix icon = palette_icon(face_buttons[k], 72, 0, 0);
@@ -636,6 +642,8 @@ static int redraw_palette(Tex *imgs, int n) {
 // button lies flat at 56x34 over a darker copy 7 pixels lower.
 static int redraw_push(Tex *imgs, int n) {
     if (n < 10) return 0;
+    for (int k = 0; k < 8; k++)
+        if (imgs[2 + k].px.w < 56 || imgs[2 + k].px.h < 26 + 34) return 0;
     for (int k = 0; k < 8; k++) {
         int b = face_buttons[k / 2];
         if (!has(b)) continue;
@@ -656,10 +664,10 @@ static int redraw_push(Tex *imgs, int n) {
 // mnu032_btn_circle.wilay: a white B button (radius 37 about the centre) inside a ring; the button is drawn again over
 // the ring's inside.
 static int redraw_circle(Tex *imgs, int n) {
-    if (!has(BT_B)) return 1;
     Tex *img = &imgs[n - 1];
     int w = img->px.w, h = img->px.h, cx = w / 2, cy = h / 2;
     if (cy < 48 || cx < 48 || cx + 48 > w || cy + 48 > h) return 0;
+    if (!has(BT_B)) return 1;
     Rgba ring = img->px.p[(cy - 46) * w + cx];   // the ring's inside, above the button
     Pix base = blank(w, h);
     for (int y = 0; y < h; y++)
@@ -679,6 +687,7 @@ static int redraw_circle(Tex *imgs, int n) {
 
 // mnu001_btn.wilay: the plus button, 32x32.
 static int redraw_plus(Tex *imgs, int n) {
+    if (imgs[n - 1].px.w != 32 || imgs[n - 1].px.h != 32) return 0;
     if (!has(BT_PLUS)) return 1;
     Pix icon = atlas_cell(BT_PLUS, 32);
     paste(&imgs[n - 1], 0, 0, &icon);

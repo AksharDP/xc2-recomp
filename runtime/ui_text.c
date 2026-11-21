@@ -130,8 +130,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS] = "Button prompts",
     [UI_MENU_PROMPTS_DESC] = "Which buttons the game shows in its text and menus. Automatic follows the connected "
                              "controller (the keyboard without one). Xbox and PlayStation follow the button layout; "
-                             "Keyboard shows the keys you bound. Needs add-on content installed. Applies at the next "
-                             "start, a remapped key too.",
+                             "Keyboard shows the keys you bound. Applies at the next start, a remapped key too.",
     [UI_MENU_PROMPTS_AUTO] = "Automatic", [UI_MENU_PROMPTS_SWITCH] = "Switch (the game's own)",
     [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_KEYBOARD] = "Keyboard",
     [UI_MENU_LSTICK_DEADZONE] = "Left stick dead zone", [UI_MENU_RSTICK_DEADZONE] = "Right stick dead zone",

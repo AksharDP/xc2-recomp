@@ -351,6 +351,8 @@ int probe_cfg(void) {
           "bind: pad:default keeps each layout's own button");
     input_map_reset();
     // input_map_load: the bind_ settings into a private table (prompts_keys.c), input_map untouched
+    plat_setenv("XCX_BIND_A", NULL);   // a legacy name the process inherits would show through once XC2_ is cleared
+    plat_setenv("XCX_BIND_LSTICK_LEFT", NULL);
     plat_setenv("XC2_BIND_A", "key:f, pad:default");
     plat_setenv("XC2_BIND_LSTICK_LEFT", "key:q");
     InputMap *ld = malloc(sizeof *ld);
