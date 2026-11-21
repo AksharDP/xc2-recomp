@@ -163,16 +163,28 @@ static void wide_hud(uint8_t *page) {
     // the left edge): (1 + left) / 2, for the capture region of the minimap and other captured panes
     float bounds = wide ? (float)((1.0 + left) / 2) : 0.0f;
     memcpy(page + 0xa0, &bounds, sizeof bounds);
-    // +0xa4..+0xc4: edge anchoring in the field. An element whose origin lies more than 40 % of the design's half
-    // width from the middle moves by the full distance from the design's edge to the frame's (s_max, 1 + left in clip
-    // units); below 30 % it stays; in between the move grows linearly: shift(u) = sign(u) * min(s_max, max(0, |u| - a)
-    // * m). The compass at the top (its destination marker and name reach about 30 %) stays whole below the ramp, and
-    // the corner groups (minimap, clock, Blade Switch, the battle's party list and arts) lie past it and move whole.
-    // +0xb0 is 1 in the field and 0 in menus (res_hud_frame), +0xb4 counts the frame's full-width pictures. The marker
-    // callers place markers in interface units by the inverse, centred on 640: the same shape with the slope
-    // m / (1 + m) and the limits in interface units.
-    float h = -left, s_max = 1.0f - h, a = 0.3f * h, m = s_max / (0.1f * h), k = h / (XC2_W / 2.0f);
-    float anchor[9] = {a, m, s_max, 1.0f, 0.0f, XC2_W / 2.0f, a / k, m / (1.0f + m), s_max / k};
+    // +0xa4..+0xd8: the field HUD's move to the frame's edges (patches-v301.txt, the group sites). A group moves as a
+    // whole: the topmost layout container other than a layout's root decides for everything under it, from its
+    // position, which is its origin rather than its middle; a pane outside such a container decides alone, from its
+    // centre, and only when it is narrower than 98 % of the design (+0xc8, tested on the matrix's a). A pane's global
+    // matrix (tx, ty, a, ...) is in units of the frame's width in pixels (+0xd4) per interface unit, a counting from the
+    // rectangle's 0..1, so a pane's centre lies (tx + a / 2) * width interface units from the design's left edge and a
+    // container (a = 1, no size) at tx * width; a container within half an interface unit of the left edge (+0xd8)
+    // does not move. The move is shift(u) = sign(u) * min(s_max, max(0, |u| - a) * m) with u measured from 588.25
+    // (+0xb8) and a = 202.25: a group starts to move 254 interface units left of 640 and 150.5 right of it, and moves
+    // by the full distance from the design's edge to the frame's (s_max) 28 units further out. The thresholds come from
+    // the positions measured in the field and in battle: on the right the compass's objective marker, which stops at
+    // the compass's end, reaches 148 and stays; on the left the enemy gauge's level (237 and 204 left of 640) and a
+    // field group at 252 stay, and the active blade's name (283), the party list and Blade Switch move whole. The
+    // group sites work in interface units (+0xb8 the middle, +0xbc the start, +0xa8 the slope, +0xc4 the limit); +0xa4
+    // and +0xac are the start and the limit in clip units. +0xb0 is 1 in the field and 0 in menus (res_hud_frame),
+    // +0xb4 counts the frame's full-width pictures. The marker callers place markers by the inverse: the same shape
+    // with the slope m / (1 + m) (+0xc0). +0xcc is the current group's shift in clip units, written by the pane draws
+    // for their builders, and +0xd0 the clip units per interface unit (k), to convert it.
+    float h = -left, s_max = 1.0f - h, k = h / (XC2_W / 2.0f);
+    float start = 202.25f, mid = 588.25f, m = s_max / k / 28.0f;
+    float anchor[14] = {start * k, m, s_max, 1.0f, 0.0f, mid, start, m / (1.0f + m), s_max / k,
+                        0.98f * XC2_W / X.w, 0.0f, k, (float)X.w, 0.5f / X.w};
     if (!wide) memset(anchor, 0, sizeof anchor);
     memcpy(page + 0xa4, anchor, sizeof anchor);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
