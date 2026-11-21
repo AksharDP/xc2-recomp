@@ -15,8 +15,8 @@
 //     (no mode)         run the game
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
-// rt_ticks, the function profiler hook), logging, SHA-256, and the crash reporter (a vectored exception handler that
-// names the lifted function, the guest registers and the guest frame-pointer chain).
+// rt_ticks, the function profiler hook), logging, SHA-256, and the Windows diagnostics around the crash reporter
+// (crash.c): the XC2_WATCH write watchpoint and the log line for a fault in another module.
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,25 +40,35 @@ unsigned rt_trace;
 // Log file. A game run whose stderr is not a file already (started from Explorer, a shortcut or a console) also
 // writes its log to logs\xc2.log next to xc2.exe, so a player has one to attach to a report; run_game.py and
 // `2> file` keep their own file. Each start moves the earlier logs to xc2.1.log .. xc2.4.log. A file stops at 64 MiB
-// (XC2_TRACE can write that much). Lines from before log_open wait in a static buffer: mem_init runs first so that
-// nothing else lands in the guest address space, and an earlier open would put the CRT's heap there.
+// (XC2_TRACE can write that much). Lines from before log_open wait in the head copy below: mem_init runs first so
+// that nothing else lands in the guest address space, and an earlier open would put the CRT's heap there.
+// Whatever the file gets, the first LOG_HEAD and the last LOG_TAIL bytes of the run stay in memory too, for the crash
+// report (crash.c), which writes them into its own file: a crash past the cap, or in a run logging to stderr only,
+// still has the start-up lines (settings, GPU, mods) and what led up to it.
 #define LOG_KEEP 5
 #define LOG_CAP (64ull << 20)
+#define LOG_HEAD (64u << 10)
+#define LOG_TAIL (256u << 10)
 enum { LOG_EARLY, LOG_FILE, LOG_OFF };
 static int g_log_state;
 static PlatAppend *g_log_file;
 static char g_log_path[PLAT_PATH_MAX * 3];
-static char g_log_early[32768];
-static size_t g_log_early_n;
+static char g_log_head[LOG_HEAD], g_log_tail[LOG_TAIL];
+static uint64_t g_log_total;   // bytes logged by the run, file or not
 static uint64_t g_log_bytes;
 
 void rt_log_raw(const char *p, size_t n) {
     fwrite(p, 1, n, stderr);
+    uint64_t at = __atomic_fetch_add(&g_log_total, n, __ATOMIC_RELAXED);
+    if (at < LOG_HEAD) memcpy(g_log_head + at, p, n < LOG_HEAD - at ? n : LOG_HEAD - at);
+    size_t skip = n > LOG_TAIL ? n - LOG_TAIL : 0;   // a write longer than the ring keeps its end
+    for (size_t i = skip; i < n;) {
+        size_t pos = (size_t)((at + i) % LOG_TAIL), k = n - i < LOG_TAIL - pos ? n - i : LOG_TAIL - pos;
+        memcpy(g_log_tail + pos, p + i, k);
+        i += k;
+    }
     int state = __atomic_load_n(&g_log_state, __ATOMIC_ACQUIRE);
-    if (state == LOG_EARLY) {
-        size_t at = __atomic_fetch_add(&g_log_early_n, n, __ATOMIC_RELAXED);
-        if (at + n <= sizeof g_log_early) memcpy(g_log_early + at, p, n);
-    } else if (state == LOG_FILE) {
+    if (state == LOG_FILE) {
         uint64_t at = __atomic_fetch_add(&g_log_bytes, n, __ATOMIC_RELAXED);
         if (at + n <= LOG_CAP) {
             plat_append_write(g_log_file, p, n);
@@ -98,6 +108,21 @@ const char *rt_log_path(void) {
     return __atomic_load_n(&g_log_state, __ATOMIC_ACQUIRE) == LOG_FILE ? g_log_path : NULL;
 }
 
+// Writers keep going meanwhile, so the tail's oldest bytes may already be the next lap's: the report says the copy is
+// taken live.
+uint64_t rt_log_copy(char *head, size_t head_cap, size_t *head_n, char *tail, size_t tail_cap, size_t *tail_n) {
+    uint64_t total = __atomic_load_n(&g_log_total, __ATOMIC_ACQUIRE);
+    size_t h = total < LOG_HEAD ? (size_t)total : LOG_HEAD;
+    if (h > head_cap) h = head_cap;
+    memcpy(head, g_log_head, h);
+    *head_n = h;
+    size_t t = total < LOG_TAIL ? (size_t)total : LOG_TAIL;
+    if (t > tail_cap) t = tail_cap;
+    for (size_t i = 0; i < t; i++) tail[i] = g_log_tail[(size_t)((total - t + i) % LOG_TAIL)];
+    *tail_n = t;
+    return total;
+}
+
 // Opens the log file for a game run (game = 1) and writes the buffered lines to it; anything else drops them. Runs on
 // the main thread before the boot starts other threads.
 static void log_open(int game) {
@@ -124,9 +149,9 @@ static void log_open(int game) {
         __atomic_store_n(&g_log_state, LOG_OFF, __ATOMIC_RELEASE);
         return;
     }
-    size_t n = __atomic_load_n(&g_log_early_n, __ATOMIC_RELAXED);
-    if (n > sizeof g_log_early) n = sizeof g_log_early;
-    plat_append_write(g_log_file, g_log_early, n);
+    uint64_t total = __atomic_load_n(&g_log_total, __ATOMIC_RELAXED);
+    size_t n = total < LOG_HEAD ? (size_t)total : LOG_HEAD;
+    plat_append_write(g_log_file, g_log_head, n);
     g_log_bytes = n;
     __atomic_store_n(&g_log_state, LOG_FILE, __ATOMIC_RELEASE);
     rt_log("log: %s", g_log_path);
@@ -176,42 +201,11 @@ __attribute__((constructor)) static void tick_scale_init(void) { tick_scale = pl
 
 uint64_t rt_ticks(void) { return plat_scaled(tick_scale, plat_counter()); }
 
-// ---- crash reporter
-typedef struct { uintptr_t host; uint64_t guest; } FnRev;
-static FnRev *fn_rev;
-static uint64_t fn_rev_n;
-
-static int by_host(const void *a, const void *b) {
-    uintptr_t x = ((const FnRev *)a)->host, y = ((const FnRev *)b)->host;
-    return x < y ? -1 : x > y;
-}
-
-// The lifted function that contains a host code address, by the nearest function start below it.
-static uint64_t lifted_function(uintptr_t rip) {
-    if (!fn_rev) {
-        static RtModule mods[MAX_MODULES];
-        int n = rt_linked_modules(mods, MAX_MODULES);
-        uint64_t total = 0;
-        for (int i = 0; i < n; i++) total += mods[i].count;
-        fn_rev = malloc((total ? total : 1) * sizeof *fn_rev);
-        if (!fn_rev) return 0;
-        for (int i = 0; i < n; i++)
-            for (uint64_t k = 0; k < mods[i].count; k++)
-                fn_rev[fn_rev_n++] = (FnRev){(uintptr_t)mods[i].fns[k], mods[i].addrs[k]};
-        qsort(fn_rev, fn_rev_n, sizeof *fn_rev, by_host);
-    }
-    uint64_t lo = 0, hi = fn_rev_n;
-    while (lo < hi) {
-        uint64_t mid = (lo + hi) / 2;
-        if (fn_rev[mid].host <= rip) lo = mid + 1;
-        else hi = mid;
-    }
-    return lo ? fn_rev[lo - 1].guest : 0;
-}
-
-static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
-
+// ---- Windows diagnostics (the crash reporter is crash.c)
 #ifdef _WIN32
+static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
+#define lifted_function crash_lifted_function
+
 // XC2_WATCH=<hex guest address>: a debugging write watchpoint. A thread makes the page read-only once it is committed;
 // the first writes to it are logged with the lifted function and guest call chain, the page is made writable for the
 // writer, and the thread arms it again 50 ms later (16 hits at most).
@@ -332,39 +326,6 @@ static LONG CALLBACK diag_handler(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
-
-static void crash_handler(const PlatCrash *x) {
-    static volatile int32_t busy;
-    if (plat_xchg32(&busy, 1)) plat_exit(71);
-    char d[160];
-    uintptr_t rip = x->rip;
-    rt_logf("FATAL: %s (%#x) at host %p (xc2+%#llx)", x->what, x->code, (void *)rip, (unsigned long long)x->offset);
-    if (x->access >= 0)
-        rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
-                (unsigned long long)x->addr);
-    rt_log_raw("\n", 1);
-    uint64_t f = lifted_function(rip);
-    if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    Cpu *c = kern_cpu();
-    if (c) {
-        for (int i = 0; i < 31; i++)
-            rt_logf("  x%-2d %016llx%s", i, (unsigned long long)c->x[i], i % 4 == 3 ? "\n" : "");
-        const char *hf = hostfn_name(c->pc);   // a crash inside a host function: c->pc is its synthetic address
-        rt_logf("  sp  %016llx\n  pc  %016llx%s%s  lr %s\n", (unsigned long long)c->sp, (unsigned long long)c->pc,
-                hf ? " host function " : "", hf ? hf : "", ldr_describe(c->x[30], d, sizeof d));
-        uint64_t fp = c->x[29];
-        for (int n = 0; n < 32 && fp && !(fp & 7) && readable(fp, 16); n++) {
-            uint64_t next = LD64(fp), lr = LD64(fp + 8);
-            rt_logf("  guest frame %2d: %s\n", n, ldr_describe(lr, d, sizeof d));
-            if (next <= fp || next - fp > (64u << 20)) break;
-            fp = next;
-        }
-    } else {
-        rt_logf("  not on a guest thread\n");
-    }
-    fflush(stderr);
-    plat_exit(71);
-}
 
 // ---- self-test: layout, dispatch table, host-function registry, without game files
 static int failures;
@@ -622,7 +583,7 @@ int main(int argc, char **argv) {
         CloseHandle(CreateThread(NULL, 0, watch_thread, NULL, 0, NULL));
     }
 #endif
-    plat_crash_hook(crash_handler);
+    crash_init();
 #ifdef _WIN32
     AddVectoredExceptionHandler(0, diag_handler);
 #endif

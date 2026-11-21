@@ -283,8 +283,9 @@ static void series_shot(const tex_t *t, uint64_t n) {
     free(px);
 }
 
-// XC2_HANG_DUMP=<seconds>: when no frame was presented for that long, kern_hang_dump logs every guest thread's wait
-// and call chain, once per stall. Started by the first present, so loading before it does not count.
+// XC2_HANG_DUMP=<seconds> (default 30, 0 off): when no frame was presented for that long, crash_hang_report logs
+// every guest thread's wait and call chain and writes them to logs/hang-<time>.txt with the log's last lines, once per
+// stall. Started by the first present, so loading before it does not count.
 // XC2_STATE_DUMP=<seconds>: the same dump three times, that long after the first present and 0.3 s apart, stall or
 // not (what the threads wait for in a frame that runs slow).
 static volatile int64_t g_last_present_ms;
@@ -305,8 +306,7 @@ static void hang_watch(void *arg) {
         int64_t last = plat_cas64(&g_last_present_ms, 0, 0), now = (int64_t)plat_now_ms();
         if (now - last < limit || last == dumped) continue;
         dumped = last;
-        rt_log("hang: no frame presented for %lld s", (long long)((now - last) / 1000));
-        kern_hang_dump();
+        crash_hang_report((now - last) / 1000);
     }
 }
 
@@ -315,7 +315,7 @@ static void hang_note_present(void) {
     plat_xchg64(&g_last_present_ms, (int64_t)plat_now_ms());
     if (started || plat_xchg32(&started, 1)) return;
     const char *e = cfg_get("XC2_HANG_DUMP");
-    long s = e ? strtol(e, NULL, 10) : 0;
+    long s = e && *e ? strtol(e, NULL, 10) : 30;
     if (s > 0) plat_thread_detach(plat_thread_new(hang_watch, (void *)(uintptr_t)s, "hang_watch"));
     e = cfg_get("XC2_STATE_DUMP");
     s = e ? strtol(e, NULL, 10) : 0;
@@ -331,6 +331,7 @@ static void hang_note_present(void) {
 void rt_frame_presented(const tex_t *t, uint64_t n) {
     const RtConfig *cfg = rt_config();
     hang_note_present();
+    crash_note_frame(n);
     series_shot(t, n);
     int64_t w = cfg->seconds ? frame_step_world_us() : -1;
     if (w < 0 || (double)w < cfg->seconds * 1e6) return;

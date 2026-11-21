@@ -240,6 +240,9 @@ void vk_usnap_capture_drop(void *cap);
 int vk_usnap_programs(const void *cap, const void *const **out);
 void vk_exec_captures(void *mem, void *ubo);   // this thread's next vk_exec_record of handles uses these
 extern int vk_mirror_on;
+// The crash report (crash.c): the NVN pool holding guest address a and how the GPU sees it (imported, mirrored,
+// shadowed), as one line into out; 0 when no pool holds it or there is no device. Never waits on a lock.
+int vk_mem_describe(uint64_t a, char *out, size_t n);
 void vk_mem_use(VkMemSpan *sp, uint64_t n);
 void vk_mem_pick(VkMemSpan *sp, uint64_t n);
 #define VK_MEM_USE(sp, n) do { if (vk_mirror_on && (sp).pool) vk_mem_use(&(sp), (n)); } while (0)

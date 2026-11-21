@@ -23,6 +23,20 @@ void rt_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void rt_vlogf(const char *fmt, va_list ap);
 void rt_log_raw(const char *p, size_t n);
 const char *rt_log_path(void);                  // the log file, NULL when this run writes none
+// Copies of what the log got, kept in memory for the crash report (crash.c) whatever the file's cap: the first
+// head_cap bytes of the run and the last tail_cap; returns the bytes the run logged in all.
+uint64_t rt_log_copy(char *head, size_t head_cap, size_t *head_n, char *tail, size_t tail_cap, size_t *tail_n);
+
+// ---- crash reports (crash.c)
+// A crash (crash_handler) or a fatal error (rt_fatal) writes a report to the log and to logs/crash-<time>.txt next to
+// xc2.exe: the fault, the host and guest registers and stacks, the memory around them, every guest thread, the GPU
+// and the machine, then the log's last and first lines; and logs/crash-<time>.dmp, a minidump (XC2_CRASH_DUMP=0: none).
+void crash_init(void);                          // main, first thing after mem_init: installs the crash hook
+void crash_fatal(const char *msg);              // rt_fatal: the report for a fatal error, then returns
+void crash_note_frame(uint64_t frame);          // every present: the report names the last frame and its age
+void crash_hang_report(int64_t seconds);        // boot.c: no frame presented for that long (XC2_HANG_DUMP)
+uint64_t crash_lifted_function(uintptr_t rip);  // the guest address of the lifted function holding host code rip; 0
+const char *crash_report_path(void);            // the crash file the report wrote, NULL before one
 enum { RT_TRACE_SVC = 1, RT_TRACE_HOSTCALL = 2, RT_TRACE_IPC = 4, RT_TRACE_FS = 8, RT_TRACE_GFX = 16, RT_TRACE_PERF = 32,
        RT_TRACE_SCHED = 64, RT_TRACE_AUDIO = 128, RT_TRACE_PRESENT = 256 };
 extern unsigned rt_trace;                       // from XC2_TRACE=svc,host,ipc,fs,gfx,perf,sched,audio,present (or all)
@@ -250,6 +264,10 @@ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns);   // perf_prese
                                                            // asynchronous preemption counters)
 void kern_sched_report(uint64_t frame);                    // XC2_TRACE=sched: per-thread time split, on present
 void kern_hang_dump(void);                                 // XC2_HANG_DUMP: every guest thread's wait and call chain
+// The same dump line by line into out (no prefix, no newline). crash: the caller may hold the kernel lock or have
+// stopped a thread that does, so the dump reads without it when it is not free within 200 ms.
+typedef void (*RtLineFn)(void *ctx, const char *line);
+void kern_threads_dump(RtLineFn out, void *ctx, int crash);
 uint32_t kern_handle_new(int kind, void *obj);             // kind: KERN_SESSION or KERN_TMEM (ipc.c)
 void *kern_handle_get(uint32_t h, int kind);
 void kern_handle_close(uint32_t h);                        // CloseHandle from the host side, any thread; fatal on a

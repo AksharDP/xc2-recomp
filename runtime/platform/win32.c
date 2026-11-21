@@ -2,6 +2,7 @@
 // SRW locks and condition variables.
 #include <intrin.h>
 #include <io.h>
+#include <signal.h>
 #include <stdio.h>
 #include <windows.h>
 #include <bcrypt.h>
@@ -30,6 +31,8 @@ struct PlatThread {
 
 static DWORD WINAPI thread_main(LPVOID p) {
     PlatThread *t = p;
+    ULONG keep = 64 << 10;   // stack left to the crash report after an overflow
+    SetThreadStackGuarantee(&keep);
     t->fn(t->arg);
     return 0;
 }
@@ -613,30 +616,188 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 
 static void (*crash_fn)(const PlatCrash *c);
 
+int plat_module_at(uintptr_t addr, char *name, size_t cap, uintptr_t *base) {
+    HMODULE m = NULL;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)addr, &m) || !m)
+        return 0;
+    wchar_t w[MAX_PATH] = L"?";
+    GetModuleFileNameW(m, w, MAX_PATH);
+    const wchar_t *f = wcsrchr(w, L'\\');
+    if (cap && !WideCharToMultiByte(CP_UTF8, 0, f ? f + 1 : w, -1, name, (int)cap, NULL, NULL)) name[0] = 0;
+    if (base) *base = (uintptr_t)m;
+    return 1;
+}
+
+void plat_thread_name(char *out, size_t cap) {
+    if (!cap) return;
+    out[0] = 0;
+    wchar_t *w = NULL;
+    if (SUCCEEDED(GetThreadDescription(GetCurrentThread(), &w)) && w) {
+        if (!WideCharToMultiByte(CP_UTF8, 0, w, -1, out, (int)cap, NULL, NULL)) out[0] = 0;
+        LocalFree(w);
+    }
+}
+
+// Walks a stack from cx through the modules' unwind tables (a function without one is a leaf: its return address is
+// on top of the stack). Stops at an unreadable stack slot rather than faulting inside the crash report.
+static int unwind_from(CONTEXT cx, uintptr_t *out, int max) {
+    int n = 0;
+    while (n < max && cx.Rip) {
+        out[n++] = (uintptr_t)cx.Rip;
+        DWORD64 img = 0;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cx.Rip, &img, NULL);
+        if (!f) {
+            DWORD64 ret;
+            if (!plat_mem_read(cx.Rsp, &ret, sizeof ret)) break;
+            cx.Rip = ret;
+            cx.Rsp += 8;
+            continue;
+        }
+        void *hd;
+        DWORD64 frame, sp = cx.Rsp;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, img, cx.Rip, f, &cx, &hd, &frame, NULL);
+        if (cx.Rsp <= sp) break;   // no progress: a corrupt stack
+    }
+    return n;
+}
+
+int plat_backtrace(uintptr_t *out, int max) {
+    void *bt[64];
+    USHORT n = RtlCaptureStackBackTrace(1, max < 64 ? (DWORD)max : 64, bt, NULL);
+    for (USHORT i = 0; i < n; i++) out[i] = (uintptr_t)bt[i];
+    return n;
+}
+
+static void crash_fill(PlatCrash *c, EXCEPTION_POINTERS *ep) {
+    const CONTEXT *x = ep->ContextRecord;
+    const DWORD64 r[17] = {x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi, x->R8,  x->R9,
+                           x->R10, x->R11, x->R12, x->R13, x->R14, x->R15, x->EFlags};
+    for (int i = 0; i < 17; i++) c->regs[i] = r[i];
+    c->has_regs = 1;
+    c->nframes = unwind_from(*x, c->frames, PLAT_CRASH_FRAMES);
+    c->os = ep;
+    if (c->code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
+        c->access = (int)ep->ExceptionRecord->ExceptionInformation[0], c->addr = ep->ExceptionRecord->ExceptionInformation[1];
+}
+
+static const char *crash_what(DWORD code) {
+    return code == EXCEPTION_ACCESS_VIOLATION ? "access violation"
+         : code == EXCEPTION_ILLEGAL_INSTRUCTION ? "illegal instruction"
+         : code == EXCEPTION_INT_DIVIDE_BY_ZERO ? "integer division by zero"
+         : code == EXCEPTION_PRIV_INSTRUCTION ? "privileged instruction"
+         : code == EXCEPTION_STACK_OVERFLOW ? "stack overflow"
+         : code == EXCEPTION_IN_PAGE_ERROR ? "in-page error" : NULL;
+}
+
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
-    const char *what = code == EXCEPTION_ACCESS_VIOLATION ? "access violation"
-                     : code == EXCEPTION_ILLEGAL_INSTRUCTION ? "illegal instruction"
-                     : code == EXCEPTION_INT_DIVIDE_BY_ZERO ? "integer division by zero"
-                     : code == EXCEPTION_PRIV_INSTRUCTION ? "privileged instruction"
-                     : code == EXCEPTION_STACK_OVERFLOW ? "stack overflow"
-                     : code == EXCEPTION_IN_PAGE_ERROR ? "in-page error" : NULL;
+    const char *what = crash_what(code);
     if (!what) return EXCEPTION_CONTINUE_SEARCH;
     uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
     MODULEINFO mi;
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi) ||
         rip - (uintptr_t)mi.lpBaseOfDll >= mi.SizeOfImage)
-        return EXCEPTION_CONTINUE_SEARCH;   // not our code: leave it to the handler that expects it
+        return EXCEPTION_CONTINUE_SEARCH;   // not our code: its module may handle it; else crash_top sees it
     PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
-    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
-        c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];
+    crash_fill(&c, ep);
     crash_fn(&c);
     return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// The last chance: an exception nothing handled, in any module (a driver, the C++ runtime, a system DLL).
+static LONG WINAPI crash_top(EXCEPTION_POINTERS *ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    const char *what = crash_what(code);
+    static char other[48];
+    if (!what) snprintf(other, sizeof other, "unhandled exception %#lx", code), what = other;
+    uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip, base = 0;
+    static char mod[MAX_PATH];
+    PlatCrash c = {what, (uint32_t)code, rip, 0, -1, 0};
+    if (plat_module_at(rip, mod, sizeof mod, &base)) {
+        c.offset = rip - base;
+        if (base != (uintptr_t)GetModuleHandleW(NULL)) c.module = mod;
+    } else {
+        c.module = "no module";
+    }
+    crash_fill(&c, ep);
+    crash_fn(&c);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void crash_abort(int sig) {
+    (void)sig;
+    PlatCrash c = {"abort", 0, 0, 0, -1, 0};
+    c.nframes = plat_backtrace(c.frames, PLAT_CRASH_FRAMES);
+    crash_fn(&c);
 }
 
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     AddVectoredExceptionHandler(0, crash_veh);
+    SetUnhandledExceptionFilter(crash_top);
+    signal(SIGABRT, crash_abort);
+    ULONG keep = 64 << 10;   // stack left to the handler after an overflow (guest threads: thread_main does the same)
+    SetThreadStackGuarantee(&keep);
+}
+
+// ---- minidump (dbghelp.dll, loaded when a crash needs it)
+#include <dbghelp.h>
+
+typedef BOOL(WINAPI *MiniDumpFn)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
+                                  PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
+typedef struct {
+    const wchar_t *path;
+    const PlatCrash *c;
+    DWORD tid;
+    const uint64_t (*ranges)[2];
+    int n, next;
+    BOOL ok;
+} DumpJob;
+
+// The extra memory ranges, one per MemoryCallback.
+static BOOL CALLBACK dump_cb(PVOID p, const PMINIDUMP_CALLBACK_INPUT in, PMINIDUMP_CALLBACK_OUTPUT out) {
+    DumpJob *j = p;
+    if (in->CallbackType != MemoryCallback) return TRUE;
+    while (j->next < j->n) {
+        const uint64_t *r = j->ranges[j->next++];
+        if (r[1] <= r[0] || !plat_mem_readable(r[0], r[1] - r[0])) continue;
+        out->MemoryBase = r[0];
+        out->MemorySize = (ULONG)(r[1] - r[0]);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static DWORD WINAPI dump_main(void *p) {
+    DumpJob *j = p;
+    HMODULE dh = LoadLibraryW(L"dbghelp.dll");
+    MiniDumpFn fn = dh ? (MiniDumpFn)(void *)GetProcAddress(dh, "MiniDumpWriteDump") : NULL;
+    if (!fn) return 0;
+    HANDLE f = CreateFileW(j->path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    MINIDUMP_EXCEPTION_INFORMATION ei = {j->tid, j->c ? j->c->os : NULL, FALSE};
+    MINIDUMP_CALLBACK_INFORMATION cb = {dump_cb, j};
+    // The thread stacks and the memory their words point at (guest objects included), thread and module lists; not
+    // the whole guest address space, which is gigabytes.
+    MINIDUMP_TYPE t = (MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithThreadInfo |
+                                      MiniDumpWithUnloadedModules | MiniDumpWithProcessThreadData |
+                                      MiniDumpScanMemory);
+    j->ok = fn(GetCurrentProcess(), GetCurrentProcessId(), f, t, ei.ExceptionPointers ? &ei : NULL, NULL, &cb);
+    CloseHandle(f);
+    if (!j->ok) DeleteFileW(j->path);
+    return 0;
+}
+
+int plat_crash_dump(const char *path, const PlatCrash *c, const uint64_t (*ranges)[2], int nranges) {
+    wchar_t w[WPATH];
+    if (!widen(path, w, WPATH)) return 0;
+    DumpJob j = {w, c, GetCurrentThreadId(), ranges, nranges, 0, FALSE};
+    HANDLE h = CreateThread(NULL, 1 << 20, dump_main, &j, 0, NULL);
+    if (!h) return 0;
+    WaitForSingleObject(h, 120000);
+    CloseHandle(h);
+    return j.ok;
 }
 
 // A fresh process gets a fresh layout: Windows places DLLs, heaps and thread stacks at random addresses. The parent
