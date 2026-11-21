@@ -106,7 +106,7 @@ def main():
         assert all(o + 16 <= size for o in offs), f'{files[fi]}: patch outside the layout'
         cells += 1
     assert at == len(blob), 'the table has no trailing bytes'
-    assert cells == 50, 'every replaceable cell of the seven layouts is listed'
+    assert cells == 54, 'every replaceable cell of the seven layouts is listed'
     print(f'prompts keys: {nkeys} keys, {nstyles} tile styles, {npatches} patches, {len(blob)} bytes')
 
 

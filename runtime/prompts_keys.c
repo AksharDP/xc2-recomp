@@ -114,7 +114,17 @@ bad:
     failed = 1;
 }
 
-static uint8_t chosen[16];   // key index in keys.dat for each action, -1 when unbound
+static uint8_t chosen[16];   // key index in keys.dat for each action, 255 when unbound
+
+// The same keys in any order: a bind line may list an action's default keys its own way (input_map.c same_set).
+static int same_keys(const uint8_t *a, const uint8_t *b, int n) {
+    for (int i = 0; i < n; i++) {
+        int ca = 0, cb = 0;
+        for (int j = 0; j < n; j++) ca += a[j] == a[i], cb += b[j] == a[i];
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
 
 static void read_bindings(void) {
     for (int a = 0; a < 16; a++) {
@@ -122,7 +132,7 @@ static void read_bindings(void) {
         int n = input_map_keys_of(&input_map, a, keys, (int)(sizeof keys / sizeof *keys));
         chosen[a] = 255;
         for (int i = 0; i < n; i++) keys[i] = (uint8_t)db.slot[keys[i]];   // ids to keys.dat indices
-        if (n == db.ndef[a] && !memcmp(keys, db.defs[a], (size_t)n)) chosen[a] = db.baked[a];
+        if (n == db.ndef[a] && same_keys(keys, db.defs[a], n)) chosen[a] = db.baked[a];
         else if (n) chosen[a] = keys[0];
     }
 }
@@ -149,7 +159,8 @@ int prompts_keys_file(const char *rel, const char *set_dir, const char *src, cha
     if (file < 0) goto done;
 
     if (snprintf(out, cap, "%s/%s", gen_dir, rel) >= (int)cap) goto done;
-    if (plat_fs_kind(out) == PLAT_FS_FILE) goto served;   // this hash has already been written
+    // this hash has already been written, from a source of the same size (a regenerated layout may differ)
+    if (plat_fs_kind(out) == PLAT_FS_FILE && plat_file_size(out) == plat_file_size(src)) goto served;
     uint64_t n = 0;
     uint8_t *data = plat_file_read(src, &n);
     if (!data || n > 0xffffffffu) { free(data); goto done; }
@@ -173,7 +184,7 @@ int prompts_keys_file(const char *rel, const char *set_dir, const char *src, cha
     if (sep) *sep = 0;
     plat_file_mkdir_p(parent);
     plat_file_mkdir_p(gen_dir);
-    if (ok && !plat_file_write(out, data, (size_t)n)) ok = 0;
+    if (ok && !plat_file_write_atomic(out, data, (size_t)n)) ok = 0;   // a half-written copy must never be served
     free(data);
     if (!ok) goto done;
 served:

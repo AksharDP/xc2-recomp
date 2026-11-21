@@ -618,8 +618,8 @@ KEY_NAMES = (
 ACTION_IDS = {'A': 0, 'B': 1, 'X': 2, 'Y': 3, 'LCLICK': 4, 'RCLICK': 5, 'L': 6, 'R': 7, 'ZL': 8, 'ZR': 9,
               'PLUS': 10, 'MINUS': 11, 'LEFT': 12, 'UP': 13, 'RIGHT': 14, 'DOWN': 15}
 CELL_ACTIONS = {'A': 'A', 'B': 'B', 'X': 'X', 'Y': 'Y', 'L3': 'LCLICK', 'R3': 'RCLICK', 'L': 'L', 'R': 'R',
-                'ZL': 'ZL', 'ZR': 'ZR', 'plus': 'PLUS', 'minus': 'MINUS', 'up': 'UP', 'down': 'DOWN',
-                'left': 'LEFT', 'right': 'RIGHT'}
+                'ZL': 'ZL', 'ZR': 'ZR', 'ZL2': 'ZL', 'ZR2': 'ZR',   # ZL2 and ZR2 draw the same actions' icons (atlas())
+                'plus': 'PLUS', 'minus': 'MINUS', 'up': 'UP', 'down': 'DOWN', 'left': 'LEFT', 'right': 'RIGHT'}
 
 # The default keys of each action (input_map.c DEFAULT_KEYS), and the key whose icon the set was baked with (KEYS).
 # ZL and ZR have two default keys; the baked set uses Z and F, so the runtime must keep those until a bind changes.
@@ -662,9 +662,17 @@ FONT = {
     '\\': (0x10, 0x10, 0x08, 0x04, 0x02, 0x02, 0x02), '`': (0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00),
 }
 
-# The menu's names for keys whose Kenney icon has another name.
+# The menu's names for keys whose Kenney icon has another name. Letters, digits, F-keys and the named keys
+# (enter, backspace, ...) match keyboard_<name>.png; the numpad digits have no icon and get a drawn keycap.
 ICON_FILES = {'lshift': 'keyboard_shift', 'rshift': 'keyboard_shift', 'lctrl': 'keyboard_ctrl',
-              'rctrl': 'keyboard_ctrl', 'mouse_l': 'mouse_left'}
+              'rctrl': 'keyboard_ctrl', 'lalt': 'keyboard_alt', 'mouse_l': 'mouse_left', 'mouse_r': 'mouse_right',
+              'mouse_m': 'mouse_scroll', 'mouse_x1': 'mouse_side_back', 'mouse_x2': 'mouse_side_forward',
+              'up': 'keyboard_arrow_up', 'down': 'keyboard_arrow_down', 'left': 'keyboard_arrow_left',
+              'right': 'keyboard_arrow_right', 'pageup': 'keyboard_page_up', 'pagedown': 'keyboard_page_down',
+              'lbracket': 'keyboard_bracket_open', 'rbracket': 'keyboard_bracket_close',
+              'slash': 'keyboard_slash_forward', 'backslash': 'keyboard_slash_back', 'grave': 'keyboard_tilde',
+              'num_add': 'keyboard_numpad_plus', 'num_sub': 'keyboard_minus', 'num_mul': 'keyboard_asterisk',
+              'num_div': 'keyboard_slash_forward', 'num_decimal': 'keyboard_period'}
 
 # Short labels for keys the menu names by a word; letters and digits use the character on the key itself.
 LABELS = {'space': 'SPACE', 'tab': 'TAB', 'lshift': 'SHIFT', 'rshift': 'SHIFT', 'lctrl': 'CTRL', 'rctrl': 'CTRL',
@@ -678,37 +686,45 @@ LABELS = {'space': 'SPACE', 'tab': 'TAB', 'lshift': 'SHIFT', 'rshift': 'SHIFT', 
 
 
 def keycap(name, size=64):
-    """A white keycap with a dark label, in the shape the styled() pass expects (like the Kenney icons)."""
+    """A keycap in the Kenney icons' own shape, for the keys the pack lacks (the numpad digits): a white rounded
+    square with the label cut out of it. The face spans three quarters of the tile with an eighth of margin and a
+    corner radius of 12 at 128, the outline of keyboard_z.png; the letter stands 40 of the face's 96 pixels tall.
+    Drawn at four times the size and averaged down, so the label's edges are smooth, not the bitmap font's steps."""
     label = LABELS.get(name, name.upper())[:7]
-    scale = max(1, min(5, (size - 16) // (len(label) * 6 + 1), (size - 16) // 8))
-    gw, gh = len(label) * 6 * scale, 7 * scale
-    x0, y0 = (size - gw) // 2, (size - 8 - gh) // 2
-    out = blank(size, size)
-    edge, radius = 3, 6
-    for y in range(size):
-        for x in range(size):
-            dx = max(edge + radius - x, x - (size - 1 - edge - radius), 0)
-            dy = max(edge + radius - y, y - (size - 1 - edge - radius), 0)
-            if dx * dx + dy * dy <= radius * radius and edge <= x < size - edge and edge <= y < size - edge:
+    s = size * 4
+    margin, radius = s // 8, round(s * 12 / 128)
+    face = s - 2 * margin
+    out = blank(s, s)
+    for y in range(margin, s - margin):
+        for x in range(margin, s - margin):
+            dx = max(margin + radius - x, x - (s - 1 - margin - radius), 0)
+            dy = max(margin + radius - y, y - (s - 1 - margin - radius), 0)
+            if dx * dx + dy * dy <= radius * radius:
                 out[y][x] = WHITE + (255,)
+    unit = max(1, round(face * 0.4167 / 7))
+    width = (len(label) * 6 - 1) * unit
+    if width > face * 0.72:
+        unit = max(1, int(face * 0.72 / (len(label) * 6 - 1)))
+        width = (len(label) * 6 - 1) * unit
+    x0, y0 = (s - width) // 2, (s - 7 * unit) // 2
     for i, ch in enumerate(label):
         for row, bits in enumerate(FONT.get(ch, ())):
             for col in range(5):
                 if bits >> (4 - col) & 1:
-                    for sy in range(scale):
-                        for sx in range(scale):
-                            x, y = x0 + (i * 6 + col) * scale + sx, y0 + row * scale + sy
-                            if 0 <= x < size and 0 <= y < size:
-                                out[y][x] = (0, 0, 0, 255)
-    return out
+                    for sy in range(unit):
+                        for sx in range(unit):
+                            x, y = x0 + (i * 6 + col) * unit + sx, y0 + row * unit + sy
+                            if 0 <= x < s and 0 <= y < s:
+                                out[y][x] = (0, 0, 0, 0)   # the label is a hole in the face, as in the Kenney icons
+    return resample(out, size)
 
 
 def key_icon(name, size):
-    """The Kenney icon of a key when the set has one, a drawn keycap otherwise, resampled to size."""
+    """The Kenney icon of a key when the set has one, a drawn keycap otherwise, at size x size."""
     vendored = ICON_FILES.get(name) or ('keyboard_' + name if (ICONS / 'keyboard' / ('keyboard_' + name + '.png')).is_file() else None)
     if vendored:
         return icon('keyboard', vendored, size)
-    return resample(keycap(name), size)
+    return keycap(name, size)
 
 
 def styled_key(name, size, palette=False, h=None):
