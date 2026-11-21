@@ -10,8 +10,12 @@
 #include "input.h"
 #include "input_map.h"
 #include "platform/platform.h"
+#include "prompts_keys.h"
 
 enum { MAX_FILES = 32 };
+// The folder under prompts/ of the keyboard set drawn for the keys bound (prompts_keys.c), outside the manifest: it
+// takes the keyboard set's place for the same paths.
+#define BOUND_SET "keyboard_bound"
 
 static PlatOnce once = PLAT_ONCE_INIT;
 static char dir[1200];               // prompts/<set> of the chosen set, "" for the game's own prompts
@@ -73,6 +77,15 @@ static void init(void *arg) {
     free(m);
     snprintf(dir, sizeof dir, "%sprompts/%s", base, set);
     snprintf(text_dir, sizeof text_dir, "%sprompts/text", base);
+    if (!strcmp(set, "keyboard")) {   // the setup drew the default keys: other bind_ lines draw the set again
+        char prompts_dir[1200], bound[1200];
+        snprintf(prompts_dir, sizeof prompts_dir, "%sprompts", base);
+        snprintf(bound, sizeof bound, "%sprompts/%s", base, BOUND_SET);
+        if (prompts_keys_draw(prompts_dir, bound)) {
+            snprintf(dir, sizeof dir, "%s", bound);
+            rt_log("prompts: keyboard drawn for the keys bound");
+        }
+    }
     for (char *line = text, *next; *line && nfiles < MAX_FILES; line = next) {
         next = line + strcspn(line, "\r\n");
         if (*next) *next++ = 0;

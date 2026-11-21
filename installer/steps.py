@@ -141,7 +141,9 @@ def run_tool(ctx, step, script, args, parse=None, cwd=None):
     command = [str(ctx.layout.python), '-c', extract.RUN_SCRIPT, str(script), *map(str, args)]
     ctx.reporter.log('run ' + ' '.join(command[3:]))
     env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
-    with open(log, 'w', encoding='utf-8', newline='\n') as out:
+    for var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+        env.setdefault(var, '1')
+    with open(log, 'w', encoding='utf-8', newline='\n', buffering=1) as out:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd or ctx.layout.root,
                                 env=env, text=True, encoding='utf-8', errors='replace', bufsize=1,
                                 start_new_session=os.name != 'nt')

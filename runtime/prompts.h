@@ -4,7 +4,8 @@
 // prompts/manifest.tsv. The game asks every add-on content mount for a menu or text file before it reads bf2.ard, so
 // fs_host.c serves these files to those probes. A player without add-on content gets an empty pack of the port's own
 // to give the game a mount to ask (fs_host.c AOC_PORT_PACK). Every redrawn set also gets prompts/text/: the message
-// tables whose stick clicks use the click's icon.
+// tables whose stick clicks use the click's icon. The keyboard set shows the default keys; when the bind_ lines show
+// others, prompts_keys.c draws it again at the first call into prompts/keyboard_bound/, which then takes its place.
 #pragma once
 #include <stddef.h>
 
@@ -16,5 +17,5 @@ int prompts_possible(void);
 // the set has no such file or no set is chosen. The set is picked at the first call (the game loads its layouts at
 // start, so a change of XC2_PROMPTS or of the gamepad takes a restart): XC2_PROMPTS=auto takes the open gamepad's
 // labels (PlayStation, Xbox, the game's own for Nintendo's) or the keyboard without one; the Xbox and PlayStation sets
-// follow XC2_PAD_LAYOUT. Any thread.
+// follow XC2_PAD_LAYOUT, the keyboard set the keys bound then (a remapping takes a restart too). Any thread.
 int prompts_file(const char *rel, char *out, size_t cap);

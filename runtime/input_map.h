@@ -79,6 +79,11 @@ const char *input_pad_name(int pad);
 int input_map_bind(const char *button, const char *list);
 // Applies the XC2_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
 void input_map_configure(void);
+// The same tables built into m, without logging and without touching input_map: for a reader on another thread
+// (prompts_keys.c draws the keyboard prompts of the keys bound). Any thread.
+void input_map_load(InputMap *m);
+// The default tables (docs/controls.md).
+const InputMap *input_map_defaults(void);
 
 // The layout for a XC2_PAD_LAYOUT value: "nintendo" or "xbox" (any case); anything else ("auto", NULL) picks Nintendo
 // when the pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox otherwise.
