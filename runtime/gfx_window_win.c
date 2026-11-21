@@ -200,7 +200,14 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
     case WM_SIZE:
-        if (w != SIZE_MINIMIZED) gfx_window_mark_dirty();
+        if (w == SIZE_MINIMIZED) {
+            // While minimized, let the user's power plan run normally.
+            SetThreadExecutionState(ES_CONTINUOUS);
+        } else {
+            // Restored or resized: keep the display and system awake again.
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+            gfx_window_mark_dirty();
+        }
         refresh_rate_update(h, 0);
         return 0;
     case WM_EXITSIZEMOVE:   // dragged onto another monitor
@@ -219,7 +226,10 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_CLOSE:
+        // Drop the request, so the user's power plan governs the display and sleep timeouts again.
+        SetThreadExecutionState(ES_CONTINUOUS);
         gfx_window_closed();
+
     case WM_ERASEBKGND:
         return 1;
     }
@@ -259,6 +269,10 @@ static void window_main(void *arg) {
         rt_log("gfx: CreateWindowEx failed (%lu)", GetLastError());
         g_wnd_failed = 1;
     } else {
+        // The game runs on a controller with no keyboard or mouse: to the idle timer the machine looks untouched, and
+        // the display and sleep timeouts fire in the middle of a run. ES_CONTINUOUS holds the request until it is
+        // cleared, ES_SYSTEM_REQUIRED blocks sleep and ES_DISPLAY_REQUIRED the screen.
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
         SetWindowPos(g_hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         if (!background) {
             FLASHWINFO fw = {.cbSize = sizeof fw, .hwnd = g_hwnd, .dwFlags = FLASHW_TRAY | FLASHW_TIMERNOFG};
