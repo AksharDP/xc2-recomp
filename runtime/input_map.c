@@ -117,11 +117,15 @@ static void pads_put(InputMap *m, int layout, int action, const uint8_t *list, i
         t[m->npads[layout]++] = (PadBinding){list[i], (uint8_t)action};
 }
 
-int input_map_bind(const char *button, const char *list) {
+// input_map_bind on the table m; quiet leaves the log to the call that builds the table in effect.
+static int bind_into(InputMap *m, const char *button, const char *list, int quiet) {
     int action = -1;
     for (int a = 0; a < ACTION_COUNT; a++)
         if (!strcasecmp(action_names[a], button)) action = a;
-    if (action < 0) { rt_log("input: bind: unknown button '%s'", button); return 0; }
+    if (action < 0) {
+        if (!quiet) rt_log("input: bind: unknown button '%s'", button);
+        return 0;
+    }
     uint8_t keys[INPUT_BINDING_MAX], pads[INPUT_PAD_BINDING_MAX];
     int nk = 0, np = 0, none = 0, key_def = 0, pad_def = 0, bad = 0;
     char buf[256];
@@ -143,36 +147,44 @@ int input_map_bind(const char *button, const char *list) {
         }
         if (!ok) {
             bad++;
-            rt_log("input: bind %s: ignoring '%s' (expected pad:<name> or key:<name>; stick directions take keys only)",
+            if (!quiet) rt_log("input: bind %s: ignoring '%s' (expected pad:<name> or key:<name>; stick directions take keys only)",
                    button, tok);
         }
     }
     if (!nk && !np && !none && !key_def && !pad_def) {
-        if (bad) rt_log("input: bind %s: no valid entry, keeping the defaults", button);
+        if (bad && !quiet) rt_log("input: bind %s: no valid entry, keeping the defaults", button);
         return 0;
     }
     uint8_t list_k[INPUT_BINDING_MAX];
     int n = key_def ? input_map_keys_of(&defaults, action, list_k, INPUT_BINDING_MAX) : 0;
     for (int i = 0; i < nk && n < INPUT_BINDING_MAX; i++) list_k[n++] = keys[i];
-    keys_put(&input_map, action, list_k, n);
+    keys_put(m, action, list_k, n);
     for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {   // a bind line names physical buttons: the same in every layout
         uint8_t list_p[INPUT_PAD_BINDING_MAX];
         int c = pad_def ? input_map_pads_of(&defaults, action, l, list_p, INPUT_PAD_BINDING_MAX) : 0;
         for (int i = 0; i < np && c < INPUT_PAD_BINDING_MAX; i++) list_p[c++] = pads[i];
-        pads_put(&input_map, l, action, list_p, c);
+        pads_put(m, l, action, list_p, c);
     }
     return 1;
 }
 
-void input_map_configure(void) {
-    input_map_reset();
+int input_map_bind(const char *button, const char *list) { return bind_into(&input_map, button, list, 0); }
+
+static void configure_into(InputMap *m, int quiet) {
+    *m = defaults;
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
         snprintf(var, sizeof var, "XC2_BIND_%s", action_names[a]);
         const char *v = cfg_get(var);
-        if (v && *v && input_map_bind(action_names[a], v)) rt_log("input: %s = %s", var + 5, v);
+        if (v && *v && bind_into(m, action_names[a], v, quiet) && !quiet) rt_log("input: %s = %s", var + 5, v);
     }
 }
+
+void input_map_configure(void) { configure_into(&input_map, 0); }
+
+void input_map_load(InputMap *m) { configure_into(m, 1); }
+
+const InputMap *input_map_defaults(void) { return &defaults; }
 
 int input_map_set_key(InputMap *m, int action, int slot, int key) {
     uint8_t list[INPUT_BINDING_MAX];

@@ -13,7 +13,9 @@ console's colours), a blue rim and a glow. Sets, one folder each:
   xbox, playstation                    gamepad layout Xbox (XC2_PAD_LAYOUT, runtime/input_map.h): Switch A is the
                                        bottom button, Xbox A, PlayStation cross
   xbox_nintendo, playstation_nintendo  Nintendo layout: Switch A is the right button, Xbox B, PlayStation circle
-  keyboard                             the default keys and mouse buttons (runtime/input_map.c DEFAULT_KEYS)
+  keyboard                             the default keys and mouse buttons (runtime/input_map.c DEFAULT_KEYS); with
+                                       other bind_ lines the runtime draws it again for the keys bound, from the
+                                       set "keys" (key_bank): the game's layouts and the icon of every key
 Only the texture blocks under a replaced cell are re-encoded; every other byte of a layout stays the game's.
 
 The text gets one change too, in the set "text" that every redrawn set shares. Menu/msproj/bf2.msbp names a tag for
@@ -22,8 +24,8 @@ tool's L3 and R3), but the game's text only uses the plain ones. On a Switch the
 W A S D or the mouse and the click is Ctrl or C, so the lines that mean a click move to the click's tag (press_text).
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, tools/extract.py). Output: <out>/<set>/menu/image/
-<file>.wilay, <out>/text/bdat/<language>/<file>.bdat and <out>/manifest.tsv (set, path, size, SHA-256), by default
-build/<version>/prompts, which
+<file>.wilay, <out>/text/bdat/<language>/<file>.bdat, <out>/keys/ and <out>/manifest.tsv (set, path, size,
+SHA-256), by default build/<version>/prompts, which
 tools/build_game.py copies next to xc2.exe. Nothing it writes may be committed. --png <dir> also writes every texture
 before and after as PNG; --survey <dir> writes the textures of the image layouts whose names match --match as PNG, to
 look for more button art. Runs on either Python: no third-party modules.
@@ -538,7 +540,30 @@ PAD = {
 FACE = {'xbox': ('xbox_button_a', 'xbox_button_b', 'xbox_button_x', 'xbox_button_y'),
         'playstation': ('playstation_button_cross', 'playstation_button_circle', 'playstation_button_square',
                         'playstation_button_triangle')}
-# runtime/input_map.c DEFAULT_KEYS (Switch home, capture, SL and SR have no key)
+# The icon of every key a bind_ line can name (runtime/input_map.c key_names), and mouse_move for the right stick that
+# the mouse drives. Kenney has no numpad digits nor right-hand Shift and Ctrl: those show the plain key.
+KEY_ICONS = {
+    **{c: f'keyboard_{c}' for c in 'abcdefghijklmnopqrstuvwxyz0123456789'},
+    **{f'num{d}': f'keyboard_{d}' for d in range(10)},
+    **{f'f{n}': f'keyboard_f{n}' for n in (2, 3, 4, 5, 6, 7, 9, 12)},
+    **{d: f'keyboard_arrow_{d}' for d in ('up', 'down', 'left', 'right')},
+    'space': 'keyboard_space', 'tab': 'keyboard_tab', 'lshift': 'keyboard_shift', 'rshift': 'keyboard_shift',
+    'lctrl': 'keyboard_ctrl', 'rctrl': 'keyboard_ctrl', 'lalt': 'keyboard_alt', 'enter': 'keyboard_enter',
+    'backspace': 'keyboard_backspace', 'capslock': 'keyboard_capslock', 'insert': 'keyboard_insert',
+    'delete': 'keyboard_delete', 'home': 'keyboard_home', 'end': 'keyboard_end', 'pageup': 'keyboard_page_up',
+    'pagedown': 'keyboard_page_down',
+    'mouse_l': 'mouse_left', 'mouse_r': 'mouse_right', 'mouse_m': 'mouse_scroll', 'mouse_x1': 'mouse_side_back',
+    'mouse_x2': 'mouse_side_forward',
+    'num_add': 'keyboard_numpad_plus', 'num_sub': 'keyboard_minus', 'num_mul': 'keyboard_asterisk',
+    'num_div': 'keyboard_slash_forward', 'num_decimal': 'keyboard_period',
+    'minus': 'keyboard_minus', 'equals': 'keyboard_equals', 'lbracket': 'keyboard_bracket_open',
+    'rbracket': 'keyboard_bracket_close', 'semicolon': 'keyboard_semicolon', 'apostrophe': 'keyboard_apostrophe',
+    'comma': 'keyboard_comma', 'period': 'keyboard_period', 'slash': 'keyboard_slash_forward',
+    'backslash': 'keyboard_slash_back', 'grave': 'keyboard_tilde',
+    'mouse_move': 'mouse_move',
+}
+# runtime/input_map.c DEFAULT_KEYS (Switch home, capture, SL and SR have no key). With other bind_ lines the runtime
+# draws this set again for the keys bound (runtime/prompts_keys.c), from the icons of KEY_ICONS in prompts/keys/.
 KEYS = {'A': 'keyboard_e', 'B': 'keyboard_shift', 'X': 'keyboard_space', 'Y': 'mouse_left', 'L': 'keyboard_q',
         'R': 'keyboard_r', 'ZL': 'keyboard_z', 'ZR': 'keyboard_f', 'plus': 'keyboard_tab', 'minus': 'keyboard_m',
         'L3': 'keyboard_ctrl', 'R3': 'keyboard_c', 'lstick': 'lstick', 'rstick': 'mouse_move', 'dpad': 'dpad',
@@ -802,7 +827,40 @@ def main():
         dst.write_bytes(new)
         lines.append(f'{TEXT_SET}\t{path.lstrip("/")}\t{len(new)}\t{hashlib.sha256(new).hexdigest()}')
         print(f'{path}: click prompts')
+    lines += key_bank(arc, out)
     (out / 'manifest.tsv').write_text('\n'.join(lines) + '\n')
+
+
+KEY_SET, BANK_SET, BANK_FILE = 'keyboard', 'keys', 'keys.bin'
+BANK_MAGIC = b'XC2KEYS1'
+
+
+def key_bank(arc, out):
+    """What runtime/prompts_keys.c needs to draw the keyboard set for other keys: the game's own LAYOUTS, the base it
+    draws on, and keys.bin, every icon of KEY_ICONS at its own size. keys.bin: BANK_MAGIC, u32 icon count, u32 key
+    count, each icon as u16 width, u16 height and its RGBA rows, then each key as u8 name length, the name and the u16
+    index of its icon. Both go in the set "keys", which the game is never served. Returns their manifest lines."""
+    files, icons, index = [], [], {}
+    for path in LAYOUTS:
+        files.append((path.lstrip('/'), arc.read(path)))
+    keys = bytearray()
+    for name, kenney in KEY_ICONS.items():
+        if kenney not in index:
+            index[kenney] = len(icons)
+            icons.append(read_png(ICONS / KEY_SET / f'{kenney}.png'))
+        keys += bytes((len(name),)) + name.encode() + struct.pack('<H', index[kenney])
+    bank = bytearray(BANK_MAGIC + struct.pack('<II', len(icons), len(KEY_ICONS)))
+    for px in icons:
+        bank += struct.pack('<HH', len(px[0]), len(px)) + bytes(c for row in px for p in row for c in p)
+    files.append((BANK_FILE, bytes(bank + keys)))
+    lines = []
+    for rel, data in files:
+        dst = out / BANK_SET / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+        lines.append(f'{BANK_SET}\t{rel}\t{len(data)}\t{hashlib.sha256(data).hexdigest()}')
+    print(f'{BANK_SET}: {len(icons)} icons for {len(KEY_ICONS)} keys, {len(LAYOUTS)} layouts')
+    return lines
 
 
 if __name__ == '__main__':
