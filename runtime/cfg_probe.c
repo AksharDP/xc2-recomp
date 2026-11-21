@@ -350,6 +350,23 @@ int probe_cfg(void) {
               input_map_pad_buttons((uint8_t[PAD_COUNT]){[PAD_SOUTH] = 1}, PAD_LAYOUT_NINTENDO) == 1ull << B_B,
           "bind: pad:default keeps each layout's own button");
     input_map_reset();
+    // input_map_load: the bind_ settings into a private table (prompts_keys.c), input_map untouched
+    plat_setenv("XCX_BIND_A", NULL);   // a legacy name the process inherits would show through once XC2_ is cleared
+    plat_setenv("XCX_BIND_LSTICK_LEFT", NULL);
+    plat_setenv("XC2_BIND_A", "key:f, pad:default");
+    plat_setenv("XC2_BIND_LSTICK_LEFT", "key:q");
+    InputMap *ld = malloc(sizeof *ld);
+    uint8_t lk[8];
+    input_map_load(ld);
+    CHECK(input_map_keys_of(ld, B_A, lk, 8) == 1 && lk[0] == KEY_F && input_map_keys_of(ld, B_SL_LEFT, lk, 8) == 1 &&
+              lk[0] == KEY_Q && input_map_keys_of(&input_map, B_A, lk, 8) == 1 && lk[0] == KEY_E,
+          "load: the bind_ lines into a table of its own, the one in effect unchanged");
+    plat_setenv("XC2_BIND_A", NULL);
+    plat_setenv("XC2_BIND_LSTICK_LEFT", NULL);
+    input_map_load(ld);
+    CHECK(input_map_keys_of(ld, B_A, lk, 8) == 1 && lk[0] == KEY_E && input_map_keys_of(ld, B_SL_LEFT, lk, 8) == 1 &&
+              lk[0] == KEY_A, "load: without the bind_ lines, the default keys");
+    free(ld);
     InputMap mp = input_map;
     char line[256];
     input_map_line(&mp, B_ZR, line, sizeof line);
