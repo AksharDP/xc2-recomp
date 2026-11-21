@@ -38,6 +38,23 @@ PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
     return plat_thread_new_ex(fn, arg, name, 0);
 }
 
+// SetThreadDescription looked up, not imported: Windows 10 before version 1607 (build 14393) lacks it, and an import
+// would stop the loader there with "entry point not found" for the sake of thread names in a debugger. Those builds
+// then run with unnamed threads.
+typedef HRESULT(WINAPI *SetThreadDescriptionFn)(HANDLE, PCWSTR);
+
+static void thread_name(HANDLE h, const char *name) {
+    static SetThreadDescriptionFn set;
+    static volatile LONG looked;
+    if (!looked) {
+        HMODULE k = GetModuleHandleW(L"kernel32.dll");
+        set = k ? (SetThreadDescriptionFn)(void *)GetProcAddress(k, "SetThreadDescription") : NULL;
+        InterlockedExchange(&looked, 1);
+    }
+    wchar_t w[64];
+    if (set && MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64)) set(h, w);
+}
+
 PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, size_t stack) {
     PlatThread *t = calloc(1, sizeof *t);
     if (!t) return NULL;
@@ -46,10 +63,7 @@ PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, siz
     t->h = CreateThread(NULL, stack ? stack : PLAT_STACK_DEFAULT, thread_main, t,
                         CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (!t->h) { free(t); return NULL; }
-    if (name) {
-        wchar_t w[64];
-        if (MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64)) SetThreadDescription(t->h, w);
-    }
+    if (name) thread_name(t->h, name);
     ResumeThread(t->h);
     return t;
 }

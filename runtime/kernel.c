@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "cpu_level.h"
 #include "flight.h"
 #include "host.h"
 #include "kernel.h"
@@ -447,6 +448,19 @@ static int ap_disabled(const RtThread *t) { return g_ap > 0 && ap_tlr(t)[0]; }
 // in kern_ap_yield and jumps back to kern_ap_rip(), whose value it first stores in the return slot it reserved at
 // entry, so a stack walk sees the interrupted function as its caller. No ret: the jump keeps call/return pairs
 // balanced. The waiter never writes the owner's stack.
+//
+// A build for x86-64-v2 (cpu_level.h) saves XMM0-15 with SSE moves instead and leaves vzeroupper out: its game code is
+// compiled without AVX, so no upper YMM half is live in it, and a processor without AVX faults on any VEX instruction,
+// which the first preemption of game code would otherwise run. The slots keep their 32-byte spacing either way.
+#if XC2_CPU_LEVEL >= 3
+#define AP_SAVE(n, off) "    vmovdqa %ymm" #n ", " #off "(%rsp)\n"
+#define AP_LOAD(n, off) "    vmovdqa " #off "(%rsp), %ymm" #n "\n"
+#define AP_VZEROUPPER "    vzeroupper\n"
+#else
+#define AP_SAVE(n, off) "    movdqa %xmm" #n ", " #off "(%rsp)\n"
+#define AP_LOAD(n, off) "    movdqa " #off "(%rsp), %xmm" #n "\n"
+#define AP_VZEROUPPER ""
+#endif
 #ifdef _WIN32
 __asm__(".text\n"
         ".globl kern_ap_stub\n"
@@ -479,47 +493,47 @@ __asm__(".text\n"
         ".seh_endprologue\n"
         "    andq $-32, %rsp\n"
         "    subq $576, %rsp\n"   // 0: shadow space, 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15
-        "    vmovdqa %ymm0, 64(%rsp)\n"
-        "    vmovdqa %ymm1, 96(%rsp)\n"
-        "    vmovdqa %ymm2, 128(%rsp)\n"
-        "    vmovdqa %ymm3, 160(%rsp)\n"
-        "    vmovdqa %ymm4, 192(%rsp)\n"
-        "    vmovdqa %ymm5, 224(%rsp)\n"
-        "    vmovdqa %ymm6, 256(%rsp)\n"
-        "    vmovdqa %ymm7, 288(%rsp)\n"
-        "    vmovdqa %ymm8, 320(%rsp)\n"
-        "    vmovdqa %ymm9, 352(%rsp)\n"
-        "    vmovdqa %ymm10, 384(%rsp)\n"
-        "    vmovdqa %ymm11, 416(%rsp)\n"
-        "    vmovdqa %ymm12, 448(%rsp)\n"
-        "    vmovdqa %ymm13, 480(%rsp)\n"
-        "    vmovdqa %ymm14, 512(%rsp)\n"
-        "    vmovdqa %ymm15, 544(%rsp)\n"
+        AP_SAVE(0, 64)
+        AP_SAVE(1, 96)
+        AP_SAVE(2, 128)
+        AP_SAVE(3, 160)
+        AP_SAVE(4, 192)
+        AP_SAVE(5, 224)
+        AP_SAVE(6, 256)
+        AP_SAVE(7, 288)
+        AP_SAVE(8, 320)
+        AP_SAVE(9, 352)
+        AP_SAVE(10, 384)
+        AP_SAVE(11, 416)
+        AP_SAVE(12, 448)
+        AP_SAVE(13, 480)
+        AP_SAVE(14, 512)
+        AP_SAVE(15, 544)
         "    stmxcsr 32(%rsp)\n"
         "    movl $0x1f80, 36(%rsp)\n"
         "    ldmxcsr 36(%rsp)\n"
         "    cld\n"
-        "    vzeroupper\n"
+        AP_VZEROUPPER
         "    call kern_ap_rip\n"
         "    movq %rax, 72(%rbp)\n"   // the return slot: rbp + 8 pushes + pushfq
         "    call kern_ap_yield\n"
         "    ldmxcsr 32(%rsp)\n"
-        "    vmovdqa 64(%rsp), %ymm0\n"
-        "    vmovdqa 96(%rsp), %ymm1\n"
-        "    vmovdqa 128(%rsp), %ymm2\n"
-        "    vmovdqa 160(%rsp), %ymm3\n"
-        "    vmovdqa 192(%rsp), %ymm4\n"
-        "    vmovdqa 224(%rsp), %ymm5\n"
-        "    vmovdqa 256(%rsp), %ymm6\n"
-        "    vmovdqa 288(%rsp), %ymm7\n"
-        "    vmovdqa 320(%rsp), %ymm8\n"
-        "    vmovdqa 352(%rsp), %ymm9\n"
-        "    vmovdqa 384(%rsp), %ymm10\n"
-        "    vmovdqa 416(%rsp), %ymm11\n"
-        "    vmovdqa 448(%rsp), %ymm12\n"
-        "    vmovdqa 480(%rsp), %ymm13\n"
-        "    vmovdqa 512(%rsp), %ymm14\n"
-        "    vmovdqa 544(%rsp), %ymm15\n"
+        AP_LOAD(0, 64)
+        AP_LOAD(1, 96)
+        AP_LOAD(2, 128)
+        AP_LOAD(3, 160)
+        AP_LOAD(4, 192)
+        AP_LOAD(5, 224)
+        AP_LOAD(6, 256)
+        AP_LOAD(7, 288)
+        AP_LOAD(8, 320)
+        AP_LOAD(9, 352)
+        AP_LOAD(10, 384)
+        AP_LOAD(11, 416)
+        AP_LOAD(12, 448)
+        AP_LOAD(13, 480)
+        AP_LOAD(14, 512)
+        AP_LOAD(15, 544)
         "    movq %rbp, %rsp\n"
         "    popq %rbp\n"
         "    popq %r11\n"
@@ -558,47 +572,47 @@ __asm__(".text\n"
         "    movq %rsp, %rbp\n"
         "    andq $-32, %rsp\n"
         "    subq $576, %rsp\n"   // 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15
-        "    vmovdqa %ymm0, 64(%rsp)\n"
-        "    vmovdqa %ymm1, 96(%rsp)\n"
-        "    vmovdqa %ymm2, 128(%rsp)\n"
-        "    vmovdqa %ymm3, 160(%rsp)\n"
-        "    vmovdqa %ymm4, 192(%rsp)\n"
-        "    vmovdqa %ymm5, 224(%rsp)\n"
-        "    vmovdqa %ymm6, 256(%rsp)\n"
-        "    vmovdqa %ymm7, 288(%rsp)\n"
-        "    vmovdqa %ymm8, 320(%rsp)\n"
-        "    vmovdqa %ymm9, 352(%rsp)\n"
-        "    vmovdqa %ymm10, 384(%rsp)\n"
-        "    vmovdqa %ymm11, 416(%rsp)\n"
-        "    vmovdqa %ymm12, 448(%rsp)\n"
-        "    vmovdqa %ymm13, 480(%rsp)\n"
-        "    vmovdqa %ymm14, 512(%rsp)\n"
-        "    vmovdqa %ymm15, 544(%rsp)\n"
+        AP_SAVE(0, 64)
+        AP_SAVE(1, 96)
+        AP_SAVE(2, 128)
+        AP_SAVE(3, 160)
+        AP_SAVE(4, 192)
+        AP_SAVE(5, 224)
+        AP_SAVE(6, 256)
+        AP_SAVE(7, 288)
+        AP_SAVE(8, 320)
+        AP_SAVE(9, 352)
+        AP_SAVE(10, 384)
+        AP_SAVE(11, 416)
+        AP_SAVE(12, 448)
+        AP_SAVE(13, 480)
+        AP_SAVE(14, 512)
+        AP_SAVE(15, 544)
         "    stmxcsr 32(%rsp)\n"
         "    movl $0x1f80, 36(%rsp)\n"
         "    ldmxcsr 36(%rsp)\n"
         "    cld\n"
-        "    vzeroupper\n"
+        AP_VZEROUPPER
         "    call kern_ap_rip\n"
         "    movq %rax, 88(%rbp)\n"   // the return slot: rbp + 10 pushes + pushfq
         "    call kern_ap_yield\n"
         "    ldmxcsr 32(%rsp)\n"
-        "    vmovdqa 64(%rsp), %ymm0\n"
-        "    vmovdqa 96(%rsp), %ymm1\n"
-        "    vmovdqa 128(%rsp), %ymm2\n"
-        "    vmovdqa 160(%rsp), %ymm3\n"
-        "    vmovdqa 192(%rsp), %ymm4\n"
-        "    vmovdqa 224(%rsp), %ymm5\n"
-        "    vmovdqa 256(%rsp), %ymm6\n"
-        "    vmovdqa 288(%rsp), %ymm7\n"
-        "    vmovdqa 320(%rsp), %ymm8\n"
-        "    vmovdqa 352(%rsp), %ymm9\n"
-        "    vmovdqa 384(%rsp), %ymm10\n"
-        "    vmovdqa 416(%rsp), %ymm11\n"
-        "    vmovdqa 448(%rsp), %ymm12\n"
-        "    vmovdqa 480(%rsp), %ymm13\n"
-        "    vmovdqa 512(%rsp), %ymm14\n"
-        "    vmovdqa 544(%rsp), %ymm15\n"
+        AP_LOAD(0, 64)
+        AP_LOAD(1, 96)
+        AP_LOAD(2, 128)
+        AP_LOAD(3, 160)
+        AP_LOAD(4, 192)
+        AP_LOAD(5, 224)
+        AP_LOAD(6, 256)
+        AP_LOAD(7, 288)
+        AP_LOAD(8, 320)
+        AP_LOAD(9, 352)
+        AP_LOAD(10, 384)
+        AP_LOAD(11, 416)
+        AP_LOAD(12, 448)
+        AP_LOAD(13, 480)
+        AP_LOAD(14, 512)
+        AP_LOAD(15, 544)
         "    movq %rbp, %rsp\n"
         "    popq %rbp\n"
         "    popq %r11\n"

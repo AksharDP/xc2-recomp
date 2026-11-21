@@ -95,4 +95,4 @@ The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sti
 
 ## RenderDoc capture (blocked)
 
-`XC2_RDOC=<frame>[,...]` (`runtime/rdoc_win.c`; `XC2_RDOC_DIR`, `XC2_RDOC_DLL`) loads RenderDoc before `vkCreateInstance`. RenderDoc hides `VK_EXT_external_memory_host`, which the back end requires for guest pool imports (`runtime/vk_memory.c`), so device creation fails under it. A capture needs a copy-based pool fallback first.
+`XC2_RDOC=<frame>[,...]` (`runtime/rdoc_win.c`; `XC2_RDOC_DIR`, `XC2_RDOC_DLL`) loads RenderDoc before `vkCreateInstance`. RenderDoc hides `VK_EXT_external_memory_host`, which the back end uses for guest pool imports (`runtime/vk_memory.c`); without it the device choice now falls back to shadow storage (host-visible copies of the pools, `vk_require.h`), which should let a capture start. Not yet tried under RenderDoc.

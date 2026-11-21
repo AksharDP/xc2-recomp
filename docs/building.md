@@ -1,7 +1,8 @@
 # Building from source
 
-Windows 10 or later, an x86-64 CPU with AVX2, and a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`. Allow about
-60 GB for the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB afterwards.
+Windows 10 or later, an x86-64 CPU (with AVX2 for the default build; [Processors without AVX2](#processors-without-avx2)
+otherwise), and a GPU with Vulkan 1.3 ([compatibility.md](compatibility.md) lists the rest). Allow about 60 GB for
+the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB afterwards.
 
 Players who only want to play can use the [installer](installer.md) instead: it builds the game on their machine
 without this toolchain.
@@ -150,6 +151,24 @@ Settings live in `xc2.ini` next to `xc2.exe` ([xc2.ini.example](../xc2.ini.examp
 your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pass `--with-romfs`; otherwise put it in
 `romfs\` next to the exe or point `XC2_ROMFS` at its folder. Run `xc2.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
+
+### Processors without AVX2
+
+`--cpu v2` compiles the lifted code and the runtime for x86-64-v2 (SSE4.2, POPCNT) instead of x86-64-v3, for
+processors without AVX2 (`runtime/cpu_level.h`). Build it in a folder of its own, since the flags differ from the main
+build's and nothing of it is shared:
+
+```powershell
+.venv\Scripts\python tools\build_game.py --version <ver> --cpu v2 --out build\<ver>-v2
+.venv\Scripts\python tools\check_isa.py build\<ver>-v2\xc2.exe
+```
+
+`tools/check_isa.py` disassembles the linked exe and fails on any function with instructions above x86-64-v2, except
+library code that picks them after a CPU check of its own (libvpx, zstd, `runtime/sha256.c`), which it lists apart.
+Every build runs a start-up check first (`runtime/cpu_check.c`): a v3 build on a processor without AVX2 stops with a
+message and exit code 72 instead of an illegal-instruction crash. `--make-runtime-lib --cpu v2` writes
+`libxc2rt-v2.a`, which the installer links on such processors; a library of the other level does not link
+(`rt_cpu_level_v2` / `rt_cpu_level_v3` undefined).
 
 ## Linux
 

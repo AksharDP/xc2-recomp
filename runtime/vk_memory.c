@@ -1591,7 +1591,7 @@ static void wbf_prune(uint64_t done) {
     nwbf = n;
 }
 
-static void mirror_mode(int discrete) {
+static void mirror_mode(int discrete, int host_import) {
     const char *e = cfg_value("XC2_MEMORY");
     const char *sh = cfg_get("XC2_SHADOW");
 #ifdef _WIN32
@@ -1599,6 +1599,12 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
+    // A driver without VK_EXT_external_memory_host cannot import guest pages: shadow storage is then the only way
+    // (vk_require.h makes the extension optional for this). XC2_VK_HIDE_EXT=VK_EXT_external_memory_host tests it.
+    if (!host_import) {
+        if (sh && *sh && !strcmp(sh, "0")) rt_log("mem: XC2_SHADOW=0 ignored: the device cannot import host memory");
+        shadow_on = 1;
+    }
     // 0 import, 1 mirror, 2 verify. Mirror on integrated GPUs too: there the point is not bandwidth but the staged
     // uploads, which let the frame guard go (Iris Xe, first battle: 45 fps with import, 59 with mirror, for 1.3 GiB more
     // system memory). Not with shadow storage (the default off Windows): the guard stays on there (nvn_reads_snapshot),
@@ -1638,7 +1644,7 @@ static void mirror_mode(int discrete) {
         shadow_cap = 0;
     }
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s; "
-                          "%s", sh && *sh ? " (XC2_SHADOW)" : "",
+                          "%s", !host_import ? " (no VK_EXT_external_memory_host)" : sh && *sh ? " (XC2_SHADOW)" : "",
                           shadow_cap ? "the CPU's writes are captured in the submit call (XC2_SHADOW_CAPTURE)"
                                      : "the CPU's writes are copied in before each part");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
@@ -2625,7 +2631,7 @@ static void vram_log(uint64_t frame) {
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
 // heap that is not device-local (host memory) -> discrete; otherwise uma (import everywhere). Sets the mirror mode.
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m) {
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m, int host_import) {
     int big_local = -1, host_heap = -1;
     for (uint32_t h = 0; h < m->memoryHeapCount; h++) {
         if (m->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
@@ -2661,7 +2667,7 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
                               f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? " LAZY" : "");
     }
     rt_log("%s", line);
-    mirror_mode(discrete);
+    mirror_mode(discrete, host_import);
 }
 
 // ---------------------------------------------------------------- upload batches and deferred destruction

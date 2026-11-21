@@ -323,5 +323,93 @@ class EventsTest(unittest.TestCase):
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
 
 
+def gpu(name, api=(1, 4, 0), type_=1, usable=True, missing=(), host_import=True):
+    """A device of the host check's JSON (installer/hostcheck.c); type_ is a VkPhysicalDeviceType."""
+    return {'name': name, 'api': list(api), 'type': type_, 'vendor': 0, 'usable': usable, 'missing': list(missing),
+            'host_import': host_import}
+
+
+def host(cpu_level=3, windows=(10, 0, 26100), arch='x64', loader=True, devices=None):
+    return {'cpu_level': cpu_level, 'x86_64_v3': cpu_level >= 3, 'windows': list(windows), 'native_arch': arch,
+            'loader': loader, 'instance': 0, 'devices': [gpu('Iris Xe')] if devices is None else devices}
+
+
+class HostVerdictTest(unittest.TestCase):
+    """installer/steps.py judge_host on made-up PCs: the game's rules for the processor level (runtime/cpu_level.h),
+    Windows and each GPU (runtime/vk_require.h, vk_device.c pick_device)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from installer import steps
+        cls.steps = steps
+        cls.catalog = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
+
+    def judge(self, h, v2_runtime=True):
+        tag, warnings = self.steps.judge_host(h, v2_runtime)
+        for wid, params in warnings:
+            self.assertIn(wid, self.catalog)
+            self.catalog[wid].format(**params)   # every placeholder of the text is given
+        return tag, [w for w, _ in warnings]
+
+    def refused(self, h, v2_runtime=True):
+        with self.assertRaises(self.steps.InstallError) as cm:
+            self.steps.judge_host(h, v2_runtime)
+        e = cm.exception
+        self.assertIn(e.id, self.catalog)
+        self.catalog[e.id].format(**e.params)
+        return e.id, e.params
+
+    def test_current_pc_builds_v3_without_warnings(self):
+        self.assertEqual(self.judge(host()), ('v3', []))
+
+    def test_processor_without_avx2_builds_v2(self):
+        self.assertEqual(self.judge(host(cpu_level=2)), ('v2', ['warn.cpu_v2']))
+
+    def test_processor_without_avx2_needs_the_v2_runtime(self):
+        self.assertEqual(self.refused(host(cpu_level=2), v2_runtime=False)[0], 'check.cpu_no_avx2')
+
+    def test_processor_below_v2_is_refused(self):
+        self.assertEqual(self.refused(host(cpu_level=1))[0], 'check.cpu_too_old')
+
+    def test_windows_before_10_is_refused_and_10_1507_accepted(self):
+        for old in ((6, 1, 7601), (6, 3, 9600)):
+            self.assertEqual(self.refused(host(windows=old)), ('check.windows_old', {'version': '.'.join(map(str, old))}))
+        self.assertEqual(self.judge(host(windows=(10, 0, 10240)))[0], 'v3')
+
+    def test_windows_on_arm_warns(self):
+        self.assertEqual(self.judge(host(arch='arm64')), ('v3', ['warn.arm64_emulated']))
+
+    def test_no_loader_or_no_device(self):
+        self.assertEqual(self.refused(host(loader=False, devices=[]))[0], 'check.vulkan_missing')
+        self.assertEqual(self.refused(host(devices=[]))[0], 'check.vulkan_no_device')
+
+    def test_vulkan_1_2_only_is_refused_as_too_old(self):
+        h = host(devices=[gpu('GTX 760', api=(1, 2, 175), type_=2, usable=False, missing=['Vulkan 1.3'])])
+        self.assertEqual(self.refused(h), ('check.vulkan_too_old', {'devices': 'GTX 760 (1.2)'}))
+
+    def test_missing_requirements_are_named_per_gpu(self):
+        h = host(devices=[gpu('Old iGPU', usable=False, missing=['VK_EXT_depth_clip_control', 'geometryShader'])])
+        self.assertEqual(self.refused(h), ('check.vulkan_unusable',
+                                           {'devices': 'Old iGPU: VK_EXT_depth_clip_control, geometryShader'}))
+
+    def test_laptop_plays_on_the_usable_gpu(self):
+        h = host(devices=[gpu('dGPU', type_=2, usable=False, missing=['geometryShader']), gpu('iGPU', host_import=False)])
+        self.assertEqual(self.judge(h), ('v3', ['warn.no_host_import']))
+
+    def test_discrete_gpu_is_the_one_judged_for_host_import(self):
+        h = host(devices=[gpu('iGPU', host_import=False), gpu('dGPU', type_=2)])
+        self.assertEqual(self.judge(h), ('v3', []))
+
+    def test_software_renderer_warns(self):
+        h = host(devices=[gpu('llvmpipe', type_=4)])
+        self.assertEqual(self.judge(h), ('v3', ['warn.software_vulkan']))
+
+    def test_older_host_check_output_is_judged_as_before(self):
+        old = {'x86_64_v3': True, 'loader': True, 'instance': 0,
+               'devices': [{'name': 'RX 6600', 'api': [1, 3, 260], 'type': 2}]}
+        self.assertEqual(self.judge(old), ('v3', []))
+        self.assertEqual(self.refused(dict(old, x86_64_v3=False))[0], 'check.cpu_too_old')
+
+
 if __name__ == '__main__':
     unittest.main()

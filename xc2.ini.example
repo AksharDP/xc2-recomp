@@ -70,7 +70,8 @@
 # Game memory shared with the GPU: auto (mirror; import on an integrated GPU with less than 12 GB of system memory,
 # and on Linux, which uses shadow storage), import (host memory imported into Vulkan: about 1.3 GiB less memory,
 # but the frame guard stays on, about 25 % slower on an integrated GPU), mirror (pools used as buffers get a copy the
-# GPU reads, filled at submit time) or verify (mirror plus a check of every copy; slow).
+# GPU reads, filled at submit time) or verify (mirror plus a check of every copy; slow). A GPU whose driver cannot
+# import host memory (no VK_EXT_external_memory_host) always gets shadow storage, as on Linux.
 # memory = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
