@@ -56,6 +56,8 @@ int mods_count(void);
 ModInfo *mods_at(int i);           // 0 = top of the order; NULL out of range
 // 1 when mod i was on and usable at start: its files are served and its patches switched on until the next start.
 int mods_started(int i);
+// 1 when a patch file the build has replaces the port's patch set name (build-cache/exefs.status); no scan needed.
+int mods_status_replaces(const char *name);
 // Menu edits (present path). They change the list mods_at shows and write XC2_MODS_ORDER / XC2_MODS_DISABLED with
 // cfg_set; romfs.c used the start state, so they apply at the next start.
 void mods_set_enabled(int i, int on);

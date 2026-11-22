@@ -405,6 +405,7 @@ static void xc2_steps_store(double seconds) {
 
 void frame_step_present(uint64_t display_ns, int interval) {
     frame_limit_live();
+    res_hud_frame();
     double step = 0, dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
     if ((step_word || xc2_words) && last_ns) {
         if (dt > STEP_RESET_S || dt < 0.001) {
