@@ -284,7 +284,7 @@ static struct {
     VmaAllocation zalloc;
     VkBufferView zview;
     VkSampler samp, samp_shadow;
-    struct { VkImage image; VmaAllocation alloc; VkImageView view, sview; } img[DV_COUNT];
+    struct { VkImage image; VmaAllocation alloc; VkImageView view, sview; } img[DV_COUNT], shadow[DV_COUNT];
 } Z;
 
 static const struct { VkImageType t; VkImageViewType vt; uint32_t layers; VkSampleCountFlagBits s; VkImageCreateFlags f; } dinfo[DV_COUNT] = {
@@ -303,16 +303,19 @@ static const struct { VkImageType t; VkImageViewType vt; uint32_t layers; VkSamp
 static void make_dummy(int i, VkFormat fmt, VkImage *image, VmaAllocation *alloc, VkImageView *view, VkImageView *sview) {
     VkCtx *c = vk_ctx();
     int ms = dinfo[i].s != VK_SAMPLE_COUNT_1_BIT;
+    int depth = fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D16_UNORM;
+    VkImageAspectFlags aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = dinfo[i].f, .imageType = dinfo[i].t,
                             .format = fmt, .extent = {1, 1, 1}, .mipLevels = 1, .arrayLayers = dinfo[i].layers,
                             .samples = dinfo[i].s, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | (ms ? 0 : VK_IMAGE_USAGE_STORAGE_BIT),
+                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | (depth ? VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                                                       : ms ? 0 : VK_IMAGE_USAGE_STORAGE_BIT),
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VmaAllocationCreateInfo ia = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     if (vmaCreateImage(c->vma, &ii, &ia, image, alloc, NULL) != VK_SUCCESS) rt_fatal("vk: stand-in image %d failed", i);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = *image,
                                 .viewType = dinfo[i].vt, .format = fmt,
-                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, dinfo[i].layers}};
+                                .subresourceRange = {aspect, 0, 1, 0, dinfo[i].layers}};
     if (vkCreateImageView(c->device, &vi, NULL, view) != VK_SUCCESS) rt_fatal("vk: stand-in view failed");
     *sview = *view;
     if (!ms && (dinfo[i].vt == VK_IMAGE_VIEW_TYPE_CUBE || dinfo[i].vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)) {
@@ -324,11 +327,43 @@ static void make_dummy(int i, VkFormat fmt, VkImage *image, VmaAllocation *alloc
                                  .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                                  .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                  .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                 .image = *image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, dinfo[i].layers}};
+                                 .image = *image, .subresourceRange = {aspect, 0, 1, 0, dinfo[i].layers}};
     VkCommandBuffer cb = vk_upload_begin();
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &bar};
     vkCmdPipelineBarrier2(cb, &di);
+    if (depth) {
+        VkClearDepthStencilValue zero = {0.0f, 0};
+        vkCmdClearDepthStencilImage(cb, *image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &bar.subresourceRange);
+        bar.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        bar.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bar.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        vkCmdPipelineBarrier2(cb, &di);
+    }
     vk_upload_end();
+}
+
+// Comparison sampling requires a depth-comparison-capable format, including for an unbound descriptor. Create
+// only shapes a shader actually needs: depth images cannot represent a 3D or multisample comparison sampler.
+static VkImageView shadow_dummy(int di) {
+    if (Z.shadow[di].view) return Z.shadow[di].view;
+    if (di == DV_3D || dinfo[di].s != VK_SAMPLE_COUNT_1_BIT)
+        rt_fatal("vk: unsupported shadow stand-in shape %d", di);
+    VkCtx *c = vk_ctx();
+    const VkFormat candidates[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM};
+    for (int j = 0; j < 2; j++) {
+        VkFormatProperties3 f3 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+        VkFormatProperties2 f2 = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, .pNext = &f3};
+        vkGetPhysicalDeviceFormatProperties2(c->phys, candidates[j], &f2);
+        if (!(f3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT)) continue;
+        VkImageFormatProperties ip;
+        if (vkGetPhysicalDeviceImageFormatProperties(c->phys, candidates[j], dinfo[di].t, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, dinfo[di].f, &ip) != VK_SUCCESS) continue;
+        make_dummy(di, candidates[j], &Z.shadow[di].image, &Z.shadow[di].alloc, &Z.shadow[di].view, &Z.shadow[di].sview);
+        return Z.shadow[di].view;
+    }
+    rt_fatal("vk: no depth-comparison stand-in format for shape %d", di);
+    return VK_NULL_HANDLE;
 }
 
 // Storage image stand-ins in the format a shader declares (GfxShaderRes.format: Ryujinx TextureFormat order); Vulkan wants
@@ -397,6 +432,11 @@ void vk_exec_draw_shutdown(void) {
         if (Z.img[i].sview != Z.img[i].view) vkDestroyImageView(c->device, Z.img[i].sview, NULL);
         vkDestroyImageView(c->device, Z.img[i].view, NULL);
         vmaDestroyImage(c->vma, Z.img[i].image, Z.img[i].alloc);
+        if (Z.shadow[i].view) {
+            if (Z.shadow[i].sview != Z.shadow[i].view) vkDestroyImageView(c->device, Z.shadow[i].sview, NULL);
+            vkDestroyImageView(c->device, Z.shadow[i].view, NULL);
+            vmaDestroyImage(c->vma, Z.shadow[i].image, Z.shadow[i].alloc);
+        }
     }
     for (int i = 0; i < 48 && SD[i].used; i++) {
         if (SD[i].sview != SD[i].view) vkDestroyImageView(c->device, SD[i].sview, NULL);
@@ -1727,7 +1767,7 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
     }
     if (!view) {
         int di = dummy_index(res_view_type(r->type), ms);
-        view = storage ? storage_dummy(di, r->format) : Z.img[di].view;
+        view = storage ? storage_dummy(di, r->format) : (r->type & 0x400) ? shadow_dummy(di) : Z.img[di].view;
     }
     if (!samp) samp = r->type & 0x400 ? Z.samp_shadow : Z.samp;
     *out = (VkDescriptorImageInfo){separate || storage ? VK_NULL_HANDLE : samp, view, layout};
