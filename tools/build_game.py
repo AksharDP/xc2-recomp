@@ -115,7 +115,7 @@ GEN_FLAGS = ['-O2', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-lab
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
 # --cpu: the x86-64 level of the generated C and the runtime (runtime/cpu_level.h)
-CPU_LEVELS = {'v3': 3, 'v2': 2}
+CPU_LEVELS = {'v3': 3, 'v2': 2, 'v1': 1}
 CPU = 'v3'   # the level of this build (use_cpu)
 # The start-up check that the processor has the build's level is compiled for any x86-64 processor: the -march after
 # the build's own wins
@@ -139,7 +139,7 @@ def use_cpu(level):
     once as the guest's FMADD does, at a cost of some speed on processors without FMA."""
     global GEN_FLAGS, RT_FLAGS, CPU
     CPU = level
-    march = f'-march=x86-64-v{CPU_LEVELS[level]}'
+    march = '-march=x86-64' if level == 'v1' else f'-march=x86-64-v{CPU_LEVELS[level]}'
     GEN_FLAGS = [march if f.startswith('-march=') else f for f in GEN_FLAGS]
     RT_FLAGS = [march if f.startswith('-march=') else f for f in RT_FLAGS] + [f'-DXC2_CPU_LEVEL={CPU_LEVELS[level]}']
 
@@ -155,10 +155,10 @@ def check_runtime_isa(objects):
     dirs = [d for d in (TOOLCHAIN_BIN, UCRT if WIN else None) if d]
     objdump = next((str(d / n) for d in dirs for n in names if (d / n).is_file()), None) or check_isa.find_objdump(None)
     if not objdump:
-        sys.exit('build_game: --cpu v2 needs llvm-objdump or objdump to check the runtime objects (tools/check_isa.py)')
+        sys.exit(f'build_game: --cpu {CPU} needs llvm-objdump or objdump to check the runtime objects (tools/check_isa.py)')
     objects = [o for o in objects if o.suffix == '.o']
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
-        results = list(pool.map(lambda o: (o, check_isa.scan(objdump, o, 2)[0]), objects))
+        results = list(pool.map(lambda o: (o, check_isa.scan(objdump, o, CPU_LEVELS[CPU])[0]), objects))
     bad = []
     for o, found in results:
         for (fn, _), counts in found.items():
@@ -166,8 +166,27 @@ def check_runtime_isa(objects):
             if above and not check_isa.dispatched(fn):
                 bad.append(f'{below_root(o)}: {fn}: {", ".join(above[:6])}')
     if bad:
-        sys.exit('build_game: instructions above x86-64-v2 in the runtime (tools/check_isa.py):\n  ' + '\n  '.join(bad[:40]))
-    print(f'check_isa: {len(objects)} runtime objects hold nothing above x86-64-v2', flush=True)
+        sys.exit(f'build_game: instructions above x86-64-{CPU} in the runtime (tools/check_isa.py):\n  ' + '\n  '.join(bad[:40]))
+    print(f'check_isa: {len(objects)} runtime objects hold nothing unexpected above x86-64-{CPU}', flush=True)
+
+
+def use_baseline_deps():
+    """The experimental Windows v1 build must not silently use the MSYS2 archives compiled with SSE3."""
+    if not WIN or DEPS or TOOLCHAIN_BIN:
+        sys.exit('build_game: experimental --cpu v1 currently requires the MSYS2 UCRT64 Windows toolchain')
+    libs = ROOT / 'toolchain' / 'baseline' / 'lib'
+    for name in ('libvpx.a', 'libzstd.a'):
+        path = libs / name
+        if not path.is_file():
+            sys.exit(f'build_game: missing {path}; run tools/build_baseline_deps.py first')
+        LINK_LIBS[LINK_LIBS.index(f'-l:{name}')] = cmd_path(path)
+    atomic = UCRT.parent / 'lib' / 'libatomic.a'
+    if not atomic.is_file():
+        sys.exit(f'build_game: missing {atomic}; install the MSYS2 UCRT64 gcc-libs package')
+    # Baseline lowering may call 16-byte atomic helpers instead of emitting CMPXCHG16B.
+    LINK_LIBS.append(cmd_path(atomic))
+    print('build_game: experimental v1: the executable will be audited after linking; '
+          'bundled DLLs and the translator are not cleared by that audit', flush=True)
 
 
 def use_lto(jobs):
@@ -1139,7 +1158,7 @@ def main():
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     ap.add_argument('--cpu', choices=sorted(CPU_LEVELS), default='v3',
                     help='x86-64 level of the build: v3 (default; AVX2, FMA, BMI2) or v2 (SSE4.2, POPCNT; processors '
-                         'without AVX2)')
+                         'without AVX2), or experimental v1 (baseline SSE2; rebuilt dependencies required)')
     ap.add_argument('--no-lto', action='store_true',
                     help='compile the generated C to machine code per file, without ThinLTO at the link (faster links, '
                          'slower game: see use_lto)')
@@ -1154,9 +1173,12 @@ def main():
     ap.add_argument('--allow-stale-translator', action='store_true',
                     help='build although build/xlate does not match the sources (shaders may silently lose features)')
     args = ap.parse_args()
+    if args.cpu == 'v1' and (args.toolchain or args.deps):
+        ap.error('experimental --cpu v1 does not accept --toolchain or --deps')
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
-    out = (args.out or ROOT / 'build' / args.version).resolve()
+    default_out = f'{args.version}-v1' if args.cpu == 'v1' else args.version
+    out = (args.out or ROOT / 'build' / default_out).resolve()
     extracted = ROOT / 'build' / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),
@@ -1208,6 +1230,8 @@ def main():
             sys.exit(f'{tool} not found: install ' + ('MSYS2 UCRT64 clang, lld and ninja' if WIN else 'clang, lld and ninja')
                      + ' (docs/building.md)')
     use_cpu(args.cpu)
+    if args.cpu == 'v1':
+        use_baseline_deps()
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
@@ -1333,6 +1357,10 @@ def main():
         shutil.copy2(dll, exe.parent / dll.name)
     copy_translator(exe.parent)
     copy_fsr3(exe.parent)
+    if CPU == 'v1':
+        # Generated code is LTO bitcode before the link; only the final executable exposes all its instructions.
+        subprocess.run([sys.executable, str(ROOT / 'tools' / 'check_isa.py'), str(exe), '--level', '1',
+                        '--json', str(out / 'isa-audit.json')], check=True)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

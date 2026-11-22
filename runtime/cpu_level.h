@@ -3,7 +3,7 @@
 // XC2_CPU_LEVEL comes from tools/build_game.py --cpu: 3 (-march=x86-64-v3: AVX2, FMA, BMI1/2, F16C, LZCNT, MOVBE; the
 // default) or 2 (-march=x86-64-v2: SSE4.2, SSSE3, POPCNT, CMPXCHG16B, for processors without AVX2, such as Intel before
 // Haswell, Pentium and Celeron models up to 2020, and AMD before Excavator). Both the lifted code and the runtime take
-// it, so one build runs on processors of that level and above.
+// it. Level 1 is the experimental baseline SSE2 source build; its DLLs still need independent validation.
 //
 // cpu_level_host() reads the level from CPUID, the bits the psABI's level definitions list, with the OS saving the YMM
 // state for level 3. The installer's host check (installer/hostcheck.c) includes this header too, so the installer and
@@ -22,8 +22,8 @@
 #ifndef XC2_CPU_LEVEL
 #define XC2_CPU_LEVEL 3
 #endif
-#if XC2_CPU_LEVEL != 2 && XC2_CPU_LEVEL != 3
-#error "XC2_CPU_LEVEL must be 2 or 3"
+#if XC2_CPU_LEVEL != 1 && XC2_CPU_LEVEL != 2 && XC2_CPU_LEVEL != 3
+#error "XC2_CPU_LEVEL must be 1, 2 or 3"
 #endif
 
 #define RT_CPU_MARK_(n) rt_cpu_level_v##n

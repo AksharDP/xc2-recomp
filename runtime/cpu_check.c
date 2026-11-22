@@ -24,9 +24,11 @@ static const char k_message[] =
 #if XC2_CPU_LEVEL == 3
     "This build of XC2 Recomp is compiled for x86-64-v3 processors (AVX2, FMA, BMI2), and this processor lacks them.\n"
     "Run XC2-Setup on this PC with the same install folder: it builds the game for this processor (x86-64-v2).\n";
-#else
+#elif XC2_CPU_LEVEL == 2
     "This build of XC2 Recomp is compiled for x86-64-v2 processors (SSE4.2, POPCNT, CMPXCHG16B), and this processor "
     "lacks them.\nXC2 Recomp needs at least an Intel Core (Nehalem, 2008) or AMD Bulldozer (2011) class processor.\n";
+#else
+    "This experimental build of XC2 Recomp requires baseline x86-64 (SSE2).\n";
 #endif
 
 __attribute__((constructor(101))) static void cpu_check(void) {

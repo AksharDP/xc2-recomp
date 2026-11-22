@@ -99,15 +99,15 @@ audit, not an exhaustive CPUID decoder. Bundled libraries and the shader transla
 
 Local evidence: `build/logs/build-v301-v1-experiment.log`, `build/compat/v1-native-selftest.log`,
 `build/compat/v1-merom-selftest.log`, `build/compat/v1-merom-popcnt-negative.log`, and `build/compat/v1-merom-boot/`.
-The local experiment launcher is `build/compat/build_v1_experiment.py`; it is not a release build option.
+The initial local launcher was `build/compat/build_v1_experiment.py`. The experiment is now reproducible with the
+explicit `tools/build_game.py --cpu v1` source option; it is not an installer support claim.
 
 The level-1 audit found unguarded SSE3 instructions in the original linked MSYS2 libvpx and Zstandard archives,
 including `vp9_adjust_mask` and `ZSTD_buildFSETable`. Those instructions run on Core 2, which has SSE3, so the earlier
 Merom run could not establish the baseline SSE2 ceiling. Merely recompiling game code for baseline is insufficient.
 
 `python tools/build_baseline_deps.py` rebuilds pinned Zstandard 1.5.7 and libvpx 1.16.0 sources for Windows using
-`-march=x86-64`. It writes experimental static archives to `toolchain/baseline/lib`; these are not selected by the
-normal build or distributed in setup. libvpx retains its CPU dispatch and builds only the VP9 decoder. The helper
+`-march=x86-64`. It writes experimental static archives to `toolchain/baseline/lib`; these are selected only by the experimental `--cpu v1` source build, not the default build or setup. libvpx retains its CPU dispatch and builds only the VP9 decoder. The helper
 requires MSYS2 `nasm`, `diffutils` and `perl` as well as the documented compiler toolchain. Sources are checked against
 fixed commit IDs, and old objects are cleaned before building so a prior set of compiler flags cannot leak through.
 
@@ -121,6 +121,28 @@ Evidence: `build/compat/isa-v1.json` (original dependencies), `build/compat/isa-
 `build/logs/build-baseline-deps-helper.log`, `build/logs/build-v301-v1-baseline-deps.log`,
 `build/compat/v1-baseline-deps-selftest.log`, `build/compat/v1-baseline-deps-movie.log`, and
 `build/compat/v1-baseline-deps-merom-movie.log`.
+
+### Reproducible source option
+
+`--cpu v1` now selects `-march=x86-64`, the baseline dependency archives and a distinct level-1 runtime marker.
+The normal build remains v3 and setup still refuses CPUs below v2. The v1 default output is `build/<version>-v1`.
+Missing rebuilt archives or an unsupported toolchain stops the command; it never falls back to the MSYS2 SSE3
+archives. The final executable audit runs automatically and a failure makes the build command fail.
+
+Baseline atomic differential tests initially exposed missing 128-bit atomic helper symbols. The source build now
+links GCC's static `libatomic` fallback; the test harness links it with static winpthread, avoiding a missing DLL
+at startup. The baseline SIMD differential test passed 159,976 cases from 20,000 encodings, with 1,048,640 validity
+encodings checked and no disagreement. The atomic test passed 12,672 cases across 198 tests. Replaying the same harness under Merom completed with
+no invalid-instruction report and produced byte-for-byte identical output records. Three CPU build tests
+cover fail-closed dependency/toolchain selection and a real link failure for a mismatched runtime CPU marker.
+The existing native translator also passed its smoke test under SDE's Merom model, including recovery after invalid
+JSON and valid SPIR-V output; this is one shader, not all translation paths or a baseline SSE2 CPU.
+
+Evidence: `build/logs/build-v301-v1-source-option.log`, `build/logs/simd-baseline-source-option.log`,
+`build/logs/atomic-baseline-source-option.log`, `build/compat/atomic-baseline-merom.json`,
+`build/compat/v1-source-selftest.log`, `build/compat/v1-source-merom-selftest.log`, and
+`build/compat/xlate-merom-current.log`. The source-option build and its automatic executable audit passed; both
+native and Merom self-tests passed afterward.
 
 ### Reviewed dispatch and DLL boundary
 
@@ -153,7 +175,7 @@ maintainer's checkout (game-derived, not in the repository).
 | 32-bit Windows | The current guest layout reserves addresses beyond a 32-bit process's address space. | Cannot run this executable or preserve its direct-address layout. A redesigned memory model would be required; no such implementation exists. |
 | No Vulkan driver (Microsoft Basic Display Adapter; Intel before Skylake; NVIDIA Fermi and older; AMD TeraScale) | The renderer is Vulkan only. | A Direct3D 12 back end, or Mesa's Vulkan-on-Direct3D 12 driver (smaller feature set, untried). |
 | Vulkan below 1.3 (NVIDIA Kepler, GTX 600/700, on its last 470-series driver; AMD GCN 1 to 3 on the legacy driver) | Dynamic rendering, synchronization2 and the 1.3 feature structures are used throughout. | A Vulkan 1.2 path with those as extensions; not started. |
-| Processors below x86-64-v2 (Core 2, AMD K10) | Refused by the current installer and build options. Performance on these processors has not been measured. | An experimental baseline build compiled and passed self-tests; complete dependency and gameplay validation remain open. No installer option is shipped. |
+| Processors below x86-64-v2 (Core 2, AMD K10) | Refused by the current installer and build options. Performance on these processors has not been measured. | An experimental baseline build compiled and passed self-tests; complete dependency and gameplay validation remain open. The experimental Windows source option is `--cpu v1`; no installer option is shipped. |
 | Windows on Arm | x64 code runs only under emulation there; the runtime's platform layer is x64 specific. | A native ARM64 Windows build. |
 | Windows 7, 8, 8.1 | The shipped setup Python and .NET toolchain target newer Windows. No end-to-end validation exists on these OS versions. | Unsupported by this distribution; an older setup runtime and an audit of game and dependency imports would be needed. |
 | Software Vulkan (lavapipe, SwiftShader) | The check warns when a software device satisfies the required features. No gameplay or performance validation exists here. | Measure correctness and performance on a specific implementation before claiming support. |
