@@ -151,6 +151,10 @@ your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pa
 `romfs\` next to the exe or point `XC2_ROMFS` at its folder. Run `xc2.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
+The portable packager includes firmware fonts and RomFS patches when present; neither is required for XC2's
+American/European default-language build. Chinese and Korean text still require the shared fonts. Optional FSR DLLs
+found beside the source executable are included. The folder keeps its own profile; existing saves are not copied.
+
 ## Linux
 
 The runtime builds and runs on x86-64 Linux with a window, input and menu on SDL3 (`*_sdl.c`) in place of the Win32
