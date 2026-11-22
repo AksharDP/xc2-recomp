@@ -1467,16 +1467,18 @@ static int snap_fits(const VkExecTarget *t) {
 
 // The copy path's switches: XC2_FEEDBACK_SNAP (0 off, 1 a copy per run of draws that share one, 2 a copy per draw) and
 // XC2_SNAP_SYNC (narrow unless it is full). vk_exec_snap_mode sets them for the probe.
-// Unset, the copies are on except on NVIDIA GPUs. The probe's feedback part (vk_exec_probe.c) found that the NVIDIA GPU it
-// ran on does not show a draw's own writes in its live reads, so the copies changed nothing the probe could see there,
-// and they cost time. A value other than 0, 1 or 2 counts as unset.
+// Unset, the copies are on, on every GPU. They defaulted off on NVIDIA GPUs, whose probe draw (vk_exec_probe.c) read the
+// target it writes as if the draw had not run, but a live read of a target the draw writes is undefined, and issue 189
+// showed it in the field: the cloud sea and the fog broke on a RTX 4060 after a save and in cutscenes, and with an
+// immediate or mailbox present always, where the probe's small target had fit the tile cache and the game's distance
+// target does not. A value other than 0, 1 or 2 counts as unset.
 static int snap_on = -1, snap_narrow = -1;
 static int snap_setting(void) {
     const char *e = cfg_get("XC2_FEEDBACK_SNAP");
     char *end = NULL;
     long v = e && *e ? strtol(e, &end, 10) : -1;
     if (e && *e && end != e && !*end && v >= 0 && v <= 2) return (int)v;
-    return vk_caps.nvidia ? 0 : 1;
+    return 1;
 }
 static void snap_config(void) {
     if (snap_on < 0) snap_on = snap_setting();

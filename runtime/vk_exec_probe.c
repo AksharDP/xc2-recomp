@@ -418,7 +418,9 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
 // texel. Only pairs whose output changes when the sampled colour changes are compared, so a copy that held the wrong
 // contents would show. The narrow and full sync modes must agree too. The copy-off draw (XC2_FEEDBACK_SNAP=0) is reported, not required:
 // it differs from the reference only where the GPU's live reads see the draw's own writes, which an NVIDIA GPU does not
-// show (the AMD cloud-sea report does), so on NVIDIA this part cannot show that the copy is what makes the match.
+// show here (the AMD cloud-sea report does): this target is small enough that its writes stay in the tile cache, while
+// the game's distance target does not fit, and there the reads did see them (issue 189), so this part cannot show on
+// NVIDIA that the copy is what makes the match.
 
 #define FB_VERTS 6
 #define FB_TEX_TARGET 0x3F000u   // texture slot ids of the feedback target and of the reference's sampled target

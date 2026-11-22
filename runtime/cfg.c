@@ -136,8 +136,8 @@ static const CfgMeta metas[] = {
     {"STG_LAZY", "1", "0|1", RESTART},
     {"TEX_ALIAS", "1", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
     {"ZLIB_NATIVE", "1", "0|1", RESTART}, {"ZLIB_CHECK", "0", "0|1", RESTART},
-    // render fixes. FEEDBACK_SNAP has no fixed default: unset it is 0 on NVIDIA GPUs and 1 elsewhere (vk_exec_draw.c
-    // snap_setting), so its consumer reads cfg_get, not cfg_int.
+    // render fixes. FEEDBACK_SNAP takes 0, 1 or 2 and defaults to 1 when unset (vk_exec_draw.c snap_setting), so its
+    // consumer reads cfg_get, not cfg_int.
     {"LOD_GUARD", "1", "0|1", RESTART}, {"FEEDBACK_SNAP", "", "0|1|2", RESTART}, {"SUBMIT_WAIT", "0", "0|1", RESTART}, {"FRAME_GUARD", "auto", "auto|0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
     {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART},
     {"DESC_TEMPLATE", "1", "0|1", RESTART},
