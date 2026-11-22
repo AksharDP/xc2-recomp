@@ -26,6 +26,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "mods.h"
 #include "platform/platform.h"
 
 #define BASE_W 1920
@@ -102,6 +103,7 @@ static struct {
     int decided;       // 1: an XC2 build (the set xc2res exists), -1: not
     unsigned w, h;     // XC2_OUTPUT_RES
     uint64_t extra;    // bytes added to each of the three
+    uint64_t mod_extra;   // the same when a mod's ExeFS patch replaces xc2res: the largest growth
 } X;
 
 static int xc2_decide(void) {
@@ -122,13 +124,18 @@ static int xc2_decide(void) {
     double mib = (area - 1) * XC2_MIB_PER_AREA;
     X.extra = mib > 0 ? ((uint64_t)mib + 2) & ~1ull : 0;
     X.extra <<= 20;
+    // A mod's ExeFS patch that replaces xc2res (mods.c) sets a frame size of its own, which the port cannot read
+    // before the game runs, as the 21:9 mods do (2580x1080). On a Switch emulator such mods get by with the larger
+    // memory layout the emulator offers; here the graphics memory grows by the most XC2 can address instead (the set
+    // xc2mem). The pool is sized now, before the mods are scanned, so any built patch file that replaces xc2res counts.
+    if (mods_status_replaces("xc2res")) X.mod_extra = ((uint64_t)XC2_EXTRA_MAX_MIB & ~1ull) << 20;
     return 1;
 }
 
 // TotK Recomp grows the texture heap through its HeapDef table; XCX has no such table, and the 1.0.1 mods run at
 // 3840x2160 without a bigger heap. XC2 grows its own heaps (xc2_decide).
 uint64_t res_heap_extra_kib(void) { return 0; }
-uint64_t res_heap_extra_bytes(void) { return xc2_decide() ? X.extra : 0; }
+uint64_t res_heap_extra_bytes(void) { return xc2_decide() ? (X.extra > X.mod_extra ? X.extra : X.mod_extra) : 0; }
 int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
     (void)in, (void)n, (void)out_n;
     *out = NULL;
@@ -217,12 +224,14 @@ void res_hud_frame(void) {
 static int xc2_res_init(void) {
     uint8_t *page = rt_patch_page();
     if (!xc2_decide() || !page) return 0;
-    int set = rt_patch_set("xc2res");
+    int set = rt_patch_set("xc2res"), mem = rt_patch_set("xc2mem");
+    int by_mod = rt_patch_held(set);   // mods.c held it: a mod's patch sets the frame size
+    uint64_t grow = by_mod ? X.mod_extra : X.extra;
     R.ow = X.w, R.oh = X.h;
     // +0x80: the camera viewport the markers are placed with (patches-v301.txt), 1280x720 at 16:9; the camera takes its
     // aspect ratio from it, so another shape keeps the height and widens or narrows
     uint32_t ui_w = (uint32_t)((double)XC2_H * X.w / X.h + 0.5);
-    uint32_t v[6] = {X.w, X.h, (uint32_t)(XC2_PIXEL_HEAP + X.extra), (uint32_t)(XC2_GFX_BLOCK + X.extra), ui_w, XC2_H};
+    uint32_t v[6] = {X.w, X.h, (uint32_t)(XC2_PIXEL_HEAP + grow), (uint32_t)(XC2_GFX_BLOCK + grow), ui_w, XC2_H};
     memcpy(page + 0x70, v, sizeof v);
     float pivot = (float)XC2_H / X.h;   // +0x88: rotated interface panes' pivot back in interface units
     memcpy(page + 0x88, &pivot, sizeof pivot);
@@ -230,7 +239,11 @@ static int xc2_res_init(void) {
     R.xc2 = 1;
     R.on = X.w != XC2_W || X.h != XC2_H;
     rt_patch_switch(set, R.on);
-    if (R.on) rt_log("resolution: %ux%u, graphics heaps %llu MiB larger", X.w, X.h, (unsigned long long)(X.extra >> 20));
+    rt_patch_switch(mem, grow != 0);
+    if (by_mod)
+        rt_log("resolution: a mod's ExeFS patch replaces the port's resolution set; the game composes the size the mod "
+               "gives, graphics heaps %llu MiB larger", (unsigned long long)(grow >> 20));
+    else if (R.on) rt_log("resolution: %ux%u, graphics heaps %llu MiB larger", X.w, X.h, (unsigned long long)(X.extra >> 20));
     else rt_log("resolution: the game's own (%ux%u)", X.w, X.h);
     // XC2_RENDER_SCALE: the set xc2scale fixes lib_nx.ini's scene shares (dynamic 70 to 100 %) at the page's +0x58
     int scale = rt_patch_set("xc2scale");

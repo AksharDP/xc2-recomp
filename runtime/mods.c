@@ -242,6 +242,30 @@ static const char *exefs_status(void) {
     return text;
 }
 
+// 1 when a patch file the build has replaces the port's set name (the status file's fourth column), whether or not
+// its mod is on: memory.c sizes the application pool before the mods are scanned (resolution.c res_heap_extra_bytes).
+int mods_status_replaces(const char *name) {
+    size_t want = strlen(name);
+    for (const char *line = exefs_status(); *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        const char *col = line;
+        for (int tab = 0; tab < 3 && col; tab++) {
+            col = memchr(col, '\t', (size_t)(line + len - col));
+            if (col) col++;
+        }
+        const char *stop = col ? memchr(col, '\t', (size_t)(line + len - col)) : NULL;
+        for (const char *s = col; s && stop && s < stop;) {
+            const char *comma = memchr(s, ',', (size_t)(stop - s));
+            const char *e = comma ? comma : stop;
+            if ((size_t)(e - s) == want && !memcmp(s, name, want)) return 1;
+            s = comma ? comma + 1 : stop;
+        }
+        line = end ? end + 1 : line + len;
+    }
+    return 0;
+}
+
 // The status line of key: its kind, built-in sets and note, NUL-terminated copies; 0 when none.
 static int status_line(const char *key, const char *content, char *kind, char *over, char *note) {
     char want[20];
@@ -451,7 +475,7 @@ void mods_exefs_switch(void) {
         snprintf(over, sizeof over, "%s", m->overrides);
         for (char *s = strtok(over, ","); s; s = strtok(NULL, ",")) {
             int set = rt_patch_set(s);
-            if (set >= 0) rt_patch_switch(set, 0);
+            if (set >= 0) rt_patch_hold(set);   // res_init and the menus switch sets after this: it stays off
             rt_log("mods: %s replaces the port's patch set %s; it stays off", m->name, s);
         }
         rt_log("mods: %s: %d ExeFS patch files on", m->name, m->nsets);

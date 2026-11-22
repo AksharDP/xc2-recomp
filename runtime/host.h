@@ -301,8 +301,10 @@ int rt_patch_set(const char *name);                        // index of a set of 
 int rt_patch_enabled(int set);                             // the set is on (0 for -1)
 void rt_patch_disable(int set);                            // before the guest starts: a set needs another that is off
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code
-                                                           // the next time it runs
-void *rt_patch_page(void);                                 // the page the patched code reads (NULL without the table)
+                                                           // the next time it runs; a held set stays off
+void rt_patch_hold(int set);                               // off for good: a mod's ExeFS patch replaces it (mods.c)
+int rt_patch_held(int set);                                // rt_patch_hold was called for the set
+void *rt_patch_page(void);                                // the page the patched code reads (NULL without the table)
 void frame_step_init(void);                                // after rt_patches_init: the real-time step's first value
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 int frame_rate_paced(void);                                // XC2: the game runs at the frame limit (frame_rate.c)

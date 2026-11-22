@@ -145,6 +145,12 @@ The setup builds code patches into the game, the same way as code cheats. After 
 again. Until you do, the whole mod stays off, because its other files may depend on the patch. The Mods tab tells you
 when this happens.
 
+When a patch changes an instruction the port patches too, the port's patch set that holds it stays off while the mod is
+on (the log says `mods: <mod> replaces the port's patch set <set>; it stays off`), and the port's settings do not turn
+it back on. A patch that replaces the port's resolution set (`xc2res`), as 21:9 mods do by setting a frame size of their
+own, gets the most graphics memory XC2 can address, as the emulators' larger memory layout gives it; the frame size then
+is the mod's, not the port's resolution setting.
+
 The whole mod also stays off when:
 
 - the port cannot apply one of its patch files (the Mods tab says why), or
