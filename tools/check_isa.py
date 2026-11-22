@@ -14,6 +14,8 @@ processor's CPUID, which stops at the first instruction that processor lacks.
     python tools/check_isa.py build/v301-v2/xc2.exe [--level 2] [--objdump PATH] [--json OUT]
 
 Reads the disassembly of GNU objdump or llvm-objdump (AT&T syntax) as it streams. Standard library only.
+Level 1 additionally checks the SSE3, SSSE3, SSE4 and scalar additions listed in ABOVE_BASELINE. This mnemonic-based
+audit is not an exhaustive CPUID decoder or proof that dispatch guards work; combine it with older-CPU execution.
 """
 import argparse
 import bisect
@@ -29,6 +31,19 @@ from pathlib import Path
 # compilers emit it (rep bsf) at any level where bsf gives the same result, and older processors run it as bsf.
 ABOVE_V2 = {'andn', 'bextr', 'blsi', 'blsmsk', 'blsr', 'bzhi', 'shlx', 'shrx', 'sarx', 'rorx', 'pdep', 'pext', 'mulx',
             'lzcnt', 'movbe', 'adcx', 'adox'}
+# Intel SDM volume 1, Instruction Set Summary: SSE3, SSSE3, SSE4.1 and SSE4.2. These are additions to the
+# baseline SSE2 target. GNU/LLVM spell some integer instructions with an operand-size suffix (handled below).
+# https://cdrdv2-public.intel.com/812382/253665-sdm-vol-1.pdf
+ABOVE_BASELINE = set('''addsubpd addsubps haddpd haddps hsubpd hsubps lddqu movddup movshdup movsldup
+    fisttp monitor mwait pabsb pabsw pabsd palignr phaddw phaddd phaddsw phsubw phsubd phsubsw pmaddubsw
+    pmulhrsw pshufb psignb psignw psignd blendpd blendps blendvpd blendvps dppd dpps extractps insertps
+    movntdqa mpsadbw packusdw pblendvb pblendw pcmpeqq pextrb pextrd pextrq pextrw phminposuw pinsrb
+    pinsrd pinsrq pmaxsb pmaxsd pmaxud pmaxuw pminsb pminsd pminud pminuw pmuldq pmulld pmovsxbd
+    pmovsxbq pmovsxbw pmovsxdq pmovsxwd pmovsxwq pmovzxbd pmovzxbq pmovzxbw pmovzxdq pmovzxwd
+    pmovzxwq ptest roundpd roundps roundsd roundss pcmpestri pcmpestrm pcmpistri pcmpistrm pcmpgtq
+    crc32 popcnt cmpxchg16b lahf sahf'''.split())
+# PEXTRW's MMX/SSE2 register form is baseline; its SSE4.1 memory form is not.
+ABOVE_BASELINE.remove('pextrw')
 # In neither level: separate CPUID features a program must check for itself
 OPTIONAL = {'sha1rnds4', 'sha1nexte', 'sha1msg1', 'sha1msg2', 'sha256rnds2', 'sha256msg1', 'sha256msg2', 'aesenc',
             'aesenclast', 'aesdec', 'aesdeclast', 'aesimc', 'aeskeygenassist', 'pclmulqdq', 'rdrand', 'rdseed'}
@@ -108,11 +123,17 @@ def classify(text, level):
     if not words:
         return None
     m = words[0].lower()
-    if m in OPTIONAL:
+    base = m[:-1] if m[-1:] in ('b', 'w', 'l', 'q') else m
+    if m in OPTIONAL or base in OPTIONAL:
         return 'optional'
+    if level == 1:
+        if m in ABOVE_BASELINE or base in ABOVE_BASELINE or m.startswith('fisttp'):
+            return 'above'
+        if m == 'pextrw' and not text.rsplit(',', 1)[-1].strip().startswith('%'):
+            return 'above'
     if level >= 3:   # x86-64-v3 has everything but AVX-512 (zmm and mask registers)
         return 'above' if AVX512_REG.search(text) else None
-    if m in ABOVE_V2 or (m.startswith('v') and m not in NOT_VECTOR) or WIDE_REG.search(text):
+    if m in ABOVE_V2 or base in ABOVE_V2 or (m.startswith('v') and m not in NOT_VECTOR) or WIDE_REG.search(text):
         return 'above'
     return None
 
@@ -150,7 +171,10 @@ def scan(objdump, path, level, link_map=None):
             obj = link_map.object_at(int(m.group(1), 16)) if link_map else None
             found[(func, obj)][(kind, words[0] if words else '?')] += 1
     err = proc.stderr.read()
-    if proc.wait():
+    code = proc.wait()
+    proc.stdout.close()
+    proc.stderr.close()
+    if code:
         sys.exit(f'check_isa: {objdump} failed on {path}: {err.strip()[-400:]}')
     return found, total
 
@@ -158,7 +182,8 @@ def scan(objdump, path, level, link_map=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('files', nargs='+', type=Path)
-    ap.add_argument('--level', type=int, choices=(2, 3), default=2, help='x86-64 level to check against (default 2)')
+    ap.add_argument('--level', type=int, choices=(1, 2, 3), default=2,
+                    help='x86-64 level to check against (1: baseline SSE2; default 2)')
     ap.add_argument('--objdump', help='objdump to use (default: llvm-objdump or objdump on PATH, else MSYS2 UCRT64)')
     ap.add_argument('--json', type=Path, help='also write the findings as JSON')
     ap.add_argument('--map', type=Path, help='lld map of the executable (default: xc2.map beside it when it exists)')

@@ -94,13 +94,34 @@ A 180-second Merom boot run reached Vulkan initialization, asset loading and fra
 invalid-instruction report. The inspected frame-120 screenshot showed a loading indicator, not verified gameplay.
 The harness stopped the process tree at the time limit; this was not a normal game exit. About 3.1 fps was logged
 under SDE, which says nothing about native Core 2 performance. This does not establish support for a physical Core 2,
-AMD K10, or all baseline x86-64 processors. The existing static checker verifies only a v2 ceiling, not a baseline
-ceiling; it must be extended before a baseline build can pass a complete instruction audit. Bundled libraries and
-the shader translator also need validation below v2. The installer still rejects CPUs below v2.
+AMD K10, or all baseline x86-64 processors. The static checker now accepts `--level 1` for known instructions above baseline SSE2, but is a mnemonic-based
+audit, not an exhaustive CPUID decoder. Bundled libraries and the shader translator still need validation below v2. The installer still rejects CPUs below v2.
 
 Local evidence: `build/logs/build-v301-v1-experiment.log`, `build/compat/v1-native-selftest.log`,
 `build/compat/v1-merom-selftest.log`, `build/compat/v1-merom-popcnt-negative.log`, and `build/compat/v1-merom-boot/`.
 The local experiment launcher is `build/compat/build_v1_experiment.py`; it is not a release build option.
+
+The level-1 audit found unguarded SSE3 instructions in the original linked MSYS2 libvpx and Zstandard archives,
+including `vp9_adjust_mask` and `ZSTD_buildFSETable`. Those instructions run on Core 2, which has SSE3, so the earlier
+Merom run could not establish the baseline SSE2 ceiling. Merely recompiling game code for baseline is insufficient.
+
+`python tools/build_baseline_deps.py` rebuilds pinned Zstandard 1.5.7 and libvpx 1.16.0 sources for Windows using
+`-march=x86-64`. It writes experimental static archives to `toolchain/baseline/lib`; these are not selected by the
+normal build or distributed in setup. libvpx retains its CPU dispatch and builds only the VP9 decoder. The helper
+requires MSYS2 `nasm`, `diffutils` and `perl` as well as the documented compiler toolchain. Sources are checked against
+fixed commit IDs, and old objects are cleaned before building so a prior set of compiler flags cannot leak through.
+
+The relinked experimental executable passed the native self-test and movie probe. The movie probe also passed under
+Merom: 420 frames decoded, zero decoder errors, and no invalid-instruction report. This checks one movie and model,
+not full gameplay. Its level-1 scan covered 16,788,081 instructions and found no remaining ordinary SSE3 dependency
+functions. It still failed its gate: eight functions require dispatch review (Zstandard BMI2 fast loops and libvpx
+SSSE3 helpers), and a libstdc++ `random.o` path with RDRAND/RDSEED has no recorded check in the auditor. They must not
+be exempted solely to make the gate pass. No baseline support claim follows from these results.
+
+Evidence: `build/compat/isa-v1.json` (original dependencies), `build/compat/isa-v1-baseline-deps.json`,
+`build/logs/build-baseline-deps-helper.log`, `build/logs/build-v301-v1-baseline-deps.log`,
+`build/compat/v1-baseline-deps-selftest.log`, `build/compat/v1-baseline-deps-movie.log`, and
+`build/compat/v1-baseline-deps-merom-movie.log`.
 
 The SDE runs check `xc2.exe`, `SDL3.dll` and `libopus-0.dll` (`-chip_check_image`), not Windows' own DLLs or the GPU
 driver, which choose their instructions by processor themselves. Evidence files are in `build/compat/` of the
