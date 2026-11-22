@@ -304,9 +304,24 @@ static int create_device(void) {
     dev_exts(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     dev_exts(g_vk.phys, NULL, &ne, ep);
-    const char *ext[28];
+    const char *ext[32];
     uint32_t n_ext = 0;
     for (int i = 0; i < VK_REQUIRE_EXT_COUNT; i++) ext[n_ext++] = vk_require_ext[i];
+    // Exercise the command aliases needed for a future Vulkan 1.2 path on a current driver. API/feature
+    // negotiation still requires 1.3; this switch alone does not make an older driver usable.
+    int extension_dispatch = cfg_bool("XC2_VK_KHR_DISPATCH");
+    if (extension_dispatch) {
+        const char *needed[] = {VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+                                VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME};
+        for (int i = 0; i < 3; i++) {
+            if (!has_ext(ep, ne, needed[i])) {
+                rt_log("vk: XC2_VK_KHR_DISPATCH needs %s", needed[i]);
+                free(ep);
+                return 0;
+            }
+            if (i < 2) ext[n_ext++] = needed[i];   // extended dynamic state is enabled by OPTIONAL_EXT below
+        }
+    }
     // Optional (vk_require.h): without it the CPU-visible pools get shadow storage (vk_memory.c mirror_mode)
     g_vk.has_host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (g_vk.has_host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
@@ -418,6 +433,11 @@ static int create_device(void) {
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
+    if (!vk_api_load(&vk_api, g_vk.device, vkGetDeviceProcAddr, extension_dispatch)) {
+        rt_log("vk: required %s command entry point missing", extension_dispatch ? "KHR/EXT" : "core");
+        return 0;
+    }
+    rt_log("vk: renderer command dispatch: %s", extension_dispatch ? "KHR/EXT aliases" : "Vulkan 1.3 core");
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }

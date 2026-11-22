@@ -168,13 +168,52 @@ The SDE runs check `xc2.exe`, `SDL3.dll` and `libopus-0.dll` (`-chip_check_image
 driver, which choose their instructions by processor themselves. Evidence files are in `build/compat/` of the
 maintainer's checkout (game-derived, not in the repository).
 
+## Extension command path toward Vulkan 1.2
+
+The renderer can resolve six command entry points either by their Vulkan 1.3 core names (default) or by their
+KHR/EXT names (`XC2_VK_KHR_DISPATCH=1`). The latter requires and enables `VK_KHR_dynamic_rendering`,
+`VK_KHR_synchronization2` and `VK_EXT_extended_dynamic_state`. Missing extensions or entry points stop initialization.
+The recorder's final driver calls use the selected table, so both direct and recorded commands take the same path.
+The queue-submission sites use that table too. The resolver's compiled fake-driver test checks both sets of names
+and failure with each entry point missing, including clearing a partially resolved table.
+
+This is a tested part of a prospective lower-version renderer, not Vulkan 1.2 support. Khronos describes these
+commands' promotion and aliasing in its [version guide](https://docs.vulkan.org/guide/latest/versions.html).
+The instance/device checks still require 1.3. Before lowering that requirement, these remaining dependencies must
+be handled:
+
+| Current dependency | Needed lower-version work |
+| --- | --- |
+| Instance requests 1.3; setup checks the same minimum | Negotiate a supported version and apply the same extension/feature checks in setup |
+| Device, capability and pipeline queries use Vulkan13 feature/property structures | Query and enable the individual extension structures on 1.2; preserve optional feature fallbacks |
+| Physical pools call `vkGetDeviceImageMemoryRequirements` | Use maintenance4 when available or create a temporary image and query its requirements |
+| VMA is configured for 1.3 | Pass the actual negotiated version and enable any required allocation extensions |
+| Translator, shader caches and pipeline providers assume the present environment | Validate generated SPIR-V and provider requirements against the lower-version environment |
+
+On the available Iris Xe, the native core and extension paths both passed the window probe: 300 frames, resize,
+exact presentation readback and approximately 60 Hz vsync, with the validation layer loaded and zero validation
+errors. The extension path passed the ASTC probe (14 footprints, linear/sRGB, 1,740,602 texels bit-exact), also with
+zero validation errors. A forced missing dynamic-rendering extension was refused before command dispatch.
+
+Both full census draw probes passed their functional checks without the validation layer. With the layer loaded,
+both reported the same 18 depth-comparison descriptor errors (VUID 06479: RGBA8 images used with comparison samplers)
+and exited 1. These are not clean validation runs. No additional VUID category appeared in the extension path; the
+shared descriptor problem still needs a separate investigation. Initial runs requested validation without a loaded
+layer; their zero error counters are not validation evidence. The successful runs above set `VK_LAYER_PATH` to
+`C:\msys64\ucrt64\bin`, where this machine's MSYS2 layer manifest and DLL reside.
+
+Local evidence: `build/logs/build-v301-khr-dispatch.log`, `build/compat/vk-dispatch-cfg.log`,
+`build/compat/vk-core-window-validation.log`, `build/compat/vk-khr-window-validation.log`,
+`build/compat/vk-khr-astc-validation.log`, `build/compat/vk-khr-missing-extension.log`, and
+`build/compat/vk-{core,khr}-dispatch-validation.log`. No physical Vulkan 1.2 device was tested.
+
 ## Limits that remain
 
 | Barrier | Why | What it would take |
 | --- | --- | --- |
 | 32-bit Windows | The current guest layout reserves addresses beyond a 32-bit process's address space. | Cannot run this executable or preserve its direct-address layout. A redesigned memory model would be required; no such implementation exists. |
 | No Vulkan driver (Microsoft Basic Display Adapter; Intel before Skylake; NVIDIA Fermi and older; AMD TeraScale) | The renderer is Vulkan only. | A Direct3D 12 back end, or Mesa's Vulkan-on-Direct3D 12 driver (smaller feature set, untried). |
-| Vulkan below 1.3 (NVIDIA Kepler, GTX 600/700, on its last 470-series driver; AMD GCN 1 to 3 on the legacy driver) | Dynamic rendering, synchronization2 and the 1.3 feature structures are used throughout. | A Vulkan 1.2 path with those as extensions; not started. |
+| Vulkan below 1.3 (NVIDIA Kepler, GTX 600/700, on its last 470-series driver; AMD GCN 1 to 3 on the legacy driver) | Dynamic rendering, synchronization2 and the 1.3 feature structures are used throughout. | Extension command dispatch is implemented and path-tested on the Iris Xe. Version/feature negotiation, image memory queries, allocation configuration and shader validation still need a 1.2 path; older devices remain refused. |
 | Processors below x86-64-v2 (Core 2, AMD K10) | Refused by the current installer and build options. Performance on these processors has not been measured. | An experimental baseline build compiled and passed self-tests; complete dependency and gameplay validation remain open. The experimental Windows source option is `--cpu v1`; no installer option is shipped. |
 | Windows on Arm | x64 code runs only under emulation there; the runtime's platform layer is x64 specific. | A native ARM64 Windows build. |
 | Windows 7, 8, 8.1 | The shipped setup Python and .NET toolchain target newer Windows. No end-to-end validation exists on these OS versions. | Unsupported by this distribution; an older setup runtime and an audit of game and dependency imports would be needed. |
