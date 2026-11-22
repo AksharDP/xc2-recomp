@@ -150,10 +150,8 @@ site xc2res main 697ab4 sha:6dc6f3c2ab1239d4 @page:x8 b9408508
 # layout library's frame size, and its only callers combine it with interface objects' 1280x720 positions. They
 # are main+0x390000 (a position measured from the right and bottom edges), main+0x4077c8 (an object stretched to
 # the screen and centred on it) and main+0x48e540 (objects placed at the screen's right or bottom edge). The
-# conversions to integers return the page's +0xdc and +0x84 instead: +0xdc is the interface width (+0x80), or 1280
-# while xc2wide centres the 1280-unit design, so an object put at the right edge lands at the design's edge
-# (resolution.c, wide_hud). w0 is the return value and s0 is not read after.
-site xc2res main 697cc8 sha:f85e577a5474b33a @page:x0 b940dc00
+# conversions to integers return the page's +0x80/+0x84 instead; w0 is the return value and s0 is not read after.
+site xc2res main 697cc8 sha:f85e577a5474b33a @page:x0 b9408000
 site xc2res main 697cf4 sha:0696c9531b1e3417 @page:x0 b9408400
 site xc2res main 6c2bd8 sha:2b4fceb6018b7f4f @page:x9 b9408129
 site xc2res main 6c2be8 sha:673c02dc4db9f003 @page:x10 b940854a
