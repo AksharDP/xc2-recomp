@@ -224,6 +224,15 @@ void res_hud_frame(void) {
     memcpy(&seen, hud_page + 0xb4, sizeof seen);
     memcpy(&unit, hud_page + 0x9c, sizeof unit);
     field = seen > 8.0f * unit ? 0.0f : 1.0f;
+    // The title screen draws few full-width pictures but is laid out as a menu: its list, cursor glow and dialogs are
+    // centred under containers that start left of the middle, which the edge shift moved toward the frame's left edge, and
+    // its dialog bands are as thin as the title card. The title's object (title_main.cpp, made once at boot; the
+    // pointer at main+0xc232e8, set by its constructor main+0x14e74c) holds a pointer at +0x1a0 from the time its
+    // screen loads until a game starts (New Game or a loaded save, measured), so while it is set the frame is a menu.
+    uint64_t title = 0, screen = 0;
+    if (plat_mem_read(RT_MAIN_BASE + 0xc232e8, &title, sizeof title) && title &&
+        plat_mem_read(title + 0x1a0, &screen, sizeof screen) && screen)
+        field = 0.0f;
     memcpy(hud_page + 0xb0, &field, sizeof field);
     memset(hud_page + 0xb4, 0, sizeof seen);
     // +0xe4: the least height (the picture matrix's y scale, in units of 1 / frame width) of a full-width picture that
