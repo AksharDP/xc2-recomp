@@ -121,7 +121,8 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
                'xc2_merge_romfs.py',   # the update applied to the game data in place (extract.py, installer Extract)
                'cheats.py', 'exefs_patches.py',   # the mods folder's code cheats and ExeFS patches (installer Lift)
                'xc2_prompts.py',   # the button prompts (installer Prepare)
-               'xc2_languages.py']   # the game languages the game files have text for (installer ini, check, probe)
+               'xc2_languages.py',   # the game languages the game files have text for (installer ini, check, probe)
+               'check_isa.py']   # build_game.py --cpu v2 checks the runtime objects with it (processors without AVX2)
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes, the prompts' icons
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
 
@@ -400,6 +401,14 @@ def runtime_lib(out, llvm):
         env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
     shutil.copy2(build / 'libxc2rt.a', rt / 'libxc2rt.a')
+    # The runtime for processors without AVX2 (build_game.py --cpu v2): the installer builds the game with it there
+    # (installer/steps.py cpu_runtime_lib)
+    build_v2 = build.with_name('rtlib-v2')
+    run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--cpu', 'v2', '--version', VERSION_TAG,
+         '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,
+         '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe', '--out', build_v2],
+        env=clean_env(llvm / 'bin', out / 'bin'))
+    shutil.copy2(build_v2 / 'libxc2rt-v2.a', rt / 'libxc2rt-v2.a')
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
