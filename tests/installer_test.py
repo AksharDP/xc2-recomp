@@ -376,9 +376,14 @@ class HostVerdictTest(unittest.TestCase):
             self.assertEqual(self.refused(host(windows=old)), ('check.windows_old', {'version': '.'.join(map(str, old))}))
         self.assertEqual(self.judge(host(windows=(10, 0, 10240)))[0], 'v3')
 
-    def test_windows_on_arm_needs_native_target(self):
+    def test_windows_on_arm_warns_and_uses_emulated_cpu_level(self):
         for level in (2, 3):
-            self.assertEqual(self.refused(host(arch='arm64', cpu_level=level))[0], 'check.arm64_native')
+            with self.subTest(level=level):
+                tag, warnings = self.judge(host(arch='arm64', cpu_level=level))
+                self.assertEqual(tag, f'v{level}')
+                self.assertIn('warn.arm64_emulated', warnings)
+        self.assertEqual(self.refused(host(arch='arm64', cpu_level=1))[0], 'check.cpu_too_old')
+        self.assertEqual(self.refused(host(arch='arm64', cpu_level=2), v2_runtime=False)[0], 'check.cpu_no_avx2')
 
     def test_no_loader_or_no_device(self):
         self.assertEqual(self.refused(host(loader=False, devices=[]))[0], 'check.vulkan_missing')

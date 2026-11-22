@@ -427,6 +427,19 @@ class LanguageWindowTest(unittest.TestCase):
 
 
 class CatalogTest(unittest.TestCase):
+    def test_compatibility_messages_fall_back_to_english(self):
+        cat = Catalog('ru')
+        self.assertEqual(cat.lang, 'en')
+        for key, params in (('warn.arm64_emulated', {}), ('warn.cpu_v2', {}),
+                            ('warn.no_host_import', {'device': 'fixture GPU'}),
+                            ('check.windows_old', {'version': '6.1'})):
+            with self.subTest(key=key):
+                self.assertEqual(cat(key, **params), Catalog('en')(key, **params))
+                self.assertNotEqual(cat(key, **params), key)
+        # An eventual partial non-English catalog also falls back per key.
+        cat.texts = {}
+        self.assertIn('Windows on Arm', cat('warn.arm64_emulated'))
+
     def test_the_window_is_english_only(self):
         catalogs = sorted(p.stem for p in (ROOT / 'installer' / 'text').glob('*.json'))
         self.assertEqual(catalogs, ['en'])
