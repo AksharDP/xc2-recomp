@@ -187,6 +187,10 @@ static void wide_hud(uint8_t *page) {
                         0.98f * XC2_W / X.w, 0.0f, k, (float)X.w, 0.5f / X.w};
     if (!wide) memset(anchor, 0, sizeof anchor);
     memcpy(page + 0xa4, anchor, sizeof anchor);
+    // +0xdc: the centring in the frame's pixels, (1 + left) / 2 * width, for the viewport and scissor of panes that
+    // clip their children (main+0x8399c0, the Skip Travel map's panel; their projection takes +0x90)
+    float clip = wide ? (float)((1.0 + left) / 2 * X.w) : 0.0f;
+    memcpy(page + 0xdc, &clip, sizeof clip);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;

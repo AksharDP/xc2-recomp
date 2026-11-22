@@ -347,6 +347,20 @@ site xc2wide main 833ca0 sha:fe8af182b35022d5 1e202820 bd40cd50 1e270171 0e311e1
 site xc2wide main 8365fc sha:6d1ca0bde65c0ef2 bd417ac0 @page:x9 bd40a130 bd40cd31 1e2c1012 1f124230 1e302800
 site xc2wide main 836600 sha:fbde52beaf05940f bd4172c2 1e302842
 site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 bd40cd34 1e342821 1e212a41
+# Panes that clip their children (the Skip Travel map's panel) draw them into a viewport of their own. The clip
+# rectangle is in design units, counted from the design's left edge without the centring. main+0x8399c0 turns it into
+# the viewport and the scissor (main+0x701128 sets both): x times the frame's pixels per unit ([x19+0x558]). The
+# children's projection (main+0x833ee8) maps the same rectangle onto that viewport: sx = W / (w * s),
+# ox = sx - 1 - 2 * x / w on the full-frame clip x. The builders' centring passed through that projection lands c pixels
+# right in the viewport (c = (1 + left) / 2 * W), so the map sat c right of its place and was cut by the viewport's
+# right edge. At 32:9 it fell wholly outside, and the panel was empty. Both get the centring:
+# - the viewport's x gets the page's +0xdc, the centring in pixels, as it is scaled (main+0x839ae8). x9 and s5 are free:
+#   x9 was last read at main+0x839ac8, s5 is not used, and the call to main+0x701128 that follows clobbers both.
+# - the projection's x gets +0x90, the centring in design units, where it is loaded (main+0x833fd8). x8 and s3 are free:
+#   x8 is written at main+0x83404c before any read, and s3 at main+0x833fe4.
+# The rectangle itself stays as it is: main+0x839a6c compares it with the pane's to skip unchanged scissors.
+site xc2wide main 839ae8 sha:30bd861f00d67478 1e230803 @page:x9 bd40dd25 1e252863
+site xc2wide main 833fd8 sha:da1ef6542590620d 2d400a81 @page:x8 bd409103 1e232821
 # The builders draw text (main+0x82cbec) and pictures (main+0x82ef1c) of every layout alike, so the markers on the 3D
 # scene (talk and shop icons, field balloons) would move with the rest. The game places them across the camera viewport
 # (page +0x80, wider than 1280 here) from its left edge: main+0x3290e8 copies the viewport to [main+0xb87218] each
