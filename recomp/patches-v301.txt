@@ -150,8 +150,10 @@ site xc2res main 697ab4 sha:6dc6f3c2ab1239d4 @page:x8 b9408508
 # layout library's frame size, and its only callers combine it with interface objects' 1280x720 positions. They
 # are main+0x390000 (a position measured from the right and bottom edges), main+0x4077c8 (an object stretched to
 # the screen and centred on it) and main+0x48e540 (objects placed at the screen's right or bottom edge). The
-# conversions to integers return the page's +0x80/+0x84 instead; w0 is the return value and s0 is not read after.
-site xc2res main 697cc8 sha:f85e577a5474b33a @page:x0 b9408000
+# conversions to integers return the page's +0xdc and +0x84 instead: +0xdc is the interface width (+0x80), or 1280
+# while xc2wide centres the 1280-unit design, so an object put at the right edge lands at the design's edge
+# (resolution.c, wide_hud). w0 is the return value and s0 is not read after.
+site xc2res main 697cc8 sha:f85e577a5474b33a @page:x0 b940dc00
 site xc2res main 697cf4 sha:0696c9531b1e3417 @page:x0 b9408400
 site xc2res main 6c2bd8 sha:2b4fceb6018b7f4f @page:x9 b9408129
 site xc2res main 6c2be8 sha:673c02dc4db9f003 @page:x10 b940854a
@@ -280,7 +282,10 @@ site xc2wide main 82efd8 sha:76d1fad955ec734f 1f120c63 bd000c03
 # clear +0xcc again after their own pieces (main+0x82adec, main+0x831984, and main+0x82a0c0 for a root without a
 # parent). So the minimap, clock, area name, Blade Switch, party list, blades and arts move whole, and the compass and
 # the middle of the screen stay. min, max and the sign are fmin, fmax and bit selects, so no site writes flags; x10-x13
-# and s16-s21 are unused in the three functions.
+# and s16-s21 are unused in the three functions. A layout's root is drawn by main+0x832704, which builds its children's
+# context at sp+0x20 without setting +0x51..+0x53; main+0x832740 clears them, so a root's children never read a stale
+# tag. The layouts the game places on the 3D scene (field balloons, talk and shop markers) are drawn the same way and
+# sit under full-screen containers that decide a shift, so they are exempted below.
 site xc2wide main 82ad24 sha:b9f68517ef10f1c7 aa0803e1 @page:x10 3941468b 5102956b 4b0b03ec 2a0c016b 131f7d6b bd4033f2
 site xc2wide main 82ad28 sha:c601cb9d0110aa7d 2d419d24 1e20c253 bd40c955 7e35e673 1e270175 0e731eb5 1e2c1011 bd402bf4
 site xc2wide main 82ad2c sha:45f7e90632d67c92 1e270800 1f115251 bd40d550 1e300a31 bd40b950 1e303a31 1e20c232 bd40bd50
@@ -304,6 +309,33 @@ site xc2wide main 833c94 sha:88631bb5a0251c07 2d418920 0eb01e52 bd40d150 1e300a5
 site xc2wide main 833c98 sha:bb14bb37eea13aa5 1e220821 528014ad 0a0c01ad 1e38024c
 site xc2wide main 833d44 sha:c161fbbf6672e031 390143e9 390147ed 7900a7ec
 site xc2wide main 82a0c0 sha:5c999edc6fe8d528 f9400268 @page:x10 b900cd5f
+site xc2wide main 832740 sha:f63edfc5a4890376 79418676 3901c7ff 7900e7ff
+# Objects on the 3D scene. The game's screen objects carry their layout's pane at +0xd0 and are placed by
+# main+0x690ffc(object, position) (x0 the object holder, the screen object at its +8). Two callers place what belongs
+# to the scene: main+0x68610c puts a field balloon or marker (talk, shop) at its speaker's or object's screen position
+# (main+0x686310), and main+0x685b84 slides a balloon's tail toward its speaker within the box (main+0x685c8c). Both
+# have checked the screen object before (main+0x690e44). Before those calls the sites write 0xa5 to the placed pane's
+# +0xac, a byte the game zeroes when it builds a pane (main+0x82e7f8 and three like it) and never reads; a null pane
+# gets a dummy address below the stack instead. Other placers were tried and left out: marking every call of the
+# setter (main+0x690390) or every caller in main+0x680000..0x688000 also froze pieces of the minimap, and
+# main+0x686824, which copies one object's place onto another, also reaches what look like the battle party gauges.
+# After each pane draw has stored its shift (the sites above), main+0x82ad3c, main+0x8318d0 and main+0x833c9c clear
+# +0xcc for a pane carrying that byte, and a container carrying it also passes its children shift 0 under the tag
+# (w12, stored at main+0x833d44), so the whole object stays where the game put it. The full-screen containers these objects live in still decide a shift, which reaches their other
+# children. The byte test is (b - 0xa5)^2 negated and shifted right arithmetically, -1 unless b is 0xa5, so no flags
+# are written. The marking sites use registers free before the call (x9-x11 at main+0x686308; x10-x12 at
+# main+0x685c7c, where w8 and w9 carry the new position): they carry no argument and the called function overwrites
+# them.
+site xc2wide main 686308 sha:36675614a6124935 910043e1 f9400669 f9406929 d10403ea cb0903eb aa09016b 937ffd6b 8a0b0129
+site xc2wide main 68630c sha:16e368dea7dce66d aa1303e0 8a2b014a aa0a0129 528014aa 3902b12a
+site xc2wide main 685c7c sha:0bc247562b5cccc7 910033e1 f940066a f940694a d10403eb cb0a03ec aa0a018c 937ffd8c 8a0c014a
+site xc2wide main 685c80 sha:c5275a9b455621e5 aa1303e0 8a2c016b aa0b014a 528014ab 3902b14b
+site xc2wide main 82ad3c sha:6757f27df3157d0b 2d418920 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b bd40cd50
+site xc2wide main 82ad40 sha:43813573d73ff1e2 1e220821 1e270171 0e311e10 bd00cd50
+site xc2wide main 8318d0 sha:0dfd5dd85183e2d6 1e210842 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b bd40cd50
+site xc2wide main 8318d4 sha:72e5c312ed8f14e0 1e210861 1e270171 0e311e10 bd00cd50
+site xc2wide main 833c9c sha:b63f376f6d4a84b1 1e2008a0 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b 0a0b018c
+site xc2wide main 833ca0 sha:fe8af182b35022d5 1e202820 bd40cd50 1e270171 0e311e10 bd00cd50
 # Panes drawn through a capture (the minimap: its map and icons are rendered into a texture and drawn back in its
 # frame): main+0x83656c takes the pane's screen bounds from main+0x82aa7c, which count from the left edge without the
 # centring, turns them into the capture's region and projection (main+0x8365ec on), renders the children, which the
@@ -324,25 +356,20 @@ site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 bd40cd34 1e34282
 # x = (ndc + 1) * viewport width / 2 from it, which under the centred interface lies (viewport - 1280) / 2 units right
 # of the object. That distance, the page's +0x90, is subtracted where the two callers that place markers take the x:
 # main+0x33d50c (both conversions; main+0x33d5ec, after its checks for an unset or infinite point, before it rounds the
-# x) and main+0x347ae4 (main+0x571044; main+0x347af4, where it loads the point). In the field the group sites above
-# then move a marker by the edge shift, so each caller also takes the inverse off the x it stores: the same shape about
-# the middle (+0xb8) and from the start (+0xbc), with the slope m / (1 + m) (+0xc0) and the limit (+0xc4), times the
-# field flag, so that the marker plus its group's shift lands on its object. main+0x33d658..+0x33d660 do it on the
-# marker's left edge (the rounded x less half the marker's width, before it is stored at [sp]), main+0x347afc and
-# +0x347b00 after the marker's own offset is added. Both are needed: the shop names come through main+0x347ae4 and the
-# talk icons and other markers through main+0x33d50c, and without either the ones near the sides jump to the frame's
-# edges. The conversions themselves stay as they are: their other callers (main+0x65060, main+0x6a570) use differences
-# of two points, and shifting main+0x571044 itself hid the minimap. At main+0x33d5ec x9 and s2 are free (x9 is written
-# next, s2 is unused in the function's tail); at main+0x33d658 x10 and s0-s6 (x10's last read is at main+0x33d64c, and
-# the call at main+0x33d66c follows with no float read before it); at main+0x347af4 and on x10 and s3-s7 (x10 is
-# written before any read, s3-s7 are unused after it, and s2 is kept for main+0x347b08).
+# x) and main+0x347ae4 (main+0x571044; main+0x347af4, where it loads the point). The conversions themselves stay as
+# they are: their other callers (main+0x65060, main+0x6a570) use differences of two points, and shifting
+# main+0x571044 itself hid the minimap. At main+0x33d5ec x9 and s2 are free (x9 is written next, s2 is unused in the
+# function's tail); at main+0x347af4 x10 and s3 (x10 is written before any read, s3 is unused after it).
 site xc2wide main 33d5ec sha:ff0840a900c975f7 @page:x9 bd409122 1e223800 1e380015
-site xc2wide main 33d658 sha:d26b68508d4382f9 4b4906a9 1e220120 @page:x10 2d570d42 1e223804 1e20c085 1e2338a5 2f00e406
-site xc2wide main 33d65c sha:ce19fac8801f5c59 4b4806c8 1e2648a5 2d580d42 1e2208a5 1e2358a5 0f046406 2ea61c85 bd40b142
-site xc2wide main 33d660 sha:03f750895d167dca 910003e0 1e2208a5 1e253800 1e380009
 site xc2wide main 347af4 sha:c9dd16f47f6ed74a 2d400be1 @page:x10 bd409143 1e233821
-site xc2wide main 347afc sha:45ef53093d01ee42 1e202820 2d571143 1e233805 1e20c0a6 1e2438c6 2f00e407 1e2748c6 2d581143
-site xc2wide main 347b00 sha:2e301a1c81e22095 1e220101 1e2308c6 1e2458c6 0f046407 2ea71ca6 bd40b143 1e2308c6 1e263800
+# A field balloon's box (main+0x68610c) is built around its speaker's marker position, which the sites above have put
+# in the centred design's units, and the clamp that keeps it on screen (main+0x697a54, xc2res above) measures from the
+# viewport's left edge across the interface width (+0x80): the two disagree by the centring, so the box was clamped
+# where it was on screen and moved off its speaker. The rectangle's x (sp+8) gets the centring (+0x90, whole units)
+# added before the call (main+0x6862c0) and taken off again after it (main+0x6862c8). x9-x11 and s0 are free on both
+# sides: the call clobbers them, and after it w10 and w9 are written before they are read and x11 and s0 are not read.
+site xc2wide main 6862c0 sha:fb5c588cf819dc82 910023e0 @page:x9 bd409120 1e38000a 794013eb 0b0a016b 790013eb
+site xc2wide main 6862c8 sha:3ede046bc3887487 12000001 @page:x9 bd409120 1e38000a 794013eb 4b0a016b 790013eb
 
 # xc2scale (XC2_RENDER_SCALE, resolution.c): the share of the frame the 3D scene draws in. XC2 takes it from
 # /monolib/shader/lib_nx.ini, parsed by main+0x716e68: red_sclX/Y (1.0, +0x1928/+0x192c of the shader settings) and

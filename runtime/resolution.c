@@ -178,9 +178,9 @@ static void wide_hud(uint8_t *page) {
     // field group at 252 stay, and the active blade's name (283), the party list and Blade Switch move whole. The
     // group sites work in interface units (+0xb8 the middle, +0xbc the start, +0xa8 the slope, +0xc4 the limit); +0xa4
     // and +0xac are the start and the limit in clip units. +0xb0 is 1 in the field and 0 in menus (res_hud_frame),
-    // +0xb4 counts the frame's full-width pictures. The marker callers place markers by the inverse: the same shape
-    // with the slope m / (1 + m) (+0xc0). +0xcc is the current group's shift in clip units, written by the pane draws
-    // for their builders, and +0xd0 the clip units per interface unit (k), to convert it.
+    // +0xb4 counts the frame's full-width pictures. +0xc0 (m / (1 + m), the shift's inverse slope) is not read at
+    // present. +0xcc is the current group's shift in clip units, written by the pane draws for their builders, and
+    // +0xd0 the clip units per interface unit (k), to convert it.
     float h = -left, s_max = 1.0f - h, k = h / (XC2_W / 2.0f);
     float start = 202.25f, mid = 588.25f, m = s_max / k / 28.0f;
     float anchor[14] = {start * k, m, s_max, 1.0f, 0.0f, mid, start, m / (1.0f + m), s_max / k,
@@ -190,6 +190,12 @@ static void wide_hud(uint8_t *page) {
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;
+    // the centred interface is the 1280-unit design: its screen for the size reader is 1280 wide, so an object the
+    // game puts at the right edge lands at the design's edge
+    if (on) {
+        uint32_t design_w = XC2_W;
+        memcpy(page + 0xdc, &design_w, sizeof design_w);
+    }
     if (on) rt_log("resolution: interface centred in the %ux%u frame, field HUD at its edges (XC2_HUD_CENTER=1)", X.w, X.h);
     else if (wide) rt_log("resolution: interface at the left of the %ux%u frame, as the game places it", X.w, X.h);
 }
@@ -219,6 +225,9 @@ static int xc2_res_init(void) {
     memcpy(page + 0x70, v, sizeof v);
     float pivot = (float)XC2_H / X.h;   // +0x88: rotated interface panes' pivot back in interface units
     memcpy(page + 0x88, &pivot, sizeof pivot);
+    // +0xdc: the screen width the game's integer size reader reports (objects placed at the right edge;
+    // patches-v301.txt), the interface width; wide_hud sets 1280 while it centres the design
+    memcpy(page + 0xdc, &ui_w, sizeof ui_w);
     wide_hud(page);
     R.xc2 = 1;
     R.on = X.w != XC2_W || X.h != XC2_H;
