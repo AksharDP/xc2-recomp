@@ -16,6 +16,13 @@
 #include "vk.h"
 #include "platform/platform.h"
 
+// Other files reach these through the recorder macros. Only the final driver calls select core/KHR/EXT names.
+#define vkCmdBeginRendering vk_api.BeginRendering
+#define vkCmdEndRendering vk_api.EndRendering
+#define vkCmdPipelineBarrier2 vk_api.PipelineBarrier2
+#define vkCmdWriteTimestamp2 vk_api.WriteTimestamp2
+#define vkCmdBindVertexBuffers2 vk_api.BindVertexBuffers2
+
 #define RING_WORDS (1u << 21)   // 16 MiB: a part of a submission is ~1-2 MiB of packets in the town
 static uint64_t ring[RING_WORDS];
 static volatile uint64_t head, tail;   // words published by the producer / consumed by the recorder
