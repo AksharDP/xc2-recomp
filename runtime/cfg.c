@@ -100,7 +100,7 @@ static const CfgMeta metas[] = {
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
     {"OUTPUT_RES", "1280x720", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100", RESTART},
-    {"HUD_CENTER", "0", "0|1", RESTART},
+    {"HUD_CENTER", "1", "0|1", RESTART},
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"PICTURE_FIT", "keep", "keep|stretch", LIVE}, {"FSR3", "0", "0|1", LIVE},
     {"FSR_VERSION", "auto", "auto|4|3", LIVE}, {"FRAME_GEN", "0", "0|1", LIVE},

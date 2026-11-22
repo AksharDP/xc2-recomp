@@ -154,7 +154,7 @@ void res_heapdef_served(void) {}
 // height and holds its left edge on the screen's, so the interface filled a 16:9 region at the left. +0x8c is the left
 // edge in clip space for the design centred instead, -1280 * fit / width (-1 at 16:9); the values after it place the
 // markers, stretch full-screen layers, keep captured panes (the minimap) in place and move the field HUD to the frame's
-// edges (patches-v301.txt). XC2_HUD_CENTER is off by default. At 16:9 and narrower shapes the set stays off: the fit is
+// edges (patches-v301.txt). XC2_HUD_CENTER is on by default. At 16:9 and narrower shapes the set stays off: the fit is
 // by width there and the left edge is already the screen's.
 static uint8_t *hud_page;   // set while xc2wide is on
 
@@ -183,7 +183,7 @@ static void wide_hud(uint8_t *page) {
     // centre, and only when it is narrower than 98 % of the design (+0xc8, tested on the matrix's a). A pane's global
     // matrix (tx, ty, a, ...) is in units of the frame's width in pixels (+0xd4) per interface unit, a counting from the
     // rectangle's 0..1, so a pane's centre lies (tx + a / 2) * width interface units from the design's left edge and a
-    // container (a = 1, no size) at tx * width; a container within half an interface unit of the left edge (+0xd8)
+    // container (a = 1, no size) at tx * width; a container within 4 interface units of the left edge (+0xd8)
     // does not move. The move is shift(u) = sign(u) * min(s_max, max(0, |u| - a) * m) with u measured from 588.25
     // (+0xb8) and a = 202.25: a group starts to move 254 interface units left of 640 and 150.5 right of it, and moves
     // by the full distance from the design's edge to the frame's (s_max) 28 units further out. The thresholds come from
@@ -198,7 +198,7 @@ static void wide_hud(uint8_t *page) {
     float h = -left, s_max = 1.0f - h, k = h / (XC2_W / 2.0f);
     float start = 202.25f, mid = 588.25f, m = s_max / k / 28.0f;
     float anchor[14] = {start * k, m, s_max, 1.0f, 0.0f, mid, start, m / (1.0f + m), s_max / k,
-                        0.98f * XC2_W / X.w, 0.0f, k, (float)X.w, 0.5f / X.w};
+                        0.98f * XC2_W / X.w, 0.0f, k, (float)X.w, 4.0f / X.w};
     if (!wide) memset(anchor, 0, sizeof anchor);
     memcpy(page + 0xa4, anchor, sizeof anchor);
     // +0xdc: the centring in the frame's pixels, (1 + left) / 2 * width, for the viewport and scissor of panes that
@@ -207,7 +207,7 @@ static void wide_hud(uint8_t *page) {
     memcpy(page + 0xdc, &clip, sizeof clip);
     // +0xe0: written by the minimap capture's region site (main+0x8365fc), the capture pane's group shift kept for its
     // draw-back (main+0x8367a0), since the children's draws rewrite +0xcc in between
-    memset(page + 0xe0, 0, 4);
+    memset(page + 0xe0, 0, 8);   // and +0xe4, the thin-picture threshold res_hud_frame sets each frame
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;
@@ -226,6 +226,12 @@ void res_hud_frame(void) {
     field = seen > 8.0f * unit ? 0.0f : 1.0f;
     memcpy(hud_page + 0xb0, &field, sizeof field);
     memset(hud_page + 0xb4, 0, sizeof seen);
+    // +0xe4: the least height (the picture matrix's y scale, in units of 1 / frame width) of a full-width picture that
+    // is stretched across the frame. In menus every one is (their header bars are 0.06 at 3840 wide); in the field and
+    // in cutscenes only the full-height layers (fades, 0.33 and up at 3840 wide) are, so a thin picture as wide as the
+    // design, such as the opening's "Xenoblade Chronicles 2" title card (0.067), keeps its shape
+    float thin = field ? 384.0f / X.w : 0.0f;
+    memcpy(hud_page + 0xe4, &thin, sizeof thin);
 }
 
 // A mod's ExeFS patch that holds xc2size off writes the graphics device's size getters (main+0x6e3fc8 width,
