@@ -54,7 +54,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in; the game's own is 1280 x 720. Above it the game needs "
-                                "more video memory and GPU time. The 21:9 and 32:9 sizes show more of the world at the "
+                                "more video memory and GPU time. A size beyond the game's graphics memory is drawn "
+                                "smaller at the same shape (3840 x 1600 as 3536 x 1472, 5120 x 1440 as 4304 x 1210) "
+                                "and scaled to the window. The 21:9 and 32:9 sizes show more of the world at the "
                                 "sides; the interface stays in a 16:9 area at the left unless hud_center = 1 in "
                                 "xc2.ini fits it to the frame.",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
