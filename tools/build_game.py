@@ -135,8 +135,8 @@ else:
 
 def use_cpu(level):
     """-march=x86-64-v<level> for the generated C and the runtime, and XC2_CPU_LEVEL for runtime/cpu_level.h. Level 2
-    keeps the lifted code free of AVX: its FP fused multiply-adds become calls to the C library's fma, which rounds
-    once as the guest's FMADD does, at a cost of some speed on processors without FMA."""
+    keeps the lifted code free of AVX: its FP fused multiply-adds call runtime/fma.c, whose software implementation
+    rounds once and honors the guest's FTZ/DAZ state. The C library's fallback disagrees on some operands."""
     global GEN_FLAGS, RT_FLAGS, CPU
     CPU = level
     march = f'-march=x86-64-v{CPU_LEVELS[level]}'
