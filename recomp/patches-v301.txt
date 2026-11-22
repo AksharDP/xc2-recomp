@@ -343,10 +343,12 @@ site xc2wide main 833ca0 sha:fe8af182b35022d5 1e202820 bd40cd50 1e270171 0e311e1
 # centring in the bounds' units ((1 + left) / 2), to the region's two x bounds as this function loads them (x9 and s16
 # are free: x9 is written before its next read, s16 before its next read after a call); the third takes the draw-back's
 # -1 (s1, the constant loaded at main+0x8366b8) from the page's +0x8c. The bounds themselves stay as they are: they also
-# decide which panes are culled, and shifting them there hid the minimap.
-site xc2wide main 8365fc sha:6d1ca0bde65c0ef2 bd417ac0 @page:x9 bd40a130 bd40cd31 1e2c1012 1f124230 1e302800
+# decide which panes are culled, and shifting them there hid the minimap. The region and the draw-back also take the
+# capture pane's group shift (+0xcc, half of it in the bounds' units). The children's draws rewrite +0xcc before the
+# draw-back, so the first site keeps the pane's value at +0xe0 and the draw-back reads it from there.
+site xc2wide main 8365fc sha:6d1ca0bde65c0ef2 bd417ac0 @page:x9 bd40a130 bd40cd31 bd00e131 1e2c1012 1f124230 1e302800
 site xc2wide main 836600 sha:fbde52beaf05940f bd4172c2 1e302842
-site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 bd40cd34 1e342821 1e212a41
+site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 bd40e134 1e342821 1e212a41
 # Panes that clip their children (the Skip Travel map's panel) draw them into a viewport of their own. The clip
 # rectangle is in design units, counted from the design's left edge without the centring. main+0x8399c0 turns it into
 # the viewport and the scissor (main+0x701128 sets both): x times the frame's pixels per unit ([x19+0x558]). The

@@ -191,6 +191,9 @@ static void wide_hud(uint8_t *page) {
     // clip their children (main+0x8399c0, the Skip Travel map's panel; their projection takes +0x90)
     float clip = wide ? (float)((1.0 + left) / 2 * X.w) : 0.0f;
     memcpy(page + 0xdc, &clip, sizeof clip);
+    // +0xe0: written by the minimap capture's region site (main+0x8365fc), the capture pane's group shift kept for its
+    // draw-back (main+0x8367a0), since the children's draws rewrite +0xcc in between
+    memset(page + 0xe0, 0, 4);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;
