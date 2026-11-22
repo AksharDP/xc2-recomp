@@ -25,6 +25,8 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "cpu.h"
+#include "dispatch.h"
 #include "host.h"
 #include "mods.h"
 #include "platform/platform.h"
@@ -41,7 +43,6 @@ static struct {
     int on;            // res_init wrote the table
     int scale;         // XC2_RENDER_SCALE in percent, 0 for the game's own
     int xc2;           // XC2's patch sets (xc2_res_init): ow x oh is the size it composes, on or not
-    int by_mod;        // a mod's ExeFS patch replaces xc2res: the size is the presented frame's (res_frame_presented)
 } R;
 
 static int parse(const char *s, unsigned *w, unsigned *h) {
@@ -87,8 +88,9 @@ static void scene_scale(void) {
     rt_patch_switch(full, R.scale == 100);
 }
 
-// XC2 (recomp/patches-v301.txt, set xc2res): the game composes 1280x720 in both modes. Its graphics device's size
-// getters and the window texture setup read the patch page's +0x70 (width) and +0x74 (height) instead. The render
+// XC2 (recomp/patches-v301.txt, sets xc2size, xc2mem and xc2res): the game composes 1280x720 in both modes. Its graphics
+// device's size getters and the window texture setup read the patch page's +0x70 (width) and +0x74 (height) instead
+// (xc2size); xc2res fits the interface and the markers to that frame. The render
 // targets come from the graphics heap GLIBPXL (+0x78, 362 MiB at 1280x720), inside the game's 512 MiB graphics block
 // (+0x7c), inside the application pool (memory.c): all three grow by the same amount. 2560x1440 runs through the first
 // battle and Goldmouth with 650 MiB more and aborts at boot with 578 (its first 1 MiB from GLIBPXL, main+0x701388), so
@@ -102,10 +104,16 @@ static void scene_scale(void) {
 
 static struct {
     int decided;       // 1: an XC2 build (the set xc2res exists), -1: not
-    unsigned w, h;     // XC2_OUTPUT_RES
+    unsigned w, h;     // XC2_OUTPUT_RES, or the size a mod's patch gives (xc2_res_init)
     uint64_t extra;    // bytes added to each of the three
-    uint64_t mod_extra;   // the same when a mod's ExeFS patch replaces xc2res: the largest growth
+    uint64_t mod_extra;   // the pool's growth when a mod's ExeFS patch may replace xc2size: the largest
 } X;
+
+// The growth of the graphics heaps for a frame of area times 1280x720, in 2 MiB steps; 0 at or below 1280x720.
+static uint64_t extra_for(double area) {
+    double mib = (area - 1) * XC2_MIB_PER_AREA;
+    return mib > 0 ? (((uint64_t)mib + 2) & ~1ull) << 20 : 0;
+}
 
 static int xc2_decide(void) {
     if (X.decided) return X.decided > 0;
@@ -122,14 +130,12 @@ static int xc2_decide(void) {
         w = fw, h = fh, area = (double)(w & ~1u) * (h & ~1u) / (XC2_W * XC2_H);
     }
     X.w = w & ~1u, X.h = h & ~1u;
-    double mib = (area - 1) * XC2_MIB_PER_AREA;
-    X.extra = mib > 0 ? ((uint64_t)mib + 2) & ~1ull : 0;
-    X.extra <<= 20;
-    // A mod's ExeFS patch that replaces xc2res (mods.c) sets a frame size of its own, which the port cannot read
-    // before the game runs, as the 21:9 mods do (2580x1080). On a Switch emulator such mods get by with the larger
-    // memory layout the emulator offers; here the graphics memory grows by the most XC2 can address instead (the set
-    // xc2mem). The pool is sized now, before the mods are scanned, so any built patch file that replaces xc2res counts.
-    if (mods_status_replaces("xc2res")) X.mod_extra = ((uint64_t)XC2_EXTRA_MAX_MIB & ~1ull) << 20;
+    X.extra = extra_for(area);
+    // A mod's ExeFS patch that replaces xc2size (mods.c) sets a frame size of its own, as the 21:9 mods do (2580x1080);
+    // on a Switch emulator they get by with the larger memory layout the emulator offers. xc2_res_init reads that size
+    // once the sets are switched, but the application pool is sized now, before the mods are scanned and the patches
+    // switched: any built patch file that replaces xc2size makes room for the most XC2 can address.
+    if (mods_status_replaces("xc2size")) X.mod_extra = ((uint64_t)XC2_EXTRA_MAX_MIB & ~1ull) << 20;
     return 1;
 }
 
@@ -155,8 +161,7 @@ static uint8_t *hud_page;   // set while xc2wide is on
 static void wide_hud(uint8_t *page) {
     int set = rt_patch_set("xc2wide");
     if (set < 0) return;
-    // A mod that replaces xc2res composes a frame of its own size, which these values do not describe: the set stays off
-    int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W && !rt_patch_held(rt_patch_set("xc2res"));
+    int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W;   // X: the port's size or a mod's (xc2_res_init)
     float left = wide ? (float)(-(double)XC2_W * X.h / XC2_H / X.w) : -1.0f;
     memcpy(page + 0x8c, &left, sizeof left);
     // +0x90: how far the centred interface moved right, in interface units, (viewport width - 1280) / 2; the
@@ -223,13 +228,70 @@ void res_hud_frame(void) {
     memset(hud_page + 0xb4, 0, sizeof seen);
 }
 
+// A mod's ExeFS patch that holds xc2size off writes the graphics device's size getters (main+0x6e3fc8 width,
+// main+0x6e3fd0 height) with a size of its own; the 21:9 mods load constants there. The getters are leaves that only
+// set w0, so calling their lifted code with the mod's set switched on gives that size before the game runs; 0 when a
+// value is out of 640x360..7680x4320.
+// The lifted function at guest address a, from the linked modules' function tables: res_init runs before the first
+// guest call builds the dispatch table (hostfn_seal), so rt_dispatch_lookup has nothing yet.
+static GuestFn lifted_at(uint64_t a) {
+    RtModule mods[RT_MODULES_MAX];
+    int n = rt_linked_modules(mods, RT_MODULES_MAX);
+    for (int i = 0; i < n; i++) {
+        if (a < mods[i].base || a - mods[i].base >= mods[i].size) continue;
+        uint64_t lo = 0, hi = mods[i].count;
+        while (lo < hi) {
+            uint64_t m = (lo + hi) / 2;
+            if (mods[i].addrs[m] < a) lo = m + 1;
+            else hi = m;
+        }
+        return lo < mods[i].count && mods[i].addrs[lo] == a ? mods[i].fns[lo] : NULL;
+    }
+    return NULL;
+}
+
+static int mod_frame_size(unsigned *w, unsigned *h) {
+    unsigned v[2];
+    for (int i = 0; i < 2; i++) {
+        GuestFn f = lifted_at(RT_MAIN_BASE + (i ? 0x6e3fd0 : 0x6e3fc8));
+        if (!f) return 0;
+        Cpu c;
+        memset(&c, 0, sizeof c);
+        c.x[30] = RT_RET_HOST;
+        f(&c);
+        v[i] = (uint32_t)c.x[0];
+    }
+    if (v[0] < 640 || v[1] < 360 || v[0] > 7680 || v[1] > 4320) return 0;
+    *w = v[0], *h = v[1];
+    return 1;
+}
+
 static int xc2_res_init(void) {
     uint8_t *page = rt_patch_page();
     if (!xc2_decide() || !page) return 0;
-    int set = rt_patch_set("xc2res"), mem = rt_patch_set("xc2mem");
-    int by_mod = rt_patch_held(set);   // mods.c held it: a mod's patch sets the frame size
-    uint64_t grow = by_mod ? X.mod_extra : X.extra;
-    R.by_mod = by_mod;
+    int set = rt_patch_set("xc2res"), size = rt_patch_set("xc2size"), mem = rt_patch_set("xc2mem");
+    // mods.c held xc2size: a mod's patch sets the frame size. The interface and marker sets then follow that size.
+    int by_mod = rt_patch_held(size);
+    uint64_t grow = X.extra;
+    if (by_mod) {
+        unsigned mw, mh;
+        if (mod_frame_size(&mw, &mh)) {
+            double area = (double)mw * mh / (XC2_W * XC2_H);
+            if (X.w != XC2_W || X.h != XC2_H)
+                rt_log("resolution: XC2_OUTPUT_RES %ux%u gives way to the %ux%u a mod's ExeFS patch sets", X.w, X.h, mw, mh);
+            X.w = mw, X.h = mh;
+            grow = extra_for(area);
+            if (grow > X.mod_extra) {
+                rt_log("resolution: the mod's %ux%u needs %llu MiB more graphics memory than XC2 can address; the game "
+                       "may stop at boot", mw, mh, (unsigned long long)((grow - X.mod_extra) >> 20));
+                grow = X.mod_extra;
+            }
+        } else {
+            rt_log("resolution: a mod's ExeFS patch sets the frame size, which the port cannot read; the interface keeps "
+                   "the game's 1280x720 placement");
+            X.w = XC2_W, X.h = XC2_H, grow = X.mod_extra;
+        }
+    }
     R.ow = X.w, R.oh = X.h;
     // +0x80: the camera viewport the markers are placed with (patches-v301.txt), 1280x720 at 16:9; the camera takes its
     // aspect ratio from it, so another shape keeps the height and widens or narrows
@@ -242,10 +304,11 @@ static int xc2_res_init(void) {
     R.xc2 = 1;
     R.on = X.w != XC2_W || X.h != XC2_H;
     rt_patch_switch(set, R.on);
+    rt_patch_switch(size, R.on);   // held off while a mod sets the size
     rt_patch_switch(mem, grow != 0);
     if (by_mod)
-        rt_log("resolution: a mod's ExeFS patch replaces the port's resolution set; the game composes the size the mod "
-               "gives, graphics heaps %llu MiB larger", (unsigned long long)(grow >> 20));
+        rt_log("resolution: %ux%u from a mod's ExeFS patch (it replaces xc2size); graphics heaps %llu MiB larger", X.w,
+               X.h, (unsigned long long)(grow >> 20));
     else if (R.on) rt_log("resolution: %ux%u, graphics heaps %llu MiB larger", X.w, X.h, (unsigned long long)(X.extra >> 20));
     else rt_log("resolution: the game's own (%ux%u)", X.w, X.h);
     // XC2_RENDER_SCALE: the set xc2scale fixes lib_nx.ini's scene shares (dynamic 70 to 100 %) at the page's +0x58
@@ -307,23 +370,9 @@ static unsigned scene_side(unsigned side, float scale) {
     return s < side ? s : side;
 }
 
-// The frame a mod's ExeFS patch sets when it replaces xc2res is known only once the game presents one: gfx_present
-// reports each presented image's size here.
-static unsigned mod_frame[2];
-
-void res_frame_presented(unsigned w, unsigned h) {
-    if (!R.by_mod || !w || !h) return;
-    __atomic_store_n(&mod_frame[0], w, __ATOMIC_RELAXED);
-    __atomic_store_n(&mod_frame[1], h, __ATOMIC_RELAXED);
-}
-
-int res_sizes_known(void) { return !R.by_mod || __atomic_load_n(&mod_frame[1], __ATOMIC_RELAXED) != 0; }
-
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.on || R.xc2 ? R.ow : BASE_W, out[1] = R.on || R.xc2 ? R.oh : BASE_H;
-    if (R.by_mod && res_sizes_known())
-        out[0] = __atomic_load_n(&mod_frame[0], __ATOMIC_RELAXED), out[1] = __atomic_load_n(&mod_frame[1], __ATOMIC_RELAXED);
     uint8_t *page = rt_patch_page();
     uint32_t used[2] = {0, 0};   // the patch set sceneread
     if (page) {

@@ -152,9 +152,11 @@ when this happens.
 
 When a patch changes an instruction the port patches too, the port's patch set that holds it stays off while the mod is
 on (the log says `mods: <mod> replaces the port's patch set <set>; it stays off`), and the port's settings do not turn
-it back on. A patch that replaces the port's resolution set (`xc2res`), as 21:9 mods do by setting a frame size of their
-own, gets the most graphics memory XC2 can address, as the emulators' larger memory layout gives it; the frame size then
-is the mod's, not the port's resolution setting.
+it back on. A patch that sets the game's frame size (it replaces the port's `xc2size`), as 21:9 mods do, wins over the
+port's resolution setting. The port reads that size from the patched code before the game starts. It gives the game the
+graphics memory the size needs, as the emulators' larger memory layout does. It also fits the interface and the markers
+to that size, as it does for its own resolution setting. With **Centre the interface** on (`hud_center`), the HUD
+then reaches the screen's edges instead of keeping to a 16:9 area at the left.
 
 The whole mod also stays off when:
 

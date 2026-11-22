@@ -624,7 +624,6 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (cw <= 0 || ch <= 0) cx = cy = 0, cw = w, ch = h;   // a crop that starts outside the image: the whole image, not a
                                                            // blit with a negative extent
     window_settings_live();
-    res_frame_presented((unsigned)cw, (unsigned)ch);   // a mod's own frame size (resolution.c res_sizes)
     // The menu overlay: laid out before recording (its first frame starts the ImGui back end and uploads the font)
     const char *menu_shot = NULL;
     MenuTarget mt = {c->instance, c->phys, c->device, c->gfx_family, c->gfx_queue, g_sc_fmt, g_sc_ext.width,

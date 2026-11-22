@@ -292,8 +292,6 @@ void res_heapdef_served(void);                             // romfs.c serves the
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
 void res_hud_frame(void);                                  // once per presented frame: the field HUD's edge anchoring
                                                            // on or off after the frame's full-width pictures
-void res_frame_presented(unsigned w, unsigned h);          // gfx_present: the size of the game image it showed
-int res_sizes_known(void);                                 // res_sizes is final (a mod's frame size: once presented)
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
 // ---- code patches (patches.c) and the frame step (frame_rate.c)

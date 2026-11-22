@@ -955,15 +955,14 @@ static void glow_scale_at(uint8_t *at, double s) {
     memcpy(at, &v, 4);
 }
 
-// The output size in effect (res_sizes; it does not change while the game runs), read once it is final: a mod that
-// sets its own frame size makes it known with the first present.
+// The output size in effect (res_sizes; it does not change while the game runs), read once.
 static void glow_out(unsigned *w, unsigned *h) {
     static unsigned ow, oh;
     static int got;
     if (!got) {
         unsigned out[2], scene[2];
         res_sizes(out, scene);
-        ow = out[0], oh = out[1], got = res_sizes_known();
+        ow = out[0], oh = out[1], got = 1;
     }
     *w = ow, *h = oh;
 }
