@@ -41,6 +41,7 @@ static struct {
     int on;            // res_init wrote the table
     int scale;         // XC2_RENDER_SCALE in percent, 0 for the game's own
     int xc2;           // XC2's patch sets (xc2_res_init): ow x oh is the size it composes, on or not
+    int by_mod;        // a mod's ExeFS patch replaces xc2res: the size is the presented frame's (res_frame_presented)
 } R;
 
 static int parse(const char *s, unsigned *w, unsigned *h) {
@@ -154,7 +155,8 @@ static uint8_t *hud_page;   // set while xc2wide is on
 static void wide_hud(uint8_t *page) {
     int set = rt_patch_set("xc2wide");
     if (set < 0) return;
-    int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W;
+    // A mod that replaces xc2res composes a frame of its own size, which these values do not describe: the set stays off
+    int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W && !rt_patch_held(rt_patch_set("xc2res"));
     float left = wide ? (float)(-(double)XC2_W * X.h / XC2_H / X.w) : -1.0f;
     memcpy(page + 0x8c, &left, sizeof left);
     // +0x90: how far the centred interface moved right, in interface units, (viewport width - 1280) / 2; the
@@ -227,6 +229,7 @@ static int xc2_res_init(void) {
     int set = rt_patch_set("xc2res"), mem = rt_patch_set("xc2mem");
     int by_mod = rt_patch_held(set);   // mods.c held it: a mod's patch sets the frame size
     uint64_t grow = by_mod ? X.mod_extra : X.extra;
+    R.by_mod = by_mod;
     R.ow = X.w, R.oh = X.h;
     // +0x80: the camera viewport the markers are placed with (patches-v301.txt), 1280x720 at 16:9; the camera takes its
     // aspect ratio from it, so another shape keeps the height and widens or narrows
@@ -304,9 +307,23 @@ static unsigned scene_side(unsigned side, float scale) {
     return s < side ? s : side;
 }
 
+// The frame a mod's ExeFS patch sets when it replaces xc2res is known only once the game presents one: gfx_present
+// reports each presented image's size here.
+static unsigned mod_frame[2];
+
+void res_frame_presented(unsigned w, unsigned h) {
+    if (!R.by_mod || !w || !h) return;
+    __atomic_store_n(&mod_frame[0], w, __ATOMIC_RELAXED);
+    __atomic_store_n(&mod_frame[1], h, __ATOMIC_RELAXED);
+}
+
+int res_sizes_known(void) { return !R.by_mod || __atomic_load_n(&mod_frame[1], __ATOMIC_RELAXED) != 0; }
+
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.on || R.xc2 ? R.ow : BASE_W, out[1] = R.on || R.xc2 ? R.oh : BASE_H;
+    if (R.by_mod && res_sizes_known())
+        out[0] = __atomic_load_n(&mod_frame[0], __ATOMIC_RELAXED), out[1] = __atomic_load_n(&mod_frame[1], __ATOMIC_RELAXED);
     uint8_t *page = rt_patch_page();
     uint32_t used[2] = {0, 0};   // the patch set sceneread
     if (page) {

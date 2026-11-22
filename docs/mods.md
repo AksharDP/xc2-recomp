@@ -83,6 +83,11 @@ A mod's base `romfs\` folder works for files the game opens directly:
 - movies: `stream\movie\*.webm`
 - a full replacement of `bf2.arh` and `bf2.ard`
 
+A translation mod may bring the text of a language the installed game lacks, as `romfs\bdat\<folder>\` (`jp` for
+Japanese; the western release has none), and ask you to set the game to that language. The port offers a language only
+when the game files or an enabled mod have its text, so such a mod makes the language available: choose it in the menu
+or set `lang` in `xc2.ini` (`ja` for Japanese). The log then says `oe: an enabled mod brings the game's ja text`.
+
 The game never asks for something like `romfs\bdat\common.bdat` under the base title, so a file there does nothing. The
 emulators behave the same.
 

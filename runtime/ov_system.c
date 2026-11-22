@@ -22,6 +22,7 @@
 #include "cfg.h"
 #include "fs.h"
 #include "host.h"
+#include "mods.h"
 #include "ov.h"
 #include "platform/platform.h"
 
@@ -72,11 +73,47 @@ static const char *game_code(const char *code) {
     return NULL;
 }
 
-// Whether the installed game files have text for code. XC2_GAME_LANGS is the list of the codes they have, separated by
-// spaces or commas (the installer writes it from the archive, tools/xc2_languages.py); unset, every code counts.
+// The folder of the game's text for a code of game_codes (tools/xc2_languages.py), NULL for none.
+static const char *text_folder(const char *code) {
+    static const char *const map[][2] = {{"ja", "jp"}, {"en-US", "gb"}, {"en-GB", "gb"}, {"fr", "fr"}, {"fr-CA", "fr"},
+                                         {"de", "ge"}, {"it", "it"}, {"es", "sp"}, {"es-419", "sp"}, {"zh-CN", "cn"},
+                                         {"ko", "kr"}, {"zh-TW", "tw"}};
+    for (size_t i = 0; i < sizeof map / sizeof *map; i++)
+        if (!strcmp(code, map[i][0])) return map[i][1];
+    return NULL;
+}
+
+// Whether an enabled mod brings the text of code: a bdat/<folder> folder in its base RomFS, which the game reads for a
+// language its archive lacks. Translation mods for the western Switch release ship Japanese this way (bdat/jp), and a
+// console, which does not filter the languages, runs them once set to Japanese.
+static int mod_has_text(const char *code) {
+    static const char *const folders[] = {"jp", "gb", "fr", "ge", "it", "sp", "cn", "kr", "tw"};
+    static volatile int8_t seen[sizeof folders / sizeof *folders];   // 0 not looked, 1 no, 2 yes: mods are fixed at start
+    const char *folder = text_folder(code);
+    size_t k = 0;
+    while (folder && k < sizeof folders / sizeof *folders && strcmp(folders[k], folder)) k++;
+    if (!folder || k == sizeof folders / sizeof *folders) return 0;
+    if (seen[k]) return seen[k] == 2;
+    int has = 0;
+    mods_scan();
+    for (int i = 0; i < mods_count() && !has; i++) {
+        const ModInfo *m = mods_at(i);
+        char dir[2200];
+        if (!m || !m->romfs[0] || !mods_started(i)) continue;
+        has = snprintf(dir, sizeof dir, "%s/bdat/%s", m->romfs, folder) < (int)sizeof dir && plat_dir_exists(dir);
+    }
+    if (has) rt_log("oe: an enabled mod brings the game's %s text (bdat/%s)", code, folder);
+    seen[k] = (int8_t)(has ? 2 : 1);
+    return has;
+}
+
+// Whether the installed game files, or an enabled mod (mod_has_text), have text for code. XC2_GAME_LANGS is the list of
+// the codes the game files have, separated by spaces or commas (the installer writes it from the archive,
+// tools/xc2_languages.py); unset, every code counts.
 int ov_language_shipped(const char *code) {
     const char *list = cfg_get("XC2_GAME_LANGS");
     if (!list || !*list) return 1;
+    if (mod_has_text(code)) return 1;
     size_t n = strlen(code);
     for (const char *p = list; *p;) {
         p += strspn(p, " ,");

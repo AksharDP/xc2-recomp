@@ -450,10 +450,15 @@ void mods_scan(void) {
         char packs[64] = "";
         for (int k = 0, n = 0; k < m->naoc; k++)
             n += snprintf(packs + n, sizeof packs - (size_t)n, "%s%d", k ? "," : " aoc ", m->aoc[k].index);
-        rt_log("mods: %s: %s,%s%s%s%s%s%s, %s%s%s", m->name, m->enabled ? "on" : "off",
+        // a usable mod's patch files for another build are left out, as the Mods tab says (menu.cpp); its other files
+        // may rely on them (a translation that redirects its text through a patch for another executable)
+        char other[96] = "";
+        if (m->other_version && m->problem == MOD_OK)
+            snprintf(other, sizeof other, "; %u ExeFS patch files for another game version left out", m->other_version);
+        rt_log("mods: %s: %s,%s%s%s%s%s%s, %s%s%s%s", m->name, m->enabled ? "on" : "off",
                m->kind & MOD_ROMFS ? " romfs" : "", m->kind & MOD_AOC ? packs : "", m->kind & MOD_EXEFS ? " exefs" : "",
                m->kind & MOD_SUBSDK ? " subsdk" : "", m->kind & MOD_CHEATS ? " cheats" : "", m->kind ? "" : " no files",
-               problem_name(m->problem), m->note[0] ? ": " : "", m->note);
+               problem_name(m->problem), m->note[0] ? ": " : "", m->note, other);
     }
     rt_log("mods: %d folders in %s", nmods, dir);
     aoc_build();
