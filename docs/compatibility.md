@@ -202,6 +202,14 @@ shared descriptor problem still needs a separate investigation. Initial runs req
 layer; their zero error counters are not validation evidence. The successful runs above set `VK_LAYER_PATH` to
 `C:\msys64\ucrt64\bin`, where this machine's MSYS2 layer manifest and DLL reside.
 
+A subsequent fix identified those 18 errors as the unbound shadow-image fallback: comparison samplers were paired
+with the ordinary RGBA8 stand-in. Missing shadow descriptors now use lazy depth images, chosen from supported D32
+or D16 comparison formats, cleared to zero and synchronized before sampling. Both core and extension full census
+probes now pass with zero validation errors, and the extension probe also passes with synchronization validation.
+These tests resolve the earlier VUID 06479 failures on the tested Iris Xe; they do not clear other GPUs or the
+remaining Vulkan 1.2 negotiation barriers. Evidence is in `build/compat/shadow-dummy-core-validation.log`,
+`build/compat/shadow-dummy-khr-validation.log`, and `build/compat/shadow-dummy-khr-sync-validation.log`.
+
 Local evidence: `build/logs/build-v301-khr-dispatch.log`, `build/compat/vk-dispatch-cfg.log`,
 `build/compat/vk-core-window-validation.log`, `build/compat/vk-khr-window-validation.log`,
 `build/compat/vk-khr-astc-validation.log`, `build/compat/vk-khr-missing-extension.log`, and
