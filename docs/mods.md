@@ -83,6 +83,11 @@ A mod's base `romfs\` folder works for files the game opens directly:
 - movies: `stream\movie\*.webm`
 - a full replacement of `bf2.arh` and `bf2.ard`
 
+A translation mod may bring the text of a language the installed game lacks, as `romfs\bdat\<folder>\` (`jp` for
+Japanese; the western release has none), and ask you to set the game to that language. The port offers a language only
+when the game files or an enabled mod have its text, so such a mod makes the language available: choose it in the menu
+or set `lang` in `xc2.ini` (`ja` for Japanese). The log then says `oe: an enabled mod brings the game's ja text`.
+
 The game never asks for something like `romfs\bdat\common.bdat` under the base title, so a file there does nothing. The
 emulators behave the same.
 
@@ -144,6 +149,14 @@ The game reads code patches from a mod's `exefs` folder (`.pchtxt`, `.ips`, IPS3
 The setup builds code patches into the game, the same way as code cheats. After you add or change a patch, run the setup
 again. Until you do, the whole mod stays off, because its other files may depend on the patch. The Mods tab tells you
 when this happens.
+
+When a patch changes an instruction the port patches too, the port's patch set that holds it stays off while the mod is
+on (the log says `mods: <mod> replaces the port's patch set <set>; it stays off`), and the port's settings do not turn
+it back on. A patch that sets the game's frame size (it replaces the port's `xc2size`), as 21:9 mods do, wins over the
+port's resolution setting. The port reads that size from the patched code before the game starts. It gives the game the
+graphics memory the size needs, as the emulators' larger memory layout does. It also fits the interface and the markers
+to that size, as it does for its own resolution setting. With **Fit the interface to wide screens** on (`hud_center`), the HUD
+then reaches the screen's edges instead of keeping to a 16:9 area at the left.
 
 The whole mod also stays off when:
 

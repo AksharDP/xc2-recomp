@@ -129,9 +129,8 @@ def load(path, mods):
             alts = sites.setdefault(f[2], {}).setdefault(off, [])
             if any(k == index[f[1]] for k, _, _ in alts):
                 raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice by set {f[1]}')
-            if alts and alts[0][2] != want:
-                raise PatchError(f'{where}: {f[2]}+{off:#x} is checked by {show_check(want)}, '
-                                 f'an earlier line by {show_check(alts[0][2])}')
+            # Each line keeps its own check (check() tests them all): the mods' sites (tools/cheats.py,
+            # tools/exefs_patches.py) check the instruction word where the port's own sites at the address use a sha.
             alts.append((index[f[1]], repl, want))
         elif f[0] == 'spin' and len(f) >= 4:
             if f[1] not in bases:
@@ -153,21 +152,23 @@ def load(path, mods):
 
 
 def check(table, mod, name):
-    """Stops on a site whose check differs from the module's: its instruction word, or the sha of the bytes there."""
-    for off, [(_, _, want), *_] in table.sites.get(name, {}).items():
+    """Stops on a site whose check differs from the module's: its instruction word, or the sha of the bytes there. Every
+    alternative's check is tested, since sets at one address may check it differently."""
+    for off, alts in table.sites.get(name, {}).items():
         a = mod.base + off
         if not mod.in_text(a):
             raise PatchError(f'{name}+{off:#x}: patch site outside .text')
-        if isinstance(want, tuple):
-            if not mod.in_text(a + CHECK_BYTES - 4):
-                raise PatchError(f'{name}+{off:#x}: the sha check window runs past .text')
-            have = site_check(mod.image, off)
-            if have != show_check(want):
-                raise PatchError(f'{name}+{off:#x}: the module has {have}, the patch expects {show_check(want)}')
-        else:
-            have = mod.word(a)
-            if have != want:
-                raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
+        for want in {show_check(w): w for _, _, w in alts}.values():
+            if isinstance(want, tuple):
+                if not mod.in_text(a + CHECK_BYTES - 4):
+                    raise PatchError(f'{name}+{off:#x}: the sha check window runs past .text')
+                have = site_check(mod.image, off)
+                if have != show_check(want):
+                    raise PatchError(f'{name}+{off:#x}: the module has {have}, the patch expects {show_check(want)}')
+            else:
+                have = mod.word(a)
+                if have != want:
+                    raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
     for b, head in table.spins.get(name, {}).items():
         a = mod.base + b
         if not mod.in_text(a) or branch_target(mod.word(a), a) != mod.base + head:

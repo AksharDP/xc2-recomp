@@ -94,23 +94,31 @@ site xc2poll main 6df480 sha:f4cd221e7a1b197a 7281a800
 set xc2zlib XC2_ZLIB_NATIVE 1
 site xc2zlib main 8abc70 sha:8e1534416e8c00af 94350cd8
 
-# xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
-# handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
-# setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70
-# (width) and +0x74 (height) instead.
-set xc2res XC2_OUTPUT_RES 0
-site xc2res main 6e3fc8 sha:ffd5886200ad5493 @page:x0 b9407000
-site xc2res main 6e3fd0 sha:4cdbf2bbc589638e @page:x0 b9407400
-site xc2res main 700640 sha:1310f8325755a90c @page:x21 b94072b5
-site xc2res main 700644 sha:71f543de2911de5f @page:x22 b94076d6
+# xc2size (resolution.c, switched with XC2_OUTPUT_RES): the size the game composes its frame in. XC2 composes
+# 1280x720 (docked and handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720
+# (main+0x6e3fd0), and the window setup (main+0x700640) sizes the window textures with the same constants. All three
+# read the patch page's +0x70 (width) and +0x74 (height) instead. A set of its own, as the 21:9 mods write these same
+# sites with a size of their own: a mod's patch then holds xc2size off (mods.c), resolution.c reads the mod's size from
+# the getters, and the sets below (xc2mem, xc2res, xc2wide) follow it.
+set xc2size XC2_FRAME_SIZE 0
+site xc2size main 6e3fc8 sha:ffd5886200ad5493 @page:x0 b9407000
+site xc2size main 6e3fd0 sha:4cdbf2bbc589638e @page:x0 b9407400
+site xc2size main 700640 sha:1310f8325755a90c @page:x21 b94072b5
+site xc2size main 700644 sha:71f543de2911de5f @page:x22 b94076d6
+# xc2mem (resolution.c): the graphics memory for a frame larger than 1280x720.
+set xc2mem XC2_GFX_MEM 0
 # The graphics heaps (main+0x6f4ee4 fills their sizes, main+0x705c20 carves GLIBCNT, GLIBPXL, GLIBVTX, ... from one
 # block of their sum): the render targets come from GLIBPXL, 0x16a00000 bytes (362 MiB), the high half of x9 here;
 # above 1280x720 the game aborts in its allocator (main+0x6e927c). The size is the page's +0x78 instead
 # (resolution.c xc2_res_init); the movk that follows sets the low half, GLIBCNT, as before.
-site xc2res main 6f4f74 sha:b56a63a9639ad888 @page:x9 b9407929 d3607d29
+site xc2mem main 6f4f74 sha:b56a63a9639ad888 @page:x9 b9407929 d3607d29
 # The game's memory layout (main+0x6421b4, handed to main+0x6e3f34): the main heap, then a 512 MiB graphics block
 # (orr w8, wzr, #0x20000000) that GLIB's heaps are carved from. Its size is the page's +0x7c instead (the same growth).
-site xc2res main 6421c4 sha:a95ccb820bea65ad @page:x8 b9407d08
+site xc2mem main 6421c4 sha:a95ccb820bea65ad @page:x8 b9407d08
+
+# xc2res (XC2_OUTPUT_RES, resolution.c): the interface and the markers on a frame other than 1280x720, whichever set
+# (xc2size or a mod) gives that frame.
+set xc2res XC2_OUTPUT_RES 0
 
 # Markers on the 3D scene (target cursor, damage numbers, talk and quest icons) are placed in the interface's
 # 1280x720 space with the camera's viewport (+0x1e0, +0x1e4), which the world-to-screen (main+0x6c3aa0), the
