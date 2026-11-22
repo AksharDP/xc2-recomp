@@ -417,11 +417,13 @@ static void row_window_size(void) {
     opt_choice_list("XC2_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
-// The game resolution (resolution.c): 16:9 sizes from the game's own 1280x720 up, and the current value when it is
-// another size.
+// The game resolution (resolution.c): 16:9 sizes from the game's own 1280x720 up, then the common 21:9 and 32:9
+// monitor sizes (the scene widens; the interface keeps a 16:9 area at the left unless the next row, XC2_HUD_CENTER,
+// fits it to the frame: resolution.c wide_hud); another value set in xc2.ini shows as it is.
 static void row_output_res(void) {
     // 1280x720: XC2's own, also the Steam Deck's (letterboxed in its 1280x800 screen, XC2_PICTURE_FIT)
-    static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160"};
+    static const char *const vals[] = {"1280x720",  "1600x900",  "1920x1080", "2560x1440", "3200x1800", "3840x2160",
+                                       "2560x1080", "3440x1440", "3840x1600", "3840x1080", "5120x1440"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
@@ -538,6 +540,7 @@ static void tab_screen(float scale) {
     opt_choice("XC2_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
+    opt_toggle("XC2_HUD_CENTER", UI_MENU_HUD_CENTER, UI_MENU_HUD_CENTER_DESC);   // resolution.c wide_hud
     row_render_scale();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);

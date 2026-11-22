@@ -136,6 +136,84 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n) {
 }
 void res_heapdef_served(void) {}
 
+// A game resolution wider than 16:9 (patches-v301.txt, set xc2wide): the layout library fits the 1280x720 design by
+// height and holds its left edge on the screen's, so the interface filled a 16:9 region at the left. +0x8c is the left
+// edge in clip space for the design centred instead, -1280 * fit / width (-1 at 16:9); the values after it place the
+// markers, stretch full-screen layers, keep captured panes (the minimap) in place and move the field HUD to the frame's
+// edges (patches-v301.txt). XC2_HUD_CENTER is off by default. At 16:9 and narrower shapes the set stays off: the fit is
+// by width there and the left edge is already the screen's.
+static uint8_t *hud_page;   // set while xc2wide is on
+
+static void wide_hud(uint8_t *page) {
+    int set = rt_patch_set("xc2wide");
+    if (set < 0) return;
+    int wide = (uint64_t)X.w * XC2_H > (uint64_t)X.h * XC2_W;
+    float left = wide ? (float)(-(double)XC2_W * X.h / XC2_H / X.w) : -1.0f;
+    memcpy(page + 0x8c, &left, sizeof left);
+    // +0x90: how far the centred interface moved right, in interface units, (viewport width - 1280) / 2; the
+    // world-to-screen conversions of the markers subtract it so they stay on their objects
+    float shift = wide ? (float)(((double)XC2_H * X.w / X.h - XC2_W) / 2) : 0.0f;
+    memcpy(page + 0x90, &shift, sizeof shift);
+    // +0x98, +0x9c: pictures at least as wide as the design (fades, loading and menu backgrounds) are stretched to the
+    // frame: the width in clip units from which a picture counts (98 % of the design's, 2 * -left), and the stretch
+    // minus one, 1 / -left - 1, which their x row is scaled by about the frame's centre
+    float fill[2] = {wide ? (float)(-2.0 * 0.98 * left) : 4.0f, wide ? (float)(-1.0 / left - 1.0) : 0.0f};
+    memcpy(page + 0x98, fill, sizeof fill);
+    // +0xa0: the same move in the units of the panes' screen bounds (main+0x82aa7c, half the clip-space distance from
+    // the left edge): (1 + left) / 2, for the capture region of the minimap and other captured panes
+    float bounds = wide ? (float)((1.0 + left) / 2) : 0.0f;
+    memcpy(page + 0xa0, &bounds, sizeof bounds);
+    // +0xa4..+0xd8: the field HUD's move to the frame's edges (patches-v301.txt, the group sites). A group moves as a
+    // whole: the topmost layout container other than a layout's root decides for everything under it, from its
+    // position, which is its origin rather than its middle; a pane outside such a container decides alone, from its
+    // centre, and only when it is narrower than 98 % of the design (+0xc8, tested on the matrix's a). A pane's global
+    // matrix (tx, ty, a, ...) is in units of the frame's width in pixels (+0xd4) per interface unit, a counting from the
+    // rectangle's 0..1, so a pane's centre lies (tx + a / 2) * width interface units from the design's left edge and a
+    // container (a = 1, no size) at tx * width; a container within half an interface unit of the left edge (+0xd8)
+    // does not move. The move is shift(u) = sign(u) * min(s_max, max(0, |u| - a) * m) with u measured from 588.25
+    // (+0xb8) and a = 202.25: a group starts to move 254 interface units left of 640 and 150.5 right of it, and moves
+    // by the full distance from the design's edge to the frame's (s_max) 28 units further out. The thresholds come from
+    // the positions measured in the field and in battle: on the right the compass's objective marker, which stops at
+    // the compass's end, reaches 148 and stays; on the left the enemy gauge's level (237 and 204 left of 640) and a
+    // field group at 252 stay, and the active blade's name (283), the party list and Blade Switch move whole. The
+    // group sites work in interface units (+0xb8 the middle, +0xbc the start, +0xa8 the slope, +0xc4 the limit); +0xa4
+    // and +0xac are the start and the limit in clip units. +0xb0 is 1 in the field and 0 in menus (res_hud_frame),
+    // +0xb4 counts the frame's full-width pictures. +0xc0 (m / (1 + m), the shift's inverse slope) is not read at
+    // present. +0xcc is the current group's shift in clip units, written by the pane draws for their builders, and
+    // +0xd0 the clip units per interface unit (k), to convert it.
+    float h = -left, s_max = 1.0f - h, k = h / (XC2_W / 2.0f);
+    float start = 202.25f, mid = 588.25f, m = s_max / k / 28.0f;
+    float anchor[14] = {start * k, m, s_max, 1.0f, 0.0f, mid, start, m / (1.0f + m), s_max / k,
+                        0.98f * XC2_W / X.w, 0.0f, k, (float)X.w, 0.5f / X.w};
+    if (!wide) memset(anchor, 0, sizeof anchor);
+    memcpy(page + 0xa4, anchor, sizeof anchor);
+    // +0xdc: the centring in the frame's pixels, (1 + left) / 2 * width, for the viewport and scissor of panes that
+    // clip their children (main+0x8399c0, the Skip Travel map's panel; their projection takes +0x90)
+    float clip = wide ? (float)((1.0 + left) / 2 * X.w) : 0.0f;
+    memcpy(page + 0xdc, &clip, sizeof clip);
+    // +0xe0: written by the minimap capture's region site (main+0x8365fc), the capture pane's group shift kept for its
+    // draw-back (main+0x8367a0), since the children's draws rewrite +0xcc in between
+    memset(page + 0xe0, 0, 4);
+    int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
+    rt_patch_switch(set, on);
+    hud_page = on ? page : NULL;
+    if (on) rt_log("resolution: interface centred in the %ux%u frame, field HUD at its edges (XC2_HUD_CENTER=1)", X.w, X.h);
+    else if (wide) rt_log("resolution: interface at the left of the %ux%u frame, as the game places it", X.w, X.h);
+}
+
+void res_hud_frame(void) {
+    if (!hud_page) return;
+    // +0xb4 sums the stretch minus one (+0x9c) of every full-width picture drawn, so it counts them. The field draws 1
+    // to 4 (fades and overlays), a menu 16 to 32 (its background, header and bars; the Skip Travel menu, measured):
+    // above 8 the interface stays a whole 16:9 block
+    float seen, unit, field;
+    memcpy(&seen, hud_page + 0xb4, sizeof seen);
+    memcpy(&unit, hud_page + 0x9c, sizeof unit);
+    field = seen > 8.0f * unit ? 0.0f : 1.0f;
+    memcpy(hud_page + 0xb0, &field, sizeof field);
+    memset(hud_page + 0xb4, 0, sizeof seen);
+}
+
 static int xc2_res_init(void) {
     uint8_t *page = rt_patch_page();
     if (!xc2_decide() || !page) return 0;
@@ -148,6 +226,7 @@ static int xc2_res_init(void) {
     memcpy(page + 0x70, v, sizeof v);
     float pivot = (float)XC2_H / X.h;   // +0x88: rotated interface panes' pivot back in interface units
     memcpy(page + 0x88, &pivot, sizeof pivot);
+    wide_hud(page);
     R.xc2 = 1;
     R.on = X.w != XC2_W || X.h != XC2_H;
     rt_patch_switch(set, R.on);
