@@ -217,10 +217,10 @@ void vk_mem_dirty_submit(void);                   // vk_sync_submit, under its l
 //   buffer. n: the bytes from sp.offset the GPU may read (sp.avail when not known), which a lazy mirror then keeps.
 // - VK_MEM_PICK(sp, n) where a copy, fill or update reads or writes n bytes of a span: the mirror if the pool has one,
 //   never a new one.
-// - vk_mem_gpu_wrote after recording a GPU write of [sp.offset, sp.offset + size) into sp.buffer: a mirror's bytes go
-//   back to guest memory at the end of the submission. No-op for imported buffers.
-// - vk_mem_mirror_begin at the start of a submission's recording, with the submission's capture, vk_mem_mirror_end
-//   (records the write-backs; returns the commands recorded) after its last barrier.
+// - vk_mem_gpu_wrote after recording a GPU write of [sp.offset, sp.offset + size) into sp.buffer: the bytes of the
+//   mirror the submission changed there go back to guest memory by its fence. No-op for imported buffers.
+// - vk_mem_mirror_begin at the start of a submission's recording, with the submission's capture and fence,
+//   vk_mem_mirror_end (records the write-backs; returns the commands recorded) after its last barrier.
 // vk_sync.c records the capture and the copies the mirrors' first uses queued (vk_mem_mirror_pending) into a prologue
 // command buffer with vk_mem_mirror_prologue and submits it right before each part.
 // Submit-time captures: the back end (vk_backend.c vk_be_submit) takes them in the game's submit call, in queue order,
@@ -255,7 +255,7 @@ const void *vk_usnap_host(uint64_t addr, uint64_t n);   // the copy for the CPU 
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
-void vk_mem_mirror_begin(void *cap);
+void vk_mem_mirror_begin(void *cap, uint64_t fence);
 int vk_mem_shadow_captures(void);   // shadow storage with submit-time captures (XC2_SHADOW_CAPTURE)
 int vk_mem_snapshots(void);   // the mirrors with staged captures are on: every buffer read can be a submit-time copy
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);

@@ -1508,8 +1508,36 @@ static int test_mirror(const GfxBackend *b, uint8_t *guest, int *bytes) {
     CHECK(xf_submit(b, stream, p), "fence_wait of the third mirror submission timed out");
     for (int i = 0; i < 0x800; i++) CHECK(m[0x4000 + i] == 0x11, "CPU byte %#x beside a fill is %02x", i, m[0x4000 + i]);
     for (int i = 0; i < 0x800; i++) CHECK(m[0x4800 + i] == 0x77, "fill byte %#x is %02x", i, m[0x4800 + i]);
+    // 4: in a GPU-written range, bytes the GPU leaves as they were keep what the CPU wrote after the submit call, while
+    // the submission was in flight (issue 158: the game's heap reuses a block the GPU still writes, and a write-back of
+    // the whole range reverted the new block's footer). The second fill changes its bytes, which come back.
+    memset(m + 0x5000, 0x33, 0x1000);
+    memset(m + 0x6000, 0x11, 0x800);
+    p = put(stream, OP_BEGIN, NULL, 0);
+    const p_clear_buf f4 = {a + 0x5000, 0x1000, 0x33333333u, 0}, f5 = {a + 0x6000, 0x800, 0x44444444u, 0};
+    p = put(p, OP_CLEAR_BUF, &f4, sizeof f4);
+    p = put(p, OP_CLEAR_BUF, &f5, sizeof f5);
+    p = put(p, OP_END, NULL, 0);
+    uint64_t handle = (uint64_t)(uintptr_t)stream;
+    uint64_t f = b->submit(&handle, 1);
+    memset(m + 0x5400, 0x99, 0x10);
+    CHECK(b->fence_wait(f, 5000000000ull), "fence_wait of the fourth mirror submission timed out");
+    for (int i = 0; i < 0x1000; i++) {
+        uint8_t want = i >= 0x400 && i < 0x410 ? 0x99 : 0x33;
+        CHECK(m[0x5000 + i] == want, "byte %#x of an unchanged fill range is %02x, expected %02x (a CPU write made in "
+              "flight was reverted)", i, m[0x5000 + i], want);
+    }
+    for (int i = 0; i < 0x800; i++) CHECK(m[0x6000 + i] == 0x44, "second fill byte %#x is %02x", i, m[0x6000 + i]);
+    // 5: the next submission reads the CPU's bytes there (the mirror got them again).
+    p = put(stream, OP_BEGIN, NULL, 0);
+    const p_copy_b2b c6 = {a + 0x5000, a + 0x7000, 0x1000};
+    p = put(p, OP_COPY_B2B, &c6, sizeof c6);
+    CHECK(xf_submit(b, stream, p), "fence_wait of the fifth mirror submission timed out");
+    for (int i = 0; i < 0x1000; i++)
+        CHECK(m[0x7000 + i] == m[0x5000 + i], "B2B byte %#x after a CPU write in flight is %02x, expected %02x", i,
+              m[0x7000 + i], m[0x5000 + i]);
     b->pool_fini(&pool);
-    *bytes = 4096 + 0x1000 + 4096 + 0x1000;
+    *bytes = 4096 + 0x1000 + 4096 + 0x1000 + 0x1800 + 0x1000;
     return 0;
 }
 
@@ -1696,7 +1724,8 @@ int probe_vkexec(void) {
            zero_bytes, cfg_value("XC2_FIX_ZERO"));
     if (vk_mirror_on)
         printf("probe-vkexec: mirror part passed (B2B and fill in a VRAM mirror written back by the fence, a CPU write "
-               "between submissions mirrored, CPU bytes beside a fill kept, %d bytes compared)\n", mirror_bytes);
+               "between submissions mirrored, CPU bytes beside a fill kept, CPU bytes written in flight kept and "
+               "mirrored, %d bytes compared)\n", mirror_bytes);
     else
         printf("probe-vkexec: mirror part skipped (memory mode import)\n");
     if (xfb_floats)
