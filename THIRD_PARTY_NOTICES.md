@@ -103,3 +103,7 @@ folder's `licenses/` and in each component's own folder.
 | `xc2_xlate` (NativeAOT linux-x64 build of `tools/xlate/`, linked with the folder's clang, lld and sysroot) | built by `tools/build_xlate.py --llvm --sysroot` | MIT | `bin/xc2_xlate` |
 | AppImage type-2 runtime (static; includes libfuse and squashfuse), the AppImage's first part; appimagetool packs the folder and is not distributed | https://github.com/AppImage/type2-runtime | MIT; libfuse LGPL-2.1; squashfuse BSD-2-Clause | the AppImage header |
 | MacNativeGames shader variant list | as in the installer release row above | MIT | `data/shader_list.tsv` |
+
+| Experimental Windows baseline dependencies: libvpx 1.16.0 and Zstandard 1.5.7, built locally by `tools/build_baseline_deps.py`; not shipped by the normal release | https://github.com/webmproject/libvpx @ `1024874c5919305883187e2953de8fcb4c3d7fa6`; https://github.com/facebook/zstd @ `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | libvpx BSD-3-Clause with WebM patent grant; Zstandard BSD-3-Clause | Ignored `toolchain/baseline/lib/` |
+
+| GCC libatomic (MSYS2 UCRT64 gcc-libs), static fallback for 128-bit atomics in the experimental baseline Windows build | https://gcc.gnu.org/, GCC contributors; installed `share/licenses/gcc-libs/COPYING.RUNTIME` and `COPYING3` | GPL-3.0 with GCC Runtime Library Exception | `tools/build_game.py --cpu v1`, differential test harness |
