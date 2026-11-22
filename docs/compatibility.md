@@ -82,6 +82,26 @@ build 26300. No AMD or NVIDIA GPU, no AMD CPU, no CPU without AVX2 and no Window
 | Setup PC check (`installer/hostcheck.c`) on the tested PC | `cpu_level` 3, Windows 10.0.26300, x64; both Iris Xe entries usable with host import | Tested |
 | PC check verdicts (`tests/installer_test.py`, 13 cases) | v3 and v2 processors, v2 without the v2 library, below v2, Windows 7 / 8.1 refused and 10 1507 accepted, Arm warning, no loader or device, Vulkan 1.2 only, missing extensions and features named per GPU, a laptop with an unusable discrete GPU, host import judged on the GPU the game picks, software renderer, an older host check's output | Check only |
 
+### Baseline x86-64 experiment (not released)
+
+A local experiment compiled the existing generated v301 C and a copy of the runtime with `-march=x86-64`, using the
+SSE preemption stub and a level-1 runtime marker. No SIMD lowering changes were needed. The executable passed
+`--selftest` on the host and under SDE's Merom (Core 2) model with `-xsave_by_host 1`. The existing v2 executable
+refused that model with exit 72. A separate executable containing POPCNT was rejected by SDE as invalid for Merom,
+confirming that the instruction check was active.
+
+A 180-second Merom boot run reached Vulkan initialization, asset loading and frame submission without an SDE
+invalid-instruction report. The inspected frame-120 screenshot showed a loading indicator, not verified gameplay.
+The harness stopped the process tree at the time limit; this was not a normal game exit. About 3.1 fps was logged
+under SDE, which says nothing about native Core 2 performance. This does not establish support for a physical Core 2,
+AMD K10, or all baseline x86-64 processors. The existing static checker verifies only a v2 ceiling, not a baseline
+ceiling; it must be extended before a baseline build can pass a complete instruction audit. Bundled libraries and
+the shader translator also need validation below v2. The installer still rejects CPUs below v2.
+
+Local evidence: `build/logs/build-v301-v1-experiment.log`, `build/compat/v1-native-selftest.log`,
+`build/compat/v1-merom-selftest.log`, `build/compat/v1-merom-popcnt-negative.log`, and `build/compat/v1-merom-boot/`.
+The local experiment launcher is `build/compat/build_v1_experiment.py`; it is not a release build option.
+
 The SDE runs check `xc2.exe`, `SDL3.dll` and `libopus-0.dll` (`-chip_check_image`), not Windows' own DLLs or the GPU
 driver, which choose their instructions by processor themselves. Evidence files are in `build/compat/` of the
 maintainer's checkout (game-derived, not in the repository).
@@ -90,14 +110,27 @@ maintainer's checkout (game-derived, not in the repository).
 
 | Barrier | Why | What it would take |
 | --- | --- | --- |
-| 32-bit Windows | The guest memory layout needs far more address space than a 32-bit process has. Windows 11 has no 32-bit edition. | Not possible. |
+| 32-bit Windows | The current guest layout reserves addresses beyond a 32-bit process's address space. | Cannot run this executable or preserve its direct-address layout. A redesigned memory model would be required; no such implementation exists. |
 | No Vulkan driver (Microsoft Basic Display Adapter; Intel before Skylake; NVIDIA Fermi and older; AMD TeraScale) | The renderer is Vulkan only. | A Direct3D 12 back end, or Mesa's Vulkan-on-Direct3D 12 driver (smaller feature set, untried). |
 | Vulkan below 1.3 (NVIDIA Kepler, GTX 600/700, on its last 470-series driver; AMD GCN 1 to 3 on the legacy driver) | Dynamic rendering, synchronization2 and the 1.3 feature structures are used throughout. | A Vulkan 1.2 path with those as extensions; not started. |
-| Processors below x86-64-v2 (Core 2, AMD K10) | Refused; every such processor predates Windows 11 and its speed would be far below the game's needs. | A baseline build is possible in principle; not pursued. |
+| Processors below x86-64-v2 (Core 2, AMD K10) | Refused by the current installer and build options. Performance on these processors has not been measured. | An experimental baseline build compiled and passed self-tests; complete dependency and gameplay validation remain open. No installer option is shipped. |
 | Windows on Arm | x64 code runs only under emulation there; the runtime's platform layer is x64 specific. | A native ARM64 Windows build. |
-| Windows 7, 8, 8.1 | No Vulkan 1.3 drivers; the setup's Python does not run there. | Unsupported. |
-| Software Vulkan (lavapipe, SwiftShader) | Accepted with a warning; far too slow. | None. |
+| Windows 7, 8, 8.1 | The shipped setup Python and .NET toolchain target newer Windows. No end-to-end validation exists on these OS versions. | Unsupported by this distribution; an older setup runtime and an audit of game and dependency imports would be needed. |
+| Software Vulkan (lavapipe, SwiftShader) | The check warns when a software device satisfies the required features. No gameplay or performance validation exists here. | Measure correctness and performance on a specific implementation before claiming support. |
 | The Linux release | Has no v2 runtime library yet, so its setup refuses processors without AVX2 as before (`check.cpu_no_avx2`). | `tools/make_release_linux.py` building `libxc2rt-v2.a` against its sysroot. |
+
+## Hard limits and implementation limits
+
+This renderer's Vulkan version, the installer runtime, and the current CPU build targets are implementation limits.
+They are not proof that a PC cannot run a different native port. A CPU instruction missing from a processor cannot
+be executed directly on that processor; a compiler or a different algorithm can often avoid it. Likewise, an x86-64
+executable is not a native ARM64 executable. Native Windows on Arm requires a separate code generator target and
+platform implementation; x64 emulation does not satisfy that requirement.
+
+The current direct-address memory model needs a 64-bit address space. Supporting 32-bit Windows would require a
+fundamental redesign, not a setup option. With no usable graphics driver, the current Vulkan renderer cannot start.
+A different graphics back end or software renderer would still need its own correctness and performance evidence.
+No performance threshold or complete hardware impossibility has been demonstrated for all alternative designs.
 
 ## What cannot be claimed
 
