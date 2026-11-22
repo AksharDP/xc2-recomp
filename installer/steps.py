@@ -271,8 +271,8 @@ def judge_host(host, v2_runtime):
     if windows and tuple(windows[:2]) < WINDOWS_NEEDED:
         raise InstallError('check.windows_old', version='.'.join(map(str, windows)))
     if host.get('native_arch') == 'arm64':
-        # x64 code on Windows on Arm runs under Microsoft's emulator: it may work, slowly, and is not tested
-        warnings.append(('warn.arm64_emulated', {}))
+        # This distribution builds x86-64 code. An ARM64 native port needs a separate runtime and build target.
+        raise InstallError('check.arm64_native')
     # The processor's x86-64 level: 3 builds the game for x86-64-v3, 2 for x86-64-v2 when the release has that runtime
     # library (an older release has only the v3 one)
     level = host.get('cpu_level', 3 if host.get('x86_64_v3') else 1)

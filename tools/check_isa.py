@@ -80,10 +80,13 @@ class LinkMap:
 
     def __init__(self, path, image_base):
         self.base, rows = image_base, []
-        for line in path.open(encoding='utf-8', errors='replace'):
-            m = MAP_ROW.match(line)
-            if m:
-                rows.append((int(m.group(1), 16), int(m.group(2), 16), Path(m.group(3)).name))
+        with path.open(encoding='utf-8', errors='replace') as source:
+            for line in source:
+                m = MAP_ROW.match(line)
+                if m:
+                    section = m.group(4)
+                    symbol = section.removeprefix('.text$') if section.startswith('.text$') else None
+                    rows.append((int(m.group(1), 16), int(m.group(2), 16), Path(m.group(3)).name, symbol))
         rows.sort()
         self.starts = [r[0] for r in rows]
         self.rows = rows
@@ -92,9 +95,19 @@ class LinkMap:
         rva = vma - self.base
         i = bisect.bisect_right(self.starts, rva) - 1
         if i >= 0:
-            start, size, name = self.rows[i]
+            start, size, name, _ = self.rows[i]
             if start <= rva < start + size:
                 return name
+        return None
+
+    def symbol_at(self, vma):
+        """COFF function sections preserve local names missing from the executable's symbol table."""
+        rva = vma - self.base
+        i = bisect.bisect_right(self.starts, rva) - 1
+        if i >= 0:
+            start, size, _, symbol = self.rows[i]
+            if start <= rva < start + size:
+                return symbol
         return None
 
 
@@ -148,6 +161,31 @@ def dispatched(name, obj=None):
     return None
 
 
+def reviewed_dispatch(name, obj, mnemonics):
+    """Narrow exceptions reviewed in the dependency sources and linked code; unexpected opcodes still fail.
+
+    Zstandard huf_decompress.c HUF_decompress4X{1,2}_usingDTable_internal returns to the default decoder unless
+    HUF_flags_bmi2 is set (ZSTD_cpuSupportsBmi2). libvpx inv_txfm_ssse3.c calls the two idct32 helpers only from
+    vpx_idct32x32_{34,135}_add_ssse3, selected by vpx_dsp_rtcd. GCC random.cc random_device::_M_init tests CPUID
+    leaf 1 ECX bit 30 and leaf 7 EBX bit 18 before selecting the RDRAND and RDSEED functions; the linked code was
+    also checked. Object and opcode restrictions prevent an unrelated function or future SIMD code being excused.
+    """
+    ops = {m if m == 'pmulhrsw' else m[:-1] if m[-1:] in ('b', 'w', 'l', 'q') else m for m in mnemonics}
+    if not ops:
+        return None
+    if obj in ('huf_decompress.o', 'huf_decompress_amd64.o') and re.fullmatch(
+            r'_?HUF_decompress4X[12]_usingDTable_internal_fast(?:_(?:c|asm)_loop)?', name):
+        if ops <= {'shlx', 'shrx', 'andn', 'mulx'}:
+            return 'zstd HUF_flags_bmi2 gate in HUF_decompress4X1/2_usingDTable_internal'
+    if obj == 'inv_txfm_ssse3.c.o' and name in ('idct32_135_8x32_ssse3', 'idct32_34_8x32_ssse3'):
+        if ops <= {'pmulhrsw'}:
+            return 'libvpx vpx_idct32x32_34/135_add_ssse3 via vpx_dsp_rtcd'
+    if obj == 'random.o' and re.fullmatch(r'_ZNSt12_GLOBAL__N_1L(?:12__x86_(?:rdrand|rdseed)|19__x86_rdseed_rdrand)EPv', name):
+        if ops <= {'rdrand', 'rdseed'}:
+            return 'libstdc++ random_device::_M_init CPUID RDRAND/RDSEED checks'
+    return None
+
+
 def scan(objdump, path, level, link_map=None):
     """{(function, object or None): Counter of mnemonics} of the instructions outside the level, and the instruction
     count. With link_map each instruction is also attributed to the object file it came from."""
@@ -169,7 +207,8 @@ def scan(objdump, path, level, link_map=None):
         if kind:
             words = [w for w in text.split() if w not in PREFIXES and not w.startswith('{')]
             obj = link_map.object_at(int(m.group(1), 16)) if link_map else None
-            found[(func, obj)][(kind, words[0] if words else '?')] += 1
+            symbol = link_map.symbol_at(int(m.group(1), 16)) if link_map else None
+            found[(symbol or func, obj)][(kind, words[0] if words else '?')] += 1
     err = proc.stderr.read()
     code = proc.wait()
     proc.stdout.close()
@@ -186,14 +225,15 @@ def main():
                     help='x86-64 level to check against (1: baseline SSE2; default 2)')
     ap.add_argument('--objdump', help='objdump to use (default: llvm-objdump or objdump on PATH, else MSYS2 UCRT64)')
     ap.add_argument('--json', type=Path, help='also write the findings as JSON')
-    ap.add_argument('--map', type=Path, help='lld map of the executable (default: xc2.map beside it when it exists)')
+    ap.add_argument('--map', type=Path, help='lld map of the executable (default: same filename with .map extension)')
     args = ap.parse_args()
     objdump = find_objdump(args.objdump)
     if not objdump:
         sys.exit('check_isa: no objdump found' + (f' at {args.objdump}' if args.objdump else ''))
     report, bad = {}, 0
     for path in args.files:
-        map_path = args.map or path.with_name('xc2.map')
+        # Neighboring DLLs do not share the game's address-to-object mapping.
+        map_path = args.map or path.with_suffix('.map')
         base = image_base(objdump, path) if map_path.is_file() else None
         link_map = LinkMap(map_path, base) if base is not None else None
         found, total = scan(objdump, path, args.level, link_map)
@@ -204,9 +244,12 @@ def main():
             opt = {mn: n for (kind, mn), n in counts.items() if kind == 'optional'}
             why = dispatched(fn, obj)
             if above:
-                (known if why else unexpected)[func] = {'mnemonics': above, **({'check': why} if why else {})}
+                above_why = why or reviewed_dispatch(fn, obj, above)
+                (known if above_why else unexpected)[func] = {'mnemonics': above,
+                                                            **({'check': above_why} if above_why else {})}
             if opt:
-                optional[func] = {'mnemonics': opt, **({'check': why} if why else {})}
+                opt_why = why or reviewed_dispatch(fn, obj, opt)
+                optional[func] = {'mnemonics': opt, **({'check': opt_why} if opt_why else {})}
         report[str(path)] = {'instructions': total, 'level': args.level, 'unexpected': unexpected,
                              'dispatched': known, 'optional_extensions': optional}
         if link_map:

@@ -7,10 +7,36 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from check_isa import classify, find_objdump, scan
+from check_isa import classify, find_objdump, scan, LinkMap, reviewed_dispatch
 
 
 class InstructionLevelTest(unittest.TestCase):
+    def test_function_section_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.map'
+            path.write_text('00001000 00000020    16         random.o:(.text$local_rng)\n'
+                            '00001020 00000010    16         other.o:(.text)\n')
+            symbols = LinkMap(path, 0x140000000)
+            self.assertEqual(symbols.object_at(0x140001001), 'random.o')
+            self.assertEqual(symbols.symbol_at(0x140001001), 'local_rng')
+            self.assertIsNone(symbols.symbol_at(0x140001020))
+            self.assertIsNone(symbols.object_at(0x140001030))
+
+    def test_reviewed_dispatch_is_restricted(self):
+        cases = [
+            ('HUF_decompress4X1_usingDTable_internal_fast', 'huf_decompress.o', {'shlxq', 'andnq'}),
+            ('_HUF_decompress4X2_usingDTable_internal_fast_asm_loop', 'huf_decompress_amd64.o', {'shlxq'}),
+            ('idct32_135_8x32_ssse3', 'inv_txfm_ssse3.c.o', {'pmulhrsw'}),
+            ('_ZNSt12_GLOBAL__N_1L12__x86_rdrandEPv', 'random.o', {'rdrandl'}),
+        ]
+        for name, obj, ops in cases:
+            with self.subTest(name=name):
+                self.assertIsNotNone(reviewed_dispatch(name, obj, ops))
+                self.assertIsNone(reviewed_dispatch(name, 'unrelated.o', ops))
+                self.assertIsNone(reviewed_dispatch(name, obj, ops | {'movddup'}))
+        self.assertIsNone(reviewed_dispatch('ZSTD_buildFSETable', 'huf_decompress.o', {'shlxq'}))
+        self.assertIsNone(reviewed_dispatch('_ZNSt11range_errorD2Ev', 'random.o', {'rdrandl'}))
+
     def test_baseline_sse2(self):
         for asm in ('movdqa %xmm0,%xmm1', 'paddq %xmm0,%xmm1', 'pextrw $0,%xmm0,%eax',
                     'lock cmpxchgq %rax,(%rdx)', 'rep bsf %rax,%rax'):

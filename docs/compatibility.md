@@ -27,7 +27,7 @@ build 26300. No AMD or NVIDIA GPU, no AMD CPU, no CPU without AVX2 and no Window
 
 | | Requirement | Level |
 | --- | --- | --- |
-| Architecture | 64-bit x86 (Intel or AMD). Windows on Arm runs it only under Microsoft's x64 emulation, not natively; the PC check warns. | Check only (Arm) |
+| Architecture | 64-bit x86 (Intel or AMD). Windows on Arm would require x64 emulation; setup refuses it because this release has no native ARM64 target. | Check only (Arm) |
 | Windows | 10 or 11. `xc2.exe` imports nothing newer than Windows 10 version 1507: `SetThreadDescription` (1607) is looked up at run time. Vulkan 1.3 drivers and the setup's Python ship for nothing older than Windows 10. | Tested on 11 (26300); Check only for 10 |
 | Processor | x86-64-v3 (AVX2, FMA, BMI2: Intel Haswell 2013+, AMD Excavator 2015+ / Zen) gets the default build. x86-64-v2 (SSE4.2, POPCNT, CMPXCHG16B: Intel Nehalem 2008+, AMD Bulldozer 2011+, and Pentium and Celeron models up to 2020, which have no AVX) gets a build for that level. Older processors are refused. | v3 Tested; v2 Emulated |
 | GPU API | Vulkan 1.3. | Tested |
@@ -80,7 +80,7 @@ build 26300. No AMD or NVIDIA GPU, no AMD CPU, no CPU without AVX2 and no Window
 | v2 game under SDE, Nehalem | As is, SDE stops about 20 s in with its own error "OSXSAVE bit is not set in CPUID", raised by code outside the three checked images (also with the null graphics back end and SDL's dummy audio driver), before the window opens; reaZelda's TotK runs stopped the same way. With `-xsave_by_host 1` (code outside the images may use the host's XSAVE; the images stay checked against Nehalem, and the AVX2 test program is still stopped): 8.5 minutes, title screen, New Game, the opening cutscene with sound, 464 preemptions of game code through the SSE stub, 0 invalid instructions. Then the Vulkan device was lost (exit 70), which no native or Sandy Bridge run showed; the Intel driver runs under the emulated Nehalem CPUID too. Not isolated | Emulated |
 | Shader translator (`xc2_xlate.exe`, .NET NativeAOT) under SDE, Nehalem and Sandy Bridge, its own image checked | `tools/xlate_smoke.py` passed: the test shader translated to valid SPIR-V, 0 SDE errors. Inside the SDE game runs the game's translation requests failed ("translator unavailable", 3 and 7 times; SDE instruments that child process too); the prepared shader cache covered the opening | Emulated |
 | Setup PC check (`installer/hostcheck.c`) on the tested PC | `cpu_level` 3, Windows 10.0.26300, x64; both Iris Xe entries usable with host import | Tested |
-| PC check verdicts (`tests/installer_test.py`, 13 cases) | v3 and v2 processors, v2 without the v2 library, below v2, Windows 7 / 8.1 refused and 10 1507 accepted, Arm warning, no loader or device, Vulkan 1.2 only, missing extensions and features named per GPU, a laptop with an unusable discrete GPU, host import judged on the GPU the game picks, software renderer, an older host check's output | Check only |
+| PC check verdicts (`tests/installer_test.py`, 13 cases) | v3 and v2 processors, v2 without the v2 library, below v2, Windows 7 / 8.1 refused and 10 1507 accepted, Arm refused even with a v2/v3 CPU report, no loader or device, Vulkan 1.2 only, missing extensions and features named per GPU, a laptop with an unusable discrete GPU, host import judged on the GPU the game picks, software renderer, an older host check's output | Check only |
 
 ### Baseline x86-64 experiment (not released)
 
@@ -114,14 +114,33 @@ fixed commit IDs, and old objects are cleaned before building so a prior set of 
 The relinked experimental executable passed the native self-test and movie probe. The movie probe also passed under
 Merom: 420 frames decoded, zero decoder errors, and no invalid-instruction report. This checks one movie and model,
 not full gameplay. Its level-1 scan covered 16,788,081 instructions and found no remaining ordinary SSE3 dependency
-functions. It still failed its gate: eight functions require dispatch review (Zstandard BMI2 fast loops and libvpx
-SSSE3 helpers), and a libstdc++ `random.o` path with RDRAND/RDSEED has no recorded check in the auditor. They must not
-be exempted solely to make the gate pass. No baseline support claim follows from these results.
+functions. At that stage it failed its gate: eight functions required dispatch review (Zstandard BMI2 fast loops and libvpx
+SSSE3 helpers), and a libstdc++ `random.o` path with RDRAND/RDSEED had no recorded check in the auditor. The subsequent review below accounts for these paths. No baseline support claim follows from these results.
 
 Evidence: `build/compat/isa-v1.json` (original dependencies), `build/compat/isa-v1-baseline-deps.json`,
 `build/logs/build-baseline-deps-helper.log`, `build/logs/build-v301-v1-baseline-deps.log`,
 `build/compat/v1-baseline-deps-selftest.log`, `build/compat/v1-baseline-deps-movie.log`, and
 `build/compat/v1-baseline-deps-merom-movie.log`.
+
+### Reviewed dispatch and DLL boundary
+
+A follow-up audit reviewed the Zstandard fast-loop gates in `huf_decompress.c`, the two libvpx helpers in
+`inv_txfm_ssse3.c`, and the linked libstdc++ `random_device::_M_init` CPUID checks. The linker map's `.text$` section
+names recover the RNG helper names that the executable's stripped symbol table otherwise labels as `range_error`.
+The auditor now recognizes only the reviewed functions, objects and opcodes; a different object or an additional
+SSE3 opcode still fails. Seven auditor tests cover those restrictions, function sections, and compiled instruction
+fixtures. The experimental executable's 16,788,081-instruction scan now reports zero unexpected functions, 138
+CPU-dispatched functions, and four optional-extension functions with recorded guards.
+
+This result covers the executable, not its DLLs or its child translator. DLL scans exposed a reporting defect: the
+auditor used the neighboring `xc2.map` for DLL addresses. It now defaults to the input's own `.map` filename. Without
+that unrelated map, the scanned libiconv has no flagged instructions above baseline. SDL3, Opus and `xc2_xlate.exe`
+still have flagged newer instructions with insufficient symbol detail to establish all their dispatch guards.
+They remain an open validation requirement. SDE's Pentium 4 model refused the x64 executable itself; that attempt
+is not an SSE2 execution result and is not evidence about a usable Windows x64 configuration.
+
+Evidence: `build/compat/isa-v1-reviewed.json`, `build/compat/isa-v1-dlls.json`, and
+`build/compat/v1-sse2-selftest.log`. None of this enables a baseline installer option.
 
 The SDE runs check `xc2.exe`, `SDL3.dll` and `libopus-0.dll` (`-chip_check_image`), not Windows' own DLLs or the GPU
 driver, which choose their instructions by processor themselves. Evidence files are in `build/compat/` of the
