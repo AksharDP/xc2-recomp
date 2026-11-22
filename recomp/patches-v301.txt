@@ -245,7 +245,7 @@ site xc2res main 329120 sha:89126e7f267c2d70 52805a00
 # +0x82cbec, +0x82ef1c, +0x82f014) load the -1 from the page's +0x8c instead, -1280 * fit / W: the design's centre on
 # the screen's. x10 is free at each site (written or clobbered by a call before any read).
 # At 16:9 and narrower shapes resolution.c leaves the set off.
-set xc2wide XC2_HUD_CENTER 0
+set xc2wide XC2_HUD_CENTER 1
 site xc2wide main 829c1c sha:00c55613fdd90219 @page:x10 bd408d41 bd40cd50 1e302821
 site xc2wide main 82cd00 sha:eb04d7399bb85ba8 @page:x10 bd408d41 bd40cd50 1e302821
 site xc2wide main 82efc4 sha:bc09d16b1be02939 @page:x10 bd408d45 bd40cd55 1e3528a5
@@ -267,9 +267,17 @@ site xc2wide main 82f148 sha:141ae56c2aed3d22 1e222881 1f140421
 # from main+0x82f014, the product of the pane's matrix with the piece's own, which carries its size: the same test and
 # scale run there on the product's x scale (s1) before its three x stores, with x9 and s16, s18 and s20 free (the
 # function is a leaf that uses x8 and s1-s5).
-site xc2wide main 82efb8 sha:348da3a97df6504d @page:x9 2d534530 1e20c0b2 7e30e652 0e311e52 1f1214a5 bd000005
-site xc2wide main 82efc8 sha:66be2bdadfaa03c5 1f120c63 bd000403 bd40b537 1e322af7 bd00b537
-site xc2wide main 82efd8 sha:76d1fad955ec734f 1f120c63 bd000c03
+# In the field and in cutscenes only the full-height layers are stretched: the opening's "Xenoblade Chronicles 2" title
+# card is a picture as wide as the design but only 0.067 of the frame width tall (its y scale |s2|), and stretching it
+# drew the logo twice as wide at 32:9, while the field's full-width pictures are fades (0.33 and up at 3840 wide). The
+# site before the fill test compares |s2| with the page's +0xe4 (res_hud_frame: 384 / frame width in the field, 0 in
+# menus, whose header bars are as thin and must stretch) into s21 (s19 and s21 are free after main+0x82ef80), and the
+# fill site keeps the stretch in s22 = s18 & s21 for the three stores. The count at +0xb4 still adds s18, every
+# full-width picture, so the menu test does not change.
+site xc2wide main 82efb4 sha:f94b55ee0d052bff 1e2708a5 @page:x9 bd40e533 1e20c055 7e33e6b5
+site xc2wide main 82efb8 sha:348da3a97df6504d @page:x9 2d534530 1e20c0b2 7e30e652 0e311e52 0e351e56 1f1614a5 bd000005
+site xc2wide main 82efc8 sha:66be2bdadfaa03c5 1f160c63 bd000403 bd40b537 1e322af7 bd00b537
+site xc2wide main 82efd8 sha:76d1fad955ec734f 1f160c63 bd000c03
 # In the field the HUD goes to the frame's edges by groups, so a widget's parts move together. The layout library draws
 # a tree of panes (main+0x833bf8 draws a container and walks its children through main+0x83311c, passing them a context
 # whose +0x40 points at its global matrix); every pane's draw builds its global matrix from that parent matrix and its
@@ -281,8 +289,9 @@ site xc2wide main 82efd8 sha:76d1fad955ec734f 1f120c63 bd000c03
 # s_max and the middle u counts from are at +0xbc, +0xa8, +0xc4 and +0xb8 (resolution.c wide_hud). The matrix is in
 # units of the frame's width in pixels (+0xd4) per interface unit: a pane's u is its centre, (tx + a / 2) * +0xd4,
 # and it decides only when narrower than 98 % of the design (|a| below +0xc8); a container's matrix carries no size
-# (a = 1), so its u is its origin, tx * +0xd4, and one within half an interface unit of the design's left edge
-# (+0xd8) does not move. A container that is neither under a tag nor a layout's root (tx exactly 0) passes its
+# (a = 1), so its u is its origin, tx * +0xd4, and one within 4 interface units of the design's left edge (+0xd8) does
+# not move (the title screen's dialog container sits between 0.5 and 4 units from it, and with half a unit its band and
+# text moved to the frame's left edge). A container that is neither under a tag nor a layout's root (tx exactly 0) passes its
 # children's context (+0x51, a byte no reader uses, and +0x52) the tag 0xa5 and its shift in whole interface units as
 # an int16, and every pane and container under that tag takes the inherited shift instead of its own; the pane draws
 # clear +0xcc again after their own pieces (main+0x82adec, main+0x831984, and main+0x82a0c0 for a root without a

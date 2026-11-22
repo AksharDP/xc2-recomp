@@ -383,9 +383,10 @@ static void list_gpus(VkInstance inst) {
     g_gpu_n = (int)n;
 }
 
-// Window sizes: the common 16:9 sizes that fit the monitor, the 1920x1080 default and the current size.
-static const int kSizes[][2] = {{1280, 720}, {1366, 768}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3200, 1800},
-                                {3840, 2160}};
+// Window sizes: the common 16:9 sizes, then the 21:9 and 32:9 ones of the game resolution (row_output_res), each when
+// it fits the monitor; the 1920x1080 default and the current size always.
+static const int kSizes[][2] = {{1280, 720},  {1366, 768},  {1600, 900},  {1920, 1080}, {2560, 1440}, {3200, 1800},
+                                {3840, 2160}, {2560, 1080}, {3440, 1440}, {3840, 1600}, {3840, 1080}, {5120, 1440}};
 enum { MAX_SIZES = sizeof kSizes / sizeof *kSizes + 1 };
 
 static void row_window_size(void) {
