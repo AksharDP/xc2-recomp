@@ -9,10 +9,8 @@
 #include "nvn_obj.h"   // pool_t, tex_t, view_t, samp_par, NVNcopyRegion (memory and textures block)
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
 
-// Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
-// VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
-// synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
-// independentBlend, geometryShader, textureCompressionBC.
+// Required (device choice fails without them): vk_require.h lists them (Vulkan 1.3, VK_KHR_swapchain,
+// VK_KHR_push_descriptor, VK_EXT_depth_clip_control and ten features); the installer's host check uses the same list.
 // Optional (flag set in VkCtx when enabled): the has_* members.
 typedef struct VkCtx {
     VkInstance instance;
@@ -43,6 +41,7 @@ typedef struct VkCtx {
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or XC2_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
+    int has_host_import;                    // VK_EXT_external_memory_host enabled; 0: shadow storage (vk_memory.c)
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     int device_index;                       // index in vkEnumeratePhysicalDevices
     uint64_t vram_held;                     // XC2_VRAM_LIMIT: device-local bytes held unused (vk_device.c vram_limit)
@@ -269,7 +268,9 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
+// Once, at the device choice: the memory class and the memory mode. host_import: the device has
+// VK_EXT_external_memory_host; without it CPU-visible pools get shadow storage whatever XC2_SHADOW says.
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m, int host_import);
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with XC2_TRACE=perf, every 1800 frames

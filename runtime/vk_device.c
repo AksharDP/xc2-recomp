@@ -9,6 +9,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+#include "vk_require.h"
 #include "platform/platform.h"
 
 static VkCtx g_vk;
@@ -98,22 +99,45 @@ static int create_instance(void) {
     return 1;
 }
 
-static const char *const k_required_ext[] = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-    VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
-
-// Name of the first missing required extension, or NULL.
-static const char *missing_required(VkPhysicalDevice pd) {
-    uint32_t n = 0;
-    vkEnumerateDeviceExtensionProperties(pd, NULL, &n, NULL);
-    VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
-    vkEnumerateDeviceExtensionProperties(pd, NULL, &n, e);
-    const char *miss = NULL;
-    for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext && !miss; i++)
-        if (!has_ext(e, n, k_required_ext[i])) miss = k_required_ext[i];
-    free(e);
-    return miss;
+// XC2_VK_HIDE_EXT=<name>[,<name>...]: the device's extension list without those names, in the device choice and in
+// device creation, so a GPU that has an extension runs the path of a driver without it. XC2_VK_HIDE_EXT=
+// VK_EXT_external_memory_host runs the shadow storage such a driver gets (vk_memory.c mirror_mode).
+static int ext_hidden(const char *name) {
+    const char *s = cfg_get("XC2_VK_HIDE_EXT");
+    size_t n = strlen(name);
+    while (s && *s) {
+        const char *comma = strchr(s, ',');
+        size_t len = comma ? (size_t)(comma - s) : strlen(s);
+        if (len == n && !strncmp(s, name, n)) return 1;
+        s = comma ? comma + 1 : NULL;
+    }
+    return 0;
 }
+
+// vkEnumerateDeviceExtensionProperties without the XC2_VK_HIDE_EXT names (same calling convention).
+static VKAPI_ATTR VkResult VKAPI_CALL dev_exts(VkPhysicalDevice pd, const char *layer, uint32_t *count,
+                                               VkExtensionProperties *out) {
+    uint32_t n = 0;
+    VkResult r = vkEnumerateDeviceExtensionProperties(pd, layer, &n, NULL);
+    if (r < 0) return r;
+    VkExtensionProperties *all = calloc(n ? n : 1, sizeof *all);
+    if (!all) return VK_ERROR_OUT_OF_HOST_MEMORY;
+    if ((r = vkEnumerateDeviceExtensionProperties(pd, layer, &n, all)) < 0) return free(all), r;
+    uint32_t k = 0, cap = out ? *count : UINT32_MAX;
+    r = VK_SUCCESS;
+    for (uint32_t i = 0; i < n; i++) {
+        if (ext_hidden(all[i].extensionName)) continue;
+        if (k == cap) { r = VK_INCOMPLETE; break; }
+        if (out) out[k] = all[i];
+        k++;
+    }
+    free(all);
+    *count = k;
+    return r;
+}
+
+static const VkRequireProcs k_require_procs = {vkGetPhysicalDeviceProperties, dev_exts, vkGetPhysicalDeviceFeatures2,
+                                               vkGetPhysicalDeviceQueueFamilyProperties};
 
 // Graphics+compute family that can present to the window.
 static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperties *qp, uint32_t nq) {
@@ -130,8 +154,10 @@ static int name_has(const char *s, const char *sub) {
     return 0;
 }
 
-// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; XC2_GPU_INDEX (index) or
-// XC2_GPU_NAME (case-insensitive part of the name) overrides.
+// First discrete GPU that meets vk_require.h (Vulkan 1.3, the required extensions and features) and has a
+// graphics+present queue; XC2_GPU_INDEX (index) or XC2_GPU_NAME (case-insensitive part of the name) overrides. The
+// features are checked here too, not only at device creation, so a laptop whose discrete GPU lacks one plays on its
+// integrated GPU instead of stopping.
 static int pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.instance, &n, NULL);
@@ -141,7 +167,7 @@ static int pick_device(void) {
     const char *e = cfg_get("XC2_GPU_INDEX");   // no fixed default: the best device when unset
     int want = e && *e ? atoi(e) : -1;
     const char *name = cfg_get("XC2_GPU_NAME");
-    int best = -1, best_score = -1;
+    int best = -1, best_score = -1, best_import = 0;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
@@ -149,9 +175,18 @@ static int pick_device(void) {
                VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
         if (want >= 0 && (int)i != want) continue;
         if (name && *name && !name_has(p.deviceName, name)) continue;
-        if (p.apiVersion < VK_API_VERSION_1_3) { rt_log("vk: gpu %u skipped: Vulkan below 1.3", i); continue; }
-        const char *miss = missing_required(pd[i]);
-        if (miss) { rt_log("vk: gpu %u skipped: missing extension %s", i, miss); continue; }
+        VkRequireResult req;
+        vk_require_check(&k_require_procs, pd[i], &req);
+        if (!req.usable) {
+            char why[512];
+            size_t k = 0;
+            for (int m = 0; m < req.n_missing && m < VK_REQUIRE_MISSING_MAX; m++)
+                k += (size_t)snprintf(why + k, k < sizeof why ? sizeof why - k : 0, "%s%s", m ? ", " : "", req.missing[m]);
+            rt_log("vk: gpu %u skipped: lacks %s", i, why);
+            continue;
+        }
+        if (!req.host_import)
+            rt_log("vk: gpu %u: no %s; CPU-visible pools will be shadow copies", i, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
         uint32_t nq = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(pd[i], &nq, NULL);
         VkQueueFamilyProperties *qp = calloc(nq ? nq : 1, sizeof *qp);
@@ -161,12 +196,12 @@ static int pick_device(void) {
         if (fam == UINT32_MAX) { rt_log("vk: gpu %u skipped: no graphics+compute+present queue family", i); continue; }
         int score = (int)i == want ? 100 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3
                   : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
-        if (score > best_score) { best_score = score; best = (int)i; }
+        if (score > best_score) { best_score = score; best = (int)i; best_import = req.host_import; }
     }
     if (best < 0) {
         if (want >= 0) rt_log("vk: XC2_GPU_INDEX=%d is not usable (see above)", want);
         else if (name && *name) rt_log("vk: no usable gpu matches XC2_GPU_NAME=%s (see above)", name);
-        else rt_log("vk: no device with Vulkan 1.3 and the required extensions (see above)");
+        else rt_log("vk: no device with Vulkan 1.3 and the required extensions and features (see above)");
         free(pd);
         return 0;
     }
@@ -197,7 +232,8 @@ static int pick_device(void) {
         }
     free(qp);
     rt_log("vk: using gpu %d: %s, graphics family %u with %u queues", best, g_vk.props.deviceName, g_vk.gfx_family, g_vk.gfx_queue_count);
-    vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
+    g_vk.has_host_import = best_import;   // create_device enables the extension by the same list
+    vk_mem_class_log(&g_vk.props, &g_vk.mem_props, best_import);
     return 1;
 }
 
@@ -265,12 +301,19 @@ static void vram_limit(void) {
 
 static int create_device(void) {
     uint32_t ne = 0;
-    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
+    dev_exts(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
-    vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+    dev_exts(g_vk.phys, NULL, &ne, ep);
     const char *ext[28];
     uint32_t n_ext = 0;
-    for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
+    for (int i = 0; i < VK_REQUIRE_EXT_COUNT; i++) ext[n_ext++] = vk_require_ext[i];
+    // Optional (vk_require.h): without it the CPU-visible pools get shadow storage (vk_memory.c mirror_mode)
+    g_vk.has_host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    if (g_vk.has_host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+    {
+        const char *h = cfg_get("XC2_VK_HIDE_EXT");
+        if (h && *h) rt_log("vk: extensions hidden from the device choice and creation (XC2_VK_HIDE_EXT): %s", h);
+    }
 
     FeatureChain *c = calloc(1, sizeof *c);
     void **tail = &c->f2.pNext;
@@ -331,18 +374,12 @@ static int create_device(void) {
         if (!vk_caps_gpl(&c->gpl, &gp)) { *gpl_link = NULL; n_ext -= 2; }
     }
     const VkPhysicalDeviceFeatures *h = &c->f2.features;
-    const char *miss = NULL;
-    if (!c->f12.timelineSemaphore) miss = "timelineSemaphore";
-    else if (!c->f13.dynamicRendering) miss = "dynamicRendering";
-    else if (!c->f13.synchronization2) miss = "synchronization2";
-    else if (!h->shaderStorageImageWriteWithoutFormat) miss = "shaderStorageImageWriteWithoutFormat";
-    else if (!c->clip.depthClipControl) miss = "depthClipControl";
-    else if (!h->shaderInt64) miss = "shaderInt64";
-    else if (!h->samplerAnisotropy) miss = "samplerAnisotropy";
-    else if (!h->independentBlend) miss = "independentBlend";
-    else if (!h->geometryShader) miss = "geometryShader";
-    else if (!h->textureCompressionBC) miss = "textureCompressionBC";
-    if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
+    const char *miss = NULL;   // pick_device checked the same list; vk_caps_features may have cleared one since
+    if (vk_require_features_missing(h, &c->f12, &c->f13, &c->clip, &miss, 1)) {
+        rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss);
+        free(c);
+        return 0;
+    }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
@@ -385,10 +422,12 @@ static int create_device(void) {
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }
 
-    VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
-    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &emh};
-    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
-    g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
+    if (g_vk.has_host_import) {
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &emh};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
+    }
     vk_caps_init(&g_vk);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
