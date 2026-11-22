@@ -57,8 +57,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                 "more video memory and GPU time. A size beyond the game's graphics memory is drawn "
                                 "smaller at the same shape (3840 x 1600 as 3536 x 1472, 5120 x 1440 as 4304 x 1210) "
                                 "and scaled to the window. The 21:9 and 32:9 sizes show more of the world at the "
-                                "sides; the interface stays in a 16:9 area at the left unless hud_center = 1 in "
-                                "xc2.ini fits it to the frame.",
+                                "sides; the interface stays in a 16:9 area at the left unless Fit the interface to "
+                                "wide screens is on.",
+    [UI_MENU_HUD_CENTER] = "Fit the interface to wide screens",
+    [UI_MENU_HUD_CENTER_DESC] = "At a game resolution wider than 16:9: centres menus and moves the field and battle HUD "
+                                "to the screen's edges, instead of keeping the interface in a 16:9 area at the left. "
+                                "No effect at 16:9.",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game scales it up to "
                                   "that size. Game leaves it to the game's dynamic resolution (70 to 100 %); a "
