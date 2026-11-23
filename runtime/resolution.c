@@ -208,6 +208,8 @@ static void wide_hud(uint8_t *page) {
     // +0xe0: written by the minimap capture's region site (main+0x8365fc), the capture pane's group shift kept for its
     // draw-back (main+0x8367a0), since the children's draws rewrite +0xcc in between
     memset(page + 0xe0, 0, 8);   // and +0xe4, the thin-picture threshold res_hud_frame sets each frame
+    // +0xec: a frame counter (res_hud_frame), from which the container sites (main+0x833ca4) tell a pane drawn on the
+    // frame before from one that was hidden
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;
@@ -241,6 +243,7 @@ void res_hud_frame(void) {
     // design, such as the opening's "Xenoblade Chronicles 2" title card (0.067), keeps its shape
     float thin = field ? 384.0f / X.w : 0.0f;
     memcpy(hud_page + 0xe4, &thin, sizeof thin);
+    hud_page[0xec]++;
 }
 
 // A mod's ExeFS patch that holds xc2size off writes the graphics device's size getters (main+0x6e3fc8 width,

@@ -336,9 +336,9 @@ site xc2wide main 832740 sha:f63edfc5a4890376 79418676 3901c7ff 7900e7ff
 # main+0x686824, which copies one object's place onto another, also reaches what look like the battle party gauges.
 # After each pane draw has stored its shift (the sites above), main+0x82ad3c, main+0x8318d0 and main+0x833c9c clear
 # +0xcc for a pane carrying that byte, and a container carrying it also passes its children shift 0 under the tag
-# (w12, stored at main+0x833d44), so the whole object stays where the game put it. The full-screen containers these objects live in still decide a shift, which reaches their other
-# children. The byte test is (b - 0xa5)^2 negated and shifted right arithmetically, -1 unless b is 0xa5, so no flags
-# are written. The marking sites use registers free before the call (x9-x11 at main+0x686308; x10-x12 at
+# (w12, stored at main+0x833d44), so the whole object stays where the game put it. The full-screen containers these
+# objects live in still decide a shift, which reaches their other children. The byte test is (b - 0xa5)^2 negated and
+# shifted right arithmetically, -1 unless b is 0xa5, so no flags are written. The marking sites use registers free before the call (x9-x11 at main+0x686308; x10-x12 at
 # main+0x685c7c, where w8 and w9 carry the new position): they carry no argument and the called function overwrites
 # them.
 site xc2wide main 686308 sha:36675614a6124935 910043e1 f9400669 f9406929 d10403ea cb0903eb aa09016b 937ffd6b 8a0b0129
@@ -351,6 +351,42 @@ site xc2wide main 8318d0 sha:0dfd5dd85183e2d6 1e210842 @page:x10 3942b26b 510295
 site xc2wide main 8318d4 sha:72e5c312ed8f14e0 1e210861 1e270171 0e311e10 bd00cd50
 site xc2wide main 833c9c sha:b63f376f6d4a84b1 1e2008a0 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b 0a0b018c
 site xc2wide main 833ca0 sha:fe8af182b35022d5 1e202820 bd40cd50 1e270171 0e311e10 bd00cd50
+# Containers that slide in. A layout's full-screen containers rest at tx 0, where they pass no tag and their children
+# decide alone; while one slides in or out (the field HUD after a load, the battle palettes, Current Objective) its tx
+# crosses the ramp, and the decision it tagged its children with moved the whole palette to the other edge or to its
+# 16:9 place until it came to rest. No field of the pane tells such a container from one the game placed (the minimap's
+# map, the party gauges, a popup), but their motion does: a slider moves every draw until it is at 0, a placed one is
+# still on the draw after it appears. So a container passes its tag once it has settled, and until then its children
+# decide alone. The sites below, after the container's decision, keep in the pane's free bytes +0xad and +0xae (zeroed
+# with +0xac when the game builds it) its state and its last position in quarter interface units (int16). With u the
+# position and d the step since the last draw:
+#   far   |u| >= 16         near  |d| <= 4 units when far, 1.25 otherwise
+#   cont  drawn this frame or the one before (the page's +0xec counts frames, res_hud_frame; +0xad bits 0-4 hold it)
+#   recent  moved on this draw or one of the two before it (+0xad bits 5 and 6 hold the two)
+#   zone  |u| < 4 and recent; the decision itself gives 0 there
+#   settled (+0xad bit 7) = cont and (settled or (near and far and not zone)) and not (tx is 0 and not recent)
+# An unmarked container that is not under a tag passes
+#   no tag                  when not settled, in (zone or cont) and not (near and outside the zone)
+#   the tag and -s_max      when settled and in the zone (a gauge arriving at 0, a popup leaving across it, the
+#                           minimap's map scrolling past it)
+#   its decision as before  otherwise, which includes a pane's first draw, where a slider is still off the screen
+# and a marked one always passes the tag (with shift 0, above), since one that stands exactly at tx 0 for a frame is
+# not a layout's root. The values are masks in s16-s19, s22 and s24-s27 (unused in the function): s17 near, s18
+# settled, s19 cont, s21 the unmarked mask, s22 the frame count and the moved bits, s23 -s_max as an integer, s24 zone,
+# s27 far; x10 and x11 are scratch, and x12 and x13 carry the shift and the tag to main+0x833d44.
+site xc2wide main 833ca4 sha:f9954256b34c0523 bc1e43a0 1e270175 bd40d550 bd40c557 bd40b158 3943b14b 1e300a90 1e388af7
+site xc2wide main 833ca8 sha:7e368f447b62d6b1 bd400d21 1e3802ea 1e270157 1e18fa0a 1e270176 79c15e6b 79015e6a 4b0b014b
+site xc2wide main 833cac sha:65885dc6bf5b0619 1e220860 1b0b7d6b 1b0a7d4a 1e270158 1e270172 530c7d4a 4b0a03ea 131f7d4a
+site xc2wide main 833cb0 sha:8df8d22c9a67564a 1e2108c1 1e27015b 1218014a 4b0a016b 5100816b 131f7d6b 1e270171 1e26030a
+site xc2wide main 833cb4 sha:eb2bdbca806d2fd6 1e212800 5104014a 131f7d4a 1e270158 1e26024a 4b0a03ea 531f7d4a 3942b66b
+site xc2wide main 833cb8 sha:4fd1cfbbf3772e37 bd400521 1e270172 5305196b 331f056a 4b0a03eb 131f7d6b 1e270179 1e2602cb
+site xc2wide main 833cbc sha:3890e2ba9bc0ff2a 1e202820 331b094b 1e270176 1e26024a 4b0a016b 121f0d6b 5100056b 131f7d6b
+site xc2wide main 833cc0 sha:74917f380e19ac89 bc1dc3a0 1e270173 5ea0da94 0e391f18 0e791e9a 0e781e31 0e311f7b 0ebb1e52
+site xc2wide main 833cc4 sha:71e3cf479c9186a5 f9402429 0e331e52 0e7a1e52 1e26024b 1e2602ca 3300194b 3902b66b 13071d6b
+site xc2wide main 833cc8 sha:7427ddace0725e31 bd415660 1e270172 3941442a 5100054a 131f7d4a 1e2602ab 0a0b014a 1e270159
+site xc2wide main 833ccc sha:0639ef3608dd2cef bd400121 0eb81e73 0e721e73 0e711e73 0e391e73 0e321f18 0e391f18 1e26026a
+site xc2wide main 833cd0 sha:a6b771a26f0b0bc5 1e210800 0a2a01ad 1e26030a 0a2a018c 1e2602eb 0a0a016b 2a0b018c 1e2602ab
+site xc2wide main 833cd4 sha:8088cd7442f89933 bc1b83a0 2a2b014a 528014ab 0a0b014a 2a0a01ad
 # Panes drawn through a capture (the minimap: its map and icons are rendered into a texture and drawn back in its
 # frame): main+0x83656c takes the pane's screen bounds from main+0x82aa7c, which count from the left edge without the
 # centring, turns them into the capture's region and projection (main+0x8365ec on), renders the children, which the
