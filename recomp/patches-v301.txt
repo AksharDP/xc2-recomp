@@ -295,7 +295,9 @@ site xc2wide main 82efd8 sha:76d1fad955ec734f 1f160c63 bd000c03
 # children's context (+0x51, a byte no reader uses, and +0x52) the tag 0xa5 and its shift in whole interface units as
 # an int16, and every pane and container under that tag takes the inherited shift instead of its own; the pane draws
 # clear +0xcc again after their own pieces (main+0x82adec, main+0x831984, and main+0x82a0c0 for a root without a
-# parent). So the minimap, clock, area name, Blade Switch, party list, blades and arts move whole, and the compass and
+# parent). The sign of u is set before the mask that clears a tagged pane's own shift (s21): a sign bit left on its zero
+# would turn the inherited shift around when it is combined with it, which sent the left half of the enlarged map to the
+# left while the right half went right. So the minimap, clock, area name, Blade Switch, party list, blades and arts move whole, and the compass and
 # the middle of the screen stay. min, max and the sign are fmin, fmax and bit selects, so no site writes flags; x10-x13
 # and s16-s21 are unused in the three functions. A layout's root is drawn by main+0x832704, which builds its children's
 # context at sp+0x20 without setting +0x51..+0x53; main+0x832740 clears them, so a root's children never read a stale
@@ -305,21 +307,21 @@ site xc2wide main 82ad24 sha:b9f68517ef10f1c7 aa0803e1 @page:x10 3941468b 510295
 site xc2wide main 82ad28 sha:c601cb9d0110aa7d 2d419d24 1e20c253 bd40c955 7e35e673 1e270175 0e731eb5 1e2c1011 bd402bf4
 site xc2wide main 82ad2c sha:45f7e90632d67c92 1e270800 1f115251 bd40d550 1e300a31 bd40b950 1e303a31 1e20c232 bd40bd50
 site xc2wide main 82ad30 sha:ae977dbe500144cf 1e240847 1e303a52 bd40a950 1e300a52 bd40c550 1e305a52 2f00e410 1e304a52
-site xc2wide main 82ad34 sha:925ed8e8b7202873 1e272800 bd40b150 1e300a52 0e351e52 0f046410 2eb01e32 79c0a68c 1e220190
+site xc2wide main 82ad34 sha:925ed8e8b7202873 1e272800 bd40b150 1e300a52 0f046410 2eb01e32 0e351e52 79c0a68c 1e220190
 site xc2wide main 82ad38 sha:06ba13fd24c7d190 bd003be0 1e270171 0e711e10 0eb01e52 bd40d150 1e300a50 bd00cd50
 site xc2wide main 82adec sha:600b57fbca6504ce f9412268 @page:x10 b900cd5f
 site xc2wide main 8318b8 sha:34b2e5cce8a3a12a 2d419d04 @page:x10 3941468b 5102956b 4b0b03ec 2a0c016b 131f7d6b bc5e03b2
 site xc2wide main 8318bc sha:03f0e2ea5d69585e 1e270800 1e20c253 bd40c955 7e35e673 1e270175 0e731eb5 1e2c1011 bc5d83b4
 site xc2wide main 8318c0 sha:50118e97b8721b92 1e240821 1f115251 bd40d550 1e300a31 bd40b950 1e303a31 1e20c232 bd40bd50
 site xc2wide main 8318c4 sha:2e3d3a8dbad9d4a9 1e212800 1e303a52 bd40a950 1e300a52 bd40c550 1e305a52 2f00e410 1e304a52
-site xc2wide main 8318c8 sha:f647b70116886dfe bc1e83a0 bd40b150 1e300a52 0e351e52 0f046410 2eb01e32 79c0a68c 1e220190
+site xc2wide main 8318c8 sha:f647b70116886dfe bc1e83a0 bd40b150 1e300a52 0f046410 2eb01e32 0e351e52 79c0a68c 1e220190
 site xc2wide main 8318cc sha:193dfd4d2e65d638 2d418500 1e270171 0e711e10 0eb01e52 bd40d150 1e300a50 bd00cd50
 site xc2wide main 831984 sha:d04345d41bc1c1b7 f9412268 @page:x10 b900cd5f
 site xc2wide main 833c80 sha:a2ad8c40f203fb9d 2d419d24 @page:x10 3941442b 5102956b 4b0b03ec 2a0c016b 131f7d6b bc5d83b4
 site xc2wide main 833c84 sha:662fb0317cc69036 1e270800 5ea0da93 1e20c296 bd40d955 7eb6e6b6 1e270175 0e761eb5 bd40d550
 site xc2wide main 833c88 sha:001fec2e0d3c7895 1e240847 1e300a91 bd40b950 1e303a31 1e20c232 bd40bd50 1e303a52 bd40a950
 site xc2wide main 833c8c sha:d9505efff8726881 1e272800 1e300a52 bd40c550 1e305a52 2f00e410 1e304a52 bd40b150 1e300a52
-site xc2wide main 833c90 sha:79571923dc17a2b2 bc1e83a0 0e351e52 0f046410 2eb01e32 79c0a42c 1e220190 1e270171 0e711e10
+site xc2wide main 833c90 sha:79571923dc17a2b2 bc1e83a0 0f046410 2eb01e32 0e351e52 79c0a42c 1e220190 1e270171 0e711e10
 site xc2wide main 833c94 sha:88631bb5a0251c07 2d418920 0eb01e52 bd40d150 1e300a50 bd00cd50 1e26026c 0a0b018c 2a2c03ec
 site xc2wide main 833c98 sha:bb14bb37eea13aa5 1e220821 528014ad 0a0c01ad 1e38024c
 site xc2wide main 833d44 sha:c161fbbf6672e031 390143e9 390147ed 7900a7ec
@@ -364,31 +366,52 @@ site xc2wide main 833ca0 sha:fe8af182b35022d5 1e202820 bd40cd50 1e270171 0e311e1
 #   cont  drawn this frame or the one before (the page's +0xec counts frames, res_hud_frame; +0xad bits 0-4 hold it)
 #   recent  moved on this draw or one of the two before it (+0xad bits 5 and 6 hold the two)
 #   zone  |u| < 4 and recent; the decision itself gives 0 there
-#   settled (+0xad bit 7) = cont and (settled or (near and far and not zone)) and not (tx is 0 and not recent)
+#   scaled  the global x scale (a, at [x29 - 0x20]) is not 1 (floor(256 a) is neither 255 nor 256)
+#   settled (+0xad bit 7) = cont and (settled or (near and far and not zone)) and not (tx is 0 and not recent) and not
+#           scaled
 # An unmarked container that is not under a tag passes
-#   no tag                  when not settled, in (zone or cont) and not (near and outside the zone)
+#   no tag                  when scaled, or not settled, in (zone or cont) and not (near and outside the zone)
 #   the tag and -s_max      when settled and in the zone (a gauge arriving at 0, a popup leaving across it, the
 #                           minimap's map scrolling past it)
 #   its decision as before  otherwise, which includes a pane's first draw, where a slider is still off the screen
 # and a marked one always passes the tag (with shift 0, above), since one that stands exactly at tx 0 for a frame is
-# not a layout's root. The values are masks in s16-s19, s22 and s24-s27 (unused in the function): s17 near, s18
-# settled, s19 cont, s21 the unmarked mask, s22 the frame count and the moved bits, s23 -s_max as an integer, s24 zone,
-# s27 far; x10 and x11 are scratch, and x12 and x13 carry the shift and the tag to main+0x833d44.
+# not a layout's root. A scaled container zooms about a point in its middle, so its origin says nothing about its place:
+# the button challenge's ring (its origin 192 units times the scale left of the centre it keeps) was sent left by it,
+# and its parts, which stand at the centre, decide 0 themselves.
+# The last part (from main+0x833cdc) makes a container that follows a capture pane (below) among its siblings take the
+# capture's shift. The minimap's layout draws the map into its frame with two capture panes and, after them, two
+# containers with the map's tiles and icons, which are as large as the whole map: their origins lie far left of the
+# design, so they decided -s_max while the frame went right, and the minimap showed no map. A capture pane keeps 0xc3
+# at +0xac and the shift of its captures at +0xae (the sites at main+0x836600); an unmarked container that is not under
+# a tag and whose previous sibling (pane +8) carries 0xc3 passes the tag with that shift, and writes both to its own
+# +0xac and +0xae so the next container follows as well. In those +0xae is no longer a last position, which only the
+# settled state reads and this rule overrides. A container without a previous sibling tests itself.
+# The values are masks in s16-s19, s22 and s24-s28 (unused in the function): s17 near, s18 settled, s19 cont, s21 the
+# unmarked mask, s22 the frame count and the moved bits, s23 -s_max as an integer, s24 zone, s25 not under a tag (and
+# unmarked), s27 far, s28 scaled; the last part reuses s16-s18. x10 and x11 are scratch, and x12 and x13 carry the shift
+# and the tag to main+0x833d44.
 site xc2wide main 833ca4 sha:f9954256b34c0523 bc1e43a0 1e270175 bd40d550 bd40c557 bd40b158 3943b14b 1e300a90 1e388af7
 site xc2wide main 833ca8 sha:7e368f447b62d6b1 bd400d21 1e3802ea 1e270157 1e18fa0a 1e270176 79c15e6b 79015e6a 4b0b014b
 site xc2wide main 833cac sha:65885dc6bf5b0619 1e220860 1b0b7d6b 1b0a7d4a 1e270158 1e270172 530c7d4a 4b0a03ea 131f7d4a
-site xc2wide main 833cb0 sha:8df8d22c9a67564a 1e2108c1 1e27015b 1218014a 4b0a016b 5100816b 131f7d6b 1e270171 1e26030a
-site xc2wide main 833cb4 sha:eb2bdbca806d2fd6 1e212800 5104014a 131f7d4a 1e270158 1e26024a 4b0a03ea 531f7d4a 3942b66b
-site xc2wide main 833cb8 sha:4fd1cfbbf3772e37 bd400521 1e270172 5305196b 331f056a 4b0a03eb 131f7d6b 1e270179 1e2602cb
-site xc2wide main 833cbc sha:3890e2ba9bc0ff2a 1e202820 331b094b 1e270176 1e26024a 4b0a016b 121f0d6b 5100056b 131f7d6b
-site xc2wide main 833cc0 sha:74917f380e19ac89 bc1dc3a0 1e270173 5ea0da94 0e391f18 0e791e9a 0e781e31 0e311f7b 0ebb1e52
-site xc2wide main 833cc4 sha:71e3cf479c9186a5 f9402429 0e331e52 0e7a1e52 1e26024b 1e2602ca 3300194b 3902b66b 13071d6b
-site xc2wide main 833cc8 sha:7427ddace0725e31 bd415660 1e270172 3941442a 5100054a 131f7d4a 1e2602ab 0a0b014a 1e270159
-site xc2wide main 833ccc sha:0639ef3608dd2cef bd400121 0eb81e73 0e721e73 0e711e73 0e391e73 0e321f18 0e391f18 1e26026a
-site xc2wide main 833cd0 sha:a6b771a26f0b0bc5 1e210800 0a2a01ad 1e26030a 0a2a018c 1e2602eb 0a0a016b 2a0b018c 1e2602ab
-site xc2wide main 833cd4 sha:8088cd7442f89933 bc1b83a0 2a2b014a 528014ab 0a0b014a 2a0a01ad
-# Panes drawn through a capture (the minimap: its map and icons are rendered into a texture and drawn back in its
-# frame): main+0x83656c takes the pane's screen bounds from main+0x82aa7c, which count from the left edge without the
+site xc2wide main 833cb0 sha:8df8d22c9a67564a 1e2108c1 1e27015b 1218014a 4b0a016b 5100816b 131f7d6b 1e270171 bc5e03bc
+site xc2wide main 833cb4 sha:eb2bdbca806d2fd6 1e212800 1e18e38a 5103fd4a 121f794a 4b0a03eb 2a0b014a 131f7d4a 1e27015c
+site xc2wide main 833cb8 sha:4fd1cfbbf3772e37 bd400521 1e26030a 5104014a 131f7d4a 1e270158 1e26024a 4b0a03ea 531f7d4a
+site xc2wide main 833cbc sha:3890e2ba9bc0ff2a 1e202820 3942b66b 1e270172 5305196b 331f056a 4b0a03eb 131f7d6b 1e270179
+site xc2wide main 833cc0 sha:74917f380e19ac89 bc1dc3a0 1e2602cb 331b094b 1e270176 1e26024a 4b0a016b 121f0d6b 5100056b
+site xc2wide main 833cc4 sha:71e3cf479c9186a5 f9402429 131f7d6b 1e270173 5ea0da94 0e391f18 0e791e9a 0e781e31 0e311f7b
+site xc2wide main 833cc8 sha:7427ddace0725e31 bd415660 0e7c1f7b 0ebb1e52 0e331e52 0e7a1e52 0e7c1e52 1e26024b 1e2602ca
+site xc2wide main 833ccc sha:0639ef3608dd2cef bd400121 3300194b 3902b66b 13071d6b 1e270172 3941442a 5100054a 131f7d4a
+site xc2wide main 833cd0 sha:a6b771a26f0b0bc5 1e210800 1e2602ab 0a0b014a 1e270159 0eb81e73 0e721e73 0e711e73 0ebc1e73
+site xc2wide main 833cd4 sha:8088cd7442f89933 bc1b83a0 0e391e73 0e321f18 0e391f18 1e26026a 0a2a01ad 1e26030a 0a2a018c
+site xc2wide main 833cd8 sha:f1ddea69110d31b8 bd415a60 1e2602eb 0a0a016b 2a0b018c 1e2602ab 2a2b014a 528014ab 0a0b014a
+site xc2wide main 833cdc sha:23ff3f4710bceaac bd400521 2a0a01ad f940066a d100054b 937ffd6b 8a13016b aa0b014a 3942b14b
+site xc2wide main 833ce0 sha:974b6d2a6830e64d 1e210801 79c15d4a 1e270151 51030d6b 1b0b7d6b 4b0b03eb 131f7d6b 1e26032a
+site xc2wide main 833ce4 sha:5fc844bbf739a628 bc1bc3a1 0a2b014a 1e26022b 0a0a016b 0a2a018c 2a0b018c 1e270171 1e270152
+site xc2wide main 833ce8 sha:d4b2ebb057929c01 bd415e60 528014ab 0a0a016b 2a0b01ad 3942b26b 1e270170 5280186b 0a0a016b
+site xc2wide main 833cec sha:95d5d85f548d40f7 bd400921 1e26020a 2a0a016b 3902b26b 79c15e6b 1e26024a 0a2a016b 1e26022a
+site xc2wide main 833cf0 sha:8d41fb82840c04c5 1e210800 2a0a016b 79015e6b
+# Panes drawn through a capture (the minimap's and the enlarged map's: what lies in their rectangle is rendered into a
+# texture and drawn back in their frame): main+0x83656c takes the pane's screen bounds from main+0x82aa7c, which count from the left edge without the
 # centring, turns them into the capture's region and projection (main+0x8365ec on), renders the children, which the
 # builders above have centred, into it, and draws the texture back at 2 * fit * x / W - 1. Under the centred interface
 # the children fell outside the region and the texture came back at the left-anchored place, so the minimap's frame was
@@ -399,8 +422,17 @@ site xc2wide main 833cd4 sha:8088cd7442f89933 bc1b83a0 2a2b014a 528014ab 0a0b014
 # decide which panes are culled, and shifting them there hid the minimap. The region and the draw-back also take the
 # capture pane's group shift (+0xcc, half of it in the bounds' units). The children's draws rewrite +0xcc before the
 # draw-back, so the first site keeps the pane's value at +0xe0 and the draw-back reads it from there.
+# The sites from main+0x836600 also leave the shift in whole interface units (+0xcc / +0xd0) at the pane's +0xae and the
+# mark 0xc3 at its +0xac (x22 is the pane) for the containers that follow it (above). When the previous sibling is a
+# marked capture that shows, the pane takes over its value: the minimap's layout has the minimap's capture first and the
+# enlarged map's, at the design's centre, second, and the containers after both belong to the first. While the enlarged
+# map is open the first is hidden (bit 0 or 3 of +0xaa, the bits main+0x83656c returns on) and the second passes its own
+# shift, 0. The masks are built from differences without flags; x9-x12 and s16-s18 are free there.
 site xc2wide main 8365fc sha:6d1ca0bde65c0ef2 bd417ac0 @page:x9 bd40a130 bd40cd31 bd00e131 1e2c1012 1f124230 1e302800
-site xc2wide main 836600 sha:fbde52beaf05940f bd4172c2 1e302842
+site xc2wide main 836600 sha:fbde52beaf05940f bd4172c2 1e302842 bd40d132 1e321a31 1e380229 f94006ca d100054c 937ffd8c
+site xc2wide main 836604 sha:72a45e05933d11d1 bd453303 8a16018b aa0b014a 3942b14b 51030d6b 1b0b7d6b 4b0b03eb 131f7d6b
+site xc2wide main 836608 sha:d6233b520f746991 bd455b04 2a0c016b 3942a94c 2a4c0d8c 1300018c 2a0c016b 79c15d4a 0a2b014a
+site xc2wide main 83660c sha:99e115fe86d411f6 1e220862 0a0b0129 2a0a0129 79015ec9 52801869 3902b2c9
 site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 bd40e134 1e342821 1e212a41
 # Panes that clip their children (the Skip Travel map's panel) draw them into a viewport of their own. The clip
 # rectangle is in design units, counted from the design's left edge without the centring. main+0x8399c0 turns it into
