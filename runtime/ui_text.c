@@ -95,6 +95,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "display runs at about twice the frame rate. It needs AMD FSR on for depth, motion "
                                "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
                                "Off by default.",
+    [UI_MENU_FSR_MISSING] = "Not available: AMD's FSR libraries are not next to the game (the Linux release has none).",
+    [UI_MENU_FSR_LOADER_MISSING] = "Needs amd_fidelityfx_loader_vk.dll next to the game.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. The default is 120. Above 60 is "
@@ -348,10 +350,14 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
-    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
+    [UI_MENU_OV_UPSCALER] = "Upscaler", [UI_MENU_OV_SCALING] = "Window scaling", [UI_MENU_OV_LIMIT] = "Frame limit",
+    [UI_MENU_OV_PRESENT] = "Presentation",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
+    [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "game (TAA)",
+    [UI_MENU_OV_UPSCALE_NO_LIB] = "game: no FSR library",
+    [UI_MENU_OV_UPSCALE_IDLE] = "game: FSR not running",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

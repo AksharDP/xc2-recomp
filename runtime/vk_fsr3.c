@@ -117,6 +117,12 @@ static struct {
 static VkFsrFrame FR, FR_shown;
 static uint32_t images_gen;
 
+// What the performance overlay reports (vk_fsr3_shown): the provider version of the last upscale and when it ran.
+// record_upscale writes both on the replay thread; the overlay reads them on the present thread.
+static PlatMutex status_lock = PLAT_MUTEX_INIT;
+static char status_version[64];
+static uint64_t status_ns;
+
 static void warn_once(uint32_t bit, const char *what) {
     if (F.warned & bit) return;
     F.warned |= bit;
@@ -157,15 +163,20 @@ static PFN_vkVoidFunction VKAPI_CALL device_proc(VkDevice device, const char *na
     return f;
 }
 
+// The path of dll next to the executable in *path; 0 when the executable's path is unknown.
+static int library_path(const char *dll, char *path, size_t size) {
+    if (!plat_exe_path(path, size - strlen(dll) - 1)) return 0;
+    char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
+    if (back > end) end = back;
+    if (!end) return 0;
+    snprintf(end + 1, size - (size_t)(end + 1 - path), "%s", dll);
+    return 1;
+}
+
 // The library next to the executable: plat_lib_open searches only the system folder for a bare name. *path receives the
 // file it found, for the log.
 static void *open_library(const char *dll, char *path, size_t size) {
-    if (!plat_exe_path(path, size - strlen(dll) - 1)) return NULL;
-    char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
-    if (back > end) end = back;
-    if (!end) return NULL;
-    snprintf(end + 1, size - (size_t)(end + 1 - path), "%s", dll);
-    return plat_lib_open(path);
+    return library_path(dll, path, size) ? plat_lib_open(path) : NULL;
 }
 
 static int init(VkCtx *c) {
@@ -624,6 +635,10 @@ static void record_upscale(VkExec *ex) {
         F.ok = 0;
         return;
     }
+    plat_mutex_lock(&status_lock);
+    if (strcmp(status_version, F.version)) snprintf(status_version, sizeof status_version, "%s", F.version);
+    status_ns = now;
+    plat_mutex_unlock(&status_lock);
     memory_barrier(cb);
     VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                           .srcOffsets = {{0, 0, 0}, {(int)F.ow, (int)F.oh, 1}},
@@ -675,6 +690,36 @@ void vk_fsr3_release(void) {
     memset(&F, 0, sizeof F);
     memset(&FR, 0, sizeof FR);
     memset(&FR_shown, 0, sizeof FR_shown);
+    plat_mutex_lock(&status_lock);
+    status_ns = 0;
+    plat_mutex_unlock(&status_lock);
+}
+
+// Which of the two libraries init accepts are next to the executable: bit 0 the AMD FSR SDK 2.x loader (which frame
+// generation and the version choice need too), bit 1 the FidelityFX SDK 1.1.4 library. Nothing is loaded here; init
+// does that on the replay thread once FSR is turned on. The Linux release ships neither, so there the menu greys the
+// FSR rows out. The answer is kept: the files do not come and go while the game runs.
+int vk_fsr3_libraries(void) {
+    static int have = -1;
+    if (have < 0) {
+        char path[1024];
+        int bits = 0;
+        if (library_path(FFX_LOADER, path, sizeof path) && plat_file_exists(path)) bits |= 1;
+        if (library_path(FFX_LEGACY, path, sizeof path) && plat_file_exists(path)) bits |= 2;
+        have = bits;
+    }
+    return have;
+}
+
+// 1 with the provider version ("4.1.2", "3.1.4") in buf when FSR upscaled a frame within the last second; 0 when it did
+// not (turned off, no library, failed, or no 3D scene to upscale, as on a loading screen).
+int vk_fsr3_shown(char *buf, size_t size) {
+    uint64_t now = kern_now_ns();
+    plat_mutex_lock(&status_lock);
+    int on = status_ns && now - status_ns < 1000000000ull;
+    if (on && size) snprintf(buf, size, "%s", status_version);
+    plat_mutex_unlock(&status_lock);
+    return on;
 }
 
 // ---- --probe-fsr: the upscaler alone, without the game
