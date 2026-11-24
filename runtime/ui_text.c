@@ -4,6 +4,7 @@
 // English, Simplified Chinese and Traditional Chinese.
 #include <stdatomic.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cfg.h"
 #include "ov.h"
@@ -1016,7 +1017,12 @@ static const char *resolve_menu_lang(void) {
     return "zh-Hans";
 }
 
+static atomic_int no_chinese;
+
+void menu_text_no_chinese(void) { atomic_store_explicit(&no_chinese, 1, memory_order_relaxed); }
+
 const char *menu_text_lang(void) {
+    if (atomic_load_explicit(&no_chinese, memory_order_relaxed)) return "en";
     static _Atomic(const char *) lang = "en";
     static _Atomic unsigned seen = ~0u;
     unsigned v = cfg_version();

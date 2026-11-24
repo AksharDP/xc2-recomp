@@ -298,7 +298,7 @@ static int fonts_up(float scale, const char *menu_lang) {
         }
     uint8_t *data[N] = {};
     ImVector<ImWchar> ranges[N];
-    int merged = 0;
+    int merged = 0, chinese = 0;
     for (int i = 0; i < N; i++) {
         char path[512];
         int face = 0;
@@ -306,7 +306,7 @@ static int fonts_up(float scale, const char *menu_lang) {
         if (!plat_font_path(order[i], path, sizeof path, &face) || !(data[i] = plat_file_read(path, &size))) continue;
         merged++;
         ImFontGlyphRangesBuilder b;
-        if (!strncmp(order[i], "zh", 2)) b = zh;
+        if (!strncmp(order[i], "zh", 2)) b = zh, chinese++;
         b.AddText(ui_text_in("en", lang_name(order[i])));
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
@@ -323,6 +323,10 @@ static int fonts_up(float scale, const char *menu_lang) {
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
     rt_log("menu: font atlas at %.1f px for %s, %d of %d system fonts", 26.0f * scale, menu_lang, merged, (int)N);
+    if ((hans || hant) && !chinese) {   // a Linux system may have none: the text would be all question marks
+        rt_log("menu: no system font with Chinese characters; the menu is in English");
+        menu_text_no_chinese();
+    }
     g_font_scale = ok ? scale : 0;
     g_font_lang = menu_lang;
     return ok;

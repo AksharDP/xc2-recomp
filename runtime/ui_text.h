@@ -215,3 +215,5 @@ const char *ui_text_lang(const char *switch_code);
 const char *menu_text(UiTextId id);
 // The resolved catalog language currently used by menu_text ("zh-Hans", "zh-Hant" or "en").
 const char *menu_text_lang(void);
+// The menu has no font with Chinese characters: menu_text is English from now on, whatever the setting says.
+void menu_text_no_chinese(void);
