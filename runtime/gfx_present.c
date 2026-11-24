@@ -376,7 +376,10 @@ static int create_swapchain(void) {
     }
     int fg = vk_fg_wanted();
     g_own = vk_fg_own_wanted(c);
-    if (!g_own) vk_fg_own_release();   // the device is idle
+    if (!g_own) {   // the device is idle
+        vk_fg_own_release();
+        g_pair.gen = VK_NULL_HANDLE;   // freed: the game's picture of this pair must not read it
+    }
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = image_count(&caps),
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,

@@ -167,8 +167,8 @@ int vk_fg_active(void) { return G.on; }
 static uint64_t g_shown_t0;
 
 // Frames a second reaching the screen over the last half second, drawn and generated together, from the library's
-// present count or ours. Negative while frame generation is off or generates nothing. On the present thread, once a frame, like vk_fg_frame and
-// vk_fg_shutdown.
+// present count or ours. Negative while frame generation is off or generates nothing. On the present thread, once a
+// frame, like vk_fg_frame and vk_fg_shutdown.
 float vk_fg_shown_fps(uint64_t now_ns) {
     static uint64_t shown0;
     static float rate;

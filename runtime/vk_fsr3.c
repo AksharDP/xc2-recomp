@@ -878,9 +878,9 @@ static float half_to_float(uint16_t h) {
 }
 
 // --probe-fsr (host.h): creates a 1280x720 -> 1920x1080 context from the library next to the executable (without one, or
-// with XC2_FSR_BUILTIN=1, the built-in one), dispatches two frames of a flat colour and checks the upscaled result is that colour. The provider version the API selected (FSR
-// Upscaling 4.1.2 on Radeon RX 6000 and newer with a new enough driver, FSR 3.1.6 elsewhere) goes to the log and to the
-// output. Needs no game files.
+// with XC2_FSR_BUILTIN=1, the built-in one), dispatches two frames of a flat colour and checks the upscaled result is
+// that colour. The provider version the API selected (FSR Upscaling 4.1.2 on Radeon RX 6000 and newer with a new enough
+// driver, FSR 3.1.6 elsewhere) goes to the log and to the output. Needs no game files.
 int probe_fsr(void) {
     if (!vk_init()) return 1;
     VkCtx *c = vk_ctx();
