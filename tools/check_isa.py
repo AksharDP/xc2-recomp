@@ -250,15 +250,18 @@ def reviewed_dispatch(name, obj, mnemonics):
 
 def scan(objdump, path, level, link_map=None):
     """{(function, object or None): Counter of mnemonics} of the instructions outside the level, and the instruction
-    count. With link_map each instruction is also attributed to the object file it came from."""
+    count. With link_map each instruction is also attributed to the object file it came from. A label names the code
+    after it only inside its own object: a static function that follows another object's function without a symbol of
+    its own is '?', so it cannot pass as that function (DISPATCHED excuses by name)."""
     proc = subprocess.Popen([objdump, '-d', '--no-show-raw-insn', str(path)], stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, errors='replace', bufsize=1 << 20)
     found = collections.defaultdict(collections.Counter)
-    func, total = '?', 0
+    func, func_obj, total = '?', None, 0
     for line in proc.stdout:
         m = FUNC.match(line)
         if m:
             func = m.group(2)
+            func_obj = link_map.object_at(int(m.group(1), 16)) if link_map else None
             continue
         m = INSN.match(line)
         if not m:
@@ -270,7 +273,8 @@ def scan(objdump, path, level, link_map=None):
             words = [w for w in text.split() if w not in PREFIXES and not w.startswith('{')]
             obj = link_map.object_at(int(m.group(1), 16)) if link_map else None
             symbol = link_map.symbol_at(int(m.group(1), 16)) if link_map else None
-            found[(symbol or func, obj)][(kind, words[0] if words else '?')] += 1
+            name = symbol or (func if obj == func_obj else '?')
+            found[(name, obj)][(kind, words[0] if words else '?')] += 1
     err = proc.stderr.read()
     code = proc.wait()
     proc.stdout.close()
