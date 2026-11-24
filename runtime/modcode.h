@@ -16,6 +16,8 @@ void modcode_load(void);
 void modcode_use(int set);
 // After them, before the guest starts: hooks the functions of the sets in use; the other sets stay off.
 void modcode_hook(void);
-// Patches and cheats of enabled mods that could not be built: the menu says so. modcode_error says why ("": mods_build is off).
+// Patches and cheats of enabled mods that are not built: the menu says so. modcode_error says why, unless mods_build is off
+// (modcode_off), so that the game does not build them; a build without mod code is not off, it never builds any.
 int modcode_unbuilt(void);
 const char *modcode_error(void);
+int modcode_off(void);

@@ -303,8 +303,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EMPTY] = "This folder has no romfs, exefs or cheats files.",
     [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main). The port cannot "
                             "load code modules, so the whole mod stays off.",
-    [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs) and these patches are not built. The game builds "
-                                 "them at its next start; until then the whole mod stays off.",
+    [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs) and these patches are not built. The whole mod "
+                                 "stays off until the game builds them at a start.",
     [UI_MENU_MODS_BAD_NAME] = "The folder name contains |, which the mod list uses between names. Rename the folder.",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "This mod patches the game code (exefs) in a way the port cannot apply, so the "
                                        "whole mod stays off. %s",
@@ -322,7 +322,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_MOD] = "%s: %d cheats",
     [UI_MENU_CHEATS_UNBUILT] = "Some code patches or code cheats of your mods could not be built and stay off. The game "
                                "tries again at its next start. The reason: %s",
-    [UI_MENU_CHEATS_UNBUILT_OFF] = "mods_build = off",
+    [UI_MENU_CHEATS_UNBUILT_OFF] = "Some code patches or code cheats of your mods are not built and stay off, because "
+                                   "mods_build is off (xc2.ini or XC2_MODS_BUILD). Set it to auto and start the game "
+                                   "again to build them.",
     [UI_MENU_CHEAT_CODE_DESC] = "Changes the game's code. Switches at once.",
     [UI_MENU_CHEAT_KEY_DESC] = "Changes the game's code while you hold %s. Switches at once.",
     [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
@@ -330,8 +332,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_RESTORE] = "not needed",
     [UI_MENU_CHEAT_RESTORE_DESC] = "It only writes the game's own code back. Switching a cheat off already does that.",
     [UI_MENU_CHEAT_UNBUILT] = "not built",
-    [UI_MENU_CHEAT_UNBUILT_DESC] = "This cheat changes the game's code and is new or edited. The game builds it at its "
-                                   "next start.",
+    [UI_MENU_CHEAT_UNBUILT_DESC] = "This cheat changes the game's code and is new or edited. It stays off until the "
+                                   "game builds it at a start.",
     [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
     [UI_MENU_CHEATS_BUILTIN] = "Built-in cheats",
@@ -615,7 +617,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_MOVE_HINT] = "按手柄上方按键或 Ctrl+上 可上移，按左侧按键或 Ctrl+下 可下移。若两个 Mod 修改同一个文件，排在上方者优先。更改后需重启游戏生效。",
     [UI_MENU_MODS_EMPTY] = "此文件夹内未找到可用的 romfs、exefs 或 cheats 文件。",
     [UI_MENU_MODS_SUBSDK] = "此 Mod 携带了自带的游戏代码模块（subsdk 插件或替换的 main）。本移植版无法加载此类代码模块，整个 Mod 已禁用。",
-    [UI_MENU_MODS_EXEFS_LATER] = "此 Mod 包含代码补丁（exefs），但这些补丁尚未编译。游戏下次启动时会编译它们；在此之前整个 Mod 保持禁用。",
+    [UI_MENU_MODS_EXEFS_LATER] = "此 Mod 包含代码补丁（exefs），但这些补丁尚未编译。在游戏启动时编译它们之前，整个 Mod 保持禁用。",
     [UI_MENU_MODS_BAD_NAME] = "文件夹名称包含“|”字符（该符号用于列表分隔），请重命名该文件夹。",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此 Mod 的代码补丁（exefs）格式无法应用，整个 Mod 保持禁用。%s",
     [UI_MENU_MODS_EXEFS_OTHER] = "此 Mod 的代码补丁（exefs）面向其他游戏版本制作。",
@@ -629,7 +631,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_NONE] = "当前游戏版本没有外部作弊码。Mod 的作弊码应为位于其 cheats 目录下、以当前游戏 Build ID 命名的 Atmosphere 金手指文件：%s。添加后请重启游戏。",
     [UI_MENU_CHEATS_MOD] = "%s：%d 项作弊码",
     [UI_MENU_CHEATS_UNBUILT] = "部分 Mod 的代码补丁或代码作弊码无法编译，保持禁用。游戏下次启动时会重试。原因：%s",
-    [UI_MENU_CHEATS_UNBUILT_OFF] = "mods_build = off",
+    [UI_MENU_CHEATS_UNBUILT_OFF] = "部分 Mod 的代码补丁或代码作弊码尚未编译，保持禁用，因为 mods_build 设为 off（xc2.ini 或 XC2_MODS_BUILD）。将其改为 auto 并重新启动游戏即可编译。",
     [UI_MENU_CHEAT_CODE_DESC] = "修改游戏代码。切换立即生效。",
     [UI_MENU_CHEAT_KEY_DESC] = "按住 %s 期间修改游戏代码。切换立即生效。",
     [UI_MENU_CHEAT_DATA_DESC] = "启用期间每帧写入游戏内存。",
@@ -637,7 +639,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_RESTORE] = "无需启用",
     [UI_MENU_CHEAT_RESTORE_DESC] = "此条目仅用于将游戏代码还原为原样。关闭对应作弊码即可自动还原。",
     [UI_MENU_CHEAT_UNBUILT] = "未编译",
-    [UI_MENU_CHEAT_UNBUILT_DESC] = "此作弊码会修改游戏代码，且为新增或修改的条目。游戏下次启动时会编译它。",
+    [UI_MENU_CHEAT_UNBUILT_DESC] = "此作弊码会修改游戏代码，且为新增或修改的条目。在游戏启动时编译它之前，保持禁用。",
     [UI_MENU_CHEAT_UNSUPPORTED] = "不支持",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "此作弊码无法用于当前游戏版本：",
     [UI_MENU_CHEATS_BUILTIN] = "内置作弊选项",
@@ -916,7 +918,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_MOVE_HINT] = "按上方按鍵或 Ctrl+上 往上移動，按左側按鍵或 Ctrl+下 往下移動。當兩個 Mod 修改同一個檔案時，順位較高者生效。變更於重新啟動後套用。",
     [UI_MENU_MODS_EMPTY] = "此資料夾沒有 romfs、exefs 或 cheats 檔案。",
     [UI_MENU_MODS_SUBSDK] = "此 Mod 夾帶了專屬的遊戲程式碼（subsdk 外掛或取代的 main）。本移植版無法載入程式碼模組，因此整個 Mod 保持停用。",
-    [UI_MENU_MODS_EXEFS_LATER] = "此 Mod 包含程式碼修補程式（exefs），但這些修補尚未編譯。遊戲下次啟動時會編譯它們；在此之前整個 Mod 保持停用。",
+    [UI_MENU_MODS_EXEFS_LATER] = "此 Mod 包含程式碼修補程式（exefs），但這些修補尚未編譯。在遊戲啟動時編譯它們之前，整個 Mod 保持停用。",
     [UI_MENU_MODS_BAD_NAME] = "資料夾名稱包含「|」，該字元用於 Mod 清單分隔。請重新命名此資料夾。",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此 Mod 修補遊戲程式碼（exefs）的方式不受支援，因此整個 Mod 保持停用。%s",
     [UI_MENU_MODS_EXEFS_OTHER] = "其程式碼修補程式（exefs）是針對其他遊戲版本製作。",
@@ -930,7 +932,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_NONE] = "此遊戲版本沒有外部金手指。Mod 的金手指應放在其 cheats 資料夾內並以遊戲 Build ID 命名（%s）。新增後請重新啟動遊戲。",
     [UI_MENU_CHEATS_MOD] = "%s：%d 項金手指",
     [UI_MENU_CHEATS_UNBUILT] = "部分 Mod 的程式碼修補或程式碼金手指無法編譯，保持停用。遊戲下次啟動時會重試。原因：%s",
-    [UI_MENU_CHEATS_UNBUILT_OFF] = "mods_build = off",
+    [UI_MENU_CHEATS_UNBUILT_OFF] = "部分 Mod 的程式碼修補或程式碼金手指尚未編譯，保持停用，因為 mods_build 設為 off（xc2.ini 或 XC2_MODS_BUILD）。將其改為 auto 並重新啟動遊戲即可編譯。",
     [UI_MENU_CHEAT_CODE_DESC] = "修改遊戲程式碼。切換立即生效。",
     [UI_MENU_CHEAT_KEY_DESC] = "按住 %s 期間修改遊戲程式碼。切換立即生效。",
     [UI_MENU_CHEAT_DATA_DESC] = "開啟期間每幀寫入遊戲記憶體。",
@@ -938,7 +940,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_CHEAT_RESTORE] = "不需要",
     [UI_MENU_CHEAT_RESTORE_DESC] = "僅用於將遊戲原本的程式碼寫回。關閉金手指即會自動還原。",
     [UI_MENU_CHEAT_UNBUILT] = "未編譯",
-    [UI_MENU_CHEAT_UNBUILT_DESC] = "此金手指會修改遊戲程式碼，且為新增或編輯的項目。遊戲下次啟動時會編譯它。",
+    [UI_MENU_CHEAT_UNBUILT_DESC] = "此金手指會修改遊戲程式碼，且為新增或編輯的項目。在遊戲啟動時編譯它之前，保持停用。",
     [UI_MENU_CHEAT_UNSUPPORTED] = "不支援",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "此金手指無法搭配此版本遊戲使用：",
     [UI_MENU_CHEATS_BUILTIN] = "內建金手指",

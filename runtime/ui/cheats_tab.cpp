@@ -21,9 +21,12 @@ extern "C" {
 // The note on code cheats and patches that could not be built (the Mods and Cheats tabs).
 void rows_unbuilt(void) {
     if (!modcode_unbuilt()) return;
+    if (modcode_off()) {
+        opt_text_str(menu_text(UI_MENU_CHEATS_UNBUILT_OFF));
+        return;
+    }
     static char line[768];
-    const char *why = modcode_error();
-    snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_UNBUILT), why[0] ? why : menu_text(UI_MENU_CHEATS_UNBUILT_OFF));
+    snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_UNBUILT), modcode_error());
     opt_text_str(line);
 }
 
