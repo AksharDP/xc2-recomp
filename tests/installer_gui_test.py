@@ -19,8 +19,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -359,7 +361,7 @@ class LanguageWindowTest(unittest.TestCase):
 
         real, gui.LanguageProbe = gui.LanguageProbe, Probe
         self.addCleanup(setattr, gui, 'LanguageProbe', real)
-        self.app = gui.App(self.root, layouts.find(ROOT), remember=False)
+        self.app = gui.App(self.root, layouts.find(ROOT), remember=False, ui_lang='en')
 
     def choose(self, base, start=True):
         self.app.vars['base'].set(str(self.dir / base) if base else '')
@@ -412,6 +414,15 @@ class LanguageWindowTest(unittest.TestCase):
         self.assertEqual(self.app.languages, self.US)
         self.assertEqual(self.app.selected_lang(), 'fr')
 
+    def test_a_failed_read_is_translated_after_a_language_change(self):
+        self.choose('us.nsp')
+        self.made[-1].result = {'type': 'error', 'id': 'check.languages_unreadable'}
+        self.app.poll_probe()
+        self.assertIn(Catalog('en')('check.languages_unreadable'), self.app.langs_label.cget('text'))
+        self.app.ui_var.set('zh-Hans')   # the reason is kept as its check id, so the line changes with the language
+        self.app.switch_language()
+        self.assertIn(Catalog('zh-Hans')('check.languages_unreadable'), self.app.langs_label.cget('text'))
+
     def test_the_install_folders_language_is_kept(self):
         jp, us = self.dir / 'jp-install', self.dir / 'us-install'
         for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
@@ -426,21 +437,244 @@ class LanguageWindowTest(unittest.TestCase):
         self.assertEqual(self.app.selected_lang(), 'fr')
 
 
+class UpdateBannerTest(unittest.TestCase):
+    """installer/gui.py: the banner a newer release brings, the download (a stand-in for selfupdate.Install), the start
+    of the new setup (a stand-in for selfupdate.launch) and --update-install."""
+
+    def setUp(self):
+        try:
+            import tkinter as tk
+            from installer import gui, selfupdate
+        except ImportError:
+            self.skipTest('no tkinter')
+        gui.fix_tcl_paths()
+        try:
+            self.root = tk.Tk()
+        except tk.TclError:
+            self.skipTest('no display')
+        self.root.withdraw()
+        self.destroyed = []
+        real_destroy = self.root.destroy
+
+        def destroy():
+            if not self.destroyed:
+                self.destroyed.append(True)
+                real_destroy()
+        self.root.destroy = destroy
+        self.addCleanup(destroy)
+        self.gui, self.su = gui, selfupdate
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.jobs, self.launched, self.checks = [], [], []
+        self.exit_code = None
+        test = self
+
+        class Job:
+            def __init__(self, release, folders, system=None, opener=None):
+                self.release, self.folders = release, folders
+                self.phase, self.done_bytes, self.total = 'download', 0, release.size
+                self.result = self.error = None
+                self.cancel_event, self.finished = threading.Event(), threading.Event()
+                self.thread = SimpleNamespace(join=lambda timeout=None: None)
+                test.jobs.append(self)
+
+            def cancel(self):
+                self.cancel_event.set()
+
+            def done(self):
+                return self.finished.is_set()
+
+            def end(self, result=None, error=None):
+                self.result, self.error = result, error
+                self.finished.set()
+
+        class Check:
+            def __init__(self, repo, current, system=None, opener=None):
+                test.checks.append((repo, current))
+                self.result = test.release
+
+            def done(self):
+                return True
+
+        def launch(setup, dest, system=None):
+            self.launched.append((setup, dest))
+            return SimpleNamespace(poll=lambda: self.exit_code)
+
+        self.installable = True
+        patches = {'Install': Job, 'Check': Check, 'launch': launch,
+                   'can_install': lambda root, system=None: self.installable}
+        for name, value in patches.items():
+            self.addCleanup(setattr, selfupdate, name, getattr(selfupdate, name))
+            setattr(selfupdate, name, value)
+        self.release = selfupdate.Release(
+            '9.9.9', 'https://github.com/a/b/releases/tag/v9.9.9', 'XC2-Setup-9.9.9-windows.zip',
+            'https://github.com/a/b/releases/download/v9.9.9/XC2-Setup-9.9.9-windows.zip', 182_000_000, '0' * 64)
+        self.en = Catalog('en')
+
+    def app(self, cls=None, layout=None, **kw):
+        return (cls or self.gui.App)(self.root, layout or layouts.find(ROOT), remember=False, ui_lang='en', **kw)
+
+    def offered(self, **kw):
+        app = self.app(**kw)
+        app.update_release = self.release
+        app.refresh_update()
+        return app
+
+    def install_folder(self):
+        dest = self.dir / 'XC2'
+        dest.mkdir()
+        statefile.save(dest, statefile.empty('r1'))
+        return dest
+
+    def text(self, app):
+        return app.update_text.cget('text')
+
+    def test_hidden_until_a_newer_release(self):
+        app = self.app()
+        self.assertEqual(app.update_box.winfo_manager(), '')
+        app.update_release = self.release
+        app.refresh_update()
+        self.assertEqual(app.update_box.winfo_manager(), 'pack')
+        self.assertIn('9.9.9', self.text(app))
+        self.assertIn('182 MB', self.text(app))
+        self.assertEqual(app.update_go.winfo_manager(), 'pack')
+        self.assertEqual(app.update_stop.winfo_manager(), '')
+
+    def test_only_the_page_where_it_cannot_install(self):
+        self.installable = False
+        app = self.offered()
+        self.assertIn(self.en('ui.update_manual'), self.text(app))
+        self.assertEqual(app.update_go.winfo_manager(), '')
+        self.assertEqual(app.update_notes.winfo_manager(), 'pack')
+        app.start_update()
+        self.assertEqual(self.jobs, [])
+
+    def test_progress_then_failure(self):
+        app = self.offered()
+        app.start_update()
+        job, = self.jobs
+        self.assertTrue(app.start_button.instate(['disabled']))
+        app.start()   # Start waits while the new setup downloads
+        self.assertIsNone(app.process)
+        job.done_bytes = 91_000_000
+        app.poll_update()
+        self.assertIn('91 / 182 MB', self.text(app))
+        self.assertEqual(app.update_stop.winfo_manager(), 'pack')
+        self.assertEqual(app.update_go.winfo_manager(), '')
+        job.end(error=self.su.UpdateError('ui.update_err_damaged'))
+        app.poll_update()
+        self.assertIn(self.en('ui.update_err_damaged'), self.text(app))
+        self.assertFalse(app.start_button.instate(['disabled']))
+        self.assertEqual(app.update_go.winfo_manager(), 'pack')   # try again
+        app.ui_var.set('zh-Hans')   # the reason follows the window language
+        app.switch_language()
+        self.assertIn(Catalog('zh-Hans')('ui.update_err_damaged'), self.text(app))
+
+    def test_cancel(self):
+        app = self.offered()
+        app.start_update()
+        job, = self.jobs
+        app.cancel_update()
+        self.assertTrue(job.cancel_event.is_set())
+        self.assertTrue(app.update_stop.instate(['disabled']))
+        job.end(error=self.su.Cancelled())
+        app.poll_update()
+        self.assertNotIn(self.en('ui.update_failed', reason=''), self.text(app))
+        self.assertEqual(app.update_go.winfo_manager(), 'pack')
+
+    def test_starts_the_new_setup_on_the_installation(self):
+        dest = self.install_folder()
+        app = self.offered()
+        app.vars['dest'].set(str(dest))
+        app.start_update()
+        new = self.dir / 'XC2-Setup-9.9.9'
+        self.jobs[0].end(result=new)
+        app.poll_update()
+        self.assertEqual(self.launched, [(new, str(dest))])
+        self.assertIn(self.en('ui.update_starting'), self.text(app))
+        self.assertTrue(app.start_button.instate(['disabled']))
+        app.watch_launch()   # still running after the wait: this window closes
+        self.assertEqual(self.destroyed, [True])
+
+    def test_without_an_installation_it_only_starts_it(self):
+        app = self.offered()
+        app.vars['dest'].set(str(self.dir / 'new-folder'))
+        app.start_update()
+        self.jobs[0].end(result=self.dir / 'XC2-Setup-9.9.9')
+        app.poll_update()
+        self.assertEqual(self.launched, [(self.dir / 'XC2-Setup-9.9.9', '')])
+
+    def test_a_new_setup_that_ends_at_once_is_reported(self):
+        self.exit_code = 1
+        app = self.offered()
+        app.start_update()
+        self.jobs[0].end(result=self.dir / 'XC2-Setup-9.9.9')
+        app.poll_update()
+        app.watch_launch()
+        self.assertEqual(self.destroyed, [])
+        self.assertIn('exit code 1', self.text(app))
+        self.assertFalse(app.start_button.instate(['disabled']))
+
+    def test_update_install_starts_at_once(self):
+        started = []
+
+        class App(self.gui.App):
+            def start(self):
+                started.append(self.vars['dest'].get())
+        dest = self.install_folder()
+        app = self.app(App, update_install=str(dest))
+        self.assertEqual(app.vars['dest'].get(), os.path.normpath(dest))
+        self.root.after(self.gui.AUTO_START_MS + 100)
+        self.root.update()
+        self.assertEqual(started, [os.path.normpath(dest)])
+        started.clear()
+        self.app(App, update_install=str(self.dir / 'empty'))   # no installation there: only filled in
+        self.root.after(self.gui.AUTO_START_MS + 100)
+        self.root.update()
+        self.assertEqual(started, [])
+
+    def test_check_on_open(self):
+        dev = layouts.find(ROOT)
+        self.app(update_check=True)
+        self.assertEqual(self.checks, [], 'a checkout must not ask GitHub')
+        release = replace(dev, dev=False, release='0.1.13+973c626')
+        app = self.app(layout=release, update_check=True)
+        self.assertEqual(self.checks, [(self.su.REPO, '0.1.13+973c626')])
+        app.poll_update_check()
+        self.assertIn('9.9.9', self.text(app))
+        self.assertIn('0.1.13.', self.text(app))   # the version without its commit
+        self.app(layout=release, update_check=False)
+        self.assertEqual(len(self.checks), 1)
+
+
 class CatalogTest(unittest.TestCase):
-    def test_the_window_is_english_only(self):
+    def test_catalog_completeness_and_placeholders(self):
         catalogs = sorted(p.stem for p in (ROOT / 'installer' / 'text').glob('*.json'))
-        self.assertEqual(catalogs, ['en'])
+        self.assertEqual(catalogs, ['en', 'zh-Hans', 'zh-Hant'])
         self.assertEqual(Catalog('ru').lang, 'en')   # a language without a catalog falls back to English
+        en = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
+        for lang in ('zh-Hans', 'zh-Hant'):
+            other = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
+            self.assertEqual(set(other), set(en), f'{lang}.json keys differ from en.json')
+            for k, v in en.items():
+                self.assertEqual(set(re.findall(r'\{(\w+)\}', other[k])), set(re.findall(r'\{(\w+)\}', v)),
+                                 f'{lang}.json placeholder mismatch for {k}')
 
     def test_every_id_the_window_uses_exists(self):
-        cat = Catalog('en')
         ids = ['ui.' + n for n in ('title', 'start', 'cancel', 'open_folder', 'notice', 'space_one', 'space_two',
                                    'process_died', 'result_ok', 'result_failed', 'result_cancelled', 'langs_hint',
-                                   'langs_checking', 'langs_found', 'langs_failed', 'lang_not_in_game')]
+                                   'langs_checking', 'langs_found', 'langs_failed', 'lang_not_in_game',
+                                   'update_available', 'update_how', 'update_manual', 'update_download',
+                                   'update_notes', 'update_downloading', 'update_unpacking', 'update_starting',
+                                   'update_failed')]
+        ids += ['ui.update_err_' + n for n in ('write', 'space', 'download', 'damaged', 'unpack', 'start', 'other')]
         ids += [f'step.{s}' for s in ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
         ids += ['ui.state_' + n for n in ('started', 'done', 'skipped', 'pending', 'running', 'failed')]
         ids += ['lang.' + c for c in ini.LANGUAGES]
-        self.assertEqual([i for i in ids if not cat.has(i)], [])
+        for lang in ('en', 'zh-Hans', 'zh-Hant'):
+            cat = Catalog(lang)
+            self.assertEqual([i for i in ids if not cat.has(i)], [], f'missing ids in {lang}')
 
     def test_codes_become_names(self):
         cat = Catalog('en')
@@ -454,6 +688,9 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(cat('check.lang_not_in_game', lang='en-US', known='ja, zh-CN, zh-TW'),
                          'These game files have no English (US) text. Their languages: Japanese, '
                          'Chinese (Simplified, China), Chinese (Traditional, Taiwan).')
+        zh = Catalog('zh-Hans')
+        self.assertIn('日版', zh('ui.langs_found', release='Japan', known='ja, zh-CN'))
+        self.assertIn('简体中文（中国大陆）', zh('ui.langs_found', release='Japan', known='ja, zh-CN'))
 
     def test_fallback_and_params(self):
         cat = Catalog('en')

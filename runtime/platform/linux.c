@@ -9,6 +9,7 @@
 #include <linux/fs.h>
 #include <linux/futex.h>
 #include <linux/userfaultfd.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -892,6 +893,15 @@ int plat_mem_protect(uint64_t addr, uint64_t n, int prot) {
     return 1;
 }
 
+int plat_code_write(void *dst, const void *src, size_t n) {
+    uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE), lo = (uintptr_t)dst & ~(page - 1);
+    size_t len = ((uintptr_t)dst + n - lo + page - 1) & ~(page - 1);
+    if (mprotect((void *)lo, len, PROT_READ | PROT_WRITE | PROT_EXEC)) return 0;
+    memcpy(dst, src, n);
+    __builtin___clear_cache((char *)dst, (char *)dst + n);
+    return !mprotect((void *)lo, len, PROT_READ | PROT_EXEC);
+}
+
 int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     if (!pstate || addr >= PS_LIMIT) {
         *end = limit;
@@ -1208,6 +1218,13 @@ static void locale_tag(const char *const *names, int n, char *tag, size_t cap) {
     tag[k] = 0;
 }
 
+const char *plat_ui_language(void) {
+    static char tag[32];
+    static const char *const names[] = {"LC_ALL", "LC_MESSAGES", "LANG"};
+    if (!tag[0]) locale_tag(names, 3, tag, sizeof tag);
+    return tag;
+}
+
 const char *plat_user_locale(void) {
     static char tag[32];
     static const char *const names[] = {"LC_ALL", "LC_TIME", "LANG"};
@@ -1215,18 +1232,86 @@ const char *plat_user_locale(void) {
     return tag;
 }
 
+// Big-endian readers for the font tables: the files are big-endian on every host.
+static uint32_t font_rd32(const unsigned char *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+static unsigned font_rd16(const unsigned char *p) { return (unsigned)p[0] << 8 | p[1]; }
+
+// The face of a TrueType collection whose family name ends in the region tag ("JP", "KR", "SC", "TC"). The Noto CJK
+// collection holds one face per region plus a monospace set, and their order is not a contract, so the name picks
+// the face rather than a fixed index. A plain font file, or a collection with no matching name (the WenQuanYi
+// fallback covers every region in one face), gives face 0.
+static int ttc_region_face(const char *path, const char *tag) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char hdr[12], offs[256 * 4], dir[256 * 16], rec[512 * 12], str[512];
+    int face = 0;
+    if (fread(hdr, 1, sizeof hdr, f) != sizeof hdr || memcmp(hdr, "ttcf", 4)) goto out;
+    uint32_t n = font_rd32(hdr + 8);
+    if (!n || n > 256) goto out;
+    if (fread(offs, 4, n, f) != n) goto out;
+    for (uint32_t i = 0; i < n; i++) {
+        // Table offsets are absolute in the collection, not relative to the face: faces share tables.
+        if (fseek(f, font_rd32(offs + 4 * i), SEEK_SET)) continue;
+        if (fread(hdr, 1, 12, f) != 12) continue;
+        unsigned nt = font_rd16(hdr + 4);
+        if (!nt || nt > 256 || fread(dir, 16, nt, f) != nt) continue;
+        uint32_t no = 0, nl = 0;
+        for (unsigned t = 0; t < nt; t++)
+            if (!memcmp(dir + 16 * t, "name", 4)) {
+                no = font_rd32(dir + 16 * t + 8);
+                nl = font_rd32(dir + 16 * t + 12);
+                break;
+            }
+        if (!no || nl < 6 || fseek(f, no, SEEK_SET) || fread(hdr, 1, 6, f) != 6) continue;
+        unsigned count = font_rd16(hdr + 2), soff = font_rd16(hdr + 4);
+        if (!count || count > 512 || (uint32_t)soff + count * 12 > nl || fread(rec, 12, count, f) != count) continue;
+        for (unsigned r = 0; r < count; r++) {
+            const unsigned char *p = rec + 12 * r;
+            unsigned pid = font_rd16(p), eid = font_rd16(p + 2), lid = font_rd16(p + 4), nid = font_rd16(p + 6);
+            unsigned len = font_rd16(p + 8), ro = font_rd16(p + 10);
+            if (pid != 3 || eid != 1 || lid != 0x409 || (nid != 1 && nid != 4)) continue;   // Windows Unicode, family or full name
+            if (len < 6 || len > sizeof str || (uint32_t)soff + ro + len > nl) continue;
+            if (fseek(f, no + soff + ro, SEEK_SET) || fread(str, 1, len, f) != len) continue;
+            unsigned chars = len / 2;   // UTF-16BE: the ASCII characters of the name are every second byte
+            if (chars >= 3 && !str[2 * (chars - 3)] && str[2 * (chars - 3) + 1] == ' ' &&
+                !str[2 * (chars - 2)] && str[2 * (chars - 2) + 1] == tag[0] &&
+                !str[2 * (chars - 1)] && str[2 * (chars - 1) + 1] == tag[1]) {
+                face = (int)i;
+                goto out;
+            }
+        }
+    }
+out:
+    fclose(f);
+    return face;
+}
+
 // Noto CJK as the common distributions and SteamOS install it; one collection covers every CJK language.
-int plat_font_path(const char *lang, char *out, size_t cap) {
+int plat_font_path(const char *lang, char *out, size_t cap, int *face) {
     static const char *files[] = {
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
     };
+    *face = 0;
     if (strcmp(lang, "ja") && strcmp(lang, "ko") && strcmp(lang, "zh-Hans") && strcmp(lang, "zh-Hant")) return 0;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
-        if (plat_file_exists(files[i])) return snprintf(out, cap, "%s", files[i]) < (int)cap;
+        if (plat_file_exists(files[i])) {
+            // The shared collection holds a face per region; the single-region Noto file and WenQuanYi have one
+            // face for the language and stay at 0.
+            const char *tag = !strcmp(lang, "ja") ? "JP" : !strcmp(lang, "ko") ? "KR"
+                            : !strcmp(lang, "zh-Hans") ? "SC" : "TC";
+            *face = ttc_region_face(files[i], tag);
+            return snprintf(out, cap, "%s", files[i]) < (int)cap;
+        }
     return 0;
 }
 
@@ -1250,6 +1335,8 @@ int plat_os_version(char *out, size_t cap) {
     if (uname(&u)) return snprintf(out, cap, "%s", name) < (int)cap;
     return snprintf(out, cap, "%s (Linux %s)", name, u.release) < (int)cap;
 }
+
+int plat_stderr_console(void) { return isatty(STDERR_FILENO); }
 
 int plat_stderr_path(char *out, size_t cap) {
     struct stat st;
@@ -1338,29 +1425,24 @@ long plat_tz_west(void) {
     return timezone;
 }
 
-int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
-    // the arguments, NUL-separated, from /proc/self/cmdline
-    static char args[16384];
-    char *argv[256];
-    int argc = 0;
-    FILE *f = fopen("/proc/self/cmdline", "rb");
-    size_t n = f ? fread(args, 1, sizeof args - 1, f) : 0;
-    if (f) fclose(f);
-    args[n] = 0;
-    for (size_t i = 0; i < n && argc < 255; i += strlen(args + i) + 1) argv[argc++] = args + i;
-    argv[argc] = NULL;
-    char exe[PATH_MAX];
-    if (!argc || !plat_exe_path(exe, sizeof exe)) return -1;
+// The child's output into out (NUL-terminated, the rest discarded) and to on_output (may be NULL) as it comes, then its
+// exit code; -1 when it never started. A child still running after timeout_ms is killed; group: it gets a process
+// group of its own, and the processes it started are killed with it.
+static int run_child(const char *exe, char *const *argv, const char *cwd, char *out, size_t cap, PlatOutput on_output,
+                     void *ctx, int group, uint32_t timeout_ms) {
     int p[2];
     if (pipe2(p, O_CLOEXEC)) return -1;
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, p[1], 1);
     posix_spawn_file_actions_adddup2(&fa, p[1], 2);
-    setenv(env_name, env_value, 1);
+    if (cwd) posix_spawn_file_actions_addchdir_np(&fa, cwd);
     pid_t pid;
-    int e = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
-    unsetenv(env_name);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    if (group) posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);   // group 0: the child's own
+    int e = posix_spawn(&pid, exe, &fa, &at, argv, environ);
+    posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     close(p[1]);
     if (e) {
@@ -1370,23 +1452,69 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     size_t len = 0;
     char sink[512];
     ssize_t k;
-    while (len + 1 < cap && (k = read(p[0], out + len, cap - 1 - len)) != 0)
-        if (k > 0) len += (size_t)k;
-        else if (errno != EINTR) break;
+    uint64_t end = plat_now_ns() + (uint64_t)timeout_ms * 1000000u;
+    for (;;) {
+        struct pollfd pf = {p[0], POLLIN, 0};
+        uint64_t now = plat_now_ns();
+        if (timeout_ms && now >= end) break;
+        int ready = poll(&pf, 1, timeout_ms ? (int)((end - now) / 1000000u) + 1 : -1);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) break;
+        int full = len + 1 >= cap;
+        char *to = full ? sink : out + len;
+        k = read(p[0], to, full ? sizeof sink : cap - 1 - len);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) break;
+        if (on_output) on_output(ctx, to, (size_t)k);
+        if (!full) len += (size_t)k;
+    }
     if (cap) out[len] = 0;
-    while ((k = read(p[0], sink, sizeof sink)) > 0 || (k < 0 && errno == EINTR)) {}
     close(p[0]);
     int status = 0;
-    uint64_t end = plat_now_ns() + (uint64_t)timeout_ms * 1000000u;
+    if (group && timeout_ms && plat_now_ns() >= end) kill(-pid, SIGKILL);   // the child may be gone, its own not
     while (waitpid(pid, &status, timeout_ms ? WNOHANG : 0) == 0) {
         if (plat_now_ns() >= end) {
-            kill(pid, SIGKILL);
+            kill(group ? -pid : pid, SIGKILL);
             waitpid(pid, &status, 0);
             break;
         }
         plat_sleep_ms(10);
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+}
+
+int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms) {
+    return run_child(argv[0], (char *const *)argv, cwd, NULL, 0, on_output, ctx, 1, timeout_ms);
+}
+
+// The arguments of this process, from /proc/self/cmdline; NULL when there are none.
+static char **self_args(void) {
+    static char args[16384], *argv[256];
+    int argc = 0;
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    size_t n = f ? fread(args, 1, sizeof args - 1, f) : 0;
+    if (f) fclose(f);
+    args[n] = 0;
+    for (size_t i = 0; i < n && argc < 255; i += strlen(args + i) + 1) argv[argc++] = args + i;
+    argv[argc] = NULL;
+    return argc ? argv : NULL;
+}
+
+int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
+    char exe[PATH_MAX], **argv = self_args();
+    if (!argv || !plat_exe_path(exe, sizeof exe)) return -1;
+    setenv(env_name, env_value, 1);
+    int code = run_child(exe, argv, NULL, out, cap, NULL, NULL, 0, timeout_ms);
+    unsetenv(env_name);
+    return code;
+}
+
+int plat_restart(const char *env_name, const char *env_value) {
+    char exe[PATH_MAX], **argv = self_args();
+    if (!argv || !plat_exe_path(exe, sizeof exe)) return 0;
+    setenv(env_name, env_value, 1);
+    execv(exe, argv);   // this process becomes the new one: the descriptors are close-on-exec
+    return 0;
 }
 
 int plat_random(void *out, size_t n) {
@@ -1437,6 +1565,10 @@ int plat_open_folder(const char *path) {
 
 void *plat_lib_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_LOCAL); }
 void *plat_lib_sym(void *lib, const char *name) { return lib ? dlsym(lib, name) : NULL; }
+
+void plat_lib_close(void *lib) {
+    if (lib) dlclose(lib);
+}
 
 // ---- machine load: /proc/stat and /proc/self/stat for the CPU, hwmon for the temperature, the amdgpu sysfs files of
 // the render device for the GPU.

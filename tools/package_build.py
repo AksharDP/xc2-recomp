@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 EXE = '.exe' if os.name == 'nt' else ''
 # A Linux source build links the system's SDL3, Opus and libvpx: the other machine needs them installed
 DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll') if os.name == 'nt' else ()
+OPTIONAL_DLLS = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll',
+                 'amd_fidelityfx_framegeneration_vk.dll', 'amd_fidelityfx_vk.dll') if os.name == 'nt' else ()
 # Prepared state next to the exe: translator answers, programs, the prepared list, pipeline cache and its keys, and the
 # variant lists `xc2.exe --prepare-shaders` reads (the driver keys its library cache by exe path, so each copy runs it).
 STATE = ('romfs-index.bin', 'pipeline-cache.bin', 'pipeline-keys.bin', 'shader-answers.bin', 'shader-programs.bin',
@@ -68,14 +70,17 @@ def main():
     fonts = a.extracted.resolve().parent / 'firmware' / 'shared-fonts'
     exefs = a.extracted.resolve() / 'exefs'
     romfs = a.extracted.resolve() / 'romfs' / 'romfs.bin'
-    need = [exe, a.xlate, exefs, fonts, build / 'romfs-patches'] + [build / d for d in DLLS] + [build / 'romfs-index.bin']
+    need = [exe, a.xlate, exefs] + [build / d for d in DLLS] + [build / 'romfs-index.bin']
     if a.with_romfs:
         need.append(romfs)
     missing = [str(p) for p in need if not p.exists()]
     if missing:
         sys.exit('package_build: missing: ' + ', '.join(missing))
-    if out == build:
-        sys.exit('package_build: --out must not be the build dir')
+    # A destination inside a copied tree makes copy_tree copy its own output. A parent destination could overwrite
+    # source files. Refuse both before writing anything.
+    sources = (build, a.extracted.resolve(), a.xlate.resolve().parent)
+    if any(out == src or out in src.parents or src in out.parents for src in sources):
+        sys.exit('package_build: --out must not overlap a source directory')
     if not str(out).startswith(str(ROOT / 'build')) and not str(out).startswith(str(ROOT / 'generated')):
         print('package_build: warning: the folder holds game code; keep it out of the repository')
 
@@ -83,6 +88,9 @@ def main():
     copy(exe, out / f'xc2{EXE}')
     for d in DLLS:
         copy(build / d, out / d)
+    for d in OPTIONAL_DLLS:
+        if (build / d).is_file():
+            copy(build / d, out / d)
     copy(a.xlate, out / f'xc2_xlate{EXE}')
     idf = a.xlate.with_suffix('.id')
     if idf.exists():
@@ -92,9 +100,11 @@ def main():
             copy(build / f, out / f)
         else:
             print(f'package_build: {f} not in {build}, skipped')
-    n = copy_tree(build / 'romfs-patches', out / 'romfs-patches')
-    n += copy_tree(exefs, out / 'exefs')
-    n += copy_tree(fonts, out / 'shared-fonts')
+    n = copy_tree(exefs, out / 'exefs')
+    # XC2 has no RomFS frame-rate patches. Firmware fonts are needed only for Chinese and Korean text.
+    for src, name in ((build / 'romfs-patches', 'romfs-patches'), (fonts, 'shared-fonts')):
+        if src.is_dir():
+            n += copy_tree(src, out / name)
     if not a.no_shader_cache and (build / 'shader-cache').is_dir():
         n += copy_tree(build / 'shader-cache', out / 'shader-cache')
     (out / 'profile').mkdir(exist_ok=True)

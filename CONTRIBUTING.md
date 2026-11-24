@@ -34,6 +34,7 @@ Use the issue form. Include the port version and game update from the title line
 - Describe the problem, then what changed.
 - Say how you tested it: which version, which scene, how long.
 - A change to the lifter (`recomp/`) or the CPU headers passes the differential tests in [docs/building.md](docs/building.md), "Checks".
+- New menu text needs English (`runtime/ui_text.c`). Chinese is welcome but not required: the menu shows the English until someone translates it, and CI's Menu text check lists what is missing.
 - Commit messages are plain sentences, without `feat:` or other prefixes.
 - AI-assisted code is welcome. You are responsible for having read and run it.
 

@@ -1,25 +1,39 @@
 // Adapted from totk-pc-recomp runtime/ui/cheats_tab.cpp @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
 // The Cheats tab of the in-game menu: the port's own cheats (cheats.c), then the cheats of the mods' cheat files, a
 // heading per mod in the Mods tab's order, a row per cheat in file order and a line per group label of the file; a
-// cheat that cannot be switched here is greyed out with the reason. While code cheats wait for the setup to build
-// them in, a line on top says so. The button at the end opens the mods folder, where the cheat files live.
+// cheat that cannot be switched here is greyed out with the reason. While code cheats are not built, a line on top says
+// so and why. The button at the end opens the mods folder, where the cheat files live.
 #include <stdio.h>
 #include <string.h>
 
 #include "imgui.h"
+#include "ui/menu.h"
 #include "ui/option_rows.h"
 
 extern "C" {
 #include "cheats.h"
+#include "modcode.h"
 #include "mods.h"
 #include "platform/platform.h"
 #include "ui_text.h"
 }
 
+// The note on code cheats and patches that could not be built (the Mods and Cheats tabs).
+void rows_unbuilt(void) {
+    if (!modcode_unbuilt()) return;
+    if (modcode_off()) {
+        opt_text_str(menu_text(UI_MENU_CHEATS_UNBUILT_OFF));
+        return;
+    }
+    static char line[768];
+    snprintf(line, sizeof line, menu_text(UI_MENU_CHEATS_UNBUILT), modcode_error());
+    opt_text_str(line);
+}
+
 void tab_cheats(float scale) {
     opt_begin("##cheats", scale);
     static char line[512], desc[768], buttons[192];
-    if (cheats_unbuilt()) opt_text(UI_MENU_CHEATS_UNBUILT, true);
+    rows_unbuilt();
 
     // the port's own cheats, above the mods'
     int nb = cheats_builtin_count();
@@ -58,7 +72,7 @@ void tab_cheats(float scale) {
         case CHEAT_DATA: text = UI_MENU_CHEAT_DATA_DESC; break;
         case CHEAT_MASTER: text = UI_MENU_CHEAT_MASTER_DESC, opt_disable_next(UI_MENU_CHEAT_MASTER); break;
         case CHEAT_RESTORE: text = UI_MENU_CHEAT_RESTORE_DESC, opt_disable_next(UI_MENU_CHEAT_RESTORE); break;
-        case CHEAT_REBUILD: text = UI_MENU_CHEAT_REBUILD_DESC, opt_disable_next(UI_MENU_CHEAT_REBUILD); break;
+        case CHEAT_UNBUILT: text = UI_MENU_CHEAT_UNBUILT_DESC, opt_disable_next(UI_MENU_CHEAT_UNBUILT); break;
         case CHEAT_UNSUPPORTED:
             text = UI_MENU_CHEAT_UNSUPPORTED_DESC, opt_disable_next(UI_MENU_CHEAT_UNSUPPORTED);
             break;

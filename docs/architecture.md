@@ -57,7 +57,8 @@ MacNativeGames cannot run on x86-64 as is: its CPU path executes ARM64 code nati
   `XC2_ZLIB_NATIVE`; `XC2_ZLIB_CHECK=1` runs both and compares); the lifted function took 2.8 times as long.
 - Settings and menu: every key with its default is in one table (`cfg.c`), read from `xc2.ini` and `XC2_*`
   variables and written back when the in-game menu changes it. The menu and the performance overlay are Dear ImGui,
-  drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English).
+  drawn into the swapchain image (`runtime/ui/`); their text is in `ui_text.c` (English, Simplified and
+  Traditional Chinese; a string without a translation shows the English).
 - OS calls the host makes go through `runtime/platform/` (`platform.h`, `win32.c`), so a Linux or macOS host adds one file instead of touching the rest. The split is not finished: `tools/check_platform.py` lists the Win32 uses left in the other files.
 
 #### Threads and cores

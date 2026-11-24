@@ -69,10 +69,35 @@ typedef uint32_t __attribute__((aligned(1), may_alias)) u32u;
 typedef uint64_t __attribute__((aligned(1), may_alias)) u64u;
 typedef uint8_t __attribute__((may_alias)) u8a;
 
-// Function-entry profiler (runtime/fnprof.c, LARECOMP_FNPROF): one predictable branch per call when off.
-extern volatile int g_fnprof;
-void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
-#define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
+// Every lifted function starts with FN_ENTER: a 5-byte no-op that fnhook.c turns into a jump while the function is
+// hooked (the function-entry profiler, the code of the player's mods). Nothing is loaded or tested while it is not. The
+// jump goes to a cold path: rt_fn_hook returns 1 when another function runs in this one's place, and rt_fn_run runs it.
+// Each site has an entry in the fnkey section: the no-op and the cold path, relative to their own fields, and the
+// function. The compiler copies a site with each inlined copy of its function, entry included, so the entries of a
+// function lead to every place that runs it. C compiled without RT_FN_HOOKS (the differential tests, the mod libraries
+// of tools/mod_code.py) has no sites.
+int rt_fn_hook(Cpu *c, uint64_t addr);
+void rt_fn_run(Cpu *c);
+#if defined(RT_FN_HOOKS) && defined(__x86_64__)
+#ifdef _WIN32
+#define RT_FNKEY_SECTION ".pushsection .fnkey$m,\"dr\"\n"   // between fnhook.c's .fnkey$a and .fnkey$z
+#else
+#define RT_FNKEY_SECTION ".pushsection fnkey,\"a\",@progbits\n"   // the linker defines __start_fnkey and __stop_fnkey
+#endif
+#define FN_ENTER(a)                                                                                \
+    do {                                                                                           \
+        __label__ hooked;                                                                          \
+        __asm__ goto("1: .byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n" RT_FNKEY_SECTION                    \
+                     ".long 1b - ., %l[hooked] - .\n.quad %c0\n.popsection"                        \
+                     : : "i"(a) : : hooked);                                                       \
+        if (0) {                                                                                   \
+        hooked:                                                                                    \
+            if (rt_fn_hook(c, a)) __attribute__((musttail)) return rt_fn_run(c);                   \
+        }                                                                                          \
+    } while (0)
+#else
+#define FN_ENTER(a) ((void)0)
+#endif
 
 #define LD8(a)  (*(const u8a *)(uintptr_t)(a))
 #define LD16(a) (*(const u16u *)(uintptr_t)(a))

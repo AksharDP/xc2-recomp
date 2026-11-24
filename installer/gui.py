@@ -3,9 +3,18 @@
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
 install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Once the base game and the
 keys are chosen it runs `python -m installer.probe` on them, and the language list holds only the languages those game
-files have text for (the two releases differ). Decisions live in guilogic.py; this file only draws. The window text is in installer/text/en.json under "ui.*" and "launcher.*" ids.
+files have text for (the two releases differ). Decisions live in guilogic.py; this file only draws. The window text is in installer/text/<lang>.json under "ui.*" and "launcher.*" ids.
 
-    --selftest [--shots DIR]   build every screen and close by itself (PNG per screen with --shots)
+When it opens, a release's window asks GitHub for a newer setup (installer/selfupdate.py) and shows a banner over the
+form when there is one: Download and update fetches the new setup, starts it on the install folder and closes this one.
+
+    --selftest [--shots DIR]   build every screen in all UI languages and close by itself (PNG per screen with --shots)
+    --lang zh-Hans|zh-Hant|en  window language (default: the OS display language)
+    --update-install DIR       fill in DIR as the install folder and, when it holds an installation, update it at once
+                               (an older setup starts the new one this way)
+    --no-update-check          do not ask GitHub for a newer setup ("check_updates": false in launcher.json does the same)
+    --mod-code ...             no window: tools/mod_code.py with the release's compiler and headers (the Linux AppImage,
+                               which the game starts to build its mods' code: steps.py mod_command)
 """
 import argparse
 import json
@@ -14,6 +23,7 @@ import subprocess
 import sys
 import tkinter as tk
 import traceback
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -25,14 +35,21 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import preferences
-from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog, Form, LanguageProbe, Model, Process,
-                       amount, default_game_language, describe_event, parse_line, probe_inputs)
+from . import selfupdate
+from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, LanguageProbe, Model,
+                       Process, amount, default_game_language, describe_event, parse_line, probe_inputs,
+                       system_ui_language)
 
 POLL_MS = 100
 PROBE_DELAY_MS = 500   # after the last edit of a game file or keys path, so typing a path does not start a probe per key
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
 COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808080', FAILED: '#c01c28'}
+UI_LABELS = {'zh-Hans': '简中', 'zh-Hant': '繁中', 'en': 'EN'}
 PAD = 14
+UPDATE_POLL_MS = 500       # how often the window looks whether the update check has its answer
+UPDATE_LAUNCH_MS = 2500    # the new setup must still run (or have ended well) this long after its start
+AUTO_START_MS = 300        # --update-install: start once the window is drawn
+UPDATE_BG = '#e8f0fe'
 
 
 def fix_tcl_paths():
@@ -45,21 +62,33 @@ def fix_tcl_paths():
 
 
 class App:
-    def __init__(self, root, layout, run_args=None, remember=True):
-        """Build the setup window and restore saved paths unless this is a self-test."""
+    def __init__(self, root, layout, run_args=None, remember=True, ui_lang=None, update_check=False,
+                 update_install=None):
+        """Build the setup window and restore saved paths unless this is a self-test. update_check: ask GitHub for a
+        newer setup (a release only, and only while launcher.json allows it). update_install: an install folder to
+        fill in and, when it holds an installation, update at once."""
         self.root, self.layout = root, layout
         # the release runs under pythonw, which has no console: an error in a button's callback would vanish silently
         root.report_callback_exception = self.callback_error
-        self.cat = Catalog()
+        lang = ui_lang or system_ui_language()
+        self.all_cats = {c: Catalog(c) for c in UI_LANGUAGES}
+        self.cat = Catalog(lang)
         self.model = Model()
         self.process = None
         self.closing = False
         self.run_args = run_args or {}   # extra CLI options for tests: temp, verify
         self.log_entries = []            # events and raw lines of the run, rendered by render_log
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
+        self.form_problems = []          # current form validation error ids, retranslated on switch
         self.preferences_path = preferences.config_path() if remember else None
         saved = preferences.load(self.preferences_path) if remember else preferences.defaults()
         self.preference_save_after = None
+        self.check_updates = saved['check_updates']
+        self.update_check = None         # the selfupdate.Check running, or None
+        self.update_release = None       # the newer release the check found (selfupdate.Release), or None
+        self.update_job = None           # the selfupdate.Install running, or None
+        self.update_error = None         # why the last update attempt failed (selfupdate.UpdateError), or None
+        self.update_launched = None      # (process, setup) of the new setup while this window waits to close
         self.vars = {
             'base': tk.StringVar(value=saved['base']),
             'update': tk.StringVar(value=saved['update']),
@@ -68,7 +97,7 @@ class App:
             'dest': tk.StringVar(value=saved['dest']),
         }
         self.vars['lang'] = tk.StringVar()
-        self.lang_code = default_game_language()
+        self.lang_code = default_game_language(self.cat.lang)
         self.languages = None            # the languages of the chosen game files (LanguageProbe); None while unknown
         self.probe = None                # the LanguageProbe running, or None
         self.probe_for = None            # the inputs the shown languages are of (guilogic.probe_inputs)
@@ -94,6 +123,8 @@ class App:
         style.configure('Notice.TLabel', background='#fff3cd', foreground='#664d03', padding=8)
         style.configure('Err.TLabel', foreground='#c01c28')
         style.configure('Version.TLabel', foreground='#808080')
+        style.configure('Update.TFrame', background=UPDATE_BG)
+        style.configure('Update.TLabel', background=UPDATE_BG, foreground='#0b3d91')
 
         top = ttk.Frame(root, padding=(PAD, PAD, PAD, 0))
         top.pack(fill='x')
@@ -102,6 +133,12 @@ class App:
         version = ttk.Label(top, style='Version.TLabel')
         self.bind_text(version, 'text', 'ui.version', version=layout.release)
         version.pack(side='left', padx=(10, 0), pady=(6, 0))
+        sw = ttk.Frame(top)
+        sw.pack(side='right')
+        self.ui_var = tk.StringVar(value=self.cat.lang)
+        for code in UI_LANGUAGES:
+            ttk.Radiobutton(sw, text=UI_LABELS[code], value=code, variable=self.ui_var, style='Toolbutton',
+                            command=self.switch_language).pack(side='left', padx=1)
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
@@ -115,6 +152,13 @@ class App:
         self.refresh_form()
         self.show('form')
         self.queue_probe()
+        if update_install:
+            self.vars['dest'].set(os.path.normpath(update_install))
+            if self.form().update_mode():
+                root.after(AUTO_START_MS, self.start)
+        if update_check and self.check_updates and not layout.dev and selfupdate.platform():
+            self.update_check = selfupdate.Check(selfupdate.repo_of(layout.root), layout.release)
+            root.after(UPDATE_POLL_MS, self.poll_update_check)
 
     # ---- text -----------------------------------------------------------------------------------------------------
 
@@ -131,6 +175,26 @@ class App:
         w = ttk.Button(parent, command=command, **kw)
         self.bind_text(w, 'text', id)
         return w
+
+    def retext(self):
+        self.root.title(self.cat('ui.title'))
+        for widget, option, id, params in self.bound:
+            widget.configure(**{option: self.cat(id, **params)})
+        self.fill_languages()
+        self.refresh_form()
+        self.form_error.configure(text=' '.join(self.cat(p) for p in self.form_problems))
+        self.refresh_update()
+        self.refresh_run()
+        self.refresh_finish()
+        self.render_log()
+
+    def switch_language(self):
+        code = self.selected_lang()
+        self.cat.set_language(self.ui_var.get())
+        self.lang_code = code
+        self.retext()
+        self.vars['lang'].set(self.lang_label(self.lang_code))
+        self.fit()
 
     def lang_label(self, code):
         return self.cat('lang.' + code)
@@ -150,15 +214,23 @@ class App:
         self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
         self.lang_code = code
-        status_id, params = self.probe_status
-        self.langs_label.configure(text=self.cat(status_id, **params))
+        self.langs_label.configure(text=self.status_text(self.probe_status))
+
+    def status_text(self, status):
+        """The line under the language box in the active language. A failed read keeps its check id and parameters
+        rather than its text, so a language change translates the reason again (fill_languages runs on every change)."""
+        status_id, params = status
+        if status_id == 'ui.langs_failed':
+            params = {'reason': self.cat(params['check'], **params['check_params'])}
+        return self.cat(status_id, **params)
 
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
         shown = self.vars['lang'].get()
         for code in ini.LANGUAGES:
-            if shown == self.lang_label(code):
-                return code
+            for cat in self.all_cats.values():
+                if shown == cat('lang.' + code):
+                    return code
         return self.lang_code
 
     # ---- screens --------------------------------------------------------------------------------------------------
@@ -199,6 +271,7 @@ class App:
         self.start_button.pack(side='right')
         self.form_intro = self.label(f, 'ui.intro', wraplength=620, justify='left')
         self.form_intro.pack(anchor='w', pady=(0, 8))
+        self.build_update_banner(f)   # packed over the intro once the check found a newer release
         self.notice(f).pack(fill='x', pady=(0, 10))
         grid = ttk.Frame(f)
         grid.pack(fill='x')
@@ -238,6 +311,17 @@ class App:
         self.form_error.pack(anchor='w', pady=(8, 0))
         self.label(f, 'ui.keys_private', wraplength=620, justify='left').pack(anchor='w', pady=(8, 0))
         return f
+
+    def build_update_banner(self, f):
+        self.update_box = ttk.Frame(f, style='Update.TFrame', padding=8)
+        self.update_text = ttk.Label(self.update_box, style='Update.TLabel', wraplength=600, justify='left')
+        self.update_text.pack(anchor='w', fill='x')
+        self.update_bar = ttk.Progressbar(self.update_box, mode='determinate', maximum=1000)
+        self.update_row = ttk.Frame(self.update_box, style='Update.TFrame')
+        self.update_row.pack(anchor='w', pady=(6, 0))
+        self.update_go = self.button(self.update_row, 'ui.update_download', self.start_update)
+        self.update_notes = self.button(self.update_row, 'ui.update_notes', self.open_release_page)
+        self.update_stop = self.button(self.update_row, 'ui.cancel', self.cancel_update)
 
     def build_run(self):
         f = ttk.Frame(self.body)
@@ -343,8 +427,8 @@ class App:
                                                                    'known': ', '.join(e['languages'])}))
         else:   # the list shown is the install folder's, so another folder reads again
             self.probe_for_dest = self.vars['dest'].get()
-            reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
-            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
+            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {
+                'check': e.get('id', 'check.languages_unreadable'), 'check_params': e.get('params') or {}}))
         self.probe_done_status = self.probe_status
 
     def current_inputs(self):
@@ -399,6 +483,7 @@ class App:
             'dlc': self.dlc_paths(),
             'keys': self.vars['keys'].get(),
             'dest': self.vars['dest'].get(),
+            'check_updates': self.check_updates,
         }, self.preferences_path)
 
     def refresh_form(self):
@@ -455,9 +540,12 @@ class App:
 
     def start(self):
         """Save form paths, validate the inputs and start the installer process."""
+        if self.updating() or self.process:
+            return
         self.save_preferences()
         form = self.form()
         problems = form.problems()
+        self.form_problems = problems
         if problems:
             self.form_error.configure(text=' '.join(self.cat(p) for p in problems))
             self.fit()
@@ -605,8 +693,13 @@ class App:
             self.process.cancel()
 
     def on_close(self):
-        """Save form paths before closing or confirming cancellation of a running setup."""
+        """Save form paths before closing or confirming cancellation of a running setup. A download of a new setup
+        is cancelled and given a moment to remove its partial files."""
         self.save_preferences()
+        job = self.update_job
+        if job is not None and not job.done():
+            job.cancel()
+            job.thread.join(3)
         if self.process:
             if not messagebox.askyesno(self.cat('ui.title'), self.cat('ui.confirm_cancel')):
                 return
@@ -651,6 +744,140 @@ class App:
                 subprocess.Popen(['xdg-open', dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True)
 
+    # ---- a newer setup ---------------------------------------------------------------------------------------------
+
+    def updating(self):
+        """True while a new setup is downloaded, unpacked or started: the form's Start waits."""
+        return (self.update_job is not None and not self.update_job.done()) or self.update_launched is not None
+
+    def poll_update_check(self):
+        check = self.update_check
+        if check is None:
+            return
+        if not check.done():
+            self.root.after(UPDATE_POLL_MS, self.poll_update_check)
+            return
+        self.update_check = None
+        if check.result is not None:
+            self.update_release = check.result
+            self.refresh_update()
+
+    def update_installable(self):
+        """True when Download and update can work here: the release has this platform's file with its SHA-256, and
+        this setup is a release that can put another beside it (selfupdate.can_install)."""
+        r = self.update_release
+        return r is not None and r.installable and selfupdate.can_install(self.layout.root)
+
+    def refresh_update(self):
+        """The banner over the form: hidden until the check found a newer release, then the offer, the progress of
+        the download, or why it failed (kept as its id, so a language switch translates it again)."""
+        r = self.update_release
+        if r is None:
+            if self.update_box.winfo_manager():
+                self.update_box.pack_forget()
+            return
+        job, busy = self.update_job, self.updating()
+        if job is not None and not job.done() and job.phase in ('download', 'unpack'):
+            text = self.cat('ui.update_downloading' if job.phase == 'download' else 'ui.update_unpacking',
+                            done=megabytes(job.done_bytes), total=megabytes(job.total))
+            fraction = job.done_bytes / job.total if job.total else 0
+        elif busy:
+            text, fraction = self.cat('ui.update_starting'), 1
+        else:
+            text = self.cat('ui.update_available', version=r.version, current=self.layout.release.split('+')[0])
+            if self.update_installable():
+                text += '\n' + self.cat('ui.update_how', size=megabytes(r.size))
+            else:
+                text += '\n' + self.cat('ui.update_manual')
+            if self.update_error is not None:
+                reason = self.cat(self.update_error.id, **self.update_error.params)
+                text += '\n\n' + self.cat('ui.update_failed', reason=reason)
+            fraction = None
+        self.update_text.configure(text=text)
+        if fraction is None:
+            self.update_bar.pack_forget()
+        else:
+            self.update_bar.configure(value=fraction * 1000)
+            if not self.update_bar.winfo_manager():
+                self.update_bar.pack(fill='x', pady=(6, 0), before=self.update_row)
+        for b in (self.update_go, self.update_notes, self.update_stop):
+            b.pack_forget()
+        if not busy and self.update_installable():
+            self.update_go.pack(side='left', padx=(0, 8))
+        self.update_notes.pack(side='left', padx=(0, 8))
+        if job is not None and not job.done():
+            self.update_stop.pack(side='left')
+            self.update_stop.state(['disabled' if job.cancel_event.is_set() else '!disabled'])
+        self.start_button.state(['disabled' if busy else '!disabled'])
+        if not self.update_box.winfo_manager():
+            self.update_box.pack(fill='x', pady=(0, 10), before=self.form_intro)
+        self.fit()
+
+    def start_update(self):
+        """Download and update: fetch the new setup in a thread; poll_update starts it once it is in place."""
+        if not self.update_installable() or self.updating() or self.process:
+            return
+        self.save_preferences()
+        self.update_error = None
+        self.update_job = selfupdate.Install(self.update_release, selfupdate.places(self.layout.root),
+                                             opener=selfupdate.opener_for(self.layout.release))
+        self.refresh_update()
+        self.root.after(POLL_MS, self.poll_update)
+
+    def cancel_update(self):
+        if self.update_job is not None:
+            self.update_job.cancel()
+            self.refresh_update()
+
+    def poll_update(self):
+        job = self.update_job
+        if job is None:
+            return
+        if not job.done():
+            self.refresh_update()
+            self.root.after(POLL_MS, self.poll_update)
+            return
+        self.update_job = None
+        if job.error is not None:   # a cancel shows the offer again; a failure says why under it
+            self.update_error = None if isinstance(job.error, selfupdate.Cancelled) else job.error
+            self.refresh_update()
+            return
+        self.launch_update(job.result)
+
+    def launch_update(self, setup):
+        """Start the new setup, on the install folder when that holds an installation (it updates it at once), else
+        with the remembered fields only; watch_launch closes this window once it runs."""
+        self.save_preferences()
+        dest = self.vars['dest'].get().strip() if self.form().update_mode() else ''
+        try:
+            self.update_launched = (selfupdate.launch(setup, dest), setup)
+        except OSError as e:
+            self.update_error = selfupdate.UpdateError('ui.update_err_start', path=str(setup), detail=str(e))
+            self.refresh_update()
+            return
+        self.refresh_update()
+        self.root.after(UPDATE_LAUNCH_MS, self.watch_launch)
+
+    def watch_launch(self):
+        """The new setup still runs, or ended well: close. It ended with an error at once: say so and stay open."""
+        proc, setup = self.update_launched
+        code = proc.poll()
+        if code in (None, 0):
+            self.root.destroy()
+            return
+        self.update_launched = None
+        self.update_error = selfupdate.UpdateError('ui.update_err_start', path=str(setup), detail=f'exit code {code}')
+        self.refresh_update()
+
+    def open_release_page(self):
+        if self.update_release is not None:
+            webbrowser.open(self.update_release.page)
+
+
+def megabytes(n):
+    """Bytes as whole decimal megabytes, the unit of the update banner."""
+    return f'{(n or 0) / 1e6:.0f}'
+
 
 # ---- self test ---------------------------------------------------------------------------------------------------
 
@@ -694,12 +921,15 @@ def grab(root, path):
 
 
 def selftest(layout, shots=None):
-    """Every screen; the window closes itself. Returns 0 when nothing raised."""
+    """Every screen in every UI language; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
     root = tk.Tk()
     root.geometry('+60+40')
-    app = App(root, layout, remember=False)
-    steps = []
+    app = App(root, layout, remember=False, ui_lang='en')
+    steps, mixed, banners = [], [], []
+    newer = selfupdate.Release('9.9.9', 'https://github.com/selftest/selftest/releases/tag/v9.9.9',
+                               'XC2-Setup-9.9.9-windows.zip', 'https://github.com/selftest/selftest/releases/download/'
+                               'v9.9.9/XC2-Setup-9.9.9-windows.zip', 182_647_072, '0' * 64)
 
     def shot(name):
         root.update()
@@ -708,66 +938,103 @@ def selftest(layout, shots=None):
             grab(root, Path(shots) / f'{name}.png')
 
     def run_all():
-        app.vars['dest'].set('Z:/selftest/XC2')
-        app.vars['base'].set('Z:/selftest/xc2.nsp')
-        app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
-        app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
-        app.vars['keys'].set('Z:/selftest/prod.keys')
-        app.show('form')
-        app.start()   # missing files: shows the problems
-        steps.append(app.form_error.cget('text'))
-        shot('form')
-        app.model = Model()
-        app.clear_log()
-        app.build_step_rows(app.model.steps)
-        app.show('run')
-        for e in SAMPLE_RUN:
-            app.feed(json.dumps(e))
-        app.log_open = False
-        app.toggle_log()
-        app.refresh_run()
-        shot('run')
-        app.model = Model()
-        for e in SAMPLE_OK:
-            app.model.apply(e)
-        app.model.dest = 'Z:/selftest/XC2'
-        app.model.finish(0)
-        app.refresh_finish()
-        app.show('finish')
-        shot('finish-ok')
-        app.model = Model()
-        for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
-                                    'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
-                                   {'type': 'end', 'result': 'failed', 'seconds': 3}]:
-            app.model.apply(e)
-        app.model.finish(1)
-        app.refresh_finish()
-        shot('finish-failed')
-        app.model = Model()
-        app.model.finish(3)
-        app.refresh_finish()
-        shot('finish-cancelled')
-        app.toggle_log()
+        for lang in UI_LANGUAGES:
+            app.ui_var.set(lang)
+            app.switch_language()
+            tag = lang
+            app.vars['dest'].set('Z:/selftest/XC2')
+            app.vars['base'].set('Z:/selftest/xc2.nsp')
+            app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
+            app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
+            app.vars['keys'].set('Z:/selftest/prod.keys')
+            app.show('form')
+            app.start()   # missing files: shows the problems
+            steps.append(app.form_error.cget('text'))
+            shot(f'form-{tag}')
+            app.update_release = newer   # the banner a newer release brings, then with a failed attempt under it
+            app.refresh_update()
+            shot(f'form-update-{tag}')
+            app.update_error = selfupdate.UpdateError('ui.update_err_damaged')
+            app.refresh_update()
+            banners.append('9.9.9' in app.update_text.cget('text') and bool(app.update_box.winfo_manager()))
+            shot(f'form-update-failed-{tag}')
+            app.update_release = app.update_error = None
+            app.refresh_update()
+            banners.append(not app.update_box.winfo_manager())
+            app.model = Model()
+            app.clear_log()
+            app.build_step_rows(app.model.steps)
+            app.show('run')
+            for e in SAMPLE_RUN:
+                app.feed(json.dumps(e))
+            app.log_open = False
+            app.toggle_log()
+            app.refresh_run()
+            shot(f'run-{tag}')
+            if lang == 'en':   # the log follows the window language: no English line may remain after the switch
+                app.ui_var.set('zh-Hans')
+                app.switch_language()
+                text = app.log.get('1.0', 'end')
+                mixed.append('Checking' in text or 'Extracting' in text or '提取游戏文件' not in text)
+                app.ui_var.set('en')
+                app.switch_language()
+            app.model = Model()
+            for e in SAMPLE_OK:
+                app.model.apply(e)
+            app.model.dest = 'Z:/selftest/XC2'
+            app.model.finish(0)
+            app.refresh_finish()
+            app.show('finish')
+            shot(f'finish-ok-{tag}')
+            app.model = Model()
+            for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
+                                        'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
+                                       {'type': 'end', 'result': 'failed', 'seconds': 3}]:
+                app.model.apply(e)
+            app.model.finish(1)
+            app.refresh_finish()
+            shot(f'finish-failed-{tag}')
+            app.model = Model()
+            app.model.finish(3)
+            app.refresh_finish()
+            shot(f'finish-cancelled-{tag}')
+            app.toggle_log()
         root.destroy()
 
     root.after(200, run_all)
     root.after(60000, root.destroy)   # never leaves a window open
     root.mainloop()
-    return 0 if len(steps) == 1 and all(steps) else 1
+    return 0 if (len(steps) == len(UI_LANGUAGES) and all(steps) and mixed == [False]
+                 and len(banners) == 2 * len(UI_LANGUAGES) and all(banners)) else 1
+
+
+def mod_code(argv):
+    layout = layouts.find()
+    return subprocess.run([str(layout.python), str(layout.tools / 'mod_code.py'), '--runtime', str(layout.runtime),
+                           '--clang', str(layout.clang), *(['--sysroot', str(layout.sysroot)] if layout.sysroot else []),
+                           *argv]).returncode
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['--mod-code']:
+        return mod_code(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--shots', type=Path)
+    ap.add_argument('--lang', choices=UI_LANGUAGES)
     ap.add_argument('--root', type=Path)
-    args = ap.parse_args(argv)
+    ap.add_argument('--update-install', metavar='DIR')
+    ap.add_argument('--no-update-check', action='store_true')
+    # an older setup starts this one with the options it knew; one this setup no longer knows must not keep it shut
+    args, _unknown = ap.parse_known_args(argv)
     layout = layouts.find(args.root)
     if args.selftest:
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, layout)
+    App(root, layout, ui_lang=args.lang or system_ui_language(), update_check=not args.no_update_check,
+        update_install=args.update_install)
     root.mainloop()
     return 0
 
