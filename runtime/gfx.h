@@ -23,6 +23,9 @@ uint64_t gfx_vsync_ticks(void);                            // ticks since start
 uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time of a tick (pacing)
 double gfx_window_refresh_hz(void);                        // refresh rate of the window's monitor; 0 unknown
 int gfx_window_focused(void);
+// The next presented picture as <exe dir>/screenshots/xc2-<date>-<time>.png, written by a thread of its own (the
+// gamepad's Capture button, input.c). Any thread; returns at once.
+void gfx_screenshot(void);
 
 // ---- shader service client (gfx_shader.c)
 enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS };
