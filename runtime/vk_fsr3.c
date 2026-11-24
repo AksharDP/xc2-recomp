@@ -637,7 +637,7 @@ static void record_upscale(VkExec *ex) {
     }
     plat_mutex_lock(&status_lock);
     if (strcmp(status_version, F.version)) snprintf(status_version, sizeof status_version, "%s", F.version);
-    status_ns = now;
+    status_ns = kern_now_ns();   // not now: the first dispatch can take long enough to make that old
     plat_mutex_unlock(&status_lock);
     memory_barrier(cb);
     VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -714,8 +714,8 @@ int vk_fsr3_libraries(void) {
 // 1 with the provider version ("4.1.2", "3.1.4") in buf when FSR upscaled a frame within the last second; 0 when it did
 // not (turned off, no library, failed, or no 3D scene to upscale, as on a loading screen).
 int vk_fsr3_shown(char *buf, size_t size) {
-    uint64_t now = kern_now_ns();
     plat_mutex_lock(&status_lock);
+    uint64_t now = kern_now_ns();   // under the lock: read before it, it could be older than status_ns
     int on = status_ns && now - status_ns < 1000000000ull;
     if (on && size) snprintf(buf, size, "%s", status_version);
     plat_mutex_unlock(&status_lock);
