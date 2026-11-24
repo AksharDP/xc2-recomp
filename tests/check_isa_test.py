@@ -94,6 +94,23 @@ class InstructionLevelTest(unittest.TestCase):
             self.assertEqual(set(report['dispatched']), {'HUF_entry [huf_decompress.c.obj]'})
             self.assertEqual(set(report['unexpected']), {'entry [other.o]', 'FSE_entry [fse_decompress.c.obj]'})
 
+    def test_a_label_does_not_reach_into_the_next_object(self):
+        """plain.o's static function has no symbol and follows vpx_copy_avx2 of another object in the disassembly."""
+        listing = ('140001000 <vpx_copy_avx2>:\n140001000: vmovdqu (%rax), %ymm0\n140001008: vpaddd %ymm0, %ymm1, %ymm2\n'
+                   '140001010: vpaddd %ymm0, %ymm1, %ymm2\n140001020 <plain>:\n140001020: vaddps %ymm0, %ymm1, %ymm2\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'fixture.map'
+            path.write_text('00001000 00000010    16         kernels.c.obj:(.text)\n'
+                            '00001010 00000020    16         plain.o:(.text)\n')
+            proc = mock.Mock(stdout=io.StringIO(listing), stderr=io.StringIO(''), wait=lambda: 0)
+            with mock.patch.object(check_isa.subprocess, 'Popen', return_value=proc):
+                found, total = scan('objdump', 'x.exe', 2, LinkMap(path, 0x140000000))
+        self.assertEqual(total, 4)
+        self.assertEqual({k: sum(v.values()) for k, v in found.items()},
+                         {('vpx_copy_avx2', 'kernels.c.obj'): 2, ('?', 'plain.o'): 1, ('plain', 'plain.o'): 1})
+        self.assertIsNotNone(check_isa.dispatched('vpx_copy_avx2', 'kernels.c.obj'))
+        self.assertIsNone(check_isa.dispatched('?', 'plain.o'))
+
     def test_baseline_sse2(self):
         for asm in ('movdqa %xmm0,%xmm1', 'paddq %xmm0,%xmm1', 'pextrw $0,%xmm0,%eax',
                     'lock cmpxchgq %rax,(%rdx)', 'rep bsf %rax,%rax'):
