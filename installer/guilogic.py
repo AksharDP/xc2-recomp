@@ -25,7 +25,7 @@ from .events import render
 
 TEXT = Path(__file__).resolve().parent / 'text'
 UI_LANGUAGES = ('en',)   # the window's languages: a catalog installer/text/<lang>.json each
-STEP_ORDER = ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
+STEP_ORDER = ('check', 'kit', 'extract', 'lift', 'compile', 'prepare', 'cleanup')
 # message parameter -> catalog id prefix of the names that replace its raw values
 PARAM_NAMES = {'lang': 'lang.', 'known': 'lang.', 'step': 'step.', 'input': 'param.input.'}
 

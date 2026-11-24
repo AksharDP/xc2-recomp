@@ -3,8 +3,8 @@
 // them: <mod>/romfs, <mod>/exefs and <mod>/cheats, or the Atmosphere layout (atmosphere/contents/<title id>/romfs,
 // atmosphere/exefs_patches/<name>/*.ips). The RomFS of an add-on content title (<title id> 0100E950040390NN, in Japan
 // 0100F3400332D0NN, pack NN in hex) goes over that pack: XC2 looks a file up in every add-on content pack before its
-// base archive, which is how XC2 mods replace files inside bf2.arh / bf2.ard. ExeFS patch files (.ips, .pchtxt) for the game's main are patch sets the
-// setup builds into the game (tools/exefs_patches.py), switched with their mod (mods_exefs_switch), and data writes
+// base archive, which is how XC2 mods replace files inside bf2.arh / bf2.ard. ExeFS patch files (.ips, .pchtxt) for the game's main are patch sets, built at
+// game start (modcode.c, tools/exefs_patches.py) and switched with their mod (mods_exefs_switch), and data writes
 // stored into main before the game runs (mods_exefs_data). The list is scanned
 // once at start (romfs.c overlay_init); its order and switches live in xc2.ini [mods] (XC2_MODS_ORDER: names top
 // first, separated by '|'; XC2_MODS_DISABLED: names switched off). The top mod wins a file two mods replace.
@@ -23,8 +23,8 @@ typedef enum {
     MOD_EMPTY,          // no RomFS file, no ExeFS patch, no cheat file
     MOD_PLUGIN,         // has code modules (exefs/subsdk*, a replaced exefs/main): the port has no module loader, so the
                         // whole mod stays off (its RomFS files may expect that code)
-    MOD_EXEFS_LATER,    // has ExeFS patches for this game's main that the game was built without: running the setup
-                        // again builds them in; the whole mod stays off until then
+    MOD_EXEFS_LATER,    // has ExeFS patches for this game's main that could not be built (modcode.c): the whole mod stays
+                        // off until they are
     MOD_EXEFS_UNSUPPORTED,   // an ExeFS patch file the port cannot apply (note says why): the whole mod stays off
     MOD_EXEFS_OTHER,    // only ExeFS patches, all for another game version
     MOD_BAD_NAME,       // its folder name holds '|', the separator of the order keys
@@ -45,7 +45,7 @@ typedef struct {
     uint32_t other_version;                 // ExeFS patches for another build, not used
     char overridden_by[256];                // the first higher mod that took one of its files
     char note[256];                         // MOD_EXEFS_UNSUPPORTED: why
-    uint32_t pending, pending_key;          // ExeFS patch files the build lacks; FNV-1a of their names and contents
+    uint32_t pending;                       // ExeFS patch files no status line knows with this content (modcode.c)
     int nsets;
     uint32_t sets[16];                      // the built patch sets mod_<hash> of its ExeFS patch files
     int ndata;
@@ -87,8 +87,8 @@ long mods_exefs_data(const ModInfo *m, uint64_t base, uint64_t size, uint64_t co
 // fresh scan at the next mods_scan.
 void mods_probe_cache(const char *status, const char *data);
 void mods_rescan(void);
-// The ExeFS patch files of the enabled mods that the build lacks, their FNV-1a mixed into *key.
-int mods_exefs_pending(uint32_t *key);
+int mods_exefs_files(void);     // the ExeFS patch files for this main of every mod, switched on or not
+int mods_exefs_pending(void);   // those of them that are not built
 // The hex of the game main's build id (64 digits), "" when exefs/main cannot be read.
 const char *mods_main_build_id(void);
 // The host file that add-on content pack index serves at its RomFS path rel (no leading '/'), from the highest enabled

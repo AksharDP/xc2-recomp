@@ -293,8 +293,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EMPTY] = "This folder has no romfs, exefs or cheats files.",
     [UI_MENU_MODS_SUBSDK] = "This mod brings its own game code (a subsdk plugin or a replaced main). The port cannot "
                             "load code modules, so the whole mod stays off.",
-    [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs) and the game was built without these patches. "
-                                 "Run the setup again to build them in; until then the whole mod stays off.",
+    [UI_MENU_MODS_EXEFS_LATER] = "This mod patches the game code (exefs) and these patches are not built. The game builds "
+                                 "them at its next start; until then the whole mod stays off.",
     [UI_MENU_MODS_BAD_NAME] = "The folder name contains |, which the mod list uses between names. Rename the folder.",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "This mod patches the game code (exefs) in a way the port cannot apply, so the "
                                        "whole mod stays off. %s",
@@ -310,17 +310,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_NONE] = "No cheats for this game version. A mod's cheats are an Atmosphere cheat file in its "
                             "cheats folder named after the game's build: %s. Restart the game after adding one.",
     [UI_MENU_CHEATS_MOD] = "%s: %d cheats",
-    [UI_MENU_CHEATS_UNBUILT] = "Some cheats or code patches of your mods change the game's code and are not built into "
-                               "it. Run the setup again on this folder to build them in.",
+    [UI_MENU_CHEATS_UNBUILT] = "Some code patches or code cheats of your mods could not be built and stay off. The game "
+                               "tries again at its next start. The reason: %s",
+    [UI_MENU_CHEATS_UNBUILT_OFF] = "mods_build = off",
     [UI_MENU_CHEAT_CODE_DESC] = "Changes the game's code. Switches at once.",
     [UI_MENU_CHEAT_KEY_DESC] = "Changes the game's code while you hold %s. Switches at once.",
     [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
     [UI_MENU_CHEAT_MASTER] = "always on", [UI_MENU_CHEAT_MASTER_DESC] = "The file's master code: it is always on.",
     [UI_MENU_CHEAT_RESTORE] = "not needed",
     [UI_MENU_CHEAT_RESTORE_DESC] = "It only writes the game's own code back. Switching a cheat off already does that.",
-    [UI_MENU_CHEAT_REBUILD] = "after the setup",
-    [UI_MENU_CHEAT_REBUILD_DESC] = "This cheat changes the game's code and is new or edited since the game was built. "
-                                   "Run the setup again to build it in.",
+    [UI_MENU_CHEAT_UNBUILT] = "not built",
+    [UI_MENU_CHEAT_UNBUILT_DESC] = "This cheat changes the game's code and is new or edited. The game builds it at its "
+                                   "next start.",
     [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
     [UI_MENU_CHEATS_BUILTIN] = "Built-in cheats",

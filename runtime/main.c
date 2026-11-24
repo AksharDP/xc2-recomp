@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fnhook.h"
 #include "host.h"
 #include "replay.h"
 #include "platform/platform.h"
@@ -525,6 +526,17 @@ static int selftest(void) {
           "a registered host function does not dispatch through rt_call");
     CHECK(!rt_dispatch_lookup(probe + 16), "an unregistered host-function address dispatches");
     CHECK(rt_dispatch_lookup(RT_RET_HOST), "the rt_call return sentinel is not registered");
+    // a hooked function's every site runs the replacement: here its own entry's, through the dispatcher
+    long sites = fnhook_sites();
+    CHECK(sites >= (long)s.functions && fnhook_probe(), "FN_ENTER sites: %ld for %llu functions, or one is not a no-op",
+          sites, (unsigned long long)s.functions);
+    uint64_t target = mods[0].addrs[mods[0].count / 2];
+    int hits = host_probe_hits;
+    fnhook_replace(target, host_probe);
+    int written = fnhook_install();
+    r = rt_call(c, target, 1, (uint64_t)7);
+    CHECK(written > 0 && r == 42 && host_probe_hits == hits + 1, "a hooked function does not run its replacement");
+    printf("fnhook: %ld sites, %d written for %#llx\n", sites, written, (unsigned long long)target);
     plat_aligned_free(c);
     bench(mods, n);
 

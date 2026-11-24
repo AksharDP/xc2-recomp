@@ -21,9 +21,9 @@
 //
 // ExeFS patch files: an .ips or .pchtxt file in the exefs folder or in atmosphere/exefs_patches/<name>/ is for the game
 // when its build id is main's (an IPS file's name, a pchtxt file's @nsobid line); others are another version's and
-// counted. The setup builds every mod's files into patch sets and writes build-cache/exefs.status next to xc2.exe
-// (tools/exefs_patches.py has the format): a file whose line is missing or has another content hash waits for the
-// rebuild at start (cheats.c), and its mod stays off until then. A file's writes into main's data (.rodata, .data, .bss) are lines of
+// counted. tools/mod_code.py makes every mod's files into patch sets (modcode.c) and writes build-cache/exefs.status next
+// to xc2.exe (tools/exefs_patches.py has the format): a file whose line is missing or has another content hash could not
+// be built, and its mod stays off until it is. A file's writes into main's data (.rodata, .data, .bss) are lines of
 // build-cache/exefs.data, stored into the loaded main before the game runs (mods_exefs_data), as emulators apply a patch
 // file to the module before its dynamic linker runs.
 #include <ctype.h>
@@ -34,6 +34,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "modcode.h"
 #include "mods.h"
 #include "platform/platform.h"
 
@@ -186,7 +187,7 @@ static const char *problem_name(ModProblem p) {
     switch (p) {
     case MOD_EMPTY: return "empty";
     case MOD_PLUGIN: return "has a code module (subsdk or main), not supported; the whole mod stays off";
-    case MOD_EXEFS_LATER: return "ExeFS patches wait for a rebuild of the game code; the whole mod stays off";
+    case MOD_EXEFS_LATER: return "ExeFS patches could not be built; the whole mod stays off";
     case MOD_EXEFS_UNSUPPORTED: return "an ExeFS patch file cannot be applied; the whole mod stays off";
     case MOD_EXEFS_OTHER: return "its ExeFS patches are for another game version";
     case MOD_BAD_NAME: return "its folder name holds '|', which the order list uses; rename the folder";
@@ -232,6 +233,7 @@ static int same_build(const char *hex, size_t n) {
 
 // build-cache/<name> next to xc2.exe, read once into *text; "" when there is none (mods_probe_cache sets the text).
 static char *status_text, *data_text;
+static int probe_text;   // they are a probe's (mods_probe_cache)
 static const char *build_cache(const char *name, char **text) {
     if (*text) return *text;
     char path[2100];
@@ -344,10 +346,9 @@ static int exefs_file_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
         m->other_version++;
         return 1;
     }
-    if (!status_line(key, content, kind_s, over, note)) {
+    // a code file's set is in the mods' library: one made for another build does not count
+    if (!status_line(key, content, kind_s, over, note) || (!strcmp(kind_s, "code") && !probe_text && !modcode_current())) {
         m->pending++;
-        m->pending_key = (m->pending_key ^ fnv(key, 8)) * 0x01000193u;
-        m->pending_key = (m->pending_key ^ fnv(content, 8)) * 0x01000193u;
         return 1;
     }
     if (!strcmp(kind_s, "unsupported")) {
@@ -607,6 +608,7 @@ static char *dup_text(const char *s) {
 void mods_probe_cache(const char *status, const char *data) {
     free(status_text);
     free(data_text);
+    probe_text = status != NULL;
     status_text = dup_text(status);
     data_text = dup_text(data);
 }
@@ -624,6 +626,7 @@ static int set_on(const ModInfo *m, uint32_t key) {
     char name[32];
     snprintf(name, sizeof name, "mod_%08x", key);
     int set = rt_patch_set(name);
+    modcode_use(set);
     if (set >= 0) rt_patch_switch(set, 1);
     else rt_log("mods: %s: patch set %s is not in this build", m->name, name);
     return set >= 0;
@@ -665,13 +668,16 @@ void mods_exefs_switch(void) {
     else mods_exefs_apply(0, 0, 0, NULL);
 }
 
-int mods_exefs_pending(uint32_t *key) {
+int mods_exefs_files(void) {
     int n = 0;
-    for (int i = 0; i < nmods; i++) {
-        if (!start_enabled[i] || mods[i].problem != MOD_EXEFS_LATER) continue;
-        n += (int)mods[i].pending;
-        *key = (*key ^ mods[i].pending_key) * 0x01000193u;
-    }
+    for (int i = 0; i < nmods; i++) n += (int)mods[i].pending + mods[i].nsets + mods[i].ndata;
+    return n;
+}
+
+int mods_exefs_pending(void) {
+    int n = 0;
+    for (int i = 0; i < nmods; i++)
+        if (start_enabled[i] && mods[i].problem == MOD_EXEFS_LATER) n += (int)mods[i].pending;
     return n;
 }
 

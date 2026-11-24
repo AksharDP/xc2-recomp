@@ -1,7 +1,7 @@
 // Adapted from totk-pc-recomp runtime/cheats.h @ ab1dee5b (MIT, Copyright (c) 2026 Valiantsin Dzerakh).
 // Cheats of the mods' Atmosphere cheat files (cheats.c): mods\<mod>\cheats\<build id>.txt of each enabled mod,
-// switched from the menu's Cheats tab. A cheat that writes the game's instructions is a code patch set that tools/cheats.py built into the game
-// (switched with rt_patch_switch); one that writes data runs in the cheat VM every presented frame.
+// switched from the menu's Cheats tab. A cheat that writes the game's instructions is a code patch set of the mods'
+// library (modcode.c; switched with rt_patch_switch); one that writes data runs in the cheat VM every presented frame.
 #pragma once
 #include <stdint.h>
 
@@ -18,7 +18,7 @@ typedef enum {
     CHEAT_DATA,          // the cheat VM
     CHEAT_MASTER,        // {master}: always on
     CHEAT_RESTORE,       // writes the original instructions back: nothing to do
-    CHEAT_REBUILD,       // writes instructions, but the game was built without this version of it
+    CHEAT_UNBUILT,       // writes instructions, and could not be built (modcode.c)
     CHEAT_UNSUPPORTED,   // note says why
 } CheatKind;
 
@@ -33,8 +33,11 @@ typedef struct {
 
 void cheats_init(void);                    // after rt_patches_init: reads the mods' files and their build status
 int cheats_count(void);
-// Code cheats (CHEAT_REBUILD) and ExeFS patch files of enabled mods the build lacks: running the setup again builds them.
-int cheats_unbuilt(void);
+int cheats_unbuilt(void);                  // the CHEAT_UNBUILT ones
+// Before the mods' code is built (modcode.c modcode_prepare): the enabled mods that have a cheat file for this build, and
+// their cheats without a status line for their present content.
+int cheats_files(void);
+int cheats_pending(void);
 const CheatInfo *cheats_info(int i);
 int cheats_on(int i);                      // the player's switch (1 for a master cheat)
 void cheats_set(int i, int on);            // switches at once and sets the cheat's setting (the menu saves xc2.ini)

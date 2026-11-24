@@ -47,6 +47,7 @@ extern const char rt_port_version[];
 #include "mods.h"
 }
 void tab_cheats(float scale);   // ui/cheats_tab.cpp
+void rows_unbuilt(void);         // ui/cheats_tab.cpp: code of mods that is not built
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
 #pragma clang diagnostic push
@@ -879,8 +880,8 @@ static void tab_mods(float scale) {
         char code[512] = "", problem[512] = "";
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
-        else if (m->nsets)
-            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets);
+        else if (m->nsets || m->ndata)
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
         case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
@@ -910,7 +911,7 @@ static void tab_mods(float scale) {
             opt_save_soon();
         }
     }
-    if (cheats_unbuilt()) opt_text(UI_MENU_CHEATS_UNBUILT, true);
+    rows_unbuilt();
     static uint64_t open_failed;   // plat_now_ns until which the button says it failed
     if (opt_button("##mods_open", UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
                    plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED) : "")) {

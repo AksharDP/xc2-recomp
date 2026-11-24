@@ -12,7 +12,14 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
     bin/                    xc2_xlate.exe (+ xc2_xlate.id), ninja.exe, SDL3.dll, libopus-0.dll, amd_fidelityfx_vk.dll
     xc2.ini.example
     VERSION                 the release version, one line
-    temp/                   the default temp folder (created)
+
+Build kit (Windows release): the setup copies the release folder without XC2-Setup.exe into <install>/build-kit
+(KIT_ITEMS, steps.py Kit) and runs every later step from it, so the command the game builds its mods' code with
+(build-cache/modcode.txt, relative to the install folder) needs neither the setup folder nor its path: the setup can be
+deleted and the install folder moved. The kit is a release folder itself (release_layout). The temp folder is
+<install>/build-cache/work (TEMP_IN_DEST), so an unfinished setup's working state moves with the install and survives a
+newer setup's kit. (Build kit and TEMP_IN_DEST adapted from totk-pc-recomp
+installer/layout.py @ 501f0d3, MIT, Copyright (c) 2026 Valiantsin Dzerakh.)
 
 Linux release (the AppImage's folder, docs/installer.md "Linux release"): python/bin/python3 (python-build-standalone,
 with tkinter), llvm/ with clang, lld and llvm-ar plus llvm/sysroot (the glibc headers and libraries the game links
@@ -23,9 +30,10 @@ Python the release ships, with the same packages), else this Python; toolchain/l
 runtime/ as the sources with build/install-rtlib/libxc2rt.a (tools/build_game.py --make-runtime-lib --out
 build/install-rtlib); MSYS2 UCRT64 ninja.exe; build/xlate/xc2_xlate.exe; build/install-temp.
 Without toolchain/, the tools come from an unpacked XCX Recomp release folder, the one tools/build_xcx.ps1 builds
-with (TOOLS_FALLBACK). The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. On Linux,
-dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
+with (TOOLS_FALLBACK). The version is VERSION with -dev and the commit: 0.1.0-dev+973c626. Dev mode and the Linux
+release install no build kit: the repository, or the AppImage file, is what the game builds its mods' code with. On Linux, dev mode takes clang, lld and ninja from PATH and the system's libraries (no deps folder, no SDL3 copy).
 """
+import hashlib
 import os
 import shutil
 import subprocess
@@ -45,6 +53,14 @@ import xc2_titles  # noqa: E402
 REGIONS, DEFAULT_REGION = xc2_titles.REGIONS, xc2_titles.DEFAULT
 GAME_EXE = 'xc2' + EXE   # the game's name in the install folder (the same name the runtime and build give it)
 LEGACY_EXE = 'xcx' + EXE   # the same name in an install folder made before the rename to XC2 (steps.py removes it)
+KIT = 'build-kit'   # the build kit's folder in the install folder
+# What the build kit holds of a release folder (tools/make_release.py writes them): all but XC2-Setup.exe and
+# recomplauncher.json. licenses/ and THIRD_PARTY_NOTICES.md go along with the binaries they cover.
+KIT_ITEMS = ('python', 'llvm', 'runtime', 'bin', 'recomp', 'tools', 'installer', 'licenses',
+             'THIRD_PARTY_NOTICES.md', 'xc2.ini.example', 'VERSION')
+# The temp folder inside the install folder, for a layout that names none (every release); the check step does not
+# count it when it requires an empty install folder. Linux keeps the name its installs already use.
+TEMP_IN_DEST = Path('build-cache', 'work') if WIN else Path('.setup-temp')
 APP_ID = DEFAULT_REGION.app_id   # Xenoblade Chronicles 2 in the Americas and Europe; Region.app_id for the others
 
 
@@ -171,9 +187,10 @@ def release_layout(root):
         ninja=root / 'bin' / ('ninja' + EXE),
         xlate=root / 'bin' / ('xc2_xlate' + EXE), dlls=release_dlls(root) if WIN else (root / 'bin' / 'libSDL3.so.0',),
         ini_example=root / 'xc2.ini.example',
-        # Linux: None, the install folder's .setup-temp (installer/cli.py): the AppImage is mounted read-only, and on
-        # a Steam Deck /home is often too full for the generated C while the install folder is on the SD card
-        temp=root / 'temp' if WIN else None,
+        # None: the install folder's TEMP_IN_DEST (temp_for). Windows: an unfinished setup's working state stays with the
+        # install and its build kit. Linux: the AppImage is mounted read-only, and on a Steam Deck /home is often too
+        # full for the generated C while the install folder is on the SD card
+        temp=None,
         sysroot=None if WIN else root / 'llvm' / 'sysroot')
 
 
@@ -231,3 +248,26 @@ def find(root=None):
     """The layout of root (default: the folder above this package)."""
     root = Path(root or Path(__file__).resolve().parent.parent).resolve()
     return release_layout(root) if is_release(root) else dev_layout(root)
+
+
+def uses_kit(layout):
+    """True when the setup installs a build kit (Windows release); dev mode and the Linux AppImage run from where they
+    are."""
+    return WIN and not layout.dev
+
+
+def kit_folder(dest):
+    return Path(dest) / KIT
+
+
+def temp_folder(base, dest):
+    """One temp folder per install folder below a shared base (dev mode, --temp), so two installs never share
+    generated files."""
+    tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]
+    return base / f'{dest.name or "root"}-{tag}'
+
+
+def temp_for(layout, dest, override=None):
+    """The temp folder of a run on dest: below --temp or the layout's, else TEMP_IN_DEST in the install folder."""
+    base = override or layout.temp
+    return temp_folder(Path(base).resolve(), dest) if base else dest / TEMP_IN_DEST

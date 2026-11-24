@@ -13,6 +13,7 @@ Output, under --out:
   <mod>/folded.txt             the module's bytes the generated code took as constants: what the jump tables read at
                                lift time, as module offsets [start, end); tools/exefs_patches.py keeps a mod's data
                                writes off them
+  patches.txt                  the --patches file as it was (tools/mod_code.py; empty without --patches)
   patches.h                    code patch sets for the runtime (recomp/patches.py; no sets without --patches)
 
 Function discovery runs in this process, vectorised over the module's .text words. Function starts are the module
@@ -832,6 +833,9 @@ def main():
     write_layout(mods, args.out)
     table = patches.load(args.patches, mods) if args.patches else patches.Table()
     write_if_changed(args.out / 'patches.h', patches.header_text(table, GENERATED_MARKER))
+    # the table itself, for the mods' code (tools/mod_abi.py): their sites go on top of the built ones
+    write_if_changed(args.out / 'patches.txt', f'# {GENERATED_MARKER}: the patch table of this lift, copied by '
+                     f'recomp/gen.py. Do not edit or commit.\n' + (args.patches.read_text() if args.patches else ''))
     want = args.modules.split(',')
     unknown = set(want) - {n for n, _, _ in mods}
     if unknown:

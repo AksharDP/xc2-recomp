@@ -127,13 +127,13 @@ another game version without these patches lists none.
 | Kind of cheat | What happens |
 |---|---|
 | writes memory (heap, game data, pointer chains, button conditions) | runs every frame while on, as on Atmosphere |
-| changes the game's code (opcode 0 into main's code) | built into the game by the setup; turns on and off at once |
-| changes code while you hold buttons (`8...` / `21000000` / `20000000`) | built in; active while the buttons are held |
+| changes the game's code (opcode 0 into main's code) | compiled when the game starts; turns on and off at once |
+| changes code while you hold buttons (`8...` / `21000000` / `20000000`) | compiled too; active while the buttons are held |
 | `{master}` code | always on |
 
 The port runs the game as compiled C, not as ARM instructions, so a cheat cannot rewrite code while the game runs.
-Instead, the setup compiles every code cheat in the mods folder into the game. If you add or edit a code cheat later,
-the Cheats tab marks it as waiting. Run the setup again on the same folder to build it in. Your saves and settings stay.
+Instead, the game compiles the code cheats of the mods folder when it starts and one is new or edited
+([New and changed code](#new-and-changed-code)).
 
 Extended opcodes (`C...`, `F...`) are not supported. The Cheats tab shows them greyed out with the reason.
 
@@ -146,9 +146,14 @@ The game reads code patches from a mod's `exefs` folder (`.pchtxt`, `.ips`, IPS3
   `4F5C96E2D97F45AC288BC67613EBEF0A`. Trailing zeros can be left out.
 - An `.ips` file must be named after that build id.
 
-The setup builds code patches into the game, the same way as code cheats. After you add or change a patch, run the setup
-again. Until you do, the whole mod stays off, because its other files may depend on the patch. The Mods tab tells you
-when this happens.
+Code patches are compiled the same way as code cheats, when the game starts after you add or change one
+([New and changed code](#new-and-changed-code)). If that fails, the whole mod stays off, because its other files may
+depend on the patch. The Mods tab tells you when this happens.
+
+A patch file may also change main's data (numbers and tables in `.rodata`, `.data` or `.bss`), alone or beside code. The
+game stores those bytes when it starts, before its code runs, while the mod is on. Data the port cannot take: pointers the loader fills
+in, the linker's own tables, and jump tables, whose targets are compiled into the code. A file that writes those is
+refused with the reason.
 
 When a patch changes an instruction the port patches too, the port's patch set that holds it stays off while the mod is
 on (the log says `mods: <mod> replaces the port's patch set <set>; it stays off`), and the port's settings do not turn
@@ -165,6 +170,20 @@ The whole mod also stays off when:
 
 Patches for 2.0.0 or any other version have a different build id, and the Mods tab lists them as made for another
 version. Renaming them does not help: their offsets point at different code in 3.0.1.
+
+## New and changed code
+
+Nothing here needs the setup, your game files or the keys: put a mod in the folder, or change one, and start the game.
+Files in `romfs` and cheats that write memory work as they are. New or changed code patches and code cheats are compiled
+first: the game start takes a few seconds longer that once (about 1 s plus the compiler, which works only on the game
+functions the mod changes). Switching a mod on or off compiles nothing.
+
+- If something cannot be built, the game starts without it and tries again at its next start. The Mods and Cheats tabs
+  say so with the reason; the log has the rest.
+- `mods_build = off` under `[mods]` in `xc2.ini` turns it off.
+- On Windows this uses `build-kit` and `build-cache` in the game folder. Keep them; you can delete the setup's folder
+  and move the game folder. On Linux keep the AppImage file where it is.
+- A game folder from a release before this one gets it when you run the new setup on it once.
 
 ## Make a mod
 
@@ -199,10 +218,9 @@ An IPSwitch file for 3.0.1:
 `offset_shift 0x100` makes offsets count from the start of main. Without it, offsets include the 0x100-byte NSO header,
 as in IPS files.
 
-The setup turns each replaced instruction into a switchable alternative in the compiled code. A patch must follow these
-rules, or the setup marks the file unsupported:
+Each replaced instruction becomes a switchable alternative in the compiled code. A patch must follow these rules, or the
+file is marked unsupported:
 
-- Patch main's code only, not its data.
 - Do not replace a `br`, `blr` or `ret` instruction.
 - A replacement may end in a branch (`b`, `bl`, `b.cond`, `cbz`, `tbz`, `ret`). Only its last instruction may branch.
 - A replacement must set the CPU flags the same way as the original.
@@ -217,14 +235,19 @@ To find the log, open the Advanced tab and choose **Open log folder**. At start 
 |---|---|
 | `mods: <name>: on, romfs aoc 1, ok` | in use: base game files and add-on content pack 1 files |
 | `... empty` | no `romfs`, `exefs` or `cheats` files where the game looks. Check the folder depth. |
-| `... ExeFS patches the game was built without (run the setup again)` | run the setup on the install folder |
+| `... ExeFS patches could not be built` | `mods_build` is off, or the lines after `modcode:` say why |
 | `... its ExeFS patches are for another game version` | the patch is not for 3.0.1 |
 | `... has a code module (subsdk or main), not supported` | the mod needs a code plugin the port cannot load |
 | `mods: <name>: N add-on content files (...), M overridden by <other>` | a higher mod replaces M of these files |
-| `cheats: ... N wait for a rebuild` | code cheats added since the last build: run the setup again |
+| `cheats: ... N not built` | code cheats that could not be built |
+| `modcode: ... exit code N` | the compile of new or changed code ran; the lines after it are its output |
+| `modcode: N functions and M patch sets of mods loaded, K functions in use` | the game runs these functions of your mods in place of its own |
 
 ## For developers
 
 The mod loader is in `runtime/mods.c` (finding mods), `runtime/romfs.c` and `runtime/fs_host.c` (serving their files)
-and `runtime/cheats.c` (cheats). `tools/cheats.py` and `tools/exefs_patches.py` build code cheats and patches into the
-game. To build them without the setup, use the commands shown above in this file.
+and `runtime/cheats.c` (cheats). `runtime/modcode.c` runs `tools/mod_code.py`, which makes the code cheats and patches
+(`tools/cheats.py`, `tools/exefs_patches.py`) into a library of the changed functions; `runtime/fnhook.c` sends their
+calls there. A source build does the same with the tools it was built with. `XC2_MODS_BUILD=always` runs it at every
+start and takes the checkout's own patch table (`recomp/patches-v301.txt`) as it is now, so an edit of the port's patches
+can be tried without lifting and linking the game again.

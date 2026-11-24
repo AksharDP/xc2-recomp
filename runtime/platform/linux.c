@@ -9,6 +9,7 @@
 #include <linux/fs.h>
 #include <linux/futex.h>
 #include <linux/userfaultfd.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -892,6 +893,15 @@ int plat_mem_protect(uint64_t addr, uint64_t n, int prot) {
     return 1;
 }
 
+int plat_code_write(void *dst, const void *src, size_t n) {
+    uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE), lo = (uintptr_t)dst & ~(page - 1);
+    size_t len = ((uintptr_t)dst + n - lo + page - 1) & ~(page - 1);
+    if (mprotect((void *)lo, len, PROT_READ | PROT_WRITE | PROT_EXEC)) return 0;
+    memcpy(dst, src, n);
+    __builtin___clear_cache((char *)dst, (char *)dst + n);
+    return !mprotect((void *)lo, len, PROT_READ | PROT_EXEC);
+}
+
 int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     if (!pstate || addr >= PS_LIMIT) {
         *end = limit;
@@ -1338,29 +1348,18 @@ long plat_tz_west(void) {
     return timezone;
 }
 
-int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
-    // the arguments, NUL-separated, from /proc/self/cmdline
-    static char args[16384];
-    char *argv[256];
-    int argc = 0;
-    FILE *f = fopen("/proc/self/cmdline", "rb");
-    size_t n = f ? fread(args, 1, sizeof args - 1, f) : 0;
-    if (f) fclose(f);
-    args[n] = 0;
-    for (size_t i = 0; i < n && argc < 255; i += strlen(args + i) + 1) argv[argc++] = args + i;
-    argv[argc] = NULL;
-    char exe[PATH_MAX];
-    if (!argc || !plat_exe_path(exe, sizeof exe)) return -1;
+// The child's output into out (NUL-terminated, the rest discarded), then its exit code; -1 when it never started. A
+// child still running after timeout_ms is killed.
+static int run_child(const char *exe, char *const *argv, const char *cwd, char *out, size_t cap, uint32_t timeout_ms) {
     int p[2];
     if (pipe2(p, O_CLOEXEC)) return -1;
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, p[1], 1);
     posix_spawn_file_actions_adddup2(&fa, p[1], 2);
-    setenv(env_name, env_value, 1);
+    if (cwd) posix_spawn_file_actions_addchdir_np(&fa, cwd);
     pid_t pid;
     int e = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
-    unsetenv(env_name);
     posix_spawn_file_actions_destroy(&fa);
     close(p[1]);
     if (e) {
@@ -1370,14 +1369,23 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     size_t len = 0;
     char sink[512];
     ssize_t k;
-    while (len + 1 < cap && (k = read(p[0], out + len, cap - 1 - len)) != 0)
-        if (k > 0) len += (size_t)k;
-        else if (errno != EINTR) break;
+    uint64_t end = plat_now_ns() + (uint64_t)timeout_ms * 1000000u;
+    for (;;) {
+        struct pollfd pf = {p[0], POLLIN, 0};
+        uint64_t now = plat_now_ns();
+        if (timeout_ms && now >= end) break;
+        int ready = poll(&pf, 1, timeout_ms ? (int)((end - now) / 1000000u) + 1 : -1);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) break;
+        int full = len + 1 >= cap;
+        k = read(p[0], full ? sink : out + len, full ? sizeof sink : cap - 1 - len);
+        if (k < 0 && errno == EINTR) continue;
+        if (k <= 0) break;
+        if (!full) len += (size_t)k;
+    }
     if (cap) out[len] = 0;
-    while ((k = read(p[0], sink, sizeof sink)) > 0 || (k < 0 && errno == EINTR)) {}
     close(p[0]);
     int status = 0;
-    uint64_t end = plat_now_ns() + (uint64_t)timeout_ms * 1000000u;
     while (waitpid(pid, &status, timeout_ms ? WNOHANG : 0) == 0) {
         if (plat_now_ns() >= end) {
             kill(pid, SIGKILL);
@@ -1387,6 +1395,40 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
         plat_sleep_ms(10);
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+}
+
+int plat_run(const char *const *argv, const char *cwd, char *out, size_t cap, uint32_t timeout_ms) {
+    return run_child(argv[0], (char *const *)argv, cwd, out, cap, timeout_ms);
+}
+
+// The arguments of this process, from /proc/self/cmdline; NULL when there are none.
+static char **self_args(void) {
+    static char args[16384], *argv[256];
+    int argc = 0;
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    size_t n = f ? fread(args, 1, sizeof args - 1, f) : 0;
+    if (f) fclose(f);
+    args[n] = 0;
+    for (size_t i = 0; i < n && argc < 255; i += strlen(args + i) + 1) argv[argc++] = args + i;
+    argv[argc] = NULL;
+    return argc ? argv : NULL;
+}
+
+int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
+    char exe[PATH_MAX], **argv = self_args();
+    if (!argv || !plat_exe_path(exe, sizeof exe)) return -1;
+    setenv(env_name, env_value, 1);
+    int code = run_child(exe, argv, NULL, out, cap, timeout_ms);
+    unsetenv(env_name);
+    return code;
+}
+
+int plat_restart(const char *env_name, const char *env_value) {
+    char exe[PATH_MAX], **argv = self_args();
+    if (!argv || !plat_exe_path(exe, sizeof exe)) return 0;
+    setenv(env_name, env_value, 1);
+    execv(exe, argv);   // this process becomes the new one: the descriptors are close-on-exec
+    return 0;
 }
 
 int plat_random(void *out, size_t n) {

@@ -31,7 +31,9 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   profile/                       saves
   logs/                          xc2.log of the last run, xc2.1.log to xc2.4.log of the runs before it
   shader and pipeline caches     prepared by the setup
-  build-cache/                   what the build has of the player's mods; objects/: the last build's generated objects
+  build-cache/                   the compiled code of the player's mods; modcode.txt: the command the game builds it with;
+                                objects/: the last build's generated objects; work/: the setup's temp folder
+  build-kit/                     Windows: the setup's tools, which that command uses ("Code of mods")
   xc2-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
@@ -80,8 +82,24 @@ What keeps an update short:
 - `build-cache/objects/` in the install folder holds the objects of the last build (`tools/build_game.py`
   `ObjectCache`, about 2 GB). The compile reuses every object whose generated C, compiler, flags and included headers
   are unchanged, so a release that changes a few lifted functions or only the runtime library compiles a few chunks
-  or none and relinks. It lives in the install folder because each release folder has its own temp folder. Deleting
-  it only costs a full compile on the next update.
+  or none and relinks. Its keys hold no folder, so it also serves an install folder that was moved. Deleting it only
+  costs a full compile on the next update.
+
+## Code of mods
+
+`xc2.exe` holds none of the player's mods, and the setup does not read the mods folder. At start the game compares the
+code patches and code cheats of the enabled mods with what it built last (`build-cache/exefs.status` and
+`cheats.status`). When some are new or changed it runs the command in `build-cache/modcode.txt` and waits
+(`runtime/modcode.c`). `tools/mod_code.py` lifts the functions they change again, with the patches in, compiles them into
+`build-cache/mods/<hash>.dll` and leaves the status files; the game loads that library and sends the calls of those
+functions to it.
+
+- The library fits one build of the game: `build-cache/mod-base/` and the exe carry what ties them (`tools/mod_abi.py`).
+  After an update the first start builds it again.
+- On Windows the setup copies its folder without `XC2-Setup.exe` into `build-kit/` (`installer/steps.py` `Kit`, about
+  0.5 GB) and runs its later steps from there. The command is relative to the install folder, so the setup's folder can
+  be deleted and the install folder moved. A newer setup replaces the kit. On Linux the command starts the AppImage
+  file, which has to stay where it is.
 
 ## Setup steps
 
@@ -90,22 +108,24 @@ What keeps an update short:
    `tools/data/expected-xc2[-jp]-<version>.json`), the keys are new enough for the update, enough space
    is free on the target disk, the CPU has AVX2 (`-march=x86-64-v3`), a Vulkan 1.3 GPU exists. Each failure is one
    clear message.
-2. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
+2. **Build kit** (Windows): copies the tools into `build-kit/` ("Code of mods").
+3. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
    the update's BKTR patch while reading both game files in place: it writes the 14 GB RomFS once, decrypting on
    several threads and hashing as it writes, so the folder needs room for the RomFS only.
-3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
+4. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
    are encrypted with the title key from the NSP's ticket), up to three packs at once in processes of their own
    (`installer/steps.py` `DLC_JOBS`). Each pack's log is `logs/dlc-<index>.log` in the temp folder.
-4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
+5. **Lift** the ExeFS to C (`recomp/gen.py`) into `gen/` in the temp folder (`installer/layout.py` `temp_for`:
+   `build-cache/work` in the install folder; `.setup-temp` on Linux). A code patch table
    `recomp/patches-v301.txt` is passed when it exists (XC2's frame rate and game resolution). `patches-upd.txt` and the `v121`/`v143`
    tables are XCX's and never used.
-5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
+6. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
    and RomFS hashes) and link them with the prebuilt runtime library into `xc2.exe` (`build_game.py --runtime-lib`).
    Generated objects come from `build-cache/objects/` where they are current, and the new ones go into it
    (`build_game.py --object-cache`).
-6. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
+7. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
    shaders are translated on first use and cached in `shader-cache/`.
-7. **Clean up** the temp folder (generated C and objects).
+8. **Clean up** the temp folder and write `build-cache/modcode.txt`.
 
 A full first install from the base game, 3.0.1 and all seven add-ons took about 8 minutes on a 24-core machine.
 
@@ -254,7 +274,8 @@ python\python.exe -m installer --progress-lines --base=... --update=... --keys=.
 On Linux the same arguments go to the AppImage (`AppRun -m installer ...`). The game lands in `game/` next to the
 setup, so an update of the release leaves it in place and the launcher runs the setup again on it. Play starts
 `game/xc2.exe` (`game/xc2` on Linux), and the launcher's settings page edits `game/xc2.ini`. The setup window and the
-command line work as before.
+command line work as before. A new mod that changes the game's frame size makes the game start itself again once, so the launcher may
+show it as closed meanwhile.
 
 ## Constraints
 
