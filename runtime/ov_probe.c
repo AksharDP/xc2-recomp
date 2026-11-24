@@ -933,12 +933,25 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has English text, the software keyboard has a row per game language
-// (each Switch code of ov_system.c maps to one), and the menu and overlay are English.
+// The host catalog (ui_text.c): every menu id has English, Simplified Chinese and Traditional Chinese text, the
+// software keyboard has a row per game language (each Switch code of ov_system.c maps to one), and menu_text follows
+// XC2_MENU_LANG.
 static void probe_menu_text(void) {
+    // menu_text_lang reads XC2_MENU_LANG from the environment (or its XCX_ spelling) before the xc2.ini file, so the
+    // player's own setting would beat the values the checks below set: take the environment out, reset the file's
+    // value, and put both back when the checks are done
+    static const char *const menu_key[] = {"XC2_MENU_LANG"};
+    char *env_keep = env_take("XC2_MENU_LANG"), *legacy_keep = env_take("XCX_MENU_LANG");
+    char *file_keep = cfg_is_set("XC2_MENU_LANG") ? strdup(cfg_get("XC2_MENU_LANG")) : NULL;
+    cfg_reset(menu_key, 1);
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "zh-Hans", "zh-Hant", "ko"};
-    for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++)
+    for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && *ui_text_in("en", (UiTextId)id), "menu text id %d lacks English", id);
+        CHECK(ui_text_defined("zh-Hans", (UiTextId)id) && *ui_text_in("zh-Hans", (UiTextId)id),
+              "menu text id %d lacks zh-Hans", id);
+        CHECK(ui_text_defined("zh-Hant", (UiTextId)id) && *ui_text_in("zh-Hant", (UiTextId)id),
+              "menu text id %d lacks zh-Hant", id);
+    }
     CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("en", UI_TEXT_COUNT), "an id past the catalog gives text");
     // the other rows fall back to English for the menu and keep their own keyboard texts
     CHECK(!strcmp(ui_text_in("ja", UI_MENU_CONTINUE), ui_text_in("en", UI_MENU_CONTINUE)), "ja menu text is not English");
@@ -954,9 +967,28 @@ static void probe_menu_text(void) {
         for (size_t i = 1; i < sizeof langs / sizeof *langs; i++)
             CHECK(!strcmp(ui_text_in(langs[i], (UiTextId)id), ui_text_in("en", (UiTextId)id)), "language name %d differs in %s", id, langs[i]);
     // the overlay formats keep their conversions
-    CHECK(strstr(menu_text(UI_MENU_OV_GAME_PCT), "%.0f%%") && strstr(menu_text(UI_MENU_OV_MAX_MS), "%.1f"),
-          "overlay format lost its conversion");
-    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text is not English");
+    static const char *const menu_langs[] = {"en", "zh-Hans", "zh-Hant"};
+    for (size_t i = 0; i < sizeof menu_langs / sizeof *menu_langs; i++)
+        CHECK(strstr(ui_text_in(menu_langs[i], UI_MENU_OV_GAME_PCT), "%.0f%%") &&
+              strstr(ui_text_in(menu_langs[i], UI_MENU_OV_MAX_MS), "%.1f"),
+              "overlay format lost its conversion in %s", menu_langs[i]);
+    // menu_text follows the setting live
+    cfg_set("XC2_MENU_LANG", "zh-Hans");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("zh-Hans", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=zh-Hans");
+    cfg_set("XC2_MENU_LANG", "zh-Hant");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("zh-Hant", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=zh-Hant");
+    cfg_set("XC2_MENU_LANG", "en");
+    CHECK(menu_text(UI_MENU_CONTINUE) == ui_text_in("en", UI_MENU_CONTINUE), "menu_text ignores MENU_LANG=en");
+    cfg_set("XC2_MENU_LANG", "");
+    const char *ml = menu_text_lang();
+    CHECK(!strcmp(ml, "en") || !strcmp(ml, "zh-Hans") || !strcmp(ml, "zh-Hant"), "bad auto menu language %s", ml);
+    cfg_reset(menu_key, 1);
+    if (file_keep) cfg_set("XC2_MENU_LANG", file_keep);
+    set_env("XC2_MENU_LANG", env_keep);
+    set_env("XCX_MENU_LANG", legacy_keep);
+    free(env_keep);
+    free(legacy_keep);
+    free(file_keep);
 }
 
 static void probe_main(Cpu *c) {
