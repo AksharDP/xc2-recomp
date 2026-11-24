@@ -45,6 +45,13 @@ REBUILD_NEED = 1 * GiB    # what a rebuild writes beside the generated C and obj
 OBJECT_CACHE = 2 * GiB    # build-cache/objects in the install folder: the generated objects kept for the next build
 KIT_NEED = 1 * GiB        # the build kit (tools/make_release.py's folder without XC2-Setup.exe)
 HOSTCHECK = Path(__file__).resolve().parent / 'hostcheck.c'
+# Windows 10: the Vulkan 1.3 drivers the game needs and the bundled Python ship for nothing older. xc2.exe itself imports
+# nothing newer than Windows 10 version 1507 (runtime/platform/win32.c looks SetThreadDescription up).
+WINDOWS_NEEDED = (10, 0)
+# The game's GPU choice among usable devices (runtime/vk_device.c pick_device): the first discrete GPU, else the first
+# integrated one, else the first. Keys are VkPhysicalDeviceType values.
+DEVICE_RANK = {2: 3, 1: 2}
+VK_DEVICE_TYPE_CPU = 4
 STAMP = '.install-key'
 EXE_WAIT = 20   # seconds the compile step waits for a game that is closing to let go of its exe
 # The code patch sets of an update (recomp/patches.py) are in recomp/<Region.patch_table>: XC2's frame rate and game
@@ -259,6 +266,50 @@ class Watch(threading.Thread):
         self.stopped.set()
 
 
+def judge_host(host, v2_runtime):
+    """The verdict on the host check's JSON (installer/hostcheck.c): (the level to build, 'v3' or 'v2'; [(warning id,
+    params)]), or InstallError for a PC the game cannot run on. v2_runtime: the release holds the x86-64-v2 runtime
+    library. The rules mirror the game's: runtime/cpu_level.h for the processor, runtime/vk_require.h for each GPU,
+    vk_device.c pick_device for the GPU it plays on. A host check of an older release lacks cpu_level, windows,
+    native_arch and the per-device usable, missing and host_import; those then count as the old check judged them."""
+    warnings = []
+    windows = host.get('windows')
+    if windows and tuple(windows[:2]) < WINDOWS_NEEDED:
+        raise InstallError('check.windows_old', version='.'.join(map(str, windows)))
+    if host.get('native_arch') == 'arm64':
+        # The x64 setup can run under Windows emulation; keep checking the CPU level that environment exposes.
+        warnings.append(('warn.arm64_emulated', {}))
+    # The processor's x86-64 level: 3 builds the game for x86-64-v3, 2 for x86-64-v2 when the release has that runtime
+    # library (an older release has only the v3 one)
+    level = host.get('cpu_level', 3 if host.get('x86_64_v3') else 1)
+    if level < 2:
+        raise InstallError('check.cpu_too_old')
+    tag = 'v3'
+    if level < 3:
+        if not v2_runtime:
+            raise InstallError('check.cpu_no_avx2')
+        tag = 'v2'
+        warnings.append(('warn.cpu_v2', {}))
+    if not host.get('loader'):
+        raise InstallError('check.vulkan_missing')
+    devices = host.get('devices') or []
+    if not devices:
+        raise InstallError('check.vulkan_no_device')
+    if not any(tuple(d['api'][:2]) >= (1, 3) for d in devices):
+        raise InstallError('check.vulkan_too_old',
+                           devices=', '.join(f'{d["name"]} ({d["api"][0]}.{d["api"][1]})' for d in devices))
+    usable = [d for d in devices if d.get('usable', True)]
+    if not usable:
+        raise InstallError('check.vulkan_unusable',
+                           devices='; '.join(f'{d["name"]}: {", ".join(d.get("missing", []))}' for d in devices))
+    chosen = max(usable, key=lambda d: DEVICE_RANK.get(d.get('type'), 1))   # max keeps the first of equals
+    if not chosen.get('host_import', True):
+        warnings.append(('warn.no_host_import', {'device': chosen['name']}))
+    if chosen.get('type') == VK_DEVICE_TYPE_CPU:
+        warnings.append(('warn.software_vulkan', {'device': chosen['name']}))
+    return tag, warnings
+
+
 # ---- 1. check
 
 class Check(Step):
@@ -346,7 +397,8 @@ class Check(Step):
                                need='.'.join(map(str, GLIBC_NEEDED)))
         work.mkdir(parents=True, exist_ok=True)
         exe = work / ('hostcheck' + EXE)
-        command = [str(layout.clang), '-O1', str(HOSTCHECK), '-o', str(exe)]
+        # -I runtime: hostcheck.c applies the game's own rules, runtime/cpu_level.h and runtime/vk_require.h
+        command = [str(layout.clang), '-O1', str(HOSTCHECK), '-I', str(layout.runtime), '-o', str(exe)]
         if layout.deps:
             command += ['-I', str(layout.deps / 'include')]
         if layout.sysroot:
@@ -363,22 +415,18 @@ class Check(Step):
         except ValueError:
             raise InstallError('check.host_probe_failed', code=r.returncode) from None
         ctx.reporter.log(f'host: {r.stdout.strip()}')
-        if not host['x86_64_v3']:
-            raise InstallError('check.cpu_no_avx2')
-        if not host['loader']:
-            raise InstallError('check.vulkan_missing')
-        devices = host['devices']
-        if not devices:
-            raise InstallError('check.vulkan_no_device')
-        if not any(tuple(d['api'][:2]) >= (1, 3) for d in devices):
-            raise InstallError('check.vulkan_too_old',
-                               devices=', '.join(f'{d["name"]} ({d["api"][0]}.{d["api"][1]})' for d in devices))
+        tag, warnings = judge_host(host, cpu_runtime_lib(layout, 'v2').is_file())
+        for wid, params in warnings:
+            ctx.reporter.warning(wid, **params)
         kernel = linux_kernel()
         if kernel and kernel < (6, 7):
             # Without userfaultfd's asynchronous write protection nothing tracks the CPU's writes: the game copies whole
             # pools to the GPU at each submit and its texture checks see every page as changed (docs/building.md, Linux)
             ctx.reporter.warning('warn.kernel_old', version='.'.join(map(str, kernel)))
         ctx.host = host
+        if tag != 'v3':   # the plan was made with the default level; the compile step's key holds it
+            ctx.keys.clear()
+            ctx.plan(ctx.forced)
 
     def inputs(self, ctx):
         """Open both files with the keys as the extraction will."""
@@ -924,6 +972,19 @@ def object_cache(ctx):
     return ctx.dest / 'build-cache' / 'objects'
 
 
+def cpu_tag(ctx):
+    """The x86-64 level the game is built for on this PC (tools/build_game.py --cpu): 'v2' when the host check found a
+    processor without x86-64-v3, else 'v3' (also before the check ran, when the steps are first planned)."""
+    host = getattr(ctx, 'host', None)
+    return 'v2' if host and host.get('cpu_level', 3) == 2 else 'v3'
+
+
+def cpu_runtime_lib(layout, tag):
+    """The prebuilt runtime library of a level: libxc2rt.a for v3, libxc2rt-v2.a beside it for v2 (build_game.py
+    lib_name)."""
+    return layout.runtime_lib if tag == 'v3' else layout.runtime_lib.with_name('libxc2rt-v2.a')
+
+
 def mod_base(folder):
     """The folder tools/build_game.py leaves beside the exe for the mods' code (tools/mod_abi.py)."""
     return folder / 'build-cache' / 'mod-base'
@@ -942,8 +1003,12 @@ class Compile(Step):
             if layout.clang.is_file() else 'missing'
         tools = [layout.tools / n for n in ('build_game.py', 'build_shaders.py', 'romfs_index.py', 'check_content.py',
                                               'mod_abi.py')]
-        return fingerprint('compile-2', ctx.keys['lift'], layout.runtime, layout.runtime_lib, layout.deps or 'system',
-                           layout.sysroot or 'host', *tools, clang, *[d.name for d in layout.dlls])
+        tag = cpu_tag(ctx)
+        if tag != 'v3':
+            tools.append(layout.tools / 'check_isa.py')   # build_game.py --cpu v2 checks the runtime objects with it
+        return fingerprint('compile-2', ctx.keys['lift'], layout.runtime, cpu_runtime_lib(layout, tag),
+                           layout.deps or 'system', layout.sysroot or 'host', *tools, clang,
+                           *[d.name for d in layout.dlls], *(['cpu-' + tag] if tag != 'v3' else []))
 
     def current(self, ctx, record):
         exe = ctx.dest / GAME_EXE
@@ -970,7 +1035,8 @@ class Compile(Step):
         code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
             '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
-            '--runtime', layout.runtime, '--runtime-lib', layout.runtime_lib, '--ninja', layout.ninja,
+            '--runtime', layout.runtime, '--runtime-lib', cpu_runtime_lib(layout, cpu_tag(ctx)), '--cpu', cpu_tag(ctx),
+            '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx), game_region(ctx)),
             '--expected', layout.expected(game_version(ctx), game_region(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
