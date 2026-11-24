@@ -537,22 +537,44 @@ site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 13
 set xc2one XC2_CHEAT_ONE_DAMAGE 0
 site xc2one main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 52800029 4b1b0129 1b096fdb b900027b
 
-# xc2qte (XC2_QTE_FIX, on): the QTE ring counts the frame time twice. Issues 48 and 72: a Blade Special's QTE ring
-# closes late against the special's animation, the button window opens after the animation and a mash window is
-# short. The update (main+0x1d0bc, the challenge layout) loads the frame message's step ([x21,#4], seconds per
-# frame, measured 0.01663 to 0.01677 at 60 fps) and turns it into frames of 1/30 s by
-# 30 into s8 (main+0x1d0c0, main+0x1d0c4). When the lookup main+0x7b4b0 finds the object, main+0x1d108 to
-# main+0x1d114 multiply s8 by the product of its [x0,#0xcd8] and [x0,#0xec8], which is the frame time in 1/30 s
-# frames again, so at 60 fps the factor is 0.25 instead of 0.5 and the ring advances at half speed. The
-# replacement of that last multiply, fmov s8, s1, keeps the object's product alone: at 30 fps nothing changes (s8
-# was 1.0), and at any other rate the advance is the frame time once. The paths that skip the lookup (the flag
-# nibble at [x19,#0x18], an id of -1, or no object) keep the step times 30 they already had. masagrator's
-# FPSLocker 3.0.1 set (BID 4F5C96E2D97F45AC) writes 1.0 into s8 at main+0x1d0c4 instead, which gives the same
-# factor when the lookup succeeds but 1.0, twice the console's rate at 60 fps, on the paths that skip it. Only s8
-# changes (s1 keeps the product, main+0x1d118 copies s8 to s0 for the call) and no flag is written.
+# xc2qte (XC2_QTE_FIX, on): the Blade Special button challenges at any frame rate (issues 48, 72 and 177). One object
+# runs a challenge (the battle UI object with the update tasks main+0x3b8188 and main+0x3bb644): a ring shrinks over a
+# light band and then a dark disc, and a press is graded by the band the ring is on, excellent in the light band, good
+# in the dark disc, a miss outside. Three parts of it are per frame or count the frame time twice.
+#
+# main+0x1d0c4, the rate the battle sends the challenge each frame (the message 0x102): frame step ([x21,#4]) times 30,
+# then the product of the attacker's two motion speeds ([x0,#0xcd8], [x0,#0xec8], 1.0 in a normal special) where
+# main+0x1d0c8 to main+0x1d104 find the attacker. The receivers multiply the rate with their own frame step again
+# (main+0x3b81e0, main+0x3bb7e8), so the step was counted twice, the challenge ran at fps / 30 of its speed and closed
+# late against the special's animation. The replacement fmov s8, #1.0 is the console's value (its step is 1/30 s),
+# as in masagrator's FPSLocker 3.0.1 set (BID 4F5C96E2D97F45AC). Measured at 30, 60 and 120 fps with it: the rate is
+# 1.0 and the challenge's clock and ring both run on real time.
+#
+# main+0x3b87dc and main+0x3b87e0, the grade (main+0x3b8768): it is taken from the challenge's own clock ([x19,#0x490],
+# 1/30 s ticks) less 1, while the bands are drawn from the same tick windows for the ring's position (main+0x3b94d4 to
+# main+0x3b971c; the ring goes from [x20,#0xc] to [x20,#0x10] and the light band is [x20,#0xe] plus and minus
+# [x20,#0x12]). The two clocks start by different paths: the clock with the message that opens the challenge, the ring
+# after an interface timer that counts whole milliseconds a frame and a fade (main+0x3b99d4 to main+0x3b9a8c,
+# main+0x68b638), which end on frame boundaries. Measured, the ring leads the clock by 1 to 2 ticks at 30 fps and 1.3
+# to 1.8 at 120, so with the 1 subtracted a press was graded up to 2.8 ticks behind the ring the player sees: on a
+# level 1 special the excellent window ended 4.3 ticks, half of the dark disc, after the ring had left the light band,
+# and a press in the outer part of the light band was a miss. The console hides part of that behind its longer way from
+# button to picture. The replacement grades the ring itself: the entry's start tick plus the ring's position
+# ([x19+0x48*i+0x3d0], seconds) times 30, rounded, in place of the clock less 1. The tests before it (a press before the
+# challenge starts does nothing) and the windows after it, one tick wider than the light band at both ends, stay.
+#
+# main+0x3bb670 and main+0x3bb674, the rest of a mash challenge after its ring closed (the task main+0x3bb644): the
+# clock gets 1 per frame, so the time to mash shrank to 30 / fps of it. The replacement advances the clock as the first
+# part does (main+0x3b81d8 to main+0x3b8210): the battle's step (main+0x359a90 returns it in s0) times the rate, summed
+# in [x19,#0x494] and rounded in 1/30 s. The call clobbers x8 and x9 only, which are dead there.
+# At an exact 1/30 s step the first and the last of these are the original arithmetic. No replacement writes a flag; the
+# fcvtas rounds half away from 0, as the game's own conversion does.
 set xc2qte XC2_QTE_FIX 1
-site xc2qte main 1d114 sha:6cca7c0d6280bafd 1e204028
-
+site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008
+site xc2qte main 3b87dc sha:0e61f08ec7edf2af b9408269 5280090a 9b0a4d29 bd43d120 1e27d001 1e210800 1e240009 79401e88
+site xc2qte main 3b87e0 sha:a51b9efa2ff79485 79401a8a 0b0a0129 7940268a
+site xc2qte main 3bb670 sha:bca0d338fa39aedd 97fe7908
+site xc2qte main 3bb674 sha:2ddbafe335badaf3 bd409e61 1e210800 bd449661 1e202820 bd049660 1e27d001 1e210800 1e240008
 # xc2pulse (XC2_PULSE_FIX, on): the glow behind the element icon at the centre of the arts cross grew in battle until
 # the next special reset it (issue 48: it reached 161 interface units against its 8 at the start of a two-minute
 # fight, at 30 fps as at 60). The glow is a looping additive animation of a UI object (main+0x670ad4): its keys hold

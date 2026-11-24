@@ -168,6 +168,7 @@ class AbiTest(unittest.TestCase):
             self.assertFalse([f for f in mod_abi.flags(2) if f.startswith('-march=') and f != '-march=x86-64-v2'])
             self.assertIn('-march=x86-64-v3', mod_abi.flags(3))
             # runtime/fma.c goes into a level 2 library, so its text is in the level 2 key alone
+            (base / mod_abi.LEVEL_FILE).write_text('2\n')
             (runtime / 'fma.c').write_text('b\n')
             self.assertNotEqual(mod_abi.mod_abi(runtime, base, recomp), keys[2])
             (base / mod_abi.LEVEL_FILE).write_text('3\n')

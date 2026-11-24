@@ -148,8 +148,8 @@ def use_cpu(level):
 
 
 def check_runtime_isa(objects):
-    """--cpu v2: stop the build when a runtime object holds an instruction above x86-64-v2 outside a function with a
-    CPU check of its own (tools/check_isa.py DISPATCHED). -march keeps the compiler's code inside the level, but inline
+    """--cpu v2: stop the build when a runtime object holds an instruction above x86-64-v2, or of an extension outside the
+    levels (AES, SHA, RDRAND), outside a function with a CPU check of its own (tools/check_isa.py DISPATCHED). -march keeps the compiler's code inside the level, but inline
     assembly and target attributes pass through it: runtime/kernel.c kern_ap_stub saved YMM registers in every build
     until it got its v2 form. The generated objects are LTO bitcode, which only the linked executable shows in machine
     code; tools/check_isa.py reads that one."""
@@ -165,9 +165,8 @@ def check_runtime_isa(objects):
     bad = []
     for o, found in results:
         for (fn, _), counts in found.items():
-            above = sorted({mn for (kind, mn) in counts if kind == 'above'})
-            if above and not check_isa.dispatched(fn):
-                bad.append(f'{below_root(o)}: {fn}: {", ".join(above[:6])}')
+            if not check_isa.dispatched(fn):   # check_isa.scan counts 'above' and 'optional' instructions alone
+                bad.append(f'{below_root(o)}: {fn}: {", ".join(sorted({mn for _, mn in counts})[:6])}')
     if bad:
         sys.exit('build_game: instructions above x86-64-v2 in the runtime (tools/check_isa.py):\n  ' + '\n  '.join(bad[:40]))
     print(f'check_isa: {len(objects)} runtime objects hold nothing above x86-64-v2', flush=True)
