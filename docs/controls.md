@@ -14,23 +14,25 @@ The log names the layout in effect (`input: gamepad layout ...`); the menu shows
 
 The keyboard prompts follow the `bind_` lines (see Remapping) from the next start, as the game loads its prompt art once. A button shows its first key, or its first mouse button when it has no key (ZL shows Z, not the right mouse button); the movement prompt shows the four `LSTICK_` keys, the D-pad prompts the `UP DOWN LEFT RIGHT` keys, and the camera prompt stays the mouse. A button without a key keeps the game's own icon. A punctuation key shows the character the keyboard layout in use puts there, as the remapping rows name it, when there is an icon for it (`: ! ? * + < > ^ " _` and the US ones); otherwise its US character. Numpad digits show the plain digit, and right Shift and Ctrl the plain key. The setup draws the default keys (`prompts/keyboard/`); for other bindings `runtime/prompts_keys.c` draws the set again at start into `prompts/keyboard_bound/`, from the game's layouts and the key icons the setup keeps in `prompts/keys/`. A setup older than this has no `prompts/keys/`: run it again, or the prompts keep the default keys. The game takes these files through its add-on content; with none installed the port lists an empty pack of its own for this, which unlocks nothing and leaves saves as they are.
 
-| Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse | Action in the world |
-|---|---|---|---|
-| Left stick | left stick | W A S D | move |
-| Right stick | right stick | mouse; arrow keys as a second source | camera |
-| Y | west | left mouse button | attack |
-| ZL | left trigger (over 50%) | right mouse button, Z | shield, lock on |
-| ZR | right trigger (over 50%) | F, X | bow |
-| X | north | Space | jump |
-| B | south | Left Shift | run, cancel |
-| A | east | E | interact, pick up |
-| L | left shoulder | Q | abilities |
-| R | right shoulder | R | throw weapon |
-| Left stick click | left stick click | Left Ctrl | crouch |
-| Right stick click | right stick click | C | camera behind the player |
-| D-pad left, up, right, down | D-pad | 1 2 3 4 | quick-select |
-| Plus | Start | Tab | menu, inventory |
-| Minus | Back | M | map |
+The table lists where each Switch button sits; what it does is the game's own (XC2's in-game prompts show it).
+
+| Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse |
+|---|---|---|
+| Left stick | left stick | W A S D |
+| Right stick | right stick | mouse; arrow keys as a second source |
+| Y | west | left mouse button |
+| ZL | left trigger (over 50%) | right mouse button, Z |
+| ZR | right trigger (over 50%) | F, X |
+| X | north | Space |
+| B | south | Left Shift |
+| A | east | E |
+| L | left shoulder | Q |
+| R | right shoulder | R |
+| Left stick click | left stick click | Left Ctrl |
+| Right stick click | right stick click | C |
+| D-pad left, up, right, down | D-pad | 1 2 3 4 |
+| Plus | Start | Tab |
+| Minus | Back | M |
 
 Esc is unbound in the game; it opens the settings menu and releases the mouse cursor (see Mouse camera). Z and X duplicate ZL and ZR so menu pages turn with two neighbouring keys; the menu tabs (L, R) are Q and R. The mouse wheel is unbound. The bindings are the tables of `input_map` in `runtime/input_map.c`: the keys (platform-neutral key ids) and one gamepad table per layout (gamepad inputs by position); `runtime/input_win.c` translates Win32 virtual keys and SDL buttons.
 

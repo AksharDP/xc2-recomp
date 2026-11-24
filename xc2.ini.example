@@ -147,8 +147,14 @@
 # gpu_index = 0
 # gpu_name = NVIDIA
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1280x720 the
-# game's texture heap and memory pool grow with it. Read at start.
+# game's texture heap and memory pool grow with it. A shape wider than 16:9 (21:9 2560x1080 or 3440x1440, 32:9
+# 3840x1080) widens the 3D view. hud_center (the menu's "Fit the interface to wide screens", on by default) fits the
+# interface to such a frame: the field and battle HUD (minimap, clock, Blade Switch, party list, arts) goes to the
+# frame's edges, menus stay a centred 16:9 block, and full-screen layers (fades, loading screens, menu backgrounds,
+# dialog bands) cover the frame. hud_center = 0 keeps the interface in a 16:9 area at the left, as the game places
+# it. No effect at 16:9. Read at start.
 # output_res = 1280x720
+# hud_center = 1
 # 3D render scale: the scene's size relative to the game resolution: game (its dynamic resolution) or a fixed
 # percentage from 25 to 100; a higher one counts as 100. For supersampling, set output_res above window_size. Read at
 # start.
@@ -178,6 +184,8 @@
 # A language the game files have no text for gives way to en-US, or ja on the Japanese release (see game_langs).
 # locale = en-US
 # lang = en-US
+# Menu and performance overlay language: zh-Hans, zh-Hant, en, or unset (follows the system UI language).
+# menu_lang =
 # The languages the installed game files have text for, written by the setup: the Americas and Europe release has
 # en-US en-GB fr fr-CA de it es es-419 ko, the Japanese one ja zh-CN zh-TW. The settings menu offers only these.
 # game_langs = en-US en-GB fr fr-CA de it es es-419 ko
@@ -256,12 +264,15 @@
 # Folder with the player's mods, one subfolder per mod, unpacked as emulators take them: <name>/romfs, <name>/exefs
 # (.ips, .pchtxt), <name>/cheats (<build id>.txt), or an SD card mod's atmosphere folder. An add-on content title's
 # romfs (atmosphere/contents/0100E950040390NN/romfs) goes over that pack: XC2 mods replace archived files (bf2.arh)
-# that way. Code patches and code cheats are built in by the setup. Default: mods next to xc2.exe.
+# that way. Default: mods next to xc2.exe.
 # mods_dir =
 # Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
 # mods_order =
 # Mods switched off, names separated by |.
 # mods_disabled =
+# Code patches and code cheats are compiled when the game starts and a mod's are new or changed, which takes a few
+# seconds. auto (the default) does that, off never does (new ones stay off), always does it at every start.
+# mods_build = auto
 
 [cheats]
 # One line per cheat of the mods' cheat files; the Cheats tab of the menu writes them. cheat_<hash> = 1 switches a

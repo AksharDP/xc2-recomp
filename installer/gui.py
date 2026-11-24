@@ -3,9 +3,12 @@
 A front end over the CLI (docs/installer.md): it collects the game files, the keys file path, the game language and the
 install folder, runs `python -m installer ...` as a subprocess and shows its JSON events. Once the base game and the
 keys are chosen it runs `python -m installer.probe` on them, and the language list holds only the languages those game
-files have text for (the two releases differ). Decisions live in guilogic.py; this file only draws. The window text is in installer/text/en.json under "ui.*" and "launcher.*" ids.
+files have text for (the two releases differ). Decisions live in guilogic.py; this file only draws. The window text is in installer/text/<lang>.json under "ui.*" and "launcher.*" ids.
 
-    --selftest [--shots DIR]   build every screen and close by itself (PNG per screen with --shots)
+    --selftest [--shots DIR]   build every screen in all UI languages and close by itself (PNG per screen with --shots)
+    --lang zh-Hans|zh-Hant|en  window language (default: the OS display language)
+    --mod-code ...             no window: tools/mod_code.py with the release's compiler and headers (the Linux AppImage,
+                               which the game starts to build its mods' code: steps.py mod_command)
 """
 import argparse
 import json
@@ -25,13 +28,15 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from . import preferences
-from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, Catalog, Form, LanguageProbe, Model, Process,
-                       amount, default_game_language, describe_event, parse_line, probe_inputs)
+from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGES, Catalog, Form, LanguageProbe, Model,
+                       Process, amount, default_game_language, describe_event, parse_line, probe_inputs,
+                       system_ui_language)
 
 POLL_MS = 100
 PROBE_DELAY_MS = 500   # after the last edit of a game file or keys path, so typing a path does not start a probe per key
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
 COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808080', FAILED: '#c01c28'}
+UI_LABELS = {'zh-Hans': '简中', 'zh-Hant': '繁中', 'en': 'EN'}
 PAD = 14
 
 
@@ -45,18 +50,21 @@ def fix_tcl_paths():
 
 
 class App:
-    def __init__(self, root, layout, run_args=None, remember=True):
+    def __init__(self, root, layout, run_args=None, remember=True, ui_lang=None):
         """Build the setup window and restore saved paths unless this is a self-test."""
         self.root, self.layout = root, layout
         # the release runs under pythonw, which has no console: an error in a button's callback would vanish silently
         root.report_callback_exception = self.callback_error
-        self.cat = Catalog()
+        lang = ui_lang or system_ui_language()
+        self.all_cats = {c: Catalog(c) for c in UI_LANGUAGES}
+        self.cat = Catalog(lang)
         self.model = Model()
         self.process = None
         self.closing = False
         self.run_args = run_args or {}   # extra CLI options for tests: temp, verify
         self.log_entries = []            # events and raw lines of the run, rendered by render_log
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
+        self.form_problems = []          # current form validation error ids, retranslated on switch
         self.preferences_path = preferences.config_path() if remember else None
         saved = preferences.load(self.preferences_path) if remember else preferences.defaults()
         self.preference_save_after = None
@@ -68,7 +76,7 @@ class App:
             'dest': tk.StringVar(value=saved['dest']),
         }
         self.vars['lang'] = tk.StringVar()
-        self.lang_code = default_game_language()
+        self.lang_code = default_game_language(self.cat.lang)
         self.languages = None            # the languages of the chosen game files (LanguageProbe); None while unknown
         self.probe = None                # the LanguageProbe running, or None
         self.probe_for = None            # the inputs the shown languages are of (guilogic.probe_inputs)
@@ -102,6 +110,12 @@ class App:
         version = ttk.Label(top, style='Version.TLabel')
         self.bind_text(version, 'text', 'ui.version', version=layout.release)
         version.pack(side='left', padx=(10, 0), pady=(6, 0))
+        sw = ttk.Frame(top)
+        sw.pack(side='right')
+        self.ui_var = tk.StringVar(value=self.cat.lang)
+        for code in UI_LANGUAGES:
+            ttk.Radiobutton(sw, text=UI_LABELS[code], value=code, variable=self.ui_var, style='Toolbutton',
+                            command=self.switch_language).pack(side='left', padx=1)
         self.body = ttk.Frame(root, padding=PAD)
         self.body.pack(fill='both', expand=True)
         self.frames = {'form': self.build_form(), 'run': self.build_run(), 'finish': self.build_finish()}
@@ -132,6 +146,25 @@ class App:
         self.bind_text(w, 'text', id)
         return w
 
+    def retext(self):
+        self.root.title(self.cat('ui.title'))
+        for widget, option, id, params in self.bound:
+            widget.configure(**{option: self.cat(id, **params)})
+        self.fill_languages()
+        self.refresh_form()
+        self.form_error.configure(text=' '.join(self.cat(p) for p in self.form_problems))
+        self.refresh_run()
+        self.refresh_finish()
+        self.render_log()
+
+    def switch_language(self):
+        code = self.selected_lang()
+        self.cat.set_language(self.ui_var.get())
+        self.lang_code = code
+        self.retext()
+        self.vars['lang'].set(self.lang_label(self.lang_code))
+        self.fit()
+
     def lang_label(self, code):
         return self.cat('lang.' + code)
 
@@ -150,15 +183,23 @@ class App:
         self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
         self.lang_code = code
-        status_id, params = self.probe_status
-        self.langs_label.configure(text=self.cat(status_id, **params))
+        self.langs_label.configure(text=self.status_text(self.probe_status))
+
+    def status_text(self, status):
+        """The line under the language box in the active language. A failed read keeps its check id and parameters
+        rather than its text, so a language change translates the reason again (fill_languages runs on every change)."""
+        status_id, params = status
+        if status_id == 'ui.langs_failed':
+            params = {'reason': self.cat(params['check'], **params['check_params'])}
+        return self.cat(status_id, **params)
 
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
         shown = self.vars['lang'].get()
         for code in ini.LANGUAGES:
-            if shown == self.lang_label(code):
-                return code
+            for cat in self.all_cats.values():
+                if shown == cat('lang.' + code):
+                    return code
         return self.lang_code
 
     # ---- screens --------------------------------------------------------------------------------------------------
@@ -343,8 +384,8 @@ class App:
                                                                    'known': ', '.join(e['languages'])}))
         else:   # the list shown is the install folder's, so another folder reads again
             self.probe_for_dest = self.vars['dest'].get()
-            reason = self.cat(e.get('id', 'check.languages_unreadable'), **(e.get('params') or {}))
-            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {'reason': reason}))
+            self.set_languages(self.recorded_languages(), ('ui.langs_failed', {
+                'check': e.get('id', 'check.languages_unreadable'), 'check_params': e.get('params') or {}}))
         self.probe_done_status = self.probe_status
 
     def current_inputs(self):
@@ -458,6 +499,7 @@ class App:
         self.save_preferences()
         form = self.form()
         problems = form.problems()
+        self.form_problems = problems
         if problems:
             self.form_error.configure(text=' '.join(self.cat(p) for p in problems))
             self.fit()
@@ -694,12 +736,12 @@ def grab(root, path):
 
 
 def selftest(layout, shots=None):
-    """Every screen; the window closes itself. Returns 0 when nothing raised."""
+    """Every screen in every UI language; the window closes itself. Returns 0 when nothing raised."""
     fix_tcl_paths()
     root = tk.Tk()
     root.geometry('+60+40')
-    app = App(root, layout, remember=False)
-    steps = []
+    app = App(root, layout, remember=False, ui_lang='en')
+    steps, mixed = [], []
 
     def shot(name):
         root.update()
@@ -708,58 +750,80 @@ def selftest(layout, shots=None):
             grab(root, Path(shots) / f'{name}.png')
 
     def run_all():
-        app.vars['dest'].set('Z:/selftest/XC2')
-        app.vars['base'].set('Z:/selftest/xc2.nsp')
-        app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
-        app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
-        app.vars['keys'].set('Z:/selftest/prod.keys')
-        app.show('form')
-        app.start()   # missing files: shows the problems
-        steps.append(app.form_error.cget('text'))
-        shot('form')
-        app.model = Model()
-        app.clear_log()
-        app.build_step_rows(app.model.steps)
-        app.show('run')
-        for e in SAMPLE_RUN:
-            app.feed(json.dumps(e))
-        app.log_open = False
-        app.toggle_log()
-        app.refresh_run()
-        shot('run')
-        app.model = Model()
-        for e in SAMPLE_OK:
-            app.model.apply(e)
-        app.model.dest = 'Z:/selftest/XC2'
-        app.model.finish(0)
-        app.refresh_finish()
-        app.show('finish')
-        shot('finish-ok')
-        app.model = Model()
-        for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
-                                    'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
-                                   {'type': 'end', 'result': 'failed', 'seconds': 3}]:
-            app.model.apply(e)
-        app.model.finish(1)
-        app.refresh_finish()
-        shot('finish-failed')
-        app.model = Model()
-        app.model.finish(3)
-        app.refresh_finish()
-        shot('finish-cancelled')
-        app.toggle_log()
+        for lang in UI_LANGUAGES:
+            app.ui_var.set(lang)
+            app.switch_language()
+            tag = lang
+            app.vars['dest'].set('Z:/selftest/XC2')
+            app.vars['base'].set('Z:/selftest/xc2.nsp')
+            app.vars['update'].set('Z:/selftest/xc2-3.0.1.nsp')
+            app.set_dlc([f'Z:/selftest/xc2-dlc{i}.nsp' for i in (1, 2, 3)])
+            app.vars['keys'].set('Z:/selftest/prod.keys')
+            app.show('form')
+            app.start()   # missing files: shows the problems
+            steps.append(app.form_error.cget('text'))
+            shot(f'form-{tag}')
+            app.model = Model()
+            app.clear_log()
+            app.build_step_rows(app.model.steps)
+            app.show('run')
+            for e in SAMPLE_RUN:
+                app.feed(json.dumps(e))
+            app.log_open = False
+            app.toggle_log()
+            app.refresh_run()
+            shot(f'run-{tag}')
+            if lang == 'en':   # the log follows the window language: no English line may remain after the switch
+                app.ui_var.set('zh-Hans')
+                app.switch_language()
+                text = app.log.get('1.0', 'end')
+                mixed.append('Checking' in text or 'Extracting' in text or '提取游戏文件' not in text)
+                app.ui_var.set('en')
+                app.switch_language()
+            app.model = Model()
+            for e in SAMPLE_OK:
+                app.model.apply(e)
+            app.model.dest = 'Z:/selftest/XC2'
+            app.model.finish(0)
+            app.refresh_finish()
+            app.show('finish')
+            shot(f'finish-ok-{tag}')
+            app.model = Model()
+            for e in SAMPLE_RUN[:3] + [{'type': 'error', 'id': 'check.disk_space', 'step': 'check',
+                                        'params': {'path': 'Z:/selftest/XC2', 'need_gb': 36.4, 'free_gb': 20.1}},
+                                       {'type': 'end', 'result': 'failed', 'seconds': 3}]:
+                app.model.apply(e)
+            app.model.finish(1)
+            app.refresh_finish()
+            shot(f'finish-failed-{tag}')
+            app.model = Model()
+            app.model.finish(3)
+            app.refresh_finish()
+            shot(f'finish-cancelled-{tag}')
+            app.toggle_log()
         root.destroy()
 
     root.after(200, run_all)
     root.after(60000, root.destroy)   # never leaves a window open
     root.mainloop()
-    return 0 if len(steps) == 1 and all(steps) else 1
+    return 0 if len(steps) == len(UI_LANGUAGES) and all(steps) and mixed == [False] else 1
+
+
+def mod_code(argv):
+    layout = layouts.find()
+    return subprocess.run([str(layout.python), str(layout.tools / 'mod_code.py'), '--runtime', str(layout.runtime),
+                           '--clang', str(layout.clang), *(['--sysroot', str(layout.sysroot)] if layout.sysroot else []),
+                           *argv]).returncode
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['--mod-code']:
+        return mod_code(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--shots', type=Path)
+    ap.add_argument('--lang', choices=UI_LANGUAGES)
     ap.add_argument('--root', type=Path)
     args = ap.parse_args(argv)
     layout = layouts.find(args.root)
@@ -767,7 +831,7 @@ def main(argv=None):
         return selftest(layout, args.shots)
     fix_tcl_paths()
     root = tk.Tk()
-    App(root, layout)
+    App(root, layout, ui_lang=args.lang or system_ui_language())
     root.mainloop()
     return 0
 

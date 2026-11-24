@@ -108,6 +108,8 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   VkImage dst, int dx, int dy, uint32_t dw, uint32_t dh);
 void vk_fsr_release(void);   // before the device goes away
 void vk_fsr3_release(void);  // FSR 3.1 / FSR Upscaling 4 (vk_fsr3.c, hooks in vk_exec.h): before the device goes away
+int vk_fsr3_libraries(void); // the FSR libraries next to the executable: bit 0 the 2.x loader, bit 1 the 1.1.4 library
+int vk_fsr3_shown(char *buf, size_t size);   // 1 and the version when FSR upscaled within the last second (the overlay)
 
 // What the upscaler's resolve gave frame generation (vk_fg.c) for one frame: the depth and motion it decodes from the
 // game's targets at the render size, the upscaled scene without the HUD, and the camera values both effects take.

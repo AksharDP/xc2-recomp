@@ -33,17 +33,18 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Keyboard, mouse and gamepad
 - AMD FSR 1 scaling when the window is bigger than the game picture; bilinear is the other option
 - AMD FSR upscaling in place of the game's temporal anti-aliasing and scaling (FSR 3.1, or FSR 4 on Radeon RX 6000 and
-  newer), and frame generation between drawn frames, both off by default
+  newer), and frame generation between drawn frames, both off by default and in the Windows release only (AMD ships
+  the libraries for Windows). The performance overlay's *Upscaler* line shows the FSR version that is running
 - Mods for Switch emulators and Atmosphere, in a `mods` folder next to `xc2.exe` ([docs/mods.md](docs/mods.md))
+- Ultrawide game resolutions (21:9 and 32:9): a wider view of the world, menus centred and the field and battle HUD at
+  the screen's edges (Fit the interface to wide screens, on by default)
 
 ## Planned
 
-- Custom aspect ratios, including ultrawide
 - VRR
 
 ## Known issues
 
-- Above 1280x720 at a shape other than 16:9 (ultrawide), the interface is still laid out for 16:9.
 - The far cloud sea's texture jumps from frame to frame when the camera moves, at any frame rate and resolution.
 - The data the GPU reads is copied when each frame is submitted, so props do not slide or flicker above 30 fps. This
   takes about 1.3 GiB of extra memory; `memory = import` in `xc2.ini` saves it but makes every frame wait for the GPU

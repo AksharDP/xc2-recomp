@@ -1,7 +1,6 @@
 // Guest function call counts (XC2_FNPROF=<addr>[,<addr>...], guest addresses of lifted functions, at most FP_FUNCS).
-// Every lifted function starts with FN_ENTER (cpu.h), which calls fnprof_hit while g_fnprof is set; that is every guest
-// call of the run, so a run with it on is slow and its frame times mean nothing, but the counts hold. For each listed
-// function it counts the calls per first argument (x0), per caller (the return address) and per calling guest thread.
+// Every lifted function starts with FN_ENTER (cpu.h), whose site the listed functions' hooks (fnhook.c) turn into a call
+// of fnprof_hit. For each listed function it counts the calls per first argument (x0), per caller (the return address) and per calling guest thread.
 // With a * before the address it also reads the 32-bit word x0 points at when the call starts: for the SDK's critical
 // section (sdk+0x8fc90, the word is the owner's handle with bit 30 for waiters, 0 when free) that tells how often the lock
 // was already held and by whom. The report goes to the log at exit, per presented frame.
@@ -11,6 +10,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fnhook.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -20,7 +20,7 @@
 typedef struct { uint64_t key, used; uint64_t n, held, waiters; } FpSlot;
 typedef struct { uint64_t addr, calls, dropped; int word; FpSlot *by_x0, *by_lr, *by_tid, *by_owner; } FpFunc;
 
-volatile int g_fnprof;
+static volatile int g_fnprof;
 static FpFunc fp[FP_FUNCS];
 static int nfp;
 static uint64_t fp_presents;
@@ -55,6 +55,7 @@ static void bump(FpFunc *f, FpSlot *t, uint64_t key, int held, int waiters) {
 }
 
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    if (!g_fnprof) return;
     FpFunc *f = NULL;
     for (int i = 0; i < nfp; i++)
         if (fp[i].addr == addr) { f = &fp[i]; break; }
@@ -84,10 +85,11 @@ void fnprof_init(void) {
         f->by_x0 = calloc(FP_SLOTS, sizeof(FpSlot)), f->by_lr = calloc(FP_SLOTS, sizeof(FpSlot));
         f->by_tid = calloc(FP_SLOTS, sizeof(FpSlot)), f->by_owner = calloc(FP_SLOTS, sizeof(FpSlot));
         if (!f->by_x0 || !f->by_lr || !f->by_tid || !f->by_owner) rt_fatal("fnprof: out of memory");
+        fnhook_count(a);
         nfp++;
         p = *end == ',' ? end + 1 : end;
     }
-    rt_log("fnprof: counting the calls of %d guest functions (every guest call goes through the check: a slow run)", nfp);
+    rt_log("fnprof: counting the calls of %d guest functions", nfp);
     __atomic_store_n(&g_fnprof, nfp > 0, __ATOMIC_RELEASE);
 }
 

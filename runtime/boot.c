@@ -15,6 +15,8 @@
 
 #include "cfg.h"
 #include "cheats.h"
+#include "fnhook.h"
+#include "modcode.h"
 #include "fs.h"
 #include "gfx.h"
 #include "kernel.h"
@@ -378,15 +380,20 @@ static void prewarm_main(void *arg) {
 
 void rt_boot(void) {
     check_npdm();
+    modcode_prepare();   // before anything reads the mods' files
     if (!rt_config()->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
     // Shaders and pipelines recorded in earlier runs are made ready while the modules load; the guest waits for them.
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
     ldr_load(rt_config()->exefs);
     rt_patches_init();
+    modcode_load();
     mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on
+    cheats_init();         // a cheat's set follows its setting
+    modcode_hook();
+    int sites = fnhook_install();   // every hook is named; no guest thread runs yet
+    if (sites) rt_log("fnhook: %d sites written", sites);
     frame_step_init();
-    res_init();
-    cheats_init();   // after the patch sets: a cheat's set follows its setting
+    res_init();   // runs a mod's patched code to read its frame size (resolution.c mod_frame_size)
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     hostfn_seal();

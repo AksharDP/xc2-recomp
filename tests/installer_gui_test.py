@@ -359,7 +359,7 @@ class LanguageWindowTest(unittest.TestCase):
 
         real, gui.LanguageProbe = gui.LanguageProbe, Probe
         self.addCleanup(setattr, gui, 'LanguageProbe', real)
-        self.app = gui.App(self.root, layouts.find(ROOT), remember=False)
+        self.app = gui.App(self.root, layouts.find(ROOT), remember=False, ui_lang='en')
 
     def choose(self, base, start=True):
         self.app.vars['base'].set(str(self.dir / base) if base else '')
@@ -412,6 +412,15 @@ class LanguageWindowTest(unittest.TestCase):
         self.assertEqual(self.app.languages, self.US)
         self.assertEqual(self.app.selected_lang(), 'fr')
 
+    def test_a_failed_read_is_translated_after_a_language_change(self):
+        self.choose('us.nsp')
+        self.made[-1].result = {'type': 'error', 'id': 'check.languages_unreadable'}
+        self.app.poll_probe()
+        self.assertIn(Catalog('en')('check.languages_unreadable'), self.app.langs_label.cget('text'))
+        self.app.ui_var.set('zh-Hans')   # the reason is kept as its check id, so the line changes with the language
+        self.app.switch_language()
+        self.assertIn(Catalog('zh-Hans')('check.languages_unreadable'), self.app.langs_label.cget('text'))
+
     def test_the_install_folders_language_is_kept(self):
         jp, us = self.dir / 'jp-install', self.dir / 'us-install'
         for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
@@ -427,20 +436,28 @@ class LanguageWindowTest(unittest.TestCase):
 
 
 class CatalogTest(unittest.TestCase):
-    def test_the_window_is_english_only(self):
+    def test_catalog_completeness_and_placeholders(self):
         catalogs = sorted(p.stem for p in (ROOT / 'installer' / 'text').glob('*.json'))
-        self.assertEqual(catalogs, ['en'])
+        self.assertEqual(catalogs, ['en', 'zh-Hans', 'zh-Hant'])
         self.assertEqual(Catalog('ru').lang, 'en')   # a language without a catalog falls back to English
+        en = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
+        for lang in ('zh-Hans', 'zh-Hant'):
+            other = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
+            self.assertEqual(set(other), set(en), f'{lang}.json keys differ from en.json')
+            for k, v in en.items():
+                self.assertEqual(set(re.findall(r'\{(\w+)\}', other[k])), set(re.findall(r'\{(\w+)\}', v)),
+                                 f'{lang}.json placeholder mismatch for {k}')
 
     def test_every_id_the_window_uses_exists(self):
-        cat = Catalog('en')
         ids = ['ui.' + n for n in ('title', 'start', 'cancel', 'open_folder', 'notice', 'space_one', 'space_two',
                                    'process_died', 'result_ok', 'result_failed', 'result_cancelled', 'langs_hint',
                                    'langs_checking', 'langs_found', 'langs_failed', 'lang_not_in_game')]
         ids += [f'step.{s}' for s in ('check', 'extract', 'lift', 'compile', 'prepare', 'cleanup')]
         ids += ['ui.state_' + n for n in ('started', 'done', 'skipped', 'pending', 'running', 'failed')]
         ids += ['lang.' + c for c in ini.LANGUAGES]
-        self.assertEqual([i for i in ids if not cat.has(i)], [])
+        for lang in ('en', 'zh-Hans', 'zh-Hant'):
+            cat = Catalog(lang)
+            self.assertEqual([i for i in ids if not cat.has(i)], [], f'missing ids in {lang}')
 
     def test_codes_become_names(self):
         cat = Catalog('en')
@@ -454,6 +471,9 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(cat('check.lang_not_in_game', lang='en-US', known='ja, zh-CN, zh-TW'),
                          'These game files have no English (US) text. Their languages: Japanese, '
                          'Chinese (Simplified, China), Chinese (Traditional, Taiwan).')
+        zh = Catalog('zh-Hans')
+        self.assertIn('日版', zh('ui.langs_found', release='Japan', known='ja, zh-CN'))
+        self.assertIn('简体中文（中国大陆）', zh('ui.langs_found', release='Japan', known='ja, zh-CN'))
 
     def test_fallback_and_params(self):
         cat = Catalog('en')

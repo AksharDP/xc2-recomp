@@ -743,10 +743,12 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
     if (rt_trace & RT_TRACE_FS) {   // XC2_TRACE=fs: every read, with what it asked for and what the file has
         char what[96];
         uint64_t i = handles[h - ROMFS_HANDLE_BASE];
+        uint32_t ov = handle_ovl[h - ROMFS_HANDLE_BASE];
         snprintf(what, sizeof what, "rom read %#llx+%#llx of %#llx%s", (unsigned long long)offset,
                  (unsigned long long)size, (unsigned long long)fsize,
                  (uint64_t)offset > fsize ? " PAST END" : (uint64_t)offset + size > fsize ? " SHORT" : "");
-        fs_trace(what, i ? entry_name(entry(i - 1)) : "?");
+        // a file a mod adds has no row in the index (i - 1 lies past it): its overlay names it
+        fs_trace(what, ov ? overlays[ov - 1].name : i && i - 1 < file_count ? entry_name(entry(i - 1)) : "?");
     }
     if ((uint64_t)offset > fsize || (!buffer && size)) return FS_R_INVALID;
     uint64_t n = size < fsize - (uint64_t)offset ? size : fsize - (uint64_t)offset, done = 0;
