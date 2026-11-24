@@ -145,7 +145,8 @@ static PlatMutex g_shot_lock = PLAT_MUTEX_INIT;   // the writer thread's queue
 static PlatCond g_shot_cond = PLAT_COND_INIT;
 static ShotJob *g_shot_q[SHOT_MAX];
 static int g_shot_qn;                  // jobs queued
-static int g_shot_writer;              // the writer thread: 0 not started, 1 running, -1 could not start
+static int g_shot_writer;              // the writer thread: 0 not started (or its start failed: the next shot tries
+                                       // again), 1 running
 
 // ---- XC2_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
@@ -657,10 +658,11 @@ static void shot_writer(void *arg) {
     }
 }
 
-// Hands j to the writer thread, which the first shot starts. 0 when that thread could not start.
+// Hands j to the writer thread, which the first shot starts. 0 when that thread could not start; a later shot starts
+// it again, so one failed start (no memory for a thread at that moment) does not turn screenshots off for the run.
 static int shot_queue(ShotJob *j) {
     plat_mutex_lock(&g_shot_lock);
-    if (!g_shot_writer) g_shot_writer = plat_thread_spawn(shot_writer, NULL, "screenshot", 0) ? 1 : -1;
+    if (!g_shot_writer && plat_thread_spawn(shot_writer, NULL, "screenshot", 0)) g_shot_writer = 1;
     int ok = g_shot_writer > 0 && g_shot_qn < SHOT_MAX;   // g_shot_busy keeps the queue within SHOT_MAX
     if (ok) {
         g_shot_q[g_shot_qn++] = j;
