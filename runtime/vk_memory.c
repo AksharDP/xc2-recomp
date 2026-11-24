@@ -943,7 +943,8 @@ static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks; 
 // write-back changed (the CPU's newer bytes reverted to the shadow's). XC2_SHADOW_WB_SKIP_CPU=1 leaves such pages out of
 // the write-back (the CPU's bytes win).
 static int s_diag = -1, s_wb_skip_cpu = -1;
-// Diff write-back (the default): a GPU-written range keeps a copy of its shadow bytes from record time, and the fence
+// Diff write-back (the default): a GPU-written range keeps a copy of its shadow bytes from record time, which the CPU's
+// writes were copied into first (vk_mem_gpu_pending), and the fence
 // write-back copies only the bytes the GPU changed. The recorded range is the whole bound storage range (often far more
 // than the shader writes), and the CPU keeps writing it for the next frame while the GPU runs: a whole-range copy put
 // the shadow's older bytes over those writes (about 2.3 KB a frame on the Steam Deck title screen). On the Deck the GPU
@@ -1182,6 +1183,15 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
         const pidx_ent *e = pidx_find(&pool_index, addr, size);
         PoolRec *r = e ? e->buf : NULL;
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (snap = snap_alloc(size))) {
+            // Without captures the CPU's writes go into the shadow at the submit, which leaves this range out once it is
+            // pending: they go in here, before the snapshot. Otherwise the snapshot still holds what the last GPU write
+            // left, and where the GPU writes those bytes again over the CPU's newer ones (a readback the game cleared),
+            // the write-back finds no change and the CPU keeps its own.
+            if (!shadow_cap) {
+                plat_mutex_lock(&shadow_lock);
+                shadow_copy(r, addr, addr + size, 0);
+                plat_mutex_unlock(&shadow_lock);
+            }
             memcpy(snap, r->smap + (addr - r->import_lo), size);
             if (shadow_cap) shadow_overlay(addr, size, snap);
         }
