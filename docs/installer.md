@@ -237,10 +237,10 @@ xc2-setup.desktop, xc2-setup.png
 installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION   as on Windows
 python/               python-build-standalone 3.14 (with tkinter) + the installer's packages; a .pth puts the folder,
                       tools/ and recomp/ on sys.path
-llvm/                 LLVM 23 (clang, lld, llvm-ar) and llvm/sysroot: the files of the Steam Runtime 3 "sniper" SDK the
-                      game's compile and link read (about 130 files)
-runtime/              libxc2rt.a, headers, the install-side sources, xc2.png; deps/ with the Vulkan headers, VMA and a
-                      static zstd
+llvm/                 LLVM 23 (clang, lld, llvm-ar, llvm-objdump) and llvm/sysroot: the files of the Steam Runtime 3
+                      "sniper" SDK the game's compile and link read (about 130 files)
+runtime/              libxc2rt.a and libxc2rt-v2.a (x86-64-v2, for processors without AVX2), headers, the install-side
+                      sources, xc2.png; deps/ with the Vulkan headers, VMA and a static zstd
 bin/                  xc2_xlate, ninja, libSDL3.so.0
 ```
 
@@ -257,6 +257,10 @@ bin/                  xc2_xlate, ninja, libSDL3.so.0
 - The window cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
+- A processor without AVX2 gets the game built for x86-64-v2, as on Windows: the setup links `libxc2rt-v2.a` and
+  passes `--cpu v2`, whose check of the install-side objects runs the bundled `llvm-objdump` (SteamOS has no binutils).
+  `make_release_linux.py --prove` builds and probes both levels and runs `tools/check_isa.py` on the v2 `xc2`, so the
+  sniper sysroot's static libraries (libvpx, libstdc++) are audited too.
 - Building either release needs no game files: the runtime library takes main's base and the module limit from
   `runtime/dispatch.h` (`RT_MAIN_BASE`, `RT_MODULES_MAX`) instead of the generated `layout.h`, and each install's
   `modules.c` checks them against its layout. `.github/workflows/release.yml` builds both releases from a bare
