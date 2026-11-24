@@ -4,7 +4,8 @@
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
-// thread of its own (input_motion_start). Every SDL call on the gamepad is made under `lock`.
+// thread of its own (input_motion_start). Its Capture button takes a screenshot (gfx_screenshot) and never reaches the
+// game. Every SDL call on the gamepad is made under `lock`.
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -64,6 +65,8 @@ static const struct { const char *name; int bit; } script_buttons[] = {
     {"A", B_A}, {"B", B_B}, {"X", B_X}, {"Y", B_Y}, {"LCLICK", B_STICK_L}, {"RCLICK", B_STICK_R}, {"L", B_L}, {"R", B_R},
     {"ZL", B_ZL}, {"ZR", B_ZR}, {"PLUS", B_PLUS}, {"MINUS", B_MINUS}, {"LEFT", B_LEFT}, {"UP", B_UP}, {"RIGHT", B_RIGHT}, {"DOWN", B_DOWN},
 };
+// ScriptEv.bit of CAPTURE, the gamepad's Capture button: it has no npad bit and takes a screenshot as the button does.
+enum { SCRIPT_CAPTURE = 64 };
 static ScriptEv *script_ev;
 static int script_n, script_state;   // 0 not loaded, 1 loaded
 static int script_mixed;             // the script has timed lines: its untimed ones end where the world clock starts
@@ -98,6 +101,7 @@ static void script_load(void) {
         } else {
             for (size_t i = 0; i < sizeof script_buttons / sizeof *script_buttons; i++)
                 if (!strcmp(name, script_buttons[i].name)) e.bit = script_buttons[i].bit;
+            if (!strcmp(name, "CAPTURE")) e.bit = SCRIPT_CAPTURE;
             if (e.bit < 0) { rt_log("input: script line %d: unknown button %s", ln, name); continue; }
             if (sscanf(line + off, "%lf", &c) == 1 && c > 0) e.hold = (uint64_t)(c * unit + 0.5);
             snprintf(e.text, sizeof e.text, "%s", name);
@@ -114,7 +118,8 @@ static void script_load(void) {
     rt_log("input: script %s, %d events", path, script_n);
 }
 
-static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+// *capture is set while a CAPTURE event holds.
+static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2], int *capture) {
     if (!script_state) script_load();
     if (!script_n) return;
     uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), tick = frame_step_ticks();
@@ -130,6 +135,7 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
             else rt_log("input: script frame %llu tick %llu: %s", (unsigned long long)fr, (unsigned long long)tick, e->text);
         }
         if (e->stick) { int32_t *s = e->stick == 1 ? sl : sr; s[0] = e->x; s[1] = e->y; }
+        else if (e->bit == SCRIPT_CAPTURE) *capture = 1;
         else *b |= 1ull << e->bit;
     }
 }
@@ -509,11 +515,13 @@ int input_pad_stick_percent(double pct[2]) {
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
+    int capture = 0;   // the Capture button held: SDL's MISC1 (Switch Pro Controller and Joy-Con Capture, Xbox Series
+                       // Share, DualSense microphone button), outside the npad bits and the bindings
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) {
         binds_refresh();
-        if (state == 1) pad_read(&b, sl, sr);
+        if (state == 1 && pad_read(&b, sl, sr)) capture = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_MISC1);
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
@@ -550,8 +558,13 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             pick(&sr[0], &sr[1], k[0], k[1]);
         }
     }
-    script_apply(&b, sl, sr);
+    script_apply(&b, sl, sr, &capture);
     rec_apply(b, sl, sr);
+    // One screenshot per press of the Capture button. The game never sees the button, as on the Switch, where the
+    // system takes the shot. Every poller (the game, the text entry) shares the latch, so a press counts once.
+    static int capture_held;
+    int shot = capture && !capture_held;
+    capture_held = capture;
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
@@ -562,6 +575,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     plat_mutex_unlock(&lock);
     if (toggle) menu_toggle();
     if (overlay) menu_perf_cycle();
+    if (shot) gfx_screenshot();
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
     stick_bits(&b, sr[0], sr[1], B_SR_LEFT);
     *buttons = b; *lx = sl[0]; *ly = sl[1]; *rx = sr[0]; *ry = sr[1];

@@ -23,6 +23,14 @@ uint64_t gfx_vsync_ticks(void);                            // ticks since start
 uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time of a tick (pacing)
 double gfx_window_refresh_hz(void);                        // refresh rate of the window's monitor; 0 unknown
 int gfx_window_focused(void);
+// The next presented picture as <exe dir>/screenshots/xc2-<date>-<time>.png, written by a thread of its own (the
+// gamepad's Capture button, input.c). Any thread; returns at once.
+void gfx_screenshot(void);
+// Waits up to 5 s for the screenshots already taken to be written; returns at once when none is waiting. Every orderly
+// exit calls it before plat_exit, which ends the writer thread wherever it is and so loses a shot not yet renamed into
+// place: gfx_exit_saved (window closed, XC2_STOP_FRAME), the --seconds deadline (boot.c rt_frame_presented) and the
+// guest's ExitProcess (svc.c).
+void gfx_screenshot_drain(void);
 
 // ---- shader service client (gfx_shader.c)
 enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS };
