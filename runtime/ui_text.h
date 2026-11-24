@@ -173,7 +173,7 @@ typedef enum {
     UI_MENU_TAB_CHEATS,
     UI_MENU_CHEATS_NONE,      // "%s": <build id>.txt
     UI_MENU_CHEATS_MOD,       // "%s": the mod, "%d": its cheats
-    UI_MENU_CHEATS_UNBUILT /* "%s": why */, UI_MENU_CHEATS_UNBUILT_OFF,   // code cheats or ExeFS patches not built
+    UI_MENU_CHEATS_UNBUILT /* "%s": why */, UI_MENU_CHEATS_UNBUILT_OFF,   // code cheats or ExeFS patches not built (OFF: mods_build is off)
     UI_MENU_CHEAT_CODE_DESC, UI_MENU_CHEAT_KEY_DESC /* "%s": the buttons */, UI_MENU_CHEAT_DATA_DESC,
     UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
     UI_MENU_CHEAT_UNBUILT, UI_MENU_CHEAT_UNBUILT_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,

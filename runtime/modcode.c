@@ -200,7 +200,7 @@ static int run_tool(void) {
 
 void modcode_prepare(void) {
     const char *e = cfg_get("XC2_MODS_BUILD");
-    if (!find_dir() || (e && !strcmp(e, "off"))) return;
+    if (!find_dir() || modcode_off()) return;
     if (!rt_mod_abi[0]) return;   // lifted before gen.py wrote patches.txt: no mod code
     mods_scan();
     char path[PLAT_PATH_MAX + 128];
@@ -301,6 +301,10 @@ void modcode_hook(void) {
 int modcode_unbuilt(void) { return mods_exefs_pending() + cheats_unbuilt(); }
 
 const char *modcode_error(void) {
+    return g_error[0] ? g_error : rt_mod_abi[0] ? "new since the game started" : "a build without mod code";
+}
+
+int modcode_off(void) {
     const char *e = cfg_get("XC2_MODS_BUILD");
-    return g_error[0] ? g_error : e && !strcmp(e, "off") ? "" : rt_mod_abi[0] ? "new since the game started" : "a build without mod code";
+    return e && !strcmp(e, "off");
 }
