@@ -100,6 +100,11 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
+// The same with the built-in frame generation (vk_fg_generate) where it is on: 1 when two presents wait, the generated
+// picture's and then the game's, one vk_present_flip each; 0 when it is one or none. vk_present_wait_drawn waits for
+// the GPU to have drawn the generated one.
+int vk_present_blit_pair(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
+void vk_present_wait_drawn(void);
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the dw x dh
 // rectangle at {dx, dy} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing
 // recorded (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
@@ -132,8 +137,9 @@ void vk_fsr3_frame_show(const VkFsrFrame *fr);
 int vk_fsr3_frame_get(VkFsrFrame *out);
 
 // AMD FSR Frame Generation (vk_fg.c, XC2_FRAME_GEN): the library's swapchain replaces ours, interpolates the picture of
-// two frames and presents both. Off, every function below is the plain Vulkan call.
-int vk_fg_wanted(void);      // the setting is on and usable (it needs XC2_FSR3 for its inputs)
+// two frames and presents both. Off, every function below is the plain Vulkan call. Where that library cannot run, the
+// interpolation built into the game (vk_ffx.cpp) does the same on our swapchain (vk_fg_own_wanted, vk_fg_generate).
+int vk_fg_wanted(void);      // the setting is on and the library usable (it needs XC2_FSR3 for its inputs)
 int vk_fg_active(void);      // the live swapchain is the library's
 float vk_fg_shown_fps(uint64_t now_ns);   // frames a second on screen, negative while frame generation is off
 // 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is
@@ -145,6 +151,14 @@ VkResult vk_fg_present(VkQueue q, const VkPresentInfoKHR *pi);
 // The prepare dispatch for the frame being presented, recorded into the present command buffer; rect is where the game
 // picture sits in the swapchain image (x, y, width, height). 0 when frame generation did not take the frame.
 int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int rect[4]);
+// The built-in interpolation. 1: the setting is on, AMD's library does not do it and this device can.
+int vk_fg_own_wanted(VkCtx *c);
+// Records the interpolation between the last frame and this one into cb, for the window texture win (the game's picture,
+// w x h, GENERAL) and the frame's inputs fr (NULL none). The generated picture (RGBA8 UNORM, GENERAL) or
+// VK_NULL_HANDLE when there is none: the frame has no inputs or the last one had none.
+VkImage vk_fg_generate(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, VkImage win, VkFormat fmt, int w, int h);
+void vk_fg_own_release(void);    // its contexts go, the device idle
+void vk_fg_count_present(void);  // a present went out (for vk_fg_shown_fps)
 void vk_fg_shutdown(VkCtx *c);   // disables and destroys the contexts, and the swapchain they own
 void vk_fg_release(VkCtx *c);    // before the device goes away
 void vk_present_flip(void);

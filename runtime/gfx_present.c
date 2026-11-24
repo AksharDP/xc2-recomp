@@ -30,6 +30,7 @@
 #include "platform/platform.h"
 
 #define FRAMES 2
+#define SLOTS 4    // fence slots: FRAMES, twice as many while a frame is two presents (the built-in frame generation)
 #define MAX_IMAGES 16
 #define VSYNC_NS 1000000000ull
 #define VSYNC_HZ 60
@@ -105,9 +106,9 @@ static VkImage g_sc_img[MAX_IMAGES];
 static VkImageView g_sc_view[MAX_IMAGES];   // colour attachment views for the menu overlay
 static VkSemaphore g_render_done[MAX_IMAGES];
 static VkCommandPool g_pool;
-static VkCommandBuffer g_cb[FRAMES];
-static VkFence g_fence[FRAMES];
-static VkSemaphore g_acquire[FRAMES];
+static VkCommandBuffer g_cb[SLOTS];
+static VkFence g_fence[SLOTS];
+static VkSemaphore g_acquire[SLOTS];
 static unsigned g_frame;
 static int g_fence_stuck;   // set while the slot's fence has not signalled after a 5 s wait: presents check it without waiting
 static int g_capture;
@@ -116,8 +117,13 @@ static VmaAllocation g_cap_alloc;
 static uint8_t *g_cap_ptr;
 static VkDeviceSize g_cap_size;
 static int g_cap_w, g_cap_h, g_cap_valid;
-static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
-static uint32_t g_flip_idx;
+// The swapchain images whose blits are submitted and whose presents wait for vk_present_flip, oldest first: one, or the
+// generated picture's and the game's of one frame (vk_present_blit_pair).
+static int g_flip_n;
+static uint32_t g_flip_idx[2];
+static int g_own;                // the swapchain was made for the built-in frame generation (vk_fg_own_wanted)
+// A pair's first pass, for its second: the picture generated, the overlay laid out and the fence slot
+static struct { VkImage gen; int overlay; const char *menu_shot; VkFormat fmt; VkExtent2D ext; unsigned slot; } g_pair;
 
 // ---- screenshots (gfx_screenshot, the gamepad's Capture button). The next present copies its picture, as it lands in
 // the window but without black bars or the menu overlay, into a host buffer of its own and waits for the copy (the
@@ -153,7 +159,7 @@ static int g_shot_writer;              // the writer thread: 0 not started (or i
 static int g_th_n, g_th_failed;
 static uint64_t g_th_frame;                // frame of the next vk_present_image call (vk_thumbs_frame)
 static uint64_t *g_th_tag;                 // per ring slot
-static uint64_t g_th_pending[FRAMES];      // per fence slot: the frame whose thumbnail its submission writes
+static uint64_t g_th_pending[SLOTS];       // per fence slot: the frame whose thumbnail its submission writes
 static VkImage g_th_img;
 static VmaAllocation g_th_img_alloc;
 static VkFormat g_th_fmt;
@@ -285,20 +291,27 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
 
 const char *gfx_window_present_mode(void) { return __atomic_load_n(&g_present_got, __ATOMIC_ACQUIRE); }
 
-// Queues the present of a blit vk_present_blit left waiting (g_pl held). A swapchain rebuild and the next blit flush it
-// first; the device release drops it.
-static void flip_locked(void) {
-    if (!g_flip_on) return;
-    g_flip_on = 0;
+// Queues the present of the oldest blit vk_present_blit or vk_present_blit_pair left waiting (g_pl held).
+static void flip_one(void) {
+    if (!g_flip_n) return;
+    uint32_t idx = g_flip_idx[0];
+    g_flip_idx[0] = g_flip_idx[1];
+    g_flip_n--;
     if (!g_sc) return;
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
-                           .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
-                           .pImageIndices = &g_flip_idx};
+                           .pWaitSemaphores = &g_render_done[idx], .swapchainCount = 1, .pSwapchains = &g_sc,
+                           .pImageIndices = &idx};
+    vk_fg_count_present();
     vk_queue_lock();
     VkResult r = vk_fg_present(vk_ctx()->gfx_queue, &pi);   // the frame generation swapchain presents, else this does
     vk_queue_unlock();
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
+}
+
+// Every present still waiting. A swapchain rebuild and the next blit start with it; the device release drops them.
+static void flip_locked(void) {
+    while (g_flip_n) flip_one();
 }
 
 static void free_capture(void) {
@@ -320,9 +333,16 @@ static void free_shot(void) {
     g_shot_stale_slot = -1;
 }
 
+// The images a swapchain asks for: one more than the least the surface needs, and another one where a frame takes two.
+static uint32_t image_count(const VkSurfaceCapabilitiesKHR *caps) {
+    uint32_t n = caps->minImageCount + 1 + (g_own ? 1 : 0);
+    if (caps->maxImageCount && n > caps->maxImageCount) n = caps->maxImageCount;
+    return n > 8 ? 8 : n;
+}
+
 // Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
 static int create_swapchain(void) {
-    flip_locked();   // the acquired image goes out before its swapchain is replaced
+    flip_locked();   // the acquired images go out before their swapchain is replaced
     VkCtx *c = vk_ctx();
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(c->phys, g_surface, &caps) != VK_SUCCESS) return 0;
@@ -344,10 +364,6 @@ static int create_swapchain(void) {
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; found = 1; }
     for (uint32_t i = 0; i < nf && !found; i++)
         if (fmts[i].format == VK_FORMAT_R8G8B8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; found = 1; }
-    uint32_t count = caps.minImageCount + 1;
-    if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
-    if (count > 8) count = 8;
-
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
     VkSwapchainKHR old = g_sc;
@@ -358,15 +374,17 @@ static int create_swapchain(void) {
         old = VK_NULL_HANDLE;
         g_sc = VK_NULL_HANDLE;
     }
+    int fg = vk_fg_wanted();
+    g_own = vk_fg_own_wanted(c);
+    if (!g_own) vk_fg_own_release();   // the device is idle
     VkSwapchainCreateInfoKHR ci = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = count,
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = image_count(&caps),
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,   // every surface supports it (the menu overlay draws into it)
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = pick_present_mode(c->phys), .clipped = VK_TRUE,
         .oldSwapchain = old};
-    int fg = vk_fg_wanted();
     VkResult r = VK_ERROR_INITIALIZATION_FAILED;
     if (fg) {
         int got = vk_fg_swapchain(c, &ci, &g_sc);
@@ -378,6 +396,8 @@ static int create_swapchain(void) {
                 g_sc = old = VK_NULL_HANDLE;
                 ci.oldSwapchain = VK_NULL_HANDLE;
             }
+            g_own = vk_fg_own_wanted(c);   // AMD's library does not do it here: the built-in interpolation, where it can
+            ci.minImageCount = image_count(&caps);
         }
     }
     if (!fg) r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
@@ -400,7 +420,8 @@ static int create_swapchain(void) {
     vk_fg_images(c->device, g_sc, &g_sc_n, NULL);   // count only: the library does not write the count back with an array
     if (g_sc_n > MAX_IMAGES) g_sc_n = MAX_IMAGES;
     if (g_sc_n) vk_fg_images(c->device, g_sc, &g_sc_n, g_sc_img);
-    rt_log("gfx: swapchain ready, %u images, frame generation %s", g_sc_n, vk_fg_active() ? "on" : "off");
+    rt_log("gfx: swapchain ready, %u images, frame generation %s", g_sc_n,
+           vk_fg_active() ? "on" : g_own ? "on (built in)" : "off");
     VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (uint32_t i = 0; i < g_sc_n; i++) {
         vkCreateSemaphore(c->device, &semi, NULL, &g_render_done[i]);
@@ -774,19 +795,23 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = (dw - out[2]) / 2, out[1] = (dh - out[3]) / 2;
 }
 
-static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
-    int general = layout == VK_IMAGE_LAYOUT_GENERAL;
+// The blit of a picture into the next swapchain image and, unless defer, its present. pass says what the built-in frame
+// generation makes of the frame (g_own; vk_present_blit_pair): 0 nothing, 1 the interpolation is recorded and the
+// generated picture shown in the game's place, when there is one, 2 the game's picture after such a pass. Screenshots,
+// captures and thumbnails come from the game's picture. 1 when a generated picture's blit was submitted.
+static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer, int pass) {
+    int general = layout == VK_IMAGE_LAYOUT_GENERAL, shown_gen = 0;
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
-    flip_locked();
+    if (pass != 2) flip_locked();
     if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
         if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
     }
     if (wsys_minimized() || !g_sc) goto out;
 
-    unsigned slot = g_frame % FRAMES;
-    // The present thread's own waits: the fence of the frame FRAMES presents back (the GPU) and the swapchain image.
+    unsigned slot = g_frame % (g_own ? SLOTS : FRAMES);
+    // The present thread's own waits: the fence of the frame FRAMES frames back (the GPU) and the swapchain image.
     // The perf waits count only the render and replay threads, so these are spans (flight recorder: pres_*).
     uint64_t fw0 = perf_begin();
     // A fence that does not signal within the wait leaves its slot busy, and g_frame stays put, so the next present
@@ -828,6 +853,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     vk_device_fault_report(r);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;     // lost, not ready: skip the frame
     if (r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
+    if (!g_own && pass == 1) pass = 0;   // a rebuild just now ended it
     vkResetFences(c->device, 1, &g_fence[slot]);
     if (g_th_pending[slot]) {   // that fence has signalled: the thumbnail its submission wrote is complete
         g_th_tag[g_th_pending[slot] % (uint64_t)g_th_n] = g_th_pending[slot];
@@ -845,10 +871,17 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     window_settings_live();
     // The menu overlay: laid out before recording (its first frame starts the ImGui back end and uploads the font)
     const char *menu_shot = NULL;
+    int overlay;
     MenuTarget mt = {c->instance, c->phys, c->device, c->gfx_family, c->gfx_queue, g_sc_fmt, g_sc_ext.width,
                      g_sc_ext.height, cw, ch, g_scaler};
-    int overlay = g_sc_view[idx] &&
+    if (pass == 2) {   // what the first pass laid out is drawn again, unless a rebuild in between changed the swapchain
+        menu_shot = g_pair.menu_shot;
+        overlay = g_sc_view[idx] && g_pair.overlay && g_pair.fmt == g_sc_fmt && g_pair.ext.width == g_sc_ext.width &&
+                  g_pair.ext.height == g_sc_ext.height;
+    } else {
+        overlay = g_sc_view[idx] &&
                   menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
+    }
     int cap = (g_capture || menu_shot) && ensure_capture_buffer();
     int thumb = g_th_n && ensure_thumbs();
 
@@ -879,6 +912,15 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     int have = vk_fsr3_frame_get(&fr);
     int fgrect[4] = {to[0], to[1], to[2], to[3]};
     if (vk_fg_active()) vk_fg_frame(c, cb, have ? &fr : NULL, fgrect);
+    // The built-in frame generation: the picture between the last frame and this one, at the game's size
+    VkImage gen = VK_NULL_HANDLE;
+    if (pass == 1) {
+        gen = vk_fg_generate(c, cb, general && have && !cx && !cy && cw == w && ch == h ? &fr : NULL, src, fmt, w, h);
+        g_pair.gen = gen, g_pair.overlay = overlay, g_pair.menu_shot = menu_shot;
+        g_pair.fmt = g_sc_fmt, g_pair.ext = g_sc_ext, g_pair.slot = slot;
+    }
+    if (gen) src = gen, fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    if (gen) cap = thumb = 0;   // screenshots, captures and thumbnails are of the second pass
     // FSR (XC2_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
     int fsr = general && vk_fsr_record(cb, slot, src, fmt, w, h, rect, dst, to[0], to[1], (uint32_t)to[2], (uint32_t)to[3]);
     g_scaler = fsr ? 2 : cw != to[2] || ch != to[3];
@@ -895,12 +937,22 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
             sync_barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
     }
+    if (pass == 2 && g_pair.gen && cfg_bool("XC2_FRAME_GEN_TEST")) {   // the generated picture over the left half of the game's
+        sync_barrier(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkImageBlit half = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {cw / 2, ch, 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{to[0], to[1], 0}, {to[0] + to[2] / 2, to[1] + to[3], 1}}};
+        vkCmdBlitImage(cb, g_pair.gen, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &half,
+                       VK_FILTER_LINEAR);
+    }
     // last: the image's layout, and the stage and access of its last write, as each step leaves it
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     VkAccessFlags2 last_write = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     // A screenshot: the picture's rectangle, before the overlay draws over it
-    int shot = shot_begin(to[2], to[3]);
+    int shot = !gen && shot_begin(to[2], to[3]);
     if (shot) {
         sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -967,8 +1019,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
     vk_queue_unlock();
     if (r == VK_SUCCESS) {
-        g_flip_on = 1;
-        g_flip_idx = idx;
+        g_flip_idx[g_flip_n++] = idx;
+        shown_gen = gen != VK_NULL_HANDLE;
         if (!defer) flip_locked();
     } else {
         vk_device_fault_report(r);
@@ -986,19 +1038,35 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (shot) shot_finish(slot, r == VK_SUCCESS);
 out:
     plat_rmutex_unlock(&g_pl);
+    return shown_gen;
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 0);
+    present_image(src, layout, fmt, w, h, crop, 0, 0);
 }
 
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 1);
+    present_image(src, layout, fmt, w, h, crop, 1, 0);
+}
+
+int vk_present_blit_pair(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    plat_rmutex_lock(&g_pl);
+    if (present_image(src, layout, fmt, w, h, crop, 1, g_own ? 1 : 0)) present_image(src, layout, fmt, w, h, crop, 1, 2);
+    int pair = g_flip_n == 2;
+    plat_rmutex_unlock(&g_pl);
+    return pair;
+}
+
+void vk_present_wait_drawn(void) {
+    plat_rmutex_lock(&g_pl);
+    VkCtx *c = vk_ctx();
+    if (c && g_started && g_flip_n == 2) vkWaitForFences(c->device, 1, &g_fence[g_pair.slot], VK_TRUE, 1000000000ull);
+    plat_rmutex_unlock(&g_pl);
 }
 
 void vk_present_flip(void) {
     plat_rmutex_lock(&g_pl);
-    flip_locked();
+    flip_one();
     plat_rmutex_unlock(&g_pl);
 }
 
@@ -1018,14 +1086,14 @@ void gfx_window_release_vk(void) {
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
         vk_queue_unlock();
-        g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
+        g_flip_n = 0;   // the blits are done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
         vk_fsr3_release();
         free_capture();
         free_shot();
         free_thumbs();
-        for (int i = 0; i < FRAMES; i++) {
+        for (int i = 0; i < SLOTS; i++) {
             vkDestroySemaphore(c->device, g_acquire[i], NULL);
             vkDestroyFence(c->device, g_fence[i], NULL);
         }
@@ -1059,11 +1127,11 @@ void gfx_window_start(void) {
                                        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = c->gfx_family};
         vkCreateCommandPool(c->device, &pci, NULL, &g_pool);
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = g_pool,
-                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = FRAMES};
+                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = SLOTS};
         vkAllocateCommandBuffers(c->device, &ai, g_cb);
         VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
         VkSemaphoreCreateInfo semi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        for (int i = 0; i < FRAMES; i++) {
+        for (int i = 0; i < SLOTS; i++) {
             vkCreateFence(c->device, &fi, NULL, &g_fence[i]);
             vkCreateSemaphore(c->device, &semi, NULL, &g_acquire[i]);
         }
