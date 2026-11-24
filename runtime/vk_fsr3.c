@@ -466,6 +466,27 @@ static void note_picture(VkExec *ex) {
     }
 }
 
+// The size the game drew its last 3D scene in, for the overlay (resolution.c res_sizes): the width in the upper half,
+// the height in the lower one, 0 until the first scene. The replay thread writes it at every resolve, with FSR on or off.
+static uint64_t scene_size;
+
+// The resolve's uniform block holds the rendered size, whether the game chose it (dynamic resolution) or XC2_RENDER_SCALE.
+static void note_scene_size(VkExec *ex) {
+    const VkTexImage *scene = bound(ex, 0);
+    if (!scene || scene->format != SCENE_FORMAT || !ex->color[4].img) return;   // a pass at boot has the same targets
+    const float *c4 = block_of(&ex->ubo[1][1], 96);
+    if (!c4) return;
+    float w = c4[3 * 4], h = c4[3 * 4 + 1];
+    if (!(w >= 1 && h >= 1 && w <= (float)ex->pass_w && h <= (float)ex->pass_h)) return;
+    __atomic_store_n(&scene_size, (uint64_t)(uint32_t)w << 32 | (uint32_t)h, __ATOMIC_RELAXED);
+}
+
+int vk_scene_size(unsigned out[2]) {
+    uint64_t s = __atomic_load_n(&scene_size, __ATOMIC_RELAXED);
+    if (s) out[0] = (unsigned)(s >> 32), out[1] = (unsigned)s;
+    return s != 0;
+}
+
 void vk_fsr3_note(VkExec *ex) {
     if (ex->pass_ncolor == 1) {
         if (F.stage) note_picture(ex);
@@ -477,6 +498,7 @@ void vk_fsr3_note(VkExec *ex) {
         return;
     int unfinished = F.stage != STAGE_NONE;
     F.stage = STAGE_NONE;
+    note_scene_size(ex);
     if (!cfg_bool("XC2_FSR3")) return;   // frame generation is off without it too (vk_fg_wanted)
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
