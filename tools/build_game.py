@@ -747,7 +747,9 @@ class ObjectCache:
         named = [('gen', gen), ('rt', RUNTIME), ('tc', toolchain), ('deps', DEPS), ('sys', sysroot)]
         self.roots = sorted(((t, Path(p).resolve()) for t, p in named if p), key=lambda r: -len(str(r[1])))
         version = subprocess.run([str(CLANG), '--version'], capture_output=True, text=True).stdout
-        version = '\n'.join(l for l in version.splitlines() if not l.startswith('InstalledDir'))
+        # llvm-mingw's clang also names its configuration file, in the folder it runs from
+        version = '\n'.join(l for l in version.splitlines()
+                            if not l.startswith(('InstalledDir:', 'Configuration file:')))
         flags = ' '.join(GEN_FLAGS)
         for t, p in self.roots:
             for form in (cmd_path(p), flag_path(p), str(p), p.as_posix()):
