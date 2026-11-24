@@ -1,4 +1,7 @@
 """Instruction boundaries used to audit baseline and v2 CPU builds."""
+import collections
+import contextlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -6,8 +9,11 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+import build_game  # noqa: E402
+import check_isa  # noqa: E402
 from check_isa import classify, find_objdump, scan, LinkMap, reviewed_dispatch
 
 
@@ -113,6 +119,39 @@ class InstructionLevelTest(unittest.TestCase):
             self.assertEqual(classify('vaddps %ymm0,%ymm1,%ymm2', level), 'above')
             self.assertEqual(classify('sha256rnds2 %xmm0,%xmm1', level), 'optional')
             self.assertEqual(classify('aesenc %xmm0,%xmm1', level), 'optional')
+
+    def test_v3_vector_instructions_stay_allowed_at_v3(self):
+        for asm in ('vaddps %ymm0,%ymm1,%ymm2', 'vfmadd231sd %xmm0,%xmm1,%xmm2', 'vfnmsub132pd (%rax),%ymm1,%ymm2',
+                    'vpermilps $0x1b,%xmm0,%xmm1', 'vpermq $0xd8,%ymm0,%ymm1', 'vpackuswb %xmm0,%xmm1,%xmm2',
+                    'vcvtpd2psx (%rax),%xmm0', 'vcvttsd2si %xmm0,%rax', 'vcvtsi2sdl (%rax),%xmm1,%xmm1',
+                    'vcmpunordpd %ymm0,%ymm1,%ymm2', 'vpgatherdd %ymm0,(%rax,%ymm1,4),%ymm2', 'vbroadcastf128 (%rax),%ymm0',
+                    'vpsravd %ymm0,%ymm1,%ymm2', 'vpmovzxbw (%rax),%ymm0', 'vzeroupper', 'vmovq %xmm0,%rax',
+                    'mulx %rax,%rcx,%rdx', 'movbe (%rax),%ecx', 'lzcnt %rax,%rcx', 'verw %ax'):
+            with self.subTest(asm=asm):
+                self.assertIsNone(classify(asm, 3))
+
+    def test_avx512_and_adx_are_above_v3(self):
+        for asm in ('vpternlogd $0,%xmm0,%xmm1,%xmm2', 'vpabsq %ymm0,%ymm1', 'vpsraq $3,%xmm0,%xmm1',
+                    'vaddps %xmm16,%xmm1,%xmm2', 'vaddps (%rax){1to4},%xmm1,%xmm2', 'vaddps %zmm0,%zmm1,%zmm2',
+                    'vmovdqu8 %ymm0,%ymm1', 'vpcmpeqd %xmm0,%xmm1,%k1', 'kmovw %k0,%eax',
+                    '{vex} vpdpbusd %ymm0,%ymm1,%ymm2', 'adcx %rax,%rcx', 'adoxq %rax,%rcx'):
+            with self.subTest(asm=asm):
+                self.assertEqual(classify(asm, 3), 'above')
+        for asm in ('vaesenc %xmm0,%xmm1,%xmm2', 'vpclmulqdq $0,%xmm0,%xmm1,%xmm2', 'sha256rnds2 %xmm0,%xmm1'):
+            with self.subTest(asm=asm):
+                self.assertEqual(classify(asm, 3), 'optional')
+
+    def test_runtime_audit_refuses_extensions_outside_the_levels(self):
+        """build_game.py check_runtime_isa: AES without a known CPU check stops the build, sha256.c's checked SHA does not."""
+        def audit(counts):
+            with mock.patch.object(check_isa, 'scan', lambda *a: ({k: collections.Counter(v) for k, v in counts.items()}, 1)), \
+                    mock.patch.object(check_isa, 'find_objdump', lambda hint: 'objdump'), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                build_game.check_runtime_isa([Path('x.o')])
+        audit({('blocks_ni', None): [('optional', 'sha256rnds2')]})
+        for kind, mnemonic in (('optional', 'aesenc'), ('above', 'vaddps')):
+            with self.subTest(mnemonic=mnemonic), self.assertRaisesRegex(SystemExit, mnemonic):
+                audit({('plain', None): [(kind, mnemonic)]})
 
     def test_compiled_instruction_boundaries(self):
         cc = Path(r'C:\msys64\ucrt64\bin\clang.exe')

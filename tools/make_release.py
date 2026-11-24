@@ -406,8 +406,7 @@ def runtime_lib(out, llvm):
         env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
     shutil.copy2(build / 'libxc2rt.a', rt / 'libxc2rt.a')
-    # The runtime for processors without AVX2 (build_game.py --cpu v2): the installer builds the game with it there
-    # (installer/steps.py cpu_runtime_lib)
+    # The runtime library of a build_game.py --cpu v2 build, for processors without AVX2
     build_v2 = build.with_name('rtlib-v2')
     run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--cpu', 'v2', '--version', VERSION_TAG,
          '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,
@@ -433,6 +432,8 @@ def build_sources(out):
     shutil.copy2(ROOT / 'xc2.ini.example', out / 'xc2.ini.example')
     shutil.copy2(ROOT / 'recomplauncher.json', out / 'recomplauncher.json')   # RecompLauncher reads it from the zip's top and the AppImage's root
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
+    (out / 'licenses').mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'runtime' / 'fma-LICENSE.txt', out / 'licenses' / 'musl-fma-LICENSE.txt')   # runtime/fma.c
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
 

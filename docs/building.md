@@ -227,6 +227,9 @@ change passes these, all run with `.venv`:
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
+`--cflags=-march=x86-64-v2` runs `lift.py`, `simd.py`, `atomic.py` and `func.py` on the code a `--cpu v2` build gets, with
+the software fused multiply-add of `runtime\fma.c`; a change to that file or to the FP lowering passes both levels.
+
 `lift.py`, `simd.py` and `func.py` split their cases into chunks over `--jobs` worker processes (default: every logical
 processor). Each chunk seeds its own generator from `--seed`, so a run gives the same cases with any number of jobs. The
 tests with game files read `build\extracted\v301\exefs` when it exists, else `v121`; `--exefs` picks another. Without

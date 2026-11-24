@@ -53,7 +53,27 @@ NOT_VECTOR = {'verr', 'verw', 'vmcall', 'vmlaunch', 'vmresume', 'vmxoff', 'vmxon
 PREFIXES = {'rep', 'repe', 'repz', 'repne', 'repnz', 'lock', 'notrack', 'data16', 'data32', 'addr32', 'bnd', 'cs',
             'ds', 'es', 'ss', 'fs', 'gs', 'rex', 'rex.w', 'rex.b', 'rex.x', 'rex.r', 'xacquire', 'xrelease'}
 WIDE_REG = re.compile(r'%[yz]mm\d|%k[0-7]\b')
-AVX512_REG = re.compile(r'%zmm\d|%k[0-7]\b')
+# Operands only an EVEX (AVX-512) encoding has: ZMM and mask registers, registers 16 to 31, an embedded broadcast or
+# rounding
+AVX512_OPERAND = re.compile(r'%zmm\d|%k[0-7]\b|%[xy]mm(?:1[6-9]|2\d|3[01])\b|\{1to\d+\}|\{r[nduz]-sae\}|\{sae\}')
+# The vector instructions of x86-64-v3: AVX, AVX2, FMA and F16C (Intel SDM volume 2). Everything else that starts with v
+# (AVX-512 on XMM and YMM registers such as vpternlogd, AVX-VNNI, AVX-IFMA) is above it.
+V3_VECTOR = re.compile(r"""v(?:
+    (?:add|sub|mul|div|min|max|sqrt)[ps][sd] | (?:addsub|hadd|hsub|and|andn|or|xor|shuf|unpck[lh]|blend|blendv|dp|test)p[sd]
+  | cmp\w*[ps][sd] | u?comis[sd] | round[ps][sd] | (?:rcp|rsqrt)[ps]s | fn?m(?:add|sub)(?:132|213|231)[ps][sd]
+  | fm(?:addsub|subadd)(?:132|213|231)p[sd]
+  | mov(?:[au]p[sd] | s[sd] | dq[au] | [dq] | hlps | lhps | [hl]p[sd] | mskp[sd] | ntp[sd] | ntdqa? | s[hl]dup | ddup)
+  | lddqu | maskmov(?:p[sd]|dqu) | (?:ld|st)mxcsr | zero(?:all|upper)
+  | cvt(?:dq2p[sd] | t?p[sd]2dq | ps2pd | pd2ps | ss2sd | sd2ss | si2s[sd][lq]? | t?s[sd]2si[lq]? | ph2ps | ps2ph)[xy]?
+  | broadcast(?:s[sd]|[fi]128) | (?:insert|extract)(?:[fi]128|ps) | perm(?:ilp[sd] | 2[fi]128 | [dq] | p[sd])
+  | p?gather[dq](?:p[sd]|[dq])
+  | p(?:add|sub)(?:[bwdq] | u?s[bw]) | pmul(?:l[wd] | hu?w | hrsw | u?dq) | pmadd(?:wd|ubsw) | pavg[bw] | psadbw
+  | pabs[bwd] | psign[bwd] | p(?:min|max)[su][bwd] | pcmp(?:eq|gt)[bwdq] | pcmp[ei]str[im][lq]? | pandn? | por | pxor
+  | psll[wdq] | psrl[wdq] | psra[wd] | ps[lr]ldq | psllv[dq] | psrlv[dq] | psravd | pack[su]s(?:wb|dw)
+  | punpck[lh](?:bw|wd|dq|qdq) | pshuf(?:[bd]|[hl]w) | palignr | pblend(?:w|d|vb)
+  | pbroadcast[bwdq] | pmaskmov[dq] | pmovmskb | pmov[sz]x(?:b[wdq]|w[dq]|dq) | p(?:insr|extr)[bwdq]
+  | ph(?:add|sub)(?:[wd]|sw) | phminposuw | mpsadbw | ptest
+)""", re.X)
 FUNC = re.compile(r'^([0-9a-f]+) <(.+)>:$')
 INSN = re.compile(r'^\s*([0-9a-f]+):\s+(.*)$')
 
@@ -150,9 +170,14 @@ def classify(text, level):
             return 'above'
         if m == 'pextrw' and not text.rsplit(',', 1)[-1].strip().startswith('%'):
             return 'above'
-    if level >= 3:   # x86-64-v3 has everything but AVX-512 (zmm and mask registers)
-        return 'above' if AVX512_REG.search(text) else None
-    if m in ABOVE_V2 or base in ABOVE_V2 or (m.startswith('v') and m not in NOT_VECTOR) or WIDE_REG.search(text):
+    vector = m.startswith('v') and m not in NOT_VECTOR
+    if level >= 3:   # x86-64-v3 has the scalar additions of ABOVE_V2 but ADX, and the vector ones of V3_VECTOR
+        if vector and m[1:] in OPTIONAL:   # vaesenc and vpclmulqdq: AVX forms of extensions outside the levels
+            return 'optional'
+        if base in ('adcx', 'adox') or m in ('adcx', 'adox') or AVX512_OPERAND.search(text):
+            return 'above'
+        return 'above' if vector and not V3_VECTOR.fullmatch(m) else None
+    if m in ABOVE_V2 or base in ABOVE_V2 or vector or WIDE_REG.search(text):
         return 'above'
     return None
 
