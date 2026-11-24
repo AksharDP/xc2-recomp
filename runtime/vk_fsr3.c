@@ -23,15 +23,18 @@
 // The jitter comes from the submission's uniform snapshot: the game may already be writing the next frame's block while
 // the replay records this one, and a jitter one frame off would blur the picture.
 //
-// Two libraries are accepted, in this order:
+// What upscales, in this order:
 //
 // - amd_fidelityfx_loader_vk.dll, the AMD FSR SDK 2.x loader (effect code in amd_fidelityfx_upscaler_vk.dll next to
 //   it). It offers FSR Upscaling 4.1.2 on Radeon RX 6000 and newer with Adrenalin 26.10.1, FSR 3.1.6 and 2.3.4
 //   everywhere else, and it needs the version structure chained into the create description.
 // - amd_fidelityfx_vk.dll, the FidelityFX SDK 1.1.4 library from earlier releases (and the name OptiScaler replaces).
 //   It knows neither the version structures nor the newer backend descriptor, so it gets the deprecated one.
+// - Without either (Linux has no such library): FSR 3.1.4 from the FidelityFX SDK's source, built into the game
+//   (vk_ffx.cpp). XC2_FSR_BUILTIN=1 takes it although a library is there (a test).
 //
 // XC2_FSR_VERSION (auto, 4, 3) pins a provider version through ffxOverrideVersion; auto takes what the API selects.
+// Only the 2.x loader has versions to choose from.
 //
 // The depth and motion images and FSR's output are double buffered by frame: frame generation (vk_fg.c) reads them at
 // the present, which can run while the next frame is already on the GPU.
@@ -48,6 +51,7 @@
 #include "fsr3_prep_spv.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "vk_ffx.h"
 
 #ifndef _WIN32
 #define __declspec(x)   // the headers export their prototypes; elsewhere the library is simply not found
@@ -62,7 +66,7 @@
 #define FOV_DEFAULT 0.7853982f   // 45 degrees, what the dumped camera uses
 #define MAX_MISSES 8
 
-enum { API_NONE, API_LOADER, API_LEGACY };
+enum { API_NONE, API_LOADER, API_LEGACY, API_BUILTIN };
 enum { IMG_COLOUR, IMG_DEPTH, IMG_MOTION, IMG_OUT, IMG_N };
 enum { STAGE_NONE, STAGE_RESOLVED, STAGE_TONED };
 
@@ -80,6 +84,7 @@ static struct {
     PfnFfxQuery query;
     PfnFfxConfigure configure;
     ffxContext ctx;
+    int builtin_ctx;               // API_BUILTIN's context exists (vk_ffx_up_create)
     VkDeviceContext dev;           // the 2.x backend descriptor
     char version[64];              // what the context reports, for the log
     char pinned[8];                // the XC2_FSR_VERSION the context was created for
@@ -179,8 +184,11 @@ static void *open_library(const char *dll, char *path, size_t size) {
     return library_path(dll, path, size) ? plat_lib_open(path) : NULL;
 }
 
-static int init(VkCtx *c) {
-    F.tried = 1;
+static int builtin_only(void) { return cfg_bool("XC2_FSR_BUILTIN"); }
+
+// AMD's library into F; 0 when none is usable, and the built-in FSR 3.1 takes its place.
+static int init_library(VkCtx *c) {
+    if (builtin_only()) return 0;
     char path[1024];
     void *lib = open_library(FFX_LOADER, path, sizeof path);
     if (lib) {
@@ -189,26 +197,47 @@ static int init(VkCtx *c) {
         lib = open_library(FFX_LEGACY, path, sizeof path);
         if (lib) F.api = API_LEGACY;
     }
-    if (!lib) {
-        rt_log("vk: FSR off: neither " FFX_LOADER " nor " FFX_LEGACY " is next to the executable");
-        return 0;
-    }
+    if (!lib) return 0;
     F.create = (PfnFfxCreateContext)plat_lib_sym(lib, "ffxCreateContext");
     F.destroy = (PfnFfxDestroyContext)plat_lib_sym(lib, "ffxDestroyContext");
     F.dispatch = (PfnFfxDispatch)plat_lib_sym(lib, "ffxDispatch");
     F.query = (PfnFfxQuery)plat_lib_sym(lib, "ffxQuery");
     F.configure = (PfnFfxConfigure)plat_lib_sym(lib, "ffxConfigure");
     if (!F.create || !F.destroy || !F.dispatch) {
-        rt_log("vk: FSR off: %s has no ffxCreateContext, ffxDestroyContext or ffxDispatch", path);
+        rt_log("vk: FSR: %s has no ffxCreateContext, ffxDestroyContext or ffxDispatch", path);
+        F.api = API_NONE;
         return 0;
     }
     F.dev.vkDevice = c->device;
     F.dev.vkPhysicalDevice = c->phys;
     F.dev.vkDeviceProcAddr = device_proc;
+    rt_log("vk: FSR from %s (%s)", path, F.api == API_LOADER ? "AMD FSR SDK 2.x" : "FidelityFX SDK 1.1.4");
+    return 1;
+}
+
+// What every path needs of the device besides the API
+static int device_ok(VkCtx *c) {
     VkFormatProperties fp;
     vkGetPhysicalDeviceFormatProperties(c->phys, PICTURE_FORMAT, &fp);
+    return (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) &&
+           vkGetDeviceProcAddr(c->device, "vkCmdPushDescriptorSetKHR");
+}
+
+static int init(VkCtx *c) {
+    F.tried = 1;
+    if (!init_library(c)) {
+        const char *why = "";
+        if (!vk_ffx_usable(c, &why)) {
+            rt_log("vk: FSR off: no library of AMD's is next to the executable, and for the built-in FSR 3.1 this device "
+                   "lacks %s", why);
+            return 0;
+        }
+        F.api = API_BUILTIN;
+        rt_log("vk: FSR 3.1.4 built into the game (%s)", builtin_only() ? "XC2_FSR_BUILTIN=1"
+               : "neither " FFX_LOADER " nor " FFX_LEGACY " is next to the executable");
+    }
     F.push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(c->device, "vkCmdPushDescriptorSetKHR");
-    if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) || !F.push) {
+    if (!device_ok(c)) {
         rt_log("vk: FSR off: this device cannot blit to the picture format or push descriptors");
         return 0;
     }
@@ -249,7 +278,6 @@ static int init(VkCtx *c) {
         rt_log("vk: FSR off: its pipeline could not be created");
         return 0;
     }
-    rt_log("vk: FSR from %s (%s)", path, F.api == API_LOADER ? "AMD FSR SDK 2.x" : "FidelityFX SDK 1.1.4");
     return F.ok = 1;
 }
 
@@ -295,9 +323,17 @@ static void forget_frames(void) {
     __atomic_add_fetch(&images_gen, 1, __ATOMIC_RELEASE);
 }
 
-static void free_all(VkCtx *c) {
+static int have_context(void) { return F.ctx || F.builtin_ctx; }
+
+static void free_context(void) {
     if (F.ctx) F.destroy(&F.ctx, NULL);
+    if (F.builtin_ctx) vk_ffx_up_destroy();
     F.ctx = NULL;
+    F.builtin_ctx = 0;
+}
+
+static void free_all(VkCtx *c) {
+    free_context();
     for (int i = 0; i < IMG_N; i++)
         for (int p = 0; p < 2; p++) free_image(c, i, p);
     F.w = F.h = F.ow = F.oh = 0;
@@ -348,33 +384,13 @@ static int ensure_input(VkCtx *c, uint32_t w, uint32_t h) {
     return 1;
 }
 
-// Both output images, the context, and the version the setting asks for. A changed setting (a new version, or auto
-// where a version was pinned) makes a new context.
-static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
-    const char *want = cfg_value("XC2_FSR_VERSION");
-    if (F.img[IMG_OUT][0] && F.img[IMG_OUT][1] && F.ow == w && F.oh == h && !strcmp(want, F.pinned)) return 1;
-    if (F.ctx) {
-        wait_idle(c);
-        F.destroy(&F.ctx, NULL);
-        F.ctx = NULL;
-    } else if (F.img[IMG_OUT][0]) {
-        wait_idle(c);
+// The upscaler's context for an output of w x h and the version want (XC2_FSR_VERSION); F.version gets what it is.
+static int make_context(uint32_t w, uint32_t h, const char *want) {
+    if (F.api == API_BUILTIN) {
+        F.builtin_ctx = vk_ffx_up_create(vk_ctx(), F.w, F.h, w, h);
+        snprintf(F.version, sizeof F.version, "3.1.4");
+        return F.builtin_ctx;
     }
-    forget_frames();   // frame generation must not read the images freed here
-    for (int p = 0; p < 2; p++) free_image(c, IMG_OUT, p);
-    F.ow = F.oh = 0;
-    F.pinned[0] = 0;
-    for (int p = 0; p < 2; p++)
-        if (!make_image(c, IMG_OUT, p, w, h)) {
-            // Off for the run, as a failed context is. Left on, the stretch that calls this would retry the allocation after
-            // every resolve, each retry waiting for the GPU, with the jittered picture on screen; note_picture has already
-            // reset the miss counter, so MAX_MISSES would never turn FSR off.
-            rt_log("vk: FSR off: the output images (%ux%u) could not be created", w, h);
-            free_image(c, IMG_OUT, 0);
-            free_image(c, IMG_OUT, 1);
-            F.ok = 0;
-            return 0;
-        }
     struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
                                              .deviceContext = F.dev};
     struct ffxCreateBackendVKDesc_DEPRECATED backend_old = {
@@ -409,13 +425,7 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
         if (F.api != API_LOADER || !pick_version(3, &ov.versionId)) break;
         have_pin = 1;
     }
-    if (r != FFX_API_RETURN_OK) {
-        rt_log("vk: FSR off: no upscaler context could be created");
-        F.ok = 0;
-        return 0;
-    }
-    F.pinned[0] = 0;
-    snprintf(F.pinned, sizeof F.pinned, "%s", want);
+    if (r != FFX_API_RETURN_OK) return 0;
     F.version[0] = 0;
     if (F.api == API_LOADER && F.query) {
         struct ffxQueryGetProviderVersion pv = {.header = {.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION}};
@@ -430,6 +440,44 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
         if (F.query(&F.ctx, &q.header) == FFX_API_RETURN_OK)
             rt_log("vk: FSR %s holds %.1f MiB of GPU memory", F.version, mem.totalUsageInBytes / 1048576.0);
     }
+    return 1;
+}
+
+// Both output images, the context, and the version the setting asks for. A changed setting (a new version, or auto
+// where a version was pinned) makes a new context.
+static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
+    const char *want = cfg_value("XC2_FSR_VERSION");
+    if (F.img[IMG_OUT][0] && F.img[IMG_OUT][1] && F.ow == w && F.oh == h && !strcmp(want, F.pinned)) return 1;
+    if (have_context() || F.img[IMG_OUT][0]) wait_idle(c);
+    free_context();
+    forget_frames();   // frame generation must not read the images freed here
+    for (int p = 0; p < 2; p++) free_image(c, IMG_OUT, p);
+    F.ow = F.oh = 0;
+    F.pinned[0] = 0;
+    for (int p = 0; p < 2; p++)
+        if (!make_image(c, IMG_OUT, p, w, h)) {
+            // Off for the run, as a failed context is. Left on, the stretch that calls this would retry the allocation after
+            // every resolve, each retry waiting for the GPU, with the jittered picture on screen; note_picture has already
+            // reset the miss counter, so MAX_MISSES would never turn FSR off.
+            rt_log("vk: FSR off: the output images (%ux%u) could not be created", w, h);
+            free_image(c, IMG_OUT, 0);
+            free_image(c, IMG_OUT, 1);
+            F.ok = 0;
+            return 0;
+        }
+    int made = make_context(w, h, want);
+    const char *why = "";
+    if (!made && F.api != API_BUILTIN && vk_ffx_usable(c, &why)) {
+        rt_log("vk: FSR: AMD's library made no context; the built-in FSR 3.1 takes its place");
+        F.api = API_BUILTIN;
+        made = make_context(w, h, want);
+    }
+    if (!made) {
+        rt_log("vk: FSR off: no upscaler context could be created");
+        F.ok = 0;
+        return 0;
+    }
+    snprintf(F.pinned, sizeof F.pinned, "%s", want);
     F.ow = w;
     F.oh = h;
     F.logged = 0;
@@ -614,8 +662,17 @@ static struct FfxApiResource resource(int i, int p, uint32_t usage, uint32_t sta
                                                    .depth = 1, .mipCount = 1, .usage = usage}};
 }
 
-// The upscaler's dispatch for the frame F describes. reset clears its history (a camera cut, or the first frame).
-static ffxReturnCode_t dispatch_upscale(VkCommandBuffer cb, int reset, float ms) {
+// The upscaler's dispatch for the frame F describes. reset clears its history (a camera cut, or the first frame). 1 on
+// success.
+static int dispatch_upscale(VkCommandBuffer cb, int reset, float ms) {
+    if (F.api == API_BUILTIN) {
+        VkFfxUpscale u = {.colour = F.img[IMG_COLOUR][0], .depth = F.img[IMG_DEPTH][F.par], .motion = F.img[IMG_MOTION][F.par],
+                          .out = F.img[IMG_OUT][F.par], .w = F.w, .h = F.h, .rw = F.rw, .rh = F.rh, .ow = F.ow, .oh = F.oh,
+                          .jitter = {F.jitter[0], F.jitter[1]}, .near_z = F.near_z, .far_z = F.far_z, .fov = F.fov,
+                          .frame_ms = ms, .reset = reset, .fence = vk_exec_recording_fence()};
+        rec_drain();   // as below
+        return vk_ffx_up_dispatch(cb, &u);
+    }
     struct ffxDispatchDescUpscale d = {
         .header = {.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE}, .commandList = cb,
         .color = resource(IMG_COLOUR, 0, FFX_API_RESOURCE_USAGE_READ_ONLY, FFX_API_RESOURCE_STATE_COMPUTE_READ),
@@ -627,14 +684,16 @@ static ffxReturnCode_t dispatch_upscale(VkCommandBuffer cb, int reset, float ms)
         .cameraFar = F.far_z, .cameraFovAngleVertical = F.fov, .viewSpaceToMetersFactor = 1.0f,
         .flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB};
     rec_drain();   // the library's calls come after everything queued so far, on this thread
-    return F.dispatch(&F.ctx, &d.header);
+    ffxReturnCode_t r = F.dispatch(&F.ctx, &d.header);
+    if (r != FFX_API_RETURN_OK) rt_log("vk: FSR: ffxDispatch returned %u", r);
+    return r == FFX_API_RETURN_OK;
 }
 
 // Step 3: the tone-mapped picture to the output size, over what the stretch drew
 static void record_upscale(VkExec *ex) {
     const VkExecTarget *out = &ex->color[0];
     VkCommandBuffer cb = ex->cb;
-    if (!F.ctx || !out->image || ex->fbl_mask & 1) return;
+    if (!have_context() || !out->image || ex->fbl_mask & 1) return;
     uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), now = kern_now_ns();
     // A gap means the setting was off or the game drew no scene for a while: the history would not match the picture
     int reset = !F.last_frame || frame > F.last_frame + 2;
@@ -651,9 +710,8 @@ static void record_upscale(VkExec *ex) {
     copy_picture(cb, F.tone, F.img[IMG_COLOUR][0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, NULL);
     image_layout(cb, F.img[IMG_COLOUR][0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     image_layout(cb, F.img[IMG_OUT][F.par], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-    ffxReturnCode_t r = dispatch_upscale(cb, reset, ms);
-    if (r != FFX_API_RETURN_OK) {
-        rt_log("vk: FSR off: ffxDispatch returned %u", r);
+    if (!dispatch_upscale(cb, reset, ms)) {
+        rt_log("vk: FSR off: the upscale could not be recorded");
         F.ok = 0;
         return;
     }
@@ -759,8 +817,8 @@ static float half_to_float(uint16_t h) {
     return s ? -v : v;
 }
 
-// --probe-fsr (host.h): creates a 1280x720 -> 1920x1080 context from the library next to the executable, dispatches two
-// frames of a flat colour and checks the upscaled result is that colour. The provider version the API selected (FSR
+// --probe-fsr (host.h): creates a 1280x720 -> 1920x1080 context from the library next to the executable (without one, or
+// with XC2_FSR_BUILTIN=1, the built-in one), dispatches two frames of a flat colour and checks the upscaled result is that colour. The provider version the API selected (FSR
 // Upscaling 4.1.2 on Radeon RX 6000 and newer with a new enough driver, FSR 3.1.6 elsewhere) goes to the log and to the
 // output. Needs no game files.
 int probe_fsr(void) {
@@ -777,7 +835,7 @@ int probe_fsr(void) {
     int rc = 1;
     if (!F.tried) init(c);
     if (!F.ok) {
-        printf("probe-fsr: skipped (no FSR library next to the executable)\n");
+        printf("probe-fsr: skipped (no FSR library next to the executable and no built-in FSR on this device)\n");
         vk_shutdown();
         return 0;
     }
@@ -822,9 +880,9 @@ int probe_fsr(void) {
         image_layout(cb, F.img[IMG_MOTION][F.par], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         image_layout(cb, F.img[IMG_OUT][F.par], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
         for (int i = 0; i < 2; i++)   // two frames: the second one exercises the history
-            if (dispatch_upscale(cb, i == 0, 16.7f) != FFX_API_RETURN_OK) {
+            if (!dispatch_upscale(cb, i == 0, 16.7f)) {
                 vkEndCommandBuffer(cb);
-                printf("probe-fsr: FAILED (ffxDispatch returned an error)\n");
+                printf("probe-fsr: FAILED (the upscale could not be recorded)\n");
                 goto out;
             }
         image_layout(cb, F.img[IMG_OUT][F.par], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
