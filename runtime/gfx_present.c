@@ -60,10 +60,14 @@ void gfx_window_focus_changed(int in) {
 // done.
 void gfx_window_closed(void) { gfx_exit_saved("window closed"); }
 
-// Ends the process after the saves and the profile are written: the window close and XC2_STOP_FRAME both end this way.
+static void shot_drain(void);
+
+// Ends the process after the saves, the screenshots already taken and the profile are written: the window close and
+// XC2_STOP_FRAME both end this way.
 void gfx_exit_saved(const char *why) {
     rt_log("gfx: %s; exiting", why);
     fs_save_flush();
+    shot_drain();
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers
     plat_exit(0);
@@ -119,19 +123,29 @@ static uint32_t g_flip_idx;
 
 // ---- screenshots (gfx_screenshot, the gamepad's Capture button). The next present copies its picture, as it lands in
 // the window but without black bars or the menu overlay, into a host buffer of its own and waits for the copy (the
-// press costs that wait and a memcpy); a detached thread turns the pixels into RGB and writes them compressed (png.c) to
-// <exe dir>/screenshots/xc2-YYYYMMDD-HHMMSS.png. A press that finds no present within SHOT_STALE_NS (a minimised
-// window) is dropped, and so is one while SHOT_MAX shots are still being written. The buffer goes away once its copy
-// is done; one whose present did not complete stays until the device is idle (free_shot), as the GPU may still write it.
+// press costs that wait and a memcpy). The writer thread then turns the pixels into RGB and writes them compressed
+// (png.c) to <exe dir>/screenshots/xc2-YYYYMMDD-HHMMSS.png, one shot after the other. It is one thread for the process:
+// a detached thread per shot would leave its PlatThread record behind, and on Linux its signal stack. The present that
+// takes a press drops it when the press is older than SHOT_STALE_NS (a minimised window) or SHOT_MAX shots are still
+// waiting to be written; presses before the same present make one shot. The buffer goes away once its copy is done; one
+// whose present did not complete stays until that fence slot signals or the device is idle, as the GPU may still write
+// it. gfx_exit_saved waits up to SHOT_EXIT_MS for the shots already taken.
 #define SHOT_MAX 2
 #define SHOT_STALE_NS 2000000000ull
+#define SHOT_EXIT_MS 5000
 typedef struct { uint8_t *px; int w, h, bgra; char path[PLAT_PATH_MAX + 64]; } ShotJob;
-static volatile int64_t g_shot_req;    // plat_now_ns of a press waiting for a present, 0 none
-static volatile int32_t g_shot_busy;   // shots taken whose file is not written yet
+static volatile int64_t g_shot_req;    // plat_now_ns + 1 of a press waiting for a present, 0 none
+static volatile int32_t g_shot_busy;   // shots taken whose file is not written yet, at most SHOT_MAX
 static ShotJob *g_shot;                // this present's (g_pl)
-static VkBuffer g_shot_buf;
+static VkBuffer g_shot_buf;            // this present's, or one a present did not complete (g_shot_stale_slot)
 static VmaAllocation g_shot_alloc;
 static void *g_shot_ptr;
+static int g_shot_stale_slot = -1;     // the fence slot whose submission may still write g_shot_buf; -1 none (g_pl)
+static PlatMutex g_shot_lock = PLAT_MUTEX_INIT;   // the writer thread's queue
+static PlatCond g_shot_cond = PLAT_COND_INIT;
+static ShotJob *g_shot_q[SHOT_MAX];
+static int g_shot_qn;                  // jobs queued
+static int g_shot_writer;              // the writer thread: 0 not started, 1 running, -1 could not start
 
 // ---- XC2_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
@@ -297,12 +311,14 @@ static void free_capture(void) {
     g_cap_valid = 0;
 }
 
-// A screenshot buffer whose present did not complete (shot_finish); only once the device is idle.
+// The screenshot buffer, once no submission can write it: its copy completed, its fence slot signalled since, or the
+// device is idle.
 static void free_shot(void) {
     VkCtx *c = vk_ctx();
     if (g_shot_buf && c) vmaDestroyBuffer(c->vma, g_shot_buf, g_shot_alloc);
     g_shot_buf = VK_NULL_HANDLE;
     g_shot_ptr = NULL;
+    g_shot_stale_slot = -1;
 }
 
 // Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
@@ -569,11 +585,15 @@ static void save_capture(const char *path) {
     rt_log("gfx: menu test shot %s (%dx%d)", path, g_cap_w, g_cap_h);
 }
 
-void gfx_screenshot(void) { plat_xchg64(&g_shot_req, (int64_t)(plat_now_ns() | 1)); }
+void gfx_screenshot(void) {
+    if (plat_xchg64(&g_shot_req, (int64_t)plat_now_ns() + 1))
+        rt_log("gfx: screenshot press merged with one still waiting for a frame");
+}
 
 // <exe dir>/screenshots/xc2-<local date>-<time>.png, numbered -2, -3, ... after a name already taken: an earlier press
-// in the same second (whose file may not be written yet) or a file of an earlier run. g_pl serialises the callers.
-static void shot_path(char *out, size_t cap) {
+// in the same second (whose file may not be written yet) or a file of an earlier run. 0 when the numbers up to 999 are
+// all taken. g_pl serialises the callers.
+static int shot_path(char *out, size_t cap) {
     static char dir[PLAT_PATH_MAX], sep = '/', last[32];
     static int seq;
     if (!dir[0]) {
@@ -592,17 +612,16 @@ static void shot_path(char *out, size_t cap) {
              tm.tm_min, tm.tm_sec);
     seq = strcmp(stamp, last) ? 1 : seq + 1;
     snprintf(last, sizeof last, "%s", stamp);
-    for (;; seq++) {
+    for (; seq <= 999; seq++) {
         if (seq == 1) snprintf(out, cap, "%s%cxc2-%s.png", dir, sep, stamp);
         else snprintf(out, cap, "%s%cxc2-%s-%d.png", dir, sep, stamp, seq);
-        if (!plat_file_exists(out) || seq >= 999) break;
+        if (!plat_file_exists(out)) return 1;
     }
+    return 0;
 }
 
-// The screenshot thread: BGRA or RGBA to RGB in place (the swapchain's alpha means nothing), then the file.
-static void shot_main(void *arg) {
-    ShotJob *j = arg;
-    plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);
+// One shot on the writer thread: BGRA or RGBA to RGB in place (the swapchain's alpha means nothing), then the file.
+static void shot_write(ShotJob *j) {
     uint64_t t0 = plat_now_ns();
     size_t n = (size_t)j->w * (size_t)j->h;
     int ri = j->bgra ? 2 : 0, bi = j->bgra ? 0 : 2;
@@ -613,14 +632,50 @@ static void shot_main(void *arg) {
     char dir[sizeof j->path];
     snprintf(dir, sizeof dir, "%s", j->path);
     char *cut = strrchr(dir, '/'), *cut2 = strrchr(dir, '\\');
-    if (cut2 > cut) cut = cut2;
+    if (cut2 && (!cut || cut2 > cut)) cut = cut2;   // the last separator of either kind
     if (cut) *cut = 0, plat_file_mkdir_p(dir);
     if (png_save(j->path, j->px, (uint32_t)j->w, (uint32_t)j->h, 3, 1))
         rt_log("gfx: screenshot %s (%dx%d, %lld KB, %llu ms)", j->path, j->w, j->h, (long long)(plat_file_size(j->path) >> 10),
                (unsigned long long)((plat_now_ns() - t0) / 1000000u));
-    free(j->px);
-    free(j);
-    plat_dec32(&g_shot_busy);
+}
+
+// The writer thread: the queued shots in the order they were taken.
+static void shot_writer(void *arg) {
+    (void)arg;
+    plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);
+    for (;;) {
+        plat_mutex_lock(&g_shot_lock);
+        while (!g_shot_qn) plat_cond_wait(&g_shot_cond, &g_shot_lock);
+        ShotJob *j = g_shot_q[0];
+        g_shot_qn--;
+        memmove(g_shot_q, g_shot_q + 1, sizeof *g_shot_q * (size_t)g_shot_qn);
+        plat_mutex_unlock(&g_shot_lock);
+        shot_write(j);
+        free(j->px);
+        free(j);
+        plat_dec32(&g_shot_busy);
+    }
+}
+
+// Hands j to the writer thread, which the first shot starts. 0 when that thread could not start.
+static int shot_queue(ShotJob *j) {
+    plat_mutex_lock(&g_shot_lock);
+    if (!g_shot_writer) g_shot_writer = plat_thread_spawn(shot_writer, NULL, "screenshot", 0) ? 1 : -1;
+    int ok = g_shot_writer > 0 && g_shot_qn < SHOT_MAX;   // g_shot_busy keeps the queue within SHOT_MAX
+    if (ok) {
+        g_shot_q[g_shot_qn++] = j;
+        plat_cond_signal(&g_shot_cond);
+    }
+    plat_mutex_unlock(&g_shot_lock);
+    return ok;
+}
+
+static void shot_drain(void) {
+    int n = plat_cas32(&g_shot_busy, 0, 0);
+    if (!n) return;
+    rt_log("gfx: waiting for %d screenshot%s to be written", n, n > 1 ? "s" : "");
+    for (uint64_t end = plat_now_ms() + SHOT_EXIT_MS; plat_cas32(&g_shot_busy, 0, 0) > 0 && plat_now_ms() < end;)
+        plat_sleep_ms(10);
 }
 
 // Present path (g_pl held), before recording the copy of the w x h picture: 1 when a press waits and this present can
@@ -628,7 +683,7 @@ static void shot_main(void *arg) {
 static int shot_begin(int w, int h) {
     int64_t req = plat_xchg64(&g_shot_req, 0);
     if (!req) return 0;
-    if (plat_now_ns() - (uint64_t)req > SHOT_STALE_NS) {
+    if (plat_now_ns() - ((uint64_t)req - 1) > SHOT_STALE_NS) {
         rt_log("gfx: screenshot dropped: no frame was presented within %llu s of the press",
                (unsigned long long)(SHOT_STALE_NS / 1000000000u));
         return 0;
@@ -644,7 +699,13 @@ static int shot_begin(int w, int h) {
     }
     if (plat_inc32(&g_shot_busy) > SHOT_MAX) {
         plat_dec32(&g_shot_busy);
-        rt_log("gfx: screenshot dropped: %d are still being written", SHOT_MAX);
+        rt_log("gfx: screenshot dropped: %d are still waiting to be written", SHOT_MAX);
+        return 0;
+    }
+    char path[sizeof g_shot->path];
+    if (!shot_path(path, sizeof path)) {
+        plat_dec32(&g_shot_busy);
+        rt_log("gfx: screenshot dropped: 999 names for this second are taken");
         return 0;
     }
     VkCtx *c = vk_ctx();
@@ -666,31 +727,31 @@ static int shot_begin(int w, int h) {
     }
     g_shot_ptr = info.pMappedData;
     j->w = w, j->h = h, j->bgra = bgra;
-    shot_path(j->path, sizeof j->path);
+    memcpy(j->path, path, sizeof path);
     g_shot = j;
     return 1;
 }
 
-// Present path, after the submission (submitted 0: it failed, the copy never runs): waits for the copy, takes the
-// pixels and starts the thread that writes them.
-static void shot_finish(VkFence fence, int submitted) {
+// Present path, after the submission of fence slot slot (submitted 0: it failed, the copy never runs): waits for the
+// copy, takes the pixels and queues them for the writer thread.
+static void shot_finish(unsigned slot, int submitted) {
     VkCtx *c = vk_ctx();
     ShotJob *j = g_shot;
     g_shot = NULL;
-    VkResult r = submitted ? vkWaitForFences(c->device, 1, &fence, VK_TRUE, 5000000000ull) : VK_SUCCESS;
-    if (submitted && r == VK_SUCCESS) {
-        vmaInvalidateAllocation(c->vma, g_shot_alloc, 0, VK_WHOLE_SIZE);
-        memcpy(j->px, g_shot_ptr, (size_t)j->w * (size_t)j->h * 4);
-    }
-    if (r == VK_SUCCESS) free_shot();   // else the GPU may still write it: free_shot runs once the device is idle
-    if (submitted && r == VK_SUCCESS) {
-        if (plat_thread_spawn(shot_main, j, "screenshot", 0)) return;
-        rt_log("gfx: screenshot dropped: no thread to write it");
-    } else if (submitted) {
+    VkResult r = submitted ? vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) : VK_SUCCESS;
+    const char *why = NULL;
+    if (!submitted) why = "the present was not submitted";
+    else if (r != VK_SUCCESS) why = "the present did not complete";
+    else if (vmaInvalidateAllocation(c->vma, g_shot_alloc, 0, VK_WHOLE_SIZE) != VK_SUCCESS) why = "its copy could not be read";
+    else memcpy(j->px, g_shot_ptr, (size_t)j->w * (size_t)j->h * 4);
+    if (r == VK_SUCCESS) free_shot();
+    else g_shot_stale_slot = (int)slot;   // the GPU may still write it: present_image frees it when this slot signals
+    if (!why && shot_queue(j)) return;
+    if (r != VK_SUCCESS) {
         vk_device_fault_report(r);
-        rt_log("gfx: screenshot dropped: the present did not complete (%d)", (int)r);
+        rt_log("gfx: screenshot dropped: %s (%d)", why, (int)r);
     } else {
-        rt_log("gfx: screenshot dropped: the present was not submitted");
+        rt_log("gfx: screenshot dropped: %s", why ? why : "the writer thread did not start");
     }
     free(j->px);
     free(j);
@@ -749,6 +810,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         }
     }
     perf_span(PERF_SPAN_PRES_FENCE, fw0);
+    if (g_shot_stale_slot == (int)slot) free_shot();   // that slot's submission is done: no copy can write it now
     uint32_t idx = 0;
     uint64_t aq0 = perf_begin();
     VkResult r = vk_fg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
@@ -919,7 +981,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         g_cap_valid = 1;
         if (menu_shot) save_capture(menu_shot);
     }
-    if (shot) shot_finish(g_fence[slot], r == VK_SUCCESS);
+    if (shot) shot_finish(slot, r == VK_SUCCESS);
 out:
     plat_rmutex_unlock(&g_pl);
 }

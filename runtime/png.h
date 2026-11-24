@@ -10,6 +10,7 @@
 // memory runs out or the picture is empty or too large for one IDAT.
 uint8_t *png_encode(const uint8_t *px, uint32_t w, uint32_t h, int channels, int compress, size_t *size);
 
-// png_encode into the file path (UTF-8, either separator). 1 on success; on failure one rt_log line says why, a
-// partly written file is deleted, and 0 is returned.
+// png_encode into the file path (UTF-8, the platform's separators) through plat_file_write_atomic: path holds the whole
+// picture or what it held before, never part of one, and a read-only file there stays. 1 on success; on failure one
+// rt_log line says why and 0 is returned.
 int png_save(const char *path, const uint8_t *px, uint32_t w, uint32_t h, int channels, int compress);

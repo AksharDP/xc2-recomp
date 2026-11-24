@@ -393,7 +393,9 @@ static uint32_t adler32(const uint8_t *p, size_t n) {
 
 uint8_t *png_encode(const uint8_t *px, uint32_t w, uint32_t h, int channels, int compress, size_t *size) {
     if (!w || !h || (channels != 3 && channels != 4)) return NULL;
-    uint64_t stride = (uint64_t)w * (uint32_t)channels, raw_n = (stride + 1) * h;
+    uint64_t stride = (uint64_t)w * (uint32_t)channels;
+    if (stride + 1 > 0x7fffffffu / h) return NULL;   // larger than one IDAT, checked before the product can wrap
+    uint64_t raw_n = (stride + 1) * h;
     // No block is written larger than its bytes as stored blocks: 42 bits per 65535 bytes and per block, and a block of
     // BLOCK_SYMS symbols covers at least that many bytes. With the zlib header, the checksum and the final padding the
     // stream stays well within this; one IDAT chunk holds at most 2^31 - 1 bytes.
@@ -471,11 +473,8 @@ int png_save(const char *path, const uint8_t *px, uint32_t w, uint32_t h, int ch
         rt_log("png: cannot encode %s (%ux%u): out of memory", path, w, h);
         return 0;
     }
-    int ok = plat_file_write(path, f, n);
+    int ok = plat_file_write_atomic(path, f, n);   // a temporary file, renamed over path once complete
     free(f);
-    if (!ok) {
-        plat_file_delete(path);
-        rt_log("png: cannot write %s", path);
-    }
+    if (!ok) rt_log("png: cannot write %s", path);
     return ok;
 }
