@@ -73,6 +73,12 @@ DISPATCHED_OBJECTS = [
      'libvpx run-time CPU detection (vpx_dsp_rtcd / vp9_rtcd: x86_simd_caps); an AVX kernel object of libvpx'),
 ]
 MAP_ROW = re.compile(r'^([0-9a-f]{8,16}) ([0-9a-f]{8,16})\s+\d+\s{3,}(\S.*?):\((\.text[^)]*)\)\s*$')
+# What zstd's BMI2_TARGET_ATTRIBUTE, __attribute__((target("lzcnt,bmi,bmi2"))), lets the compiler emit: BMI1, BMI2, LZCNT
+BMI_LZCNT = {'andn', 'bextr', 'blsi', 'blsmsk', 'blsr', 'bzhi', 'mulx', 'pdep', 'pext', 'rorx', 'sarx', 'shlx', 'shrx',
+             'lzcnt'}
+# The decoder objects of MSYS2's libzstd.a (CMake names them <source>.c.obj) that hold BMI2_TARGET_ATTRIBUTE functions
+ZSTD_BMI2_OBJECTS = {'entropy_common.c.obj', 'fse_decompress.c.obj', 'huf_decompress.c.obj',
+                     'zstd_decompress_block.c.obj'}
 
 
 class LinkMap:
@@ -169,10 +175,23 @@ def reviewed_dispatch(name, obj, mnemonics):
     vpx_idct32x32_{34,135}_add_ssse3, selected by vpx_dsp_rtcd. GCC random.cc random_device::_M_init tests CPUID
     leaf 1 ECX bit 30 and leaf 7 EBX bit 18 before selecting the RDRAND and RDSEED functions; the linked code was
     also checked. Object and opcode restrictions prevent an unrelated function or future SIMD code being excused.
+
+    MSYS2's libzstd.a (mingw-w64-ucrt-x86_64-zstd 1.5.7, the package tools/make_release.py pins) is GCC code without
+    function sections, and the linked executable keeps no symbol for its static functions, so the disassembly names
+    them after the global symbol before them and only the map's object name is left. In the four ZSTD_BMI2_OBJECTS
+    the BMI1/BMI2/LZCNT code is all in functions with BMI2_TARGET_ATTRIBUTE: the *_bmi2 bodies (FSE_readNCount_body,
+    HUF_readStats_body, FSE_decompress_wksp_body, HUF_decompress{1,4}X{1,2}_usingDTable_internal,
+    ZSTD_buildFSETable_body, ZSTD_decompressSequences{,SplitLitBuffer,Long}) and HUF_FAST_BMI2_ATTRS
+    HUF_decompress4X{1,2}_usingDTable_internal_fast{,_c_loop}. Their callers reach them only when the bmi2 argument
+    or HUF_flags_bmi2 is set, which comes from dctx->bmi2 = ZSTD_cpuSupportsBmi2() (zstd_decompress.c
+    ZSTD_initDCtx_internal); every other caller passes 0. Running this script on the archive itself lists those local
+    names. The check tests BMI1 and BMI2; LZCNT comes with them on every processor that has BMI2.
     """
     ops = {m if m == 'pmulhrsw' else m[:-1] if m[-1:] in ('b', 'w', 'l', 'q') else m for m in mnemonics}
     if not ops:
         return None
+    if obj in ZSTD_BMI2_OBJECTS and ops <= BMI_LZCNT:
+        return 'zstd run-time BMI2 detection (ZSTD_cpuSupportsBmi2); BMI2_TARGET_ATTRIBUTE code of a libzstd.a decoder'
     if obj in ('huf_decompress.o', 'huf_decompress_amd64.o') and re.fullmatch(
             r'_?HUF_decompress4X[12]_usingDTable_internal_fast(?:_(?:c|asm)_loop)?', name):
         if ops <= {'shlx', 'shrx', 'andn', 'mulx'}:

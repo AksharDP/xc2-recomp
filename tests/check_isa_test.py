@@ -1,4 +1,5 @@
 """Instruction boundaries used to audit baseline and v2 CPU builds."""
+import json
 from pathlib import Path
 import sys
 import shutil
@@ -28,6 +29,9 @@ class InstructionLevelTest(unittest.TestCase):
             ('_HUF_decompress4X2_usingDTable_internal_fast_asm_loop', 'huf_decompress_amd64.o', {'shlxq'}),
             ('idct32_135_8x32_ssse3', 'inv_txfm_ssse3.c.o', {'pmulhrsw'}),
             ('_ZNSt12_GLOBAL__N_1L12__x86_rdrandEPv', 'random.o', {'rdrandl'}),
+            # zstd's static *_bmi2 functions carry the name of whatever global precedes them in the executable
+            ('vpx_tree_merge_probs', 'fse_decompress.c.obj', {'shrx', 'shlx', 'andn', 'bzhi', 'lzcnt'}),
+            ('ZSTD_decompressBlock', 'huf_decompress.c.obj', {'shlxq', 'shrxq', 'lzcntl'}),
         ]
         for name, obj, ops in cases:
             with self.subTest(name=name):
@@ -36,6 +40,53 @@ class InstructionLevelTest(unittest.TestCase):
                 self.assertIsNone(reviewed_dispatch(name, obj, ops | {'movddup'}))
         self.assertIsNone(reviewed_dispatch('ZSTD_buildFSETable', 'huf_decompress.o', {'shlxq'}))
         self.assertIsNone(reviewed_dispatch('_ZNSt11range_errorD2Ev', 'random.o', {'rdrandl'}))
+
+    def test_zstd_objects_excuse_bmi_only(self):
+        # BMI2_TARGET_ATTRIBUTE is lzcnt,bmi,bmi2: AVX, MOVBE and ADX in these objects are not behind zstd's check
+        for ops in ({'shlx', 'vpaddd'}, {'shrx', 'movbe'}, {'adcx'}, {'vpbroadcastd'}):
+            with self.subTest(ops=ops):
+                self.assertIsNone(reviewed_dispatch('HUF_decompress4X_hufOnly_wksp', 'entropy_common.c.obj', ops))
+        # Other zstd objects hold no BMI2_TARGET_ATTRIBUTE decoder code (the encoder's are not linked)
+        for obj in ('zstd_decompress.c.obj', 'huf_compress.c.obj', 'zstd_compress_sequences.c.obj', 'libzstd.a'):
+            with self.subTest(obj=obj):
+                self.assertIsNone(reviewed_dispatch('ZSTD_decompressMultiFrame', obj, {'shlx'}))
+        self.assertIsNotNone(reviewed_dispatch('x', 'zstd_decompress_block.c.obj', {'blsr', 'pdep', 'rorx'}))
+
+    def test_linked_static_function_is_attributed_to_its_object(self):
+        """A static function the executable keeps no symbol for: the map's object decides, not the label."""
+        cc = Path(r'C:\msys64\ucrt64\bin\clang.exe')
+        cc = str(cc) if cc.is_file() else shutil.which('clang')
+        objdump = find_objdump(None)
+        if not cc or not objdump:
+            self.skipTest('clang and objdump are needed for the linked scan')
+        # The instructions after each ret stand for a static function: with no symbol they disassemble under the
+        # global before them
+        sources = {
+            'other.o': ('entry', 'shrx %rax, %rbx, %rcx'),
+            'huf_decompress.c.obj': ('HUF_entry', 'shlx %rax, %rbx, %rcx\n    lzcnt %rax, %rcx'),
+            'fse_decompress.c.obj': ('FSE_entry', 'shlx %rax, %rbx, %rcx\n    vpaddd %ymm0, %ymm1, %ymm2'),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            for obj, (name, body) in sources.items():
+                src = tmp / f'{name}.s'
+                src.write_text(f'.text\n.globl {name}\n{name}:\n    ret\n    {body}\n    ret\n')
+                subprocess.run([cc, '-c', '-target', 'x86_64-w64-windows-gnu', str(src), '-o', str(tmp / obj)],
+                               check=True, capture_output=True)
+            exe = tmp / 'fixture.exe'
+            link = subprocess.run([cc, '-target', 'x86_64-w64-windows-gnu', '-nostdlib', '-fuse-ld=lld',
+                                   '-Wl,-e,entry', f'-Wl,--Map={tmp / "fixture.map"}', *(str(tmp / o) for o in sources),
+                                   '-o', str(exe)], capture_output=True, text=True)
+            if link.returncode:
+                self.skipTest(f'clang could not link a PE fixture with lld: {link.stderr.strip()[-200:]}')
+            out = tmp / 'report.json'
+            run = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'tools' / 'check_isa.py'),
+                                  str(exe), '--level', '2', '--objdump', objdump, '--json', str(out)],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+            report = json.loads(out.read_text(encoding='utf-8'))[str(exe)]
+            self.assertEqual(set(report['dispatched']), {'HUF_entry [huf_decompress.c.obj]'})
+            self.assertEqual(set(report['unexpected']), {'entry [other.o]', 'FSE_entry [fse_decompress.c.obj]'})
 
     def test_baseline_sse2(self):
         for asm in ('movdqa %xmm0,%xmm1', 'paddq %xmm0,%xmm1', 'pextrw $0,%xmm0,%eax',
