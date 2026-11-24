@@ -261,7 +261,9 @@ def compile_lib(args, key, parts, added, first):
     folder = args.cache / 'mods'
     obj = folder / 'obj'
     obj.mkdir(parents=True, exist_ok=True)
-    flags = [*mod_abi.FLAGS, *([] if WIN else ['-fPIC']), *([f'--sysroot={args.sysroot}'] if args.sysroot else [])]
+    # tools/build_game.py compiles against the sysroot the same way
+    sysroot = ['--target=x86_64-linux-gnu', f'--sysroot={args.sysroot}'] if args.sysroot else []
+    flags = [*mod_abi.FLAGS, *([] if WIN else ['-fPIC']), *sysroot]
     units = [(f'part{p.number}', p.text()) for p in parts] + [('main', main_text(key, first, added, parts))]
     salt = f'{key}\0{" ".join(mod_abi.FLAGS)}\0'   # no folder: the AppImage's sysroot has another at each start
     hashes = [hashlib.sha256((salt + t).encode()).hexdigest()[:24] for _, t in units]
@@ -289,8 +291,7 @@ def compile_lib(args, key, parts, added, first):
             objects = list(ex.map(build, zip(units, hashes)))
         tmp = folder / f'{lib.stem}.{os.getpid()}.tmp'
         try:
-            run([args.clang, '-shared', '-fuse-ld=lld', *([f'--sysroot={args.sysroot}'] if args.sysroot else []),
-                 *objects, '-o', tmp], env)
+            run([args.clang, '-shared', '-fuse-ld=lld', *sysroot, *objects, '-o', tmp], env)
             os.replace(tmp, lib)
         finally:
             tmp.unlink(missing_ok=True)

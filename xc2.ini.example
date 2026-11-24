@@ -184,6 +184,8 @@
 # A language the game files have no text for gives way to en-US, or ja on the Japanese release (see game_langs).
 # locale = en-US
 # lang = en-US
+# Menu and performance overlay language: zh-Hans, zh-Hant, en, or unset (follows the system UI language).
+# menu_lang =
 # The languages the installed game files have text for, written by the setup: the Americas and Europe release has
 # en-US en-GB fr fr-CA de it es es-419 ko, the Japanese one ja zh-CN zh-TW. The settings menu offers only these.
 # game_langs = en-US en-GB fr fr-CA de it es es-419 ko

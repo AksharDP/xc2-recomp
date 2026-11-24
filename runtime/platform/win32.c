@@ -1100,6 +1100,19 @@ size_t plat_getenv(const char *name, char *out, size_t cap) {
 
 uint32_t plat_thread_id(void) { return GetCurrentThreadId(); }
 
+const char *plat_ui_language(void) {
+    static char tag[LOCALE_NAME_MAX_LENGTH];
+    static int done;
+    if (!done) {
+        wchar_t w[LOCALE_NAME_MAX_LENGTH];
+        LCID lcid = MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT);
+        int n = LCIDToLocaleName(lcid, w, LOCALE_NAME_MAX_LENGTH, 0);
+        if (n <= 0 || !WideCharToMultiByte(CP_UTF8, 0, w, -1, tag, sizeof tag, NULL, NULL)) tag[0] = 0;
+        done = 1;
+    }
+    return tag;
+}
+
 const char *plat_user_locale(void) {
     static char tag[LOCALE_NAME_MAX_LENGTH];
     static int done;
@@ -1114,7 +1127,9 @@ const char *plat_user_locale(void) {
     return tag;
 }
 
-int plat_font_path(const char *lang, char *out, size_t cap) {
+int plat_font_path(const char *lang, char *out, size_t cap, int *face) {
+    // Windows ships a file per variant, and face 0 is the UI face of each (Microsoft YaHei, Microsoft JhengHei).
+    *face = 0;
     static const struct { const char *lang; const wchar_t *files[3]; } fonts[] = {
         {"ja", {L"YuGothM.ttc", L"meiryo.ttc", L"msgothic.ttc"}},
         {"ko", {L"malgun.ttf", L"gulim.ttc", NULL}},

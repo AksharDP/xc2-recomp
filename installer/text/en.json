@@ -162,6 +162,8 @@
  "param.input.base": "base game",
  "param.input.update": "update",
  "param.input.keys": "keys",
+ "param.region.Americas and Europe": "Americas and Europe",
+ "param.region.Japan": "Japan",
  "launcher.title": "XC2 Setup",
  "launcher.python_missing": "The setup files are incomplete: the python folder next to XC2-Setup.exe is missing. Unpack the whole archive again and start XC2-Setup.exe from the unpacked folder.",
  "lang.ja": "Japanese",

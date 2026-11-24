@@ -223,6 +223,7 @@ change passes these, all run with `.venv`:
 | `tests\diff\func.py` | whole functions as the generator emits them, loops, jump tables and calls included (calls go to a stub that checks the registers at the call) | yes |
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention, on several threads; the ABA cases print "known", as the compare-and-swap monitor misses them | no |
+| `tests\ui_text_test.py` | the catalog of the settings menu and the overlay: English for every id, the same printf conversions in every language; lists the texts without a Chinese translation (CI runs it) | no |
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
