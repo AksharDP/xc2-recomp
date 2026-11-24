@@ -69,6 +69,7 @@ static void wait_until(uint64_t at) {
 
 static void present_main(void *arg) {
     (void)arg;
+    perf_core_thread(PCORE_PRESENT);
     flight_thread_self(0, "vk present");
     uint64_t last = 0, last_queued = 0;
     plat_mutex_lock(&pl);
@@ -288,6 +289,7 @@ static int frame_bound_on(void) {
 static void replay_main(void *arg) {
     (void)arg;
     perf_replay_thread();
+    perf_core_thread(PCORE_REPLAY);
     flight_thread_self(0, "vk replay");
     plat_mutex_lock(&rl);
     for (;;) {
@@ -423,6 +425,8 @@ void gfx_exit_log(void) {
 }
 
 static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
+    static _Thread_local int pcore;   // the game's render thread: the one that presents
+    if (!pcore) pcore = 1, perf_core_thread(PCORE_RENDER);
     vk_sync_start();
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);

@@ -2,7 +2,7 @@
 """Generate C for the ExeFS modules: function discovery, then parallel emission into chunked C files.
 
 Usage: gen.py --exefs build/extracted/v121/exefs --out generated/v121 [--modules main,subsdk0,sdk] [--jobs N]
-              [--limit N] [--chunk-fns N] [--chunk-bytes B] [--big-fn B] [--patches FILE]
+              [--limit N] [--chunk-fns N] [--chunk-bytes B] [--big-fn B] [--patches FILE] [--v-locals K] [--v-trust]
 
 Output, under --out:
   layout.h, layout.json        module bases (recomp/layout.py)
@@ -21,6 +21,11 @@ Emission runs in worker processes, one chunk per task. Each worker loads the mod
 time and resolves its jump tables (recomp/jumptables.py), so memory per worker does not grow with the module.
 Chunks are sized from a per-instruction estimate of the C they produce, so their names and contents only depend on
 the input; a chunk whose text did not change is not rewritten and keeps its mtime.
+
+With --v-locals K each function keeps its K most used V registers in C locals (recomp/vlocals.py,
+runtime/simd.h RT_VLOCALS), syncing them at calls and exits; 0 (the default) keeps every V register in the Cpu.
+TotK defaults to 8, but on XC2's issue112 field route K=8 measured ~6% slower (call-heavy functions: the call/exit
+syncs cost more than the locals save), so it is opt-in here. The differential harness passes at K=8 and K=0.
 """
 import argparse
 import json
@@ -49,6 +54,7 @@ import flags  # noqa: E402
 import jumptables  # noqa: E402
 import patches  # noqa: E402
 import regs  # noqa: E402
+import vlocals  # noqa: E402
 from check_content import GENERATED_MARKER  # noqa: E402
 from layout import layout, write as write_layout  # noqa: E402
 from lifter import hx  # noqa: E402
@@ -214,13 +220,16 @@ def partition(est, max_fns, max_bytes, big_fn):
 class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
-    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None):
+    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None,
+                 v_locals=vlocals.LOCALS, v_trust=False):
         self.mod = mod
         self.starts = starts
         self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
+        self.v_locals = v_locals   # recomp/vlocals.py: V registers per function in C locals (0: all in c->v)
+        self.v_trust = v_trust     # with v_locals: V8-V15 are not reloaded after a call
         self.uses_patches = False
         self.stats = Counter()
         self.unsupported = Counter()
@@ -507,6 +516,8 @@ class Emitter:
         else:
             out += [line for _, line in body]
         out.append('}')
+        if self.v_locals:
+            out = vlocals.rewrite('\n'.join(out), self.v_locals, self.v_trust, self.stats).split('\n')
         self.stats['functions'] += 1
         self.stats['instructions'] += len(insns)
         return out, refs
@@ -524,7 +535,8 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
-    return (header(f'{name} chunk {number:04d}') + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
+    vdef = '#define RT_VLOCALS 1\n' if emitter.v_locals else ''   # runtime/simd.h: the V-locals accessors
+    return (header(f'{name} chunk {number:04d}') + vdef + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
             + '\n\n'.join(body) + '\n')
 
 
@@ -646,8 +658,17 @@ def main():
     ap.add_argument('--no-callee-saved-trust', action='store_true',
                     help='reload X19-X29 and SP after every call too, instead of trusting AAPCS64 (slower; for '
                          'telling a broken callee from a generator bug)')
+    ap.add_argument('--v-locals', type=int, default=0,
+                    help=f'V registers per function kept in C locals, the K most used ones '
+                         f'(recomp/vlocals.py; default 0: all in the Cpu. TotK uses {vlocals.LOCALS}, but on XC2 '
+                         f'the issue112 field route measured ~6%% slower at K=8: its call-heavy functions pay more '
+                         f'in call/exit syncs than they save in locals. Opt in per scene/hardware.)')
+    ap.add_argument('--v-trust', action='store_true',
+                    help='with --v-locals: do not reload V8-V15 after a call (AAPCS64: a callee preserves their '
+                         'low 64 bits, and a conforming caller does not read their upper halves after the call)')
     args = ap.parse_args()
-    opts = {'reg_locals': args.reg_locals, 'callee_saved': not args.no_callee_saved_trust}
+    opts = {'reg_locals': args.reg_locals, 'callee_saved': not args.no_callee_saved_trust,
+            'v_locals': args.v_locals, 'v_trust': args.v_trust}
 
     t0 = time.perf_counter()
     mods = layout(args.exefs)
@@ -748,6 +769,7 @@ def main():
                 'largest_chunk_bytes': max((r['bytes'] for r in rs), default=0),
                 'chunks_written': sum(r['written'] for r in rs) + table_written,
                 'stale_chunks_removed': removed,
+                **{k: v for k, v in sorted(stats.items()) if k.startswith('v_')},   # --v-locals only
             },
             'unsupported_census': dict(unsupported.most_common(50)),
             'timings': {
