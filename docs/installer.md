@@ -173,10 +173,11 @@ A cancelled or failed setup resumes from the last finished step (`xc2-install.js
 
 ## Game languages
 
-The two releases have text in different languages, and the game shows a black screen in a language its files lack
-(GitHub issue 107): it turns the language into the folder of its text (`bdat/<folder>` in `bf2.arh`) without checking
-that the folder exists. `tools/xc2_languages.py` reads those folders, from the game files in place or from an
-extracted RomFS:
+The two releases have text in different languages, and the game shows a black screen in a language its files lack, such
+as Russian (GitHub issue 107): it turns the language into the folder of its text (`bdat/<folder>` in `bf2.arh`) without
+checking that the folder exists. Asked for Japanese or Chinese, which its 3.0.1 update lists in the NACP (the base lists
+en-GB, fr, de, es and it) but has no folders for, the Americas and Europe release shows its English text instead.
+`tools/xc2_languages.py` reads those folders, from the game files in place or from an extracted RomFS:
 
 | Release | Text folders | Languages offered |
 |---|---|---|
