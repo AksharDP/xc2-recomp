@@ -200,8 +200,8 @@ static int run_tool(void) {
 
 void modcode_prepare(void) {
     const char *e = cfg_get("XC2_MODS_BUILD");
-    if (!find_dir() || modcode_off()) return;
     if (!rt_mod_abi[0]) return;   // lifted before gen.py wrote patches.txt: no mod code
+    if (!find_dir() || modcode_off()) return;
     mods_scan();
     char path[PLAT_PATH_MAX + 128];
     int files = mods_exefs_files(), cheats = cheats_files(), pending = mods_exefs_pending() + cheats_pending();
@@ -306,5 +306,5 @@ const char *modcode_error(void) {
 
 int modcode_off(void) {
     const char *e = cfg_get("XC2_MODS_BUILD");
-    return e && !strcmp(e, "off");
+    return rt_mod_abi[0] && e && !strcmp(e, "off");
 }

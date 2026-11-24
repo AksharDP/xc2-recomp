@@ -323,7 +323,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_UNBUILT] = "Some code patches or code cheats of your mods could not be built and stay off. The game "
                                "tries again at its next start. The reason: %s",
     [UI_MENU_CHEATS_UNBUILT_OFF] = "Some code patches or code cheats of your mods are not built and stay off, because "
-                                   "xc2.ini has mods_build = off. Set it to auto and start the game again to build them.",
+                                   "mods_build is off (xc2.ini or XC2_MODS_BUILD). Set it to auto and start the game "
+                                   "again to build them.",
     [UI_MENU_CHEAT_CODE_DESC] = "Changes the game's code. Switches at once.",
     [UI_MENU_CHEAT_KEY_DESC] = "Changes the game's code while you hold %s. Switches at once.",
     [UI_MENU_CHEAT_DATA_DESC] = "Writes the game's memory every frame while it is on.",
@@ -630,7 +631,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_NONE] = "当前游戏版本没有外部作弊码。Mod 的作弊码应为位于其 cheats 目录下、以当前游戏 Build ID 命名的 Atmosphere 金手指文件：%s。添加后请重启游戏。",
     [UI_MENU_CHEATS_MOD] = "%s：%d 项作弊码",
     [UI_MENU_CHEATS_UNBUILT] = "部分 Mod 的代码补丁或代码作弊码无法编译，保持禁用。游戏下次启动时会重试。原因：%s",
-    [UI_MENU_CHEATS_UNBUILT_OFF] = "部分 Mod 的代码补丁或代码作弊码尚未编译，保持禁用，因为 xc2.ini 中设置了 mods_build = off。将其改为 auto 并重新启动游戏即可编译。",
+    [UI_MENU_CHEATS_UNBUILT_OFF] = "部分 Mod 的代码补丁或代码作弊码尚未编译，保持禁用，因为 mods_build 设为 off（xc2.ini 或 XC2_MODS_BUILD）。将其改为 auto 并重新启动游戏即可编译。",
     [UI_MENU_CHEAT_CODE_DESC] = "修改游戏代码。切换立即生效。",
     [UI_MENU_CHEAT_KEY_DESC] = "按住 %s 期间修改游戏代码。切换立即生效。",
     [UI_MENU_CHEAT_DATA_DESC] = "启用期间每帧写入游戏内存。",
@@ -931,7 +932,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_CHEATS_NONE] = "此遊戲版本沒有外部金手指。Mod 的金手指應放在其 cheats 資料夾內並以遊戲 Build ID 命名（%s）。新增後請重新啟動遊戲。",
     [UI_MENU_CHEATS_MOD] = "%s：%d 項金手指",
     [UI_MENU_CHEATS_UNBUILT] = "部分 Mod 的程式碼修補或程式碼金手指無法編譯，保持停用。遊戲下次啟動時會重試。原因：%s",
-    [UI_MENU_CHEATS_UNBUILT_OFF] = "部分 Mod 的程式碼修補或程式碼金手指尚未編譯，保持停用，因為 xc2.ini 中設定了 mods_build = off。將其改為 auto 並重新啟動遊戲即可編譯。",
+    [UI_MENU_CHEATS_UNBUILT_OFF] = "部分 Mod 的程式碼修補或程式碼金手指尚未編譯，保持停用，因為 mods_build 設為 off（xc2.ini 或 XC2_MODS_BUILD）。將其改為 auto 並重新啟動遊戲即可編譯。",
     [UI_MENU_CHEAT_CODE_DESC] = "修改遊戲程式碼。切換立即生效。",
     [UI_MENU_CHEAT_KEY_DESC] = "按住 %s 期間修改遊戲程式碼。切換立即生效。",
     [UI_MENU_CHEAT_DATA_DESC] = "開啟期間每幀寫入遊戲記憶體。",
