@@ -637,7 +637,7 @@ static void record_upscale(VkExec *ex) {
     }
     plat_mutex_lock(&status_lock);
     if (strcmp(status_version, F.version)) snprintf(status_version, sizeof status_version, "%s", F.version);
-    status_ns = now;
+    status_ns = kern_now_ns();   // not now: the first dispatch can take long enough to make that old
     plat_mutex_unlock(&status_lock);
     memory_barrier(cb);
     VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
