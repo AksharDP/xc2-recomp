@@ -933,8 +933,8 @@ static void probe_fonts(void) {
            (unsigned long long)size, path);
 }
 
-// The host catalog (ui_text.c): every menu id has English, Simplified Chinese and Traditional Chinese text, the
-// software keyboard has a row per game language (each Switch code of ov_system.c maps to one), and menu_text follows
+// The host catalog (ui_text.c): every menu id has English text (one without Chinese shows the English; which those
+// are, and that the formats agree, is tests/ui_text_test.py's to say, which CI runs), the software keyboard has a row per game language (each Switch code of ov_system.c maps to one), and menu_text follows
 // XC2_MENU_LANG.
 static void probe_menu_text(void) {
     // menu_text_lang reads XC2_MENU_LANG from the environment (or its XCX_ spelling) before the xc2.ini file, so the
@@ -947,10 +947,8 @@ static void probe_menu_text(void) {
     static const char *const langs[] = {"en", "ja", "fr", "de", "it", "es", "zh-Hans", "zh-Hant", "ko"};
     for (int id = UI_MENU_FIRST; id <= UI_MENU_LAST_ID; id++) {
         CHECK(ui_text_defined("en", (UiTextId)id) && *ui_text_in("en", (UiTextId)id), "menu text id %d lacks English", id);
-        CHECK(ui_text_defined("zh-Hans", (UiTextId)id) && *ui_text_in("zh-Hans", (UiTextId)id),
-              "menu text id %d lacks zh-Hans", id);
-        CHECK(ui_text_defined("zh-Hant", (UiTextId)id) && *ui_text_in("zh-Hant", (UiTextId)id),
-              "menu text id %d lacks zh-Hant", id);
+        CHECK(*ui_text_in("zh-Hans", (UiTextId)id) && *ui_text_in("zh-Hant", (UiTextId)id),
+              "menu text id %d is empty in a Chinese menu", id);
     }
     CHECK(!ui_text_defined("en", UI_TEXT_COUNT) && !*ui_text_in("en", UI_TEXT_COUNT), "an id past the catalog gives text");
     // the other rows fall back to English for the menu and keep their own keyboard texts
