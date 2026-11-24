@@ -359,7 +359,7 @@ class LanguageWindowTest(unittest.TestCase):
 
         real, gui.LanguageProbe = gui.LanguageProbe, Probe
         self.addCleanup(setattr, gui, 'LanguageProbe', real)
-        self.app = gui.App(self.root, layouts.find(ROOT), remember=False)
+        self.app = gui.App(self.root, layouts.find(ROOT), remember=False, ui_lang='en')
 
     def choose(self, base, start=True):
         self.app.vars['base'].set(str(self.dir / base) if base else '')
