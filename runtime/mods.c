@@ -346,8 +346,10 @@ static int exefs_file_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
         m->other_version++;
         return 1;
     }
-    // a code file's set is in the mods' library: one made for another build does not count
-    if (!status_line(key, content, kind_s, over, note) || (!strcmp(kind_s, "code") && !probe_text && !modcode_current())) {
+    // a code file's set is in the mods' library, and a data file's writes were checked against the bytes the build's
+    // code took as constants: what was made for another build does not count
+    if (!status_line(key, content, kind_s, over, note) ||
+        ((!strcmp(kind_s, "code") || !strcmp(kind_s, "data")) && !probe_text && !modcode_current())) {
         m->pending++;
         return 1;
     }
@@ -546,6 +548,15 @@ static int store_main(uint64_t a, const uint8_t *from, int n) {
     return 1;
 }
 
+// 1 when store_main can write n bytes at a.
+static int storable(uint64_t a, int n) {
+    for (uint64_t page = a & ~0xFFFull, end; page < a + (uint64_t)n; page += 0x1000) {
+        int prot = plat_mem_state(page, page + 0x1000, &end);
+        if (prot != PLAT_PROT_READ && prot != PLAT_PROT_RW) return 0;
+    }
+    return 1;
+}
+
 long mods_exefs_data(const ModInfo *m, uint64_t base, uint64_t size, uint64_t code_end,
                      int (*store)(uint64_t addr, const uint8_t *bytes, int n)) {
     if (!store) store = store_main;
@@ -578,6 +589,10 @@ long mods_exefs_data(const ModInfo *m, uint64_t base, uint64_t size, uint64_t co
                 return -1;
             }
             if (!pass) {
+                if (store == store_main && !storable(base + r.off, r.n)) {   // before the first byte of any line
+                    rt_log("mods: %s: cannot write main+%#llx", m->name, (unsigned long long)r.off);
+                    return -1;
+                }
                 found += r.n;
                 continue;
             }
@@ -621,6 +636,8 @@ void mods_rescan(void) {
     scanned = 0;
 }
 
+static void aoc_build(void);
+
 // Switches the patch set mod_<key> on; 0 when this build lacks it (logged).
 static int set_on(const ModInfo *m, uint32_t key) {
     char name[32];
@@ -636,14 +653,19 @@ void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
                       int (*store)(uint64_t addr, const uint8_t *bytes, int n)) {
     // bottom first: the top mod's data writes land last and win, as its RomFS files do. Patch sets are only switches
     // (rt_patch_switch), so their order does not matter.
+    int failed = 0;
     for (int i = nmods - 1; i >= 0; i--) {
-        const ModInfo *m = &mods[i];
+        ModInfo *m = &mods[i];
         if (!start_enabled[i] || m->problem != MOD_OK || !(m->nsets || m->ndata)) continue;
-        // the data first: a mod whose data writes cannot all be stored keeps its code patches off too, as half of a
-        // patch file is worse than none
+        // the data first: a mod whose data writes cannot all be stored stays off as a whole, as one whose patches could
+        // not be built
         long stored = size ? mods_exefs_data(m, base, size, code_end, store) : 0;
         if (stored < 0) {
-            rt_log("mods: %s: its ExeFS patch files stay off: their data writes could not all be stored", m->name);
+            rt_log("mods: %s: the whole mod stays off: its ExeFS patch files' data writes could not all be stored",
+                   m->name);
+            m->problem = MOD_EXEFS_LATER;
+            m->pending = 1;
+            failed = 1;
             continue;
         }
         for (int k = 0; k < m->nsets; k++) set_on(m, m->sets[k]);
@@ -657,6 +679,14 @@ void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
         rt_log("mods: %s: %d ExeFS patch files on, %ld bytes of main's data stored", m->name, m->nsets + m->ndata,
                stored);
     }
+    if (!failed) return;
+    if (!probe_text) modcode_discard("build-cache/exefs.data does not fit");   // the next start makes it again
+    aoc_free();   // without the add-on content files of the mods that failed
+    for (int i = 0; i < nmods; i++) {
+        mods[i].aoc_replaced = mods[i].aoc_added = mods[i].overridden = 0;
+        mods[i].overridden_by[0] = 0;
+    }
+    aoc_build();
 }
 
 void mods_exefs_switch(void) {

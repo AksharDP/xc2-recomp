@@ -238,16 +238,18 @@ class MainData:
         self.linker = linker_tables(n)
 
 
-def data_runs(md, writes):
+def data_runs(md, writes, keep=frozenset()):
     """The data part of one file ({offset: byte} outside main's code), applied as emulators and Atmosphere apply a patch
     file: to the module before its dynamic linker runs. Returns ([(offset, bytes, rebase)], dropped):
 
     - a byte no relocation covers is stored as it is (runs of consecutive bytes, at most RUN_MAX long);
-    - a DT_RELR word holds its addend: the word with the file's bytes in it, rebase set (main's base gets added);
+    - a DT_RELR word holds its addend: the word with the file's bytes in it, rebase set (main's base gets added). Of two
+      files that write different bytes of one such pointer, the higher mod's whole word wins;
     - the linker overwrites a word an explicit-addend relocation fills whatever the file wrote there: such bytes
       change nothing and only count in dropped.
 
-    Bytes equal to main's are left out. ValueError for a write outside main's image (below .rodata: the NSO header),
+    Bytes equal to main's are left out, except at the offsets in keep: what other files change, where such a byte
+    undoes a lower mod's write. ValueError for a write outside main's image (below .rodata: the NSO header),
     into the dynamic linker's tables, or into a function pointer it binds lazily (JUMP_SLOT): on the Switch it holds
     the file's value plus main's base until the first call binds it, which no store before the start can reproduce."""
     plain, words, dropped = {}, {}, 0
@@ -266,13 +268,14 @@ def data_runs(md, writes):
         else:
             dropped += 1
     runs = []
-    for off in sorted(o for o, b in plain.items() if b != md.image[o]):
+    for off in sorted(o for o, b in plain.items() if b != md.image[o] or o in keep):
         last = runs[-1] if runs else None
         if last and last[0] + len(last[1]) == off and len(last[1]) < RUN_MAX:
             runs[-1] = (last[0], last[1] + bytes([plain[off]]), False)
         else:
             runs.append((off, bytes([plain[off]]), False))
-    runs += [(w, bytes(b), True) for w, b in words.items() if bytes(b) != md.image[w:w + 8]]
+    runs += [(w, bytes(b), True) for w, b in words.items()
+             if bytes(b) != md.image[w:w + 8] or not keep.isdisjoint(range(w, w + 8))]
     return sorted(runs), dropped
 
 
@@ -291,9 +294,9 @@ def builtin_sites(text):
     return out
 
 
-def classify(m, md, bid, path, raw):
+def classify(m, md, bid, path, raw, keep=frozenset()):
     """(kind, note, sites, runs, dropped) of one patch file: path gives its name and suffix, raw its bytes, bid main's
-    build id; md None: no data file, so a write into main's data makes the file unsupported."""
+    build id; keep as in data_runs; md None: no data file, so a write into main's data makes the file unsupported."""
     try:
         if path.suffix.lower() == '.ips':
             for_main = same_build(path.stem, bid)
@@ -308,7 +311,7 @@ def classify(m, md, bid, path, raw):
         if data and md is None:
             raise ValueError(f'it writes main\'s data at main+{min(data):X} (only code patches are supported)')
         sites = convert(m, word_writes(m, code)) if code else {}
-        runs, dropped = data_runs(md, data) if data else ([], 0)
+        runs, dropped = data_runs(md, data, keep) if data else ([], 0)
         return 'code' if sites else 'data' if runs else 'empty', '', sites, runs, dropped
     except ValueError as e:
         return 'unsupported', str(e), {}, [], 0
@@ -325,10 +328,13 @@ def build(args):
     builtin = builtin_sites(text)
     files = patch_files(args.mods)
     sets, sites, status, data_lines, kinds = [], [], [], [], {}
-    for mod, rel, f in files:
-        raw = f.read_bytes()
+    raws = [f.read_bytes() for _, _, f in files]
+    results = [classify(m, md, bid, f, raw) for (_, _, f), raw in zip(files, raws)]
+    changed = frozenset(off + i for r in results for off, data, _ in r[3] for i in range(len(data)))
+    if changed and len(files) > 1:
+        results = [classify(m, md, bid, f, raw, changed) for (_, _, f), raw in zip(files, raws)]
+    for (mod, rel, f), raw, (kind, note, file_sites, runs, dropped) in zip(files, raws, results):
         key, content = fnv(f'{mod}/{rel}'.encode()), fnv(raw)
-        kind, note, file_sites, runs, dropped = classify(m, md, bid, f, raw)
         over = []
         if file_sites:
             name = f'mod_{key.lower()}'

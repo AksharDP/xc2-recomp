@@ -228,6 +228,19 @@ class Tool(unittest.TestCase):
                 if not line.startswith('#')]
         self.assertEqual(left, [code])
 
+    def test_a_byte_of_mains_own_undoes_another_files(self):
+        # the runtime stores the lower mod's bytes first: without A's own 'B' the pair would keep B's 'X'
+        (self.d / 'exefs' / 'main').write_bytes(reloc_module())
+        self.mod_file('A', {0x2200: b'AY', 0x2204: b'E'})
+        self.mod_file('B', {0x2200: b'XB'})
+        self.mod_file('C', {0x2118: b'\x31'})
+        self.mod_file('D', {0x2118: struct.pack('<Q', 0x30)})
+        status, data = self.build()
+        by = {k: [(f[2], f[3]) for f in data if f[0] == self.key(k)] for k in 'ABCD'}
+        self.assertEqual((by['A'], by['B']), ([('2200', b'AY'.hex())], [('2200', b'XB'.hex())]))
+        self.assertEqual((by['C'], by['D']), ([('2118', '3100000000000000')], [('2118', struct.pack('<Q', 0x30).hex())]))
+        self.assertEqual([status[self.key(k)][4] for k in 'ABCD'], ['data 2', 'data 2', 'data 8', 'data 8'])
+
     def test_check_without_the_lift_list(self):
         (self.d / 'exefs' / 'main').write_bytes(reloc_module())
         self.mod_file('Ro', {0x1000: b'\xAA'})

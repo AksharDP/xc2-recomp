@@ -100,6 +100,21 @@ class FilesTest(unittest.TestCase):
         mod_code.refuse(self.work, {'cheat_cccccccc'}, 'why')
         self.assertEqual((self.work / 'cheats.status').read_text(), 'CCCCCCCC\t3\tunsupported\t0\twhy\n')
 
+    def test_new_constant_reads_refuse_data_writes(self):
+        base = Path(self.tmp.name) / 'mod-base'
+        base.mkdir()
+        (base / 'folded.txt').write_text('# x\n100 110\n')
+        exefs = Path(self.tmp.name) / 'exefs'
+        exefs.mkdir()
+        (exefs / 'main').write_bytes(bytes(0x40))
+        args = SimpleNamespace(cache=Path(self.tmp.name), exefs=exefs)
+        mod_code.recheck_reads(args, self.work, [(0x100, 0x104), (0x40, 0x44)])   # the second one is new; nothing writes it
+        self.assertEqual((self.work / 'exefs.status').read_text().count('unsupported'), 0)
+        mod_code.recheck_reads(args, self.work, [(0x20, 0x21)])
+        self.assertEqual((self.work / 'exefs.status').read_text().splitlines()[0], 'AAAAAAAA\t1\tcode\tx\t')
+        self.assertTrue((self.work / 'exefs.status').read_text().splitlines()[1].startswith('BBBBBBBB\t2\tunsupported'))
+        self.assertNotIn('BBBBBBBB', (self.work / 'exefs.data').read_text())
+
     def test_without_sets_drops_their_lines(self):
         f = self.work / 'p.txt'
         f.write_text('set a A 0\nset mod_1 M 0   # x\nsite mod_1 main 10 d503201f d503201f\nsite a main 10 d503201f 0\n')

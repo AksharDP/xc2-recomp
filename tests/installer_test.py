@@ -5,6 +5,7 @@ Run: python tests/installer_test.py
 """
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -411,6 +412,7 @@ class CleanupTest(unittest.TestCase):
         steps.Cleanup().run(self.ctx)
         return (self.dest / 'build-cache' / 'modcode.txt').read_text(encoding='utf-8').splitlines()
 
+    @mock.patch.dict(os.environ, {'APPIMAGE': ''})
     def test_empties_temp_and_writes_the_mod_command(self):
         for name in ('gen', 'build', 'check', 'logs'):
             (self.ctx.temp / name).mkdir()

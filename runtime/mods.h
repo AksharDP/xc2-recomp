@@ -72,7 +72,8 @@ int mods_changed(void);            // 1 when the order or a switch differs from 
 // port's own sets they replace off, and their data writes stored into main (mods_exefs_data).
 void mods_exefs_switch(void);
 // What mods_exefs_switch does with main's image at base (size bytes, code below code_end; size 0: no data stored), for
-// every enabled mod from the bottom one up, so that the top mod's data writes win where two mods write the same bytes.
+// every enabled mod from the bottom one up, so that the top mod's data writes win where two mods write the same bytes. A
+// mod whose data writes cannot be stored is off as a whole from then on (MOD_EXEFS_LATER).
 // store as for mods_exefs_data.
 void mods_exefs_apply(uint64_t base, uint64_t size, uint64_t code_end,
                       int (*store)(uint64_t addr, const uint8_t *bytes, int n));

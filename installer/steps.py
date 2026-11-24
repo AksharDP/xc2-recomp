@@ -990,8 +990,12 @@ class Compile(Step):
         # what the mods' code needs of this lift belongs to this exe (tools/mod_abi.py)
         remove(mod_base(dest))
         if mod_base(build).is_dir():
+            # copied whole before it takes its name: a copy that stops half way must not count as made (current)
+            part = mod_base(dest).with_name('mod-base.part')
+            remove(part)
             mod_base(dest).parent.mkdir(exist_ok=True)
-            shutil.copytree(mod_base(build), mod_base(dest))
+            shutil.copytree(mod_base(build), part)
+            os.replace(part, mod_base(dest))
         for dll in layout.dlls:
             replace_file(dll, dest / dll.name)
         return {'exe_sha256': file_sha256(dest / GAME_EXE)}

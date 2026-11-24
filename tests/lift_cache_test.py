@@ -169,6 +169,7 @@ class LiftCache(unittest.TestCase):
         self.assertIn('1020 1024', (self.d / 'gen' / 'main' / 'folded.txt').read_text())
         self.assert_like_fresh(patch_file(MOV_W8_200))
 
+    @unittest.skipUnless(os.name == 'nt', 'a read-only file can be replaced on Linux')
     def test_unwritable_cache_only_warns(self):
         """A cache that cannot be replaced leaves the lift successful, its manifest written; the old cache's entry for
         the chunk the run rewrote no longer matches it."""

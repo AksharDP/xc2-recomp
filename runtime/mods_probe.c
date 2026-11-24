@@ -120,6 +120,10 @@ static void probe_data(const char *root) {
         mods_exefs_apply(base, sizeof img, 8, store_buffer);
         CHECK(img[0x28] == 0xAA, "two mods write the same byte: the top mod's byte stays");
         CHECK(!memcmp(img + 0x10, "ABC", 3) && !img[0x30], "the other mods' data as each one stores it alone");
+        int on = 0;
+        for (int i = 0; mods_at(i); i++) on += mods_started(i);
+        CHECK(on == 3 && p->problem == MOD_EXEFS_LATER && q->problem == MOD_EXEFS_LATER,
+              "a mod whose data cannot be stored is off as a whole");
     }
     mods_probe_cache(NULL, NULL);
     remove_tree(root);

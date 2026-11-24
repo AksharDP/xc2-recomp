@@ -16,7 +16,8 @@ XC2's inputs; file names inside the game folder (`xc2.exe`, `xc2.ini`) are XC2 R
    - the game language, from the languages the chosen game files have text for ([Game languages](#game-languages)),
      and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `xc2.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
+4. Plays `xc2.exe` from the install folder. The source NSP or XCI can be deleted, and on Windows the installer too. On
+   Linux the AppImage file has to stay where it is: the game builds the code of mods with it ("Code of mods").
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 

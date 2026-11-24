@@ -787,7 +787,7 @@ static size_t quote_arg(const wchar_t *a, wchar_t *out, size_t cap, size_t at) {
 }
 
 // The child's output into out (NUL-terminated, the rest discarded) and to on_output (may be NULL) as it comes, then its
-// exit code; -1 when it never started. A child still running after timeout_ms is killed.
+// exit code; -1 when it never started. A child still running after timeout_ms is killed, with the processes it started.
 static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, size_t cap, PlatOutput on_output, void *ctx,
                      uint32_t timeout_ms) {
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
@@ -797,12 +797,15 @@ static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, s
     STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES, .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
                        .hStdOutput = wr, .hStdError = wr};
     PROCESS_INFORMATION pi;
-    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, TRUE, flags, NULL, dir, &si, &pi);
+    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, TRUE, flags | CREATE_SUSPENDED, NULL, dir, &si, &pi);
     CloseHandle(wr);
     if (!ok) {
         CloseHandle(rd);
         return -1;
     }
+    HANDLE job = CreateJobObjectW(NULL, NULL);   // suspended until it is in: its own children join it
+    if (job && !AssignProcessToJobObject(job, pi.hProcess)) CloseHandle(job), job = NULL;
+    ResumeThread(pi.hThread);
     size_t len = 0;
     DWORD got, avail;
     char sink[512];
@@ -824,8 +827,11 @@ static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, s
     }
     if (cap) out[len] = 0;
     CloseHandle(rd);
-    if (WaitForSingleObject(pi.hProcess, 0) != WAIT_OBJECT_0)
-        TerminateProcess(pi.hProcess, 1), WaitForSingleObject(pi.hProcess, INFINITE);
+    if (WaitForSingleObject(pi.hProcess, 0) != WAIT_OBJECT_0) {
+        if (!job || !TerminateJobObject(job, 1)) TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+    }
+    if (job) CloseHandle(job);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);

@@ -168,12 +168,13 @@ class Refused(Exception):
 
 
 def lift(args, base, new, mods):
-    """([Part], [the sets the build lacks]) of the functions whose sites differ between the tables."""
+    """([Part], [the sets the build lacks], {module: [(start, end)] it read as constants}) of the functions whose sites
+    differ between the tables."""
     numbers, added = number_sets(base, new)
     if len(base.sets) + len(added) > MAX_SETS:
         raise SystemExit(f'mod_code: {len(added)} patch sets are too many (runtime/patches.c PATCH_MAX)')
     names = [n for n, _, _ in new.sets]
-    parts = {}
+    parts, reads = {}, {}
     for name, mbase, _ in mods:
         offsets = changed_sites(base, new, name)
         if not offsets:
@@ -182,6 +183,13 @@ def lift(args, base, new, mods):
         patches.check(new, mod, name)
         starts = mod.lo + discover(mod)[0] * 4
         ends = np.append(starts[1:], mod.hi)
+        # the jump tables' reads, as recomp/gen.py _emitter records them
+        read, seen = mod.read, reads.setdefault(name, [])
+
+        def recorded(a, n, signed=False, read=read, seen=seen, mbase=mbase):
+            seen.append((a - mbase, a - mbase + n))
+            return read(a, n, signed=signed)
+        mod.read = recorded
         patched = {a: [(numbers[k], words) for k, words in alts] for a, alts in new.for_module(name, mbase).items()}
         emitter = Emitter(mod, set(starts.tolist()), patched, reg_locals=regs.LOCALS, spins=new.spins_for(name, mbase))
         built = {off: {n for n, _ in alts} for off, alts in named_sites(base, name).items() if not isinstance(off, tuple)}
@@ -209,7 +217,7 @@ def lift(args, base, new, mods):
             part.refs |= refs
     for p in parts.values():
         p.fns.sort()
-    return [parts[k] for k in sorted(parts)], added
+    return [parts[k] for k in sorted(parts)], added, reads
 
 
 def new_only_adds(base, new, module, off):
@@ -239,6 +247,17 @@ def refuse(work, sets, why):
             data = work / 'exefs.data'
             kept = [x for x in data.read_text(encoding='utf-8').splitlines() if x.split('\t')[0] not in keys]
             data.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+
+
+def recheck_reads(args, work, reads):
+    """A patched function can read bytes of main the build's lift did not: data writes over them are refused too."""
+    folded = args.cache / 'mod-base' / 'folded.txt'
+    have = exefs_patches.read_ranges(folded) if folded.is_file() else []
+    new = sorted({r for r in reads if not any(s <= r[0] and r[1] <= e for s, e in have)})
+    if new:
+        (work / 'folded.txt').write_text(''.join(f'{s:x} {e:x}\n' for s, e in sorted(have + new)))
+        exefs_patches.recheck(Namespace(exefs=args.exefs, status=work / 'exefs.status', data=work / 'exefs.data',
+                                        folded=work / 'folded.txt'))
 
 
 def without_sets(path, sets):
@@ -355,11 +374,12 @@ def build(args):
         while True:
             new = patches.load(table, mods)
             try:
-                parts, added = lift(args, base, new, mods)
+                parts, added, reads = lift(args, base, new, mods)
                 break
             except Refused as e:
                 refuse(work, e.sets, e.why)
                 without_sets(table, e.sets)
+        recheck_reads(args, work, reads.get('main', []))
         t1 = time.perf_counter()
         lib = compile_lib(args, key, parts, added, len(base.sets)) if parts else None
         publish(args, work, key, lib)

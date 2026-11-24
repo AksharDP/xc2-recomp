@@ -1426,9 +1426,10 @@ long plat_tz_west(void) {
 }
 
 // The child's output into out (NUL-terminated, the rest discarded) and to on_output (may be NULL) as it comes, then its
-// exit code; -1 when it never started. A child still running after timeout_ms is killed.
+// exit code; -1 when it never started. A child still running after timeout_ms is killed; group: it gets a process
+// group of its own, and the processes it started are killed with it.
 static int run_child(const char *exe, char *const *argv, const char *cwd, char *out, size_t cap, PlatOutput on_output,
-                     void *ctx, uint32_t timeout_ms) {
+                     void *ctx, int group, uint32_t timeout_ms) {
     int p[2];
     if (pipe2(p, O_CLOEXEC)) return -1;
     posix_spawn_file_actions_t fa;
@@ -1437,7 +1438,11 @@ static int run_child(const char *exe, char *const *argv, const char *cwd, char *
     posix_spawn_file_actions_adddup2(&fa, p[1], 2);
     if (cwd) posix_spawn_file_actions_addchdir_np(&fa, cwd);
     pid_t pid;
-    int e = posix_spawn(&pid, exe, &fa, NULL, argv, environ);
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    if (group) posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);   // group 0: the child's own
+    int e = posix_spawn(&pid, exe, &fa, &at, argv, environ);
+    posix_spawnattr_destroy(&at);
     posix_spawn_file_actions_destroy(&fa);
     close(p[1]);
     if (e) {
@@ -1466,9 +1471,10 @@ static int run_child(const char *exe, char *const *argv, const char *cwd, char *
     if (cap) out[len] = 0;
     close(p[0]);
     int status = 0;
+    if (group && timeout_ms && plat_now_ns() >= end) kill(-pid, SIGKILL);   // the child may be gone, its own not
     while (waitpid(pid, &status, timeout_ms ? WNOHANG : 0) == 0) {
         if (plat_now_ns() >= end) {
-            kill(pid, SIGKILL);
+            kill(group ? -pid : pid, SIGKILL);
             waitpid(pid, &status, 0);
             break;
         }
@@ -1478,7 +1484,7 @@ static int run_child(const char *exe, char *const *argv, const char *cwd, char *
 }
 
 int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms) {
-    return run_child(argv[0], (char *const *)argv, cwd, NULL, 0, on_output, ctx, timeout_ms);
+    return run_child(argv[0], (char *const *)argv, cwd, NULL, 0, on_output, ctx, 1, timeout_ms);
 }
 
 // The arguments of this process, from /proc/self/cmdline; NULL when there are none.
@@ -1498,7 +1504,7 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     char exe[PATH_MAX], **argv = self_args();
     if (!argv || !plat_exe_path(exe, sizeof exe)) return -1;
     setenv(env_name, env_value, 1);
-    int code = run_child(exe, argv, NULL, out, cap, NULL, NULL, timeout_ms);
+    int code = run_child(exe, argv, NULL, out, cap, NULL, NULL, 0, timeout_ms);
     unsetenv(env_name);
     return code;
 }

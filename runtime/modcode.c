@@ -46,6 +46,7 @@ static char g_dir[PLAT_PATH_MAX];   // the folder of xc2.exe, with a trailing se
 static const ModLib *g_lib;
 static uint8_t *g_used;             // per set of the library: an enabled mod has it
 static char g_error[256];
+static int g_discarded;
 
 static int find_dir(void) {
     if (g_dir[0]) return 1;
@@ -94,7 +95,17 @@ static int current(char *path, size_t cap) {
 
 int modcode_current(void) {
     char path[PLAT_PATH_MAX + 128];
-    return find_dir() && rt_mod_abi[0] && current(path, sizeof path);
+    return !g_discarded && find_dir() && rt_mod_abi[0] && current(path, sizeof path);
+}
+
+void modcode_discard(const char *why) {
+    snprintf(g_error, sizeof g_error, "%s", why);
+    g_discarded = 1;
+    char path[PLAT_PATH_MAX + 128];
+    if (!find_dir()) return;
+    if (current(path, sizeof path) && path[0]) plat_file_delete(path);   // else the tool takes the file as made
+    snprintf(path, sizeof path, "%sbuild-cache" SEP "mods" SEP "current.txt", g_dir);
+    plat_file_delete(path);
 }
 
 enum { BAR_WIDTH = 76 };   // under the 80 columns of the narrowest usual console: a wrapped line cannot be drawn over
@@ -152,6 +163,7 @@ static void tool_output(void *ctx, const char *p, size_t n) {
 // Runs the command in modcode.txt; 1 when it worked.
 static int run_tool(void) {
     char *cmd = cache_text("modcode.txt"), program[PLAT_PATH_MAX + 64];
+    static char exefs[PLAT_PATH_MAX * 3], mods[PLAT_PATH_MAX * 3];   // the tool runs in the folder of xc2.exe
     const char *argv[64];
     int argc = cmd ? lines_of(cmd, argv, 56) : 0;
     if (!argc) {
@@ -160,9 +172,9 @@ static int run_tool(void) {
         return 0;
     }
     argv[argc++] = "--exefs";
-    argv[argc++] = rt_config()->exefs;
+    argv[argc++] = plat_full_path(rt_config()->exefs, exefs, sizeof exefs) ? exefs : rt_config()->exefs;
     argv[argc++] = "--mods";
-    argv[argc++] = mods_dir();
+    argv[argc++] = plat_full_path(mods_dir(), mods, sizeof mods) ? mods : mods_dir();
     argv[argc++] = "--abi";
     argv[argc++] = rt_mod_abi;
     argv[argc++] = "--progress";
@@ -179,7 +191,9 @@ static int run_tool(void) {
     rt_log("modcode: %s: exit code %d, %llu ms%s", argv[0], code, (unsigned long long)(plat_now_ms() - t0),
            code ? "; the game starts without the code it could not make" : "");
     if (!code) g_error[0] = 0;
-    else snprintf(g_error, sizeof g_error, "%s", code == -1 ? "tools/mod_code.py did not start" : o.last);
+    else if (code == -1 || o.last[0])
+        snprintf(g_error, sizeof g_error, "%s", code == -1 ? "tools/mod_code.py did not start" : o.last);
+    else snprintf(g_error, sizeof g_error, "tools/mod_code.py: exit code %d", code);
     free(cmd);
     return code == 0;
 }
@@ -216,8 +230,10 @@ void modcode_load(void) {
     const ModLib *lib = entry ? entry() : NULL;
     if (!lib || lib->version != MOD_ABI_VERSION || strcmp(lib->key, rt_mod_abi) ||
         !rt_patches_add(lib->first_set, lib->sets, lib->nsets)) {
-        snprintf(g_error, sizeof g_error, "%s", !lib ? "the library did not load" : "the library is of another build");
+        modcode_discard(!lib ? "the library did not load" : "the library is of another build");
         rt_log("modcode: %s: %s", path, g_error);
+        mods_rescan();   // the mods whose code is in it are not usable now
+        mods_scan();
         return;
     }
     g_used = (uint8_t *)calloc((size_t)lib->nsets + 1, 1);
@@ -282,4 +298,7 @@ void modcode_hook(void) {
 
 int modcode_unbuilt(void) { return mods_exefs_pending() + cheats_unbuilt(); }
 
-const char *modcode_error(void) { return g_error; }
+const char *modcode_error(void) {
+    const char *e = cfg_get("XC2_MODS_BUILD");
+    return g_error[0] ? g_error : e && !strcmp(e, "off") ? "" : rt_mod_abi[0] ? "new since the game started" : "a build without mod code";
+}
