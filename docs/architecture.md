@@ -104,7 +104,11 @@ Every guest thread is a host thread. XCX assumes Horizon's scheduler: three appl
   goes through bloom and the tone map at the render scale, and FSR takes the tone-mapped picture to the output size in
   place of the stretch at the start of the HUD pass. With `XC2_FRAME_GEN`, `vk_fg.c` hands the swapchain to the same
   SDK's frame generation swapchain, which interpolates a frame between two drawn ones from those same inputs and the
-  HUD-less picture (off by default).
+  HUD-less picture (off by default). Without AMD's libraries (Linux has none) or where they cannot run, `vk_ffx.cpp` does
+  both with the FidelityFX SDK 1.1.4's FSR 3.1.4 from source (fetched by `tools/ffx_sdk.py`): the upscaler in the same place,
+  and the interpolation recorded by the present (`gfx_present.c`), which then presents twice a frame on its own
+  swapchain, paced by `vk_backend.c`. `XC2_FSR_BUILTIN=1` takes these although the libraries are there, and
+  `XC2_FRAME_GEN_TEST=1` shows the built-in generated picture over the left half of the game's.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `XC2_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

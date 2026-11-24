@@ -583,15 +583,25 @@ int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int re
 }
 
 // ---------------------------------------------------------------- the built-in interpolation
-int vk_fg_own_wanted(VkCtx *c) {
-    if (!cfg_bool("XC2_FRAME_GEN") || !cfg_bool("XC2_FSR3") || O.failed || vk_fg_wanted()) return 0;
+static int own_usable(VkCtx *c) {
     if (!O.asked) {
         const char *why;
         O.asked = 1;
         O.usable = vk_ffx_usable(c, &why);
-        if (!O.usable) rt_log("vk: frame generation off: the device lacks %s", why);
+        if (!O.usable) rt_log("vk: the built-in frame generation does not run here: the device lacks %s", why);
     }
     return O.usable;
+}
+
+int vk_fg_own_wanted(VkCtx *c) {
+    if (!cfg_bool("XC2_FRAME_GEN") || !cfg_bool("XC2_FSR3") || O.failed || vk_fg_wanted()) return 0;
+    return own_usable(c);
+}
+
+int vk_fg_state(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || ((vk_fsr3_libraries() & 1) && !G.failed)) return VK_FSR_OK;   // AMD's library; its failure shows once it is tried
+    return !own_usable(c) ? VK_FSR_NO_DEVICE : O.failed ? VK_FSR_FAILED : VK_FSR_OK;
 }
 
 void vk_fg_own_release(void) {

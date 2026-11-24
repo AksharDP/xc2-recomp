@@ -128,6 +128,16 @@ static PlatMutex status_lock = PLAT_MUTEX_INIT;
 static char status_version[64];
 static uint64_t status_ns;
 
+// For the menu, which asks on the present thread (vk_fsr3_state, vk_fsr3_version4): FSR went off for the run; a context
+// of FSR 4 could not be made. ffx_lock: the menu's question and this module's do not enter AMD's loader together.
+static int went_off, no_version4;
+static PlatMutex ffx_lock = PLAT_MUTEX_INIT;
+
+static void off(void) {
+    F.ok = 0;
+    __atomic_store_n(&went_off, 1, __ATOMIC_RELEASE);
+}
+
 static void warn_once(uint32_t bit, const char *what) {
     if (F.warned & bit) return;
     F.warned |= bit;
@@ -225,7 +235,10 @@ static int device_ok(VkCtx *c) {
 
 static int init(VkCtx *c) {
     F.tried = 1;
-    if (!init_library(c)) {
+    plat_mutex_lock(&ffx_lock);
+    int lib = init_library(c);
+    plat_mutex_unlock(&ffx_lock);
+    if (!lib) {
         const char *why = "";
         if (!vk_ffx_usable(c, &why)) {
             rt_log("vk: FSR off: no library of AMD's is next to the executable, and for the built-in FSR 3.1 this device "
@@ -283,23 +296,22 @@ static int init(VkCtx *c) {
 
 // The version ids the upscaler offers, named like "4.1.2" or "3.1.6". Only the 2.x loader answers; 1.1.4 has no such
 // query. *id receives the newest id of the wanted major version.
-static int pick_version(int major, uint64_t *id) {
-    if (F.api != API_LOADER || !F.query) return 0;
+static int offered_version(PfnFfxQuery query, VkDeviceContext *dev, int major, uint64_t *id) {
     struct ffxQueryDescGetVersions q;
     memset(&q, 0, sizeof q);
     q.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
     q.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
-    q.device = &F.dev;
+    q.device = dev;
     uint64_t n = 0;
     q.outputCount = &n;
-    if (F.query(NULL, &q.header) != FFX_API_RETURN_OK || !n || n > 64) return 0;
+    if (query(NULL, &q.header) != FFX_API_RETURN_OK || !n || n > 64) return 0;
     uint64_t ids[64];
     const char *names[64];
     memset(names, 0, sizeof names);
     q.outputCount = &n;
     q.versionIds = ids;
     q.versionNames = names;
-    if (F.query(NULL, &q.header) != FFX_API_RETURN_OK) return 0;
+    if (query(NULL, &q.header) != FFX_API_RETURN_OK) return 0;
     char want[4];
     snprintf(want, sizeof want, "%d.", major);
     for (uint64_t i = 0; i < n && i < 64; i++)
@@ -309,6 +321,10 @@ static int pick_version(int major, uint64_t *id) {
             return 1;
         }
     return 0;
+}
+
+static int pick_version(int major, uint64_t *id) {
+    return F.api == API_LOADER && F.query && offered_version(F.query, &F.dev, major, id);
 }
 
 static void free_image(VkCtx *c, int i, int p) {
@@ -422,6 +438,7 @@ static int make_context(uint32_t w, uint32_t h, const char *want) {
         if (r == FFX_API_RETURN_OK) break;
         rt_log("vk: FSR: ffxCreateContext returned %u%s", r, attempt ? "" : ", trying FSR 3");
         F.ctx = NULL;
+        if (!attempt && pinned_major != 3) __atomic_store_n(&no_version4, 1, __ATOMIC_RELEASE);
         if (F.api != API_LOADER || !pick_version(3, &ov.versionId)) break;
         have_pin = 1;
     }
@@ -462,10 +479,12 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
             rt_log("vk: FSR off: the output images (%ux%u) could not be created", w, h);
             free_image(c, IMG_OUT, 0);
             free_image(c, IMG_OUT, 1);
-            F.ok = 0;
+            off();
             return 0;
         }
+    plat_mutex_lock(&ffx_lock);
     int made = make_context(w, h, want);
+    plat_mutex_unlock(&ffx_lock);
     const char *why = "";
     if (!made && F.api != API_BUILTIN && vk_ffx_usable(c, &why)) {
         rt_log("vk: FSR: AMD's library made no context; the built-in FSR 3.1 takes its place");
@@ -474,7 +493,7 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
     }
     if (!made) {
         rt_log("vk: FSR off: no upscaler context could be created");
-        F.ok = 0;
+        off();
         return 0;
     }
     snprintf(F.pinned, sizeof F.pinned, "%s", want);
@@ -560,7 +579,7 @@ void vk_fsr3_note(VkExec *ex) {
     note_scene_size(ex);
     if (!cfg_bool("XC2_FSR3")) return;   // frame generation is off without it too (vk_fg_wanted)
     VkCtx *c = vk_ctx();
-    if (!F.tried) init(c);
+    if (!F.tried && !init(c)) off();
     if (!F.ok) return;
     const VkTexImage *scene = bound(ex, 0);
     F.in[0] = input_view(bound(ex, 7), VK_FORMAT_UNDEFINED, VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -569,7 +588,7 @@ void vk_fsr3_note(VkExec *ex) {
         return;   // not the resolve: a pass at boot has the same targets
     if (unfinished && ++F.misses >= MAX_MISSES) {
         rt_log("vk: FSR off: the tone map or the stretch to the output size was not found");
-        F.ok = 0;
+        off();
         return;
     }
     const float *c4 = block_of(&ex->ubo[1][1], 96), *c3 = block_of(&ex->ubo[0][0], 48);
@@ -712,7 +731,7 @@ static void record_upscale(VkExec *ex) {
     image_layout(cb, F.img[IMG_OUT][F.par], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     if (!dispatch_upscale(cb, reset, ms)) {
         rt_log("vk: FSR off: the upscale could not be recorded");
-        F.ok = 0;
+        off();
         return;
     }
     plat_mutex_lock(&status_lock);
@@ -777,18 +796,56 @@ void vk_fsr3_release(void) {
 
 // Which of the two libraries init accepts are next to the executable: bit 0 the AMD FSR SDK 2.x loader (which frame
 // generation and the version choice need too), bit 1 the FidelityFX SDK 1.1.4 library. Nothing is loaded here; init
-// does that on the replay thread once FSR is turned on. The Linux release ships neither, so there the menu greys the
-// FSR rows out. The answer is kept: the files do not come and go while the game runs.
+// does that on the replay thread once FSR is turned on. They are Windows DLLs: elsewhere, and with XC2_FSR_BUILTIN=1,
+// there is none. The answer is kept: the files do not come and go while the game runs.
 int vk_fsr3_libraries(void) {
     static int have = -1;
     if (have < 0) {
         char path[1024];
         int bits = 0;
+#ifdef _WIN32
+        if (builtin_only()) return have = 0;
+#endif
         if (library_path(FFX_LOADER, path, sizeof path) && plat_file_exists(path)) bits |= 1;
         if (library_path(FFX_LEGACY, path, sizeof path) && plat_file_exists(path)) bits |= 2;
+#ifndef _WIN32
+        bits = 0;
+#endif
         have = bits;
     }
     return have;
+}
+
+int vk_fsr3_state(void) {
+    static int usable = -1;   // of the device, which stays the same for the run
+    VkCtx *c = vk_ctx();
+    if (usable < 0 && c) {
+        const char *why;
+        usable = device_ok(c) && (vk_fsr3_libraries() || vk_ffx_usable(c, &why));
+    }
+    if (!usable) return VK_FSR_NO_DEVICE;
+    return __atomic_load_n(&went_off, __ATOMIC_ACQUIRE) ? VK_FSR_FAILED : VK_FSR_OK;
+}
+
+int vk_fsr3_version4(void) {
+    static int offered = -1;
+    if (!(vk_fsr3_libraries() & 1)) return VK_FSR4_NO_LIBRARY;
+    VkCtx *c = vk_ctx();
+    if (offered < 0 && c) {
+        offered = 0;
+        char path[1024];
+        void *lib = c->props.vendorID == 0x1002 ? open_library(FFX_LOADER, path, sizeof path) : NULL;   // no other GPU has FSR 4
+        if (lib) {
+            PfnFfxQuery query = (PfnFfxQuery)plat_lib_sym(lib, "ffxQuery");
+            VkDeviceContext dev = {.vkDevice = c->device, .vkPhysicalDevice = c->phys, .vkDeviceProcAddr = device_proc};
+            uint64_t id;
+            plat_mutex_lock(&ffx_lock);
+            offered = query && offered_version(query, &dev, 4, &id);
+            plat_mutex_unlock(&ffx_lock);
+        }
+        rt_log("vk: FSR 4 is %soffered on this GPU", offered ? "" : "not ");
+    }
+    return offered && !__atomic_load_n(&no_version4, __ATOMIC_ACQUIRE) ? VK_FSR4_YES : VK_FSR4_NO_DEVICE;
 }
 
 // 1 with the provider version ("4.1.2", "3.1.4") in buf when FSR upscaled a frame within the last second; 0 when it did

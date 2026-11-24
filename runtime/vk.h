@@ -5,6 +5,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
 #include "vk_mem_alloc.h"
+#include "fsr_state.h"
 #pragma clang diagnostic pop
 #include "nvn_obj.h"   // pool_t, tex_t, view_t, samp_par, NVNcopyRegion (memory and textures block)
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
@@ -113,7 +114,6 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
 void vk_fsr_release(void);   // before the device goes away
 void vk_fsr3_release(void);  // FSR 3.1 / FSR Upscaling 4 (vk_fsr3.c, hooks in vk_exec.h): before the device goes away
 int vk_fsr3_libraries(void); // the FSR libraries next to the executable: bit 0 the 2.x loader, bit 1 the 1.1.4 library
-int vk_fsr3_shown(char *buf, size_t size);   // 1 and the version when FSR upscaled within the last second (the overlay)
 
 // What the upscaler's resolve gave frame generation (vk_fg.c) for one frame: the depth and motion it decodes from the
 // game's targets at the render size, the upscaled scene without the HUD, and the camera values both effects take.
@@ -141,7 +141,6 @@ int vk_fsr3_frame_get(VkFsrFrame *out);
 // interpolation built into the game (vk_ffx.cpp) does the same on our swapchain (vk_fg_own_wanted, vk_fg_generate).
 int vk_fg_wanted(void);      // the setting is on and the library usable (it needs XC2_FSR3 for its inputs)
 int vk_fg_active(void);      // the live swapchain is the library's
-float vk_fg_shown_fps(uint64_t now_ns);   // frames a second on screen, negative while frame generation is off
 // 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is
 // gone, as the library destroys what it is given even when it fails.
 int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc);
