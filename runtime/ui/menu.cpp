@@ -40,6 +40,8 @@ void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
 float vk_fg_shown_fps(uint64_t now_ns);
+int vk_fsr3_libraries(void);
+int vk_fsr3_shown(char *buf, size_t size);
 extern const int rt_game_version;
 extern const char rt_game_name[];   // the game version shown, "2.0.0" (tools/build_game.py)
 extern const char rt_port_version[];
@@ -548,9 +550,16 @@ static void tab_screen(float scale) {
     static const UiTextId fit[] = {UI_MENU_PICTURE_FIT_KEEP, UI_MENU_PICTURE_FIT_STRETCH};
     opt_choice("XC2_PICTURE_FIT", UI_MENU_PICTURE_FIT, fit, 2, UI_MENU_PICTURE_FIT_DESC);
     opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    // Without AMD's libraries (the Linux release has none) these rows would change nothing: greyed out with the reason.
+    // The version choice and frame generation need the 2.x loader; FSR alone also runs on the older 1.1.4 library.
+    int libs = vk_fsr3_libraries();
+    UiTextId no_loader = libs ? UI_MENU_FSR_LOADER_MISSING : UI_MENU_FSR_MISSING;
+    if (!libs) opt_disable_next(UI_MENU_FSR_MISSING);
     opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC);
     static const UiTextId ver[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
+    if (!(libs & 1)) opt_disable_next(no_loader);
     opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, ver, 3, UI_MENU_FSR_VERSION_DESC);
+    if (!(libs & 1)) opt_disable_next(no_loader);
     opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
     opt_end();
 }
@@ -1127,35 +1136,47 @@ static void perf_label(UiTextId label, const ImVec4 &c) {
 
 static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
-// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
-// present scales the image to the window (gfx_present.c, the last present), the frame limit and the presentation mode
-// in use.
+// The overlay's Upscaler line: what takes the 3D scene to the game image. AMD FSR with the version that ran when it
+// upscaled within the last second (vk_fsr3.c vk_fsr3_shown), else the game's own temporal anti-aliasing and stretch,
+// with the reason when the FSR setting is on.
+static void upscaler_text(char *b, size_t n) {
+    char ver[64];
+    if (vk_fsr3_shown(ver, sizeof ver)) snprintf(b, n, menu_text(UI_MENU_OV_FMT_UPSCALER), ver);
+    else if (!cfg_bool("XC2_FSR3")) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_GAME));
+    else if (!vk_fsr3_libraries()) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_NO_LIB));
+    else snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_IDLE));
+}
+
+// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), what
+// upscales the scene to the image (upscaler_text), how the present scales the image to the window (gfx_present.c, the
+// last present), the frame limit and the presentation mode in use.
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
-    char v[6][64];
+    char v[7][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
+    upscaler_text(v[3], sizeof v[3]);
     if (t->scaler == 2) {
         int s = cfg_int("XC2_SHARPNESS");
-        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
+        snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
-        snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
+        snprintf(v[4], sizeof v[4], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
     double hz = frame_step_limit_hz();
-    snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
-    if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
+    snprintf(v[5], sizeof v[5], "%s", menu_text(UI_MENU_OV_NONE));
+    if (hz > 0) snprintf(v[5], sizeof v[5], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
-    snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
-                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    snprintf(v[6], sizeof v[6], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
+    static const UiTextId labels[7] = {UI_MENU_OV_WINDOW,  UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,  UI_MENU_OV_UPSCALER,
+                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT,  UI_MENU_OV_PRESENT};
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
     for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         perf_label(labels[i], c);
         ImGui::TableNextColumn();
         perf_right(v[i], false);

@@ -44,6 +44,7 @@ typedef enum {
     UI_MENU_FSR_VERSION, UI_MENU_FSR_VERSION_DESC,
     UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3,
     UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC,
+    UI_MENU_FSR_MISSING, UI_MENU_FSR_LOADER_MISSING,   // why the FSR rows are greyed out
 
     // Game
     UI_MENU_FPS_LIMIT, UI_MENU_FPS_LIMIT_DESC, UI_MENU_FPS_30, UI_MENU_FPS_40, UI_MENU_FPS_45, UI_MENU_FPS_60, UI_MENU_FPS_90,
@@ -189,13 +190,17 @@ typedef enum {
     // number formats of the overlay's cells (printf, one number each)
     UI_MENU_OV_FMT_PCT, UI_MENU_OV_FMT_TEMP, UI_MENU_OV_FMT_POWER, UI_MENU_OV_FMT_MHZ, UI_MENU_OV_FMT_GB,
     UI_MENU_OV_FMT_GB_OF, UI_MENU_OV_GAME_GB, UI_MENU_OV_FMT_MS, UI_MENU_OV_PER_FRAME,
-    // the picture lines: window, game image and 3D scene sizes, the scaling to the window, frame limit and presentation
-    UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT,
+    // the picture lines: window, game image and 3D scene sizes, the upscaler, the scaling to the window, frame limit and
+    // presentation
+    UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_UPSCALER, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT,
+    UI_MENU_OV_PRESENT,
     UI_MENU_OV_FMT_SIZE,      // "%ux%u"
     UI_MENU_OV_FMT_SCENE,     // "%ux%u, %.0f%%": the scene and its share of the game image's width
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
-    UI_MENU_LAST_ID = UI_MENU_OV_SCALE_BILINEAR,
+    UI_MENU_OV_FMT_UPSCALER,  // "AMD FSR %s": the provider version that ran
+    UI_MENU_OV_UPSCALE_GAME, UI_MENU_OV_UPSCALE_NO_LIB, UI_MENU_OV_UPSCALE_IDLE,   // the game's own, and why
+    UI_MENU_LAST_ID = UI_MENU_OV_UPSCALE_IDLE,
     UI_TEXT_COUNT
 } UiTextId;
 
