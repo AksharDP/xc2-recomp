@@ -132,7 +132,8 @@ code patches and code cheats of the enabled mods with what it built last (`build
 functions to it.
 
 - The library fits one build of the game: `build-cache/mod-base/` and the exe carry what ties them (`tools/mod_abi.py`).
-  After an update the first start builds it again.
+  After an update the first start builds it again. It is compiled for the exe's x86-64 level (`mod-base/cpu-level.txt`),
+  so an exe for processors without AVX2 gets a library without AVX2 too.
 - On Windows the setup copies its folder without `XC2-Setup.exe` into `build-kit/` (`installer/steps.py` `Kit`, about
   0.5 GB) and runs its later steps from there. The command is relative to the install folder, so the setup's folder can
   be deleted and the install folder moved. A newer setup replaces the kit. On Linux the command starts the AppImage

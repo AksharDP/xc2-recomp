@@ -53,9 +53,20 @@ from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx
 (default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs), and the C++
 runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
 
-Split build. --make-runtime-lib compiles only runtime/ into <out>/libxc2rt.a (what CI prebuilds). --runtime-lib PATH
-then compiles only the generated C and the install-time files (modules.c and INSTALL_SIDE, which bake the player's
-game hashes and version in) and links them with that library. The library holds no game-derived data.
+Split build. --make-runtime-lib compiles only runtime/ into <out>/libxc2rt.a (libxc2rt-v2.a with --cpu v2; what CI
+prebuilds). --runtime-lib PATH then compiles only the generated C and the install-time files (modules.c and
+INSTALL_SIDE, which bake the player's game hashes and version in) and links them with that library. The library holds
+no game-derived data.
+
+Processor level. --cpu v3 (default) compiles the generated C and the runtime with -march=x86-64-v3 (AVX2, FMA, BMI2);
+--cpu v2 with -march=x86-64-v2 (SSE4.2, POPCNT), for processors without AVX2 (runtime/cpu_level.h). The level is part of
+the flags, so the object cache, the LTO cache and the main build's objects of one level never stand in for the other.
+A prebuilt --runtime-lib must be of the same level: runtime/cpu_check.c references the runtime's mark of its own
+level, so a library of the other level fails the link with an undefined rt_cpu_level_v2 or rt_cpu_level_v3. With
+--cpu v2, tools/check_isa.py reads every runtime object before the link or the archive and stops the build on an
+instruction above x86-64-v2 (check_runtime_isa). The mods' code (tools/mod_code.py) is compiled for the same level:
+build-cache/mod-base/cpu-level.txt records it and the key in the exe (rt_mod_abi, tools/mod_abi.py) holds it, so the
+game does not load a mod library of the other level.
 
 Standard library only.
 """
@@ -106,6 +117,12 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 GEN_FLAGS = ['-O2', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3', '-DRT_FN_HOOKS=1']   # RT_FN_HOOKS: runtime/cpu.h FN_ENTER
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
+# --cpu: the x86-64 level of the generated C and the runtime (runtime/cpu_level.h)
+CPU_LEVELS = {'v3': 3, 'v2': 2}
+CPU = 'v3'   # the level of this build (use_cpu)
+# The start-up check that the processor has the build's level is compiled for any x86-64 processor: the -march after
+# the build's own wins
+BASELINE_FILES = {'cpu_check.c': '-march=x86-64'}
 if WIN:
     LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xc2.map"']   # the map feeds tools/prof_report.py
     LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
@@ -117,6 +134,42 @@ else:
                   '"-Wl,-Map=$builddir/xc2.map"']
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+
+
+def use_cpu(level):
+    """-march=x86-64-v<level> for the generated C and the runtime, and XC2_CPU_LEVEL for runtime/cpu_level.h. Level 2
+    keeps the lifted code free of AVX: its FP fused multiply-adds call runtime/fma.c, whose software implementation
+    rounds once and honors the guest's FTZ/DAZ state. The C library's fallback disagrees on some operands."""
+    global GEN_FLAGS, RT_FLAGS, CPU
+    CPU = level
+    march = f'-march=x86-64-v{CPU_LEVELS[level]}'
+    GEN_FLAGS = [march if f.startswith('-march=') else f for f in GEN_FLAGS]
+    RT_FLAGS = [march if f.startswith('-march=') else f for f in RT_FLAGS] + [f'-DXC2_CPU_LEVEL={CPU_LEVELS[level]}']
+
+
+def check_runtime_isa(objects):
+    """--cpu v2: stop the build when a runtime object holds an instruction above x86-64-v2, or of an extension outside the
+    levels (AES, SHA, RDRAND), outside a function with a CPU check of its own (tools/check_isa.py DISPATCHED). -march keeps the compiler's code inside the level, but inline
+    assembly and target attributes pass through it: runtime/kernel.c kern_ap_stub saved YMM registers in every build
+    until it got its v2 form. The generated objects are LTO bitcode, which only the linked executable shows in machine
+    code; tools/check_isa.py reads that one."""
+    import check_isa
+    names = ['llvm-objdump.exe', 'objdump.exe'] if WIN else ['llvm-objdump', 'objdump']
+    dirs = [d for d in (TOOLCHAIN_BIN, UCRT if WIN else None) if d]
+    objdump = next((str(d / n) for d in dirs for n in names if (d / n).is_file()), None) or check_isa.find_objdump(None)
+    if not objdump:
+        sys.exit('build_game: --cpu v2 needs llvm-objdump or objdump to check the runtime objects (tools/check_isa.py)')
+    objects = [o for o in objects if o.suffix == '.o']
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
+        results = list(pool.map(lambda o: (o, check_isa.scan(objdump, o, 2)[0]), objects))
+    bad = []
+    for o, found in results:
+        for (fn, _), counts in found.items():
+            if not check_isa.dispatched(fn):   # check_isa.scan counts 'above' and 'optional' instructions alone
+                bad.append(f'{below_root(o)}: {fn}: {", ".join(sorted({mn for _, mn in counts})[:6])}')
+    if bad:
+        sys.exit('build_game: instructions above x86-64-v2 in the runtime (tools/check_isa.py):\n  ' + '\n  '.join(bad[:40]))
+    print(f'check_isa: {len(objects)} runtime objects hold nothing above x86-64-v2', flush=True)
 
 
 def use_lto(jobs):
@@ -210,9 +263,16 @@ LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-lw
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h; patches.c, ov_zstd.c and
 # ov_inflate.c include the patches.h of the player's game version (its patch page is the page after that version's
-# main; the host functions of ov_zstd.c and ov_inflate.c sit on it).
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'ov_inflate.c'}
-LIB_NAME = 'libxc2rt.a'
+# main; the host functions of ov_zstd.c and ov_inflate.c sit on it); cpu_check.c takes the install's processor level
+# and checks that the library is of the same one.
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'ov_inflate.c', 'cpu_check.c'}
+LIB_NAME = 'libxc2rt.a'   # --cpu v2: libxc2rt-v2.a (lib_name), so both levels' libraries can sit side by side
+
+
+def lib_name(level):
+    return LIB_NAME if level == 'v3' else f'libxc2rt-{level}.a'
+
+
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/xc2.rc: the manifest of xc2.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
@@ -360,8 +420,9 @@ def runtime_object(out, src):
 
 
 def mod_base(gen, out):
-    """<out>/build-cache/mod-base: what the mods' code needs of this lift (tools/mod_abi.py). A lift from before
-    patches.txt existed has no mod code: its key is empty."""
+    """<out>/build-cache/mod-base: what the mods' code needs of this lift and this build (tools/mod_abi.py), the x86-64
+    level (use_cpu) among it, so tools/mod_code.py compiles the mods' code for the processors this exe runs on. A lift
+    from before patches.txt existed has no mod code: its key is empty."""
     base = out / 'build-cache' / 'mod-base'
     table, folded = gen / 'patches.txt', gen / 'main' / 'folded.txt'
     if not (table.is_file() and folded.is_file()):
@@ -370,6 +431,7 @@ def mod_base(gen, out):
     base.mkdir(parents=True, exist_ok=True)
     write_if_changed(base / 'patches.txt', table.read_text())
     write_if_changed(base / 'folded.txt', folded.read_text())
+    write_if_changed(base / mod_abi.LEVEL_FILE, f'{CPU_LEVELS[CPU]}\n')
     return mod_abi.mod_abi(RUNTIME, base)
 
 
@@ -503,12 +565,14 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
                          f'{ninja_path(RUNTIME / "xc2.ico")}')
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+            if src.name in BASELINE_FILES:
+                lines.append(f'  rtflags = $rtflags {BASELINE_FILES[src.name]}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
     exe = out / EXE
     if make_lib:
-        exe = out / LIB_NAME
+        exe = out / lib_name(CPU)
         lines += ['', 'rule ar', f'  command = {cmd_arg(AR.as_posix())} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
                   'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
         return '\n'.join(lines), objs, exe
@@ -1104,6 +1168,9 @@ def main():
                          'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--cpu', choices=sorted(CPU_LEVELS), default='v3',
+                    help='x86-64 level of the build: v3 (default; AVX2, FMA, BMI2) or v2 (SSE4.2, POPCNT; processors '
+                         'without AVX2)')
     ap.add_argument('--no-lto', action='store_true',
                     help='compile the generated C to machine code per file, without ThinLTO at the link (faster links, '
                          'slower game: see use_lto)')
@@ -1171,6 +1238,7 @@ def main():
         if not tool.is_file():
             sys.exit(f'{tool} not found: install ' + ('MSYS2 UCRT64 clang, lld and ninja' if WIN else 'clang, lld and ninja')
                      + ' (docs/building.md)')
+    use_cpu(args.cpu)
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
@@ -1273,6 +1341,8 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    if CPU != 'v3':
+        check_runtime_isa(objs['runtime'])
     if cache:
         t0 = time.monotonic()
         cache.store(out, {o: k for o, k in cache_keys.items() if o not in prebuilt}, base, env)

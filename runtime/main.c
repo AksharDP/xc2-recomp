@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "cpu_level.h"
 #include "fnhook.h"
 #include "host.h"
 #include "replay.h"
@@ -34,6 +35,9 @@
 #include "sha256.h"
 
 #define MAX_MODULES 16
+
+// The x86-64 level this runtime is compiled for (cpu_level.h); runtime/cpu_check.c references it.
+const int RT_CPU_MARK(XC2_CPU_LEVEL) = XC2_CPU_LEVEL;
 
 // ---- logging, tracing, hashing
 unsigned rt_trace;
@@ -377,10 +381,9 @@ static volatile int host_probe_hits;
 static void host_probe(Cpu *c) { host_probe_hits++; c->x[0] = 42; }
 
 static void check_cpu(void) {
-    __builtin_cpu_init();
-    int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-    printf("cpu: x86-64-v3 (AVX2, FMA, BMI2) %s\n", ok ? "present" : "MISSING");
-    CHECK(ok, "the lifted code is built for x86-64-v3");
+    int have = cpu_level_host();
+    printf("cpu: build x86-64-v%d, processor x86-64-v%d\n", XC2_CPU_LEVEL, have);
+    CHECK(have >= XC2_CPU_LEVEL, "the build is compiled for x86-64-v%d", XC2_CPU_LEVEL);
 }
 
 // Layout: ascending, no overlap, below 2^39, and inside the window mem_init reserved.

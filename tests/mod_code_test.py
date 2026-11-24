@@ -148,6 +148,79 @@ class AbiTest(unittest.TestCase):
                 keys.add(mod_abi.mod_abi(runtime, base, recomp))
             self.assertEqual(len(keys), 5)
 
+    def test_the_key_and_the_flags_follow_the_level(self):
+        with tempfile.TemporaryDirectory() as d:
+            runtime, base, recomp = (Path(d) / n for n in ('runtime', 'base', 'recomp'))
+            for p in (runtime, base, recomp):
+                p.mkdir()
+            for f in (runtime / 'cpu.h', runtime / 'fma.c', base / 'patches.txt', base / 'folded.txt'):
+                f.write_text('a\n')
+            unrecorded = mod_abi.mod_abi(runtime, base, recomp)   # a mod-base from before the level was recorded
+            self.assertEqual(mod_abi.level(base), 3)
+            keys = {}
+            for level in mod_abi.LEVELS:
+                (base / mod_abi.LEVEL_FILE).write_text(f'{level}\n')
+                self.assertEqual(mod_abi.level(base), level)
+                keys[level] = mod_abi.mod_abi(runtime, base, recomp)
+            self.assertEqual(keys[3], unrecorded)
+            self.assertNotEqual(keys[2], keys[3])
+            self.assertIn('-march=x86-64-v2', mod_abi.flags(2))
+            self.assertFalse([f for f in mod_abi.flags(2) if f.startswith('-march=') and f != '-march=x86-64-v2'])
+            self.assertIn('-march=x86-64-v3', mod_abi.flags(3))
+            # runtime/fma.c goes into a level 2 library, so its text is in the level 2 key alone
+            (base / mod_abi.LEVEL_FILE).write_text('2\n')
+            (runtime / 'fma.c').write_text('b\n')
+            self.assertNotEqual(mod_abi.mod_abi(runtime, base, recomp), keys[2])
+            (base / mod_abi.LEVEL_FILE).write_text('3\n')
+            self.assertEqual(mod_abi.mod_abi(runtime, base, recomp), keys[3])
+            (base / mod_abi.LEVEL_FILE).write_text('4\n')
+            with self.assertRaises(ValueError):
+                mod_abi.mod_abi(runtime, base, recomp)
+
+
+class CompileTest(unittest.TestCase):
+    """compile_lib with the compiler stood in for: the flags and units of each level."""
+
+    def compile(self, level):
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (tmp / 'mod-base').mkdir()
+        if level:
+            (tmp / 'mod-base' / mod_abi.LEVEL_FILE).write_text(f'{level}\n')
+        calls = []
+
+        def run(cmd, env):
+            cmd = [str(c) for c in cmd]
+            src = Path(cmd[cmd.index('-c') + 1]) if '-c' in cmd else None
+            calls.append((cmd, src.read_text(encoding='utf-8') if src else None))
+            Path(cmd[cmd.index('-o') + 1]).write_bytes(b'')
+
+        part = mod_code.Part(0)
+        part.fns.append((0x7000000100, 'void f_7000000100(Cpu *c) {}', []))
+        args = SimpleNamespace(cache=tmp, sysroot=None, clang=Path('clang'), runtime=ROOT / 'runtime', progress=False)
+        old, mod_code.run = mod_code.run, run
+        try:
+            lib = mod_code.compile_lib(args, 'key', [part], [], 0)
+        finally:
+            mod_code.run = old
+        self.assertTrue(lib.is_file())
+        return [c for c in calls if '-c' in c[0]], [c for c in calls if '-shared' in c[0]]
+
+    def test_level_2_compiles_for_v2_with_the_runtime_fma(self):
+        compiles, links = self.compile(2)
+        self.assertEqual(len(links), 1)
+        for cmd, _ in compiles:
+            self.assertEqual([f for f in cmd if f.startswith('-march=')], ['-march=x86-64-v2'])
+        fma = (ROOT / 'runtime' / 'fma.c').read_text(encoding='utf-8')
+        self.assertIn(fma, [text for _, text in compiles])
+        self.assertEqual(len(compiles), 3)   # part0, main, fma
+
+    def test_level_3_and_an_unrecorded_level_compile_for_v3(self):
+        for level in (3, None):
+            compiles, _ = self.compile(level)
+            self.assertEqual(len(compiles), 2)   # part0, main
+            for cmd, _ in compiles:
+                self.assertEqual([f for f in cmd if f.startswith('-march=')], ['-march=x86-64-v3'])
+
 
 if __name__ == '__main__':
     unittest.main()

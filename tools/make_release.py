@@ -12,7 +12,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, the sources of
-               build_game.py INSTALL_SIDE (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
+               build_game.py INSTALL_SIDE (compiled per install) and tools/mod_abi.py SOURCES (compiled into mod
+               libraries), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe, amd_fidelityfx_vk.dll (AMD's signed
                build, out of the FidelityFX SDK release)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
@@ -50,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import check_content  # noqa: E402
+import mod_abi  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN_ROOT = (ROOT / 'build').resolve().parent   # build/, generated/, toolchain/ and refs/ are junctions in a worktree
@@ -121,9 +123,13 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
                'xc2_merge_romfs.py',   # the update applied to the game data in place (extract.py, installer Extract)
                'cheats.py', 'exefs_patches.py', 'mod_code.py', 'mod_abi.py',   # the mods' code (the game runs mod_code.py)
                'xc2_prompts.py',   # the button prompts (installer Prepare)
-               'xc2_languages.py']   # the game languages the game files have text for (installer ini, check, probe)
+               'xc2_languages.py',   # the game languages the game files have text for (installer ini, check, probe)
+               'check_isa.py']   # build_game.py --cpu v2 checks the runtime objects with it (processors without AVX2)
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes, the prompts' icons
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
+# The runtime sources a release ships: build_game.py INSTALL_SIDE, compiled per install, and those tools/mod_code.py
+# compiles into a mod library (mod_abi.SOURCES, runtime/fma.c for x86-64-v2)
+RUNTIME_SOURCES = sorted(build_game.INSTALL_SIDE | {n for names in mod_abi.SOURCES.values() for n in names})
 
 VERSION_TAG = 'v301'   # installer/layout.py version_tag: the generated/ and build/extracted/ name of 3.0.1
 EXPECTED = 'expected-xc2-3.0.1.json'
@@ -400,11 +406,18 @@ def runtime_lib(out, llvm):
         env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
     shutil.copy2(build / 'libxc2rt.a', rt / 'libxc2rt.a')
+    # The runtime library of a build_game.py --cpu v2 build, for processors without AVX2
+    build_v2 = build.with_name('rtlib-v2')
+    run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--cpu', 'v2', '--version', VERSION_TAG,
+         '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,
+         '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe', '--out', build_v2],
+        env=clean_env(llvm / 'bin', out / 'bin'))
+    shutil.copy2(build_v2 / 'libxc2rt-v2.a', rt / 'libxc2rt-v2.a')
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in sorted(build_game.INSTALL_SIDE):
+    for name in RUNTIME_SOURCES:
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 
 
@@ -419,6 +432,8 @@ def build_sources(out):
     shutil.copy2(ROOT / 'xc2.ini.example', out / 'xc2.ini.example')
     shutil.copy2(ROOT / 'recomplauncher.json', out / 'recomplauncher.json')   # RecompLauncher reads it from the zip's top and the AppImage's root
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
+    (out / 'licenses').mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'runtime' / 'fma-LICENSE.txt', out / 'licenses' / 'musl-fma-LICENSE.txt')   # runtime/fma.c
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
 

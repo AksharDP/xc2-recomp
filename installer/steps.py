@@ -7,7 +7,8 @@ with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), aoc/<index>/ (the add-on content's RomFS), profile/, xc2.exe
 and its DLLs, romfs-index.bin, xc2_xlate.exe, xc2.ini, xc2-install.json, mods/ (the player's, never written) and
-build-cache/ (modcode.txt: the command the game runs to build the mods' code; mod-base/: what that needs of the lift;
+build-cache/ (modcode.txt: the command the game runs to build the mods' code; mod-base/: what that needs of the lift
+and the exe's x86-64 level;
 mods/, cheats.status, exefs.status, exefs.data: what it made, runtime/modcode.c; objects/: the generated objects the
 next build reuses, tools/build_game.py ObjectCache; work/: the temp folder) and build-kit/ (Kit).
 Temp folder (installer/layout.py temp_for): check/ (ExeFS of both inputs, the host check), gen/ (C and the lift cache),
