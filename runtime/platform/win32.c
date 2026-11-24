@@ -1292,6 +1292,10 @@ void *plat_lib_open(const char *name) {
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
 
+void plat_lib_close(void *lib) {
+    if (lib) FreeLibrary((HMODULE)lib);
+}
+
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.
 

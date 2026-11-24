@@ -210,7 +210,8 @@ void modcode_prepare(void) {
     rt_log("modcode: %d patch files and cheats of mods are new or changed%s", pending,
            ok ? "" : "; the mods' code was made for another build");
     int sized = mods_status_replaces("xc2size");
-    if (!run_tool()) return;
+    // a run that failed before it replaced anything changed nothing; one that failed while it did left nothing usable
+    if (!run_tool() && modcode_current()) return;
     mods_probe_cache(NULL, NULL);   // the status files are new
     mods_rescan();
     mods_scan();
@@ -230,6 +231,7 @@ void modcode_load(void) {
     const ModLib *lib = entry ? entry() : NULL;
     if (!lib || lib->version != MOD_ABI_VERSION || strcmp(lib->key, rt_mod_abi) ||
         !rt_patches_add(lib->first_set, lib->sets, lib->nsets)) {
+        plat_lib_close(h);   // a loaded DLL cannot be deleted
         modcode_discard(!lib ? "the library did not load" : "the library is of another build");
         rt_log("modcode: %s: %s", path, g_error);
         mods_rescan();   // the mods whose code is in it are not usable now

@@ -389,6 +389,7 @@ void plat_fatal_notice(const char *utf8);
 // in the system directories only. NULL when missing.
 void *plat_lib_open(const char *name);
 void *plat_lib_sym(void *lib, const char *name);
+void plat_lib_close(void *lib);   // NULL: nothing
 
 // ---- machine load for the performance overlay (perfmon.c's sampling thread; each call can take milliseconds). A number
 // the system does not give is -1.
