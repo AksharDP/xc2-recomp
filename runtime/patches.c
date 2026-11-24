@@ -71,8 +71,22 @@ void rt_patch_disable(int set) {
     if (set >= 0 && set < RT_PATCH_COUNT) rt_patch_on[set] = 0;
 }
 
+// A held set stays off: a mod's ExeFS patch replaces it (mods.c mods_exefs_switch), and the port's own switches made
+// later at start (resolution.c res_init and the like) must not turn it back on, or its sites, earlier in the patch file,
+// would win over the mod's at the addresses both patch.
+static uint8_t held[RT_PATCH_COUNT > 0 ? RT_PATCH_COUNT : 1];
+
+void rt_patch_hold(int set) {
+    if (set < 0 || set >= RT_PATCH_COUNT) return;
+    held[set] = 1;
+    __atomic_store_n(&rt_patch_on[set], 0, __ATOMIC_RELAXED);
+}
+
+int rt_patch_held(int set) { return set >= 0 && set < RT_PATCH_COUNT && held[set]; }
+
 void rt_patch_switch(int set, int on) {
-    if (set >= 0 && set < RT_PATCH_COUNT) __atomic_store_n(&rt_patch_on[set], (uint8_t)(on != 0), __ATOMIC_RELAXED);
+    if (set < 0 || set >= RT_PATCH_COUNT || (on && held[set])) return;
+    __atomic_store_n(&rt_patch_on[set], (uint8_t)(on != 0), __ATOMIC_RELAXED);
 }
 
 void *rt_patch_page(void) {

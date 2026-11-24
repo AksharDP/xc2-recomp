@@ -147,8 +147,14 @@
 # gpu_index = 0
 # gpu_name = NVIDIA
 # Game resolution: the size the game draws its picture and interface in (1280x720 to 7680x4320). Above 1280x720 the
-# game's texture heap and memory pool grow with it. Read at start.
+# game's texture heap and memory pool grow with it. A shape wider than 16:9 (21:9 2560x1080 or 3440x1440, 32:9
+# 3840x1080) widens the 3D view. hud_center (the menu's "Fit the interface to wide screens", on by default) fits the
+# interface to such a frame: the field and battle HUD (minimap, clock, Blade Switch, party list, arts) goes to the
+# frame's edges, menus stay a centred 16:9 block, and full-screen layers (fades, loading screens, menu backgrounds,
+# dialog bands) cover the frame. hud_center = 0 keeps the interface in a 16:9 area at the left, as the game places
+# it. No effect at 16:9. Read at start.
 # output_res = 1280x720
+# hud_center = 1
 # 3D render scale: the scene's size relative to the game resolution: game (its dynamic resolution) or a fixed
 # percentage from 25 to 100; a higher one counts as 100. For supersampling, set output_res above window_size. Read at
 # start.
@@ -207,11 +213,11 @@
 # west X, north Y, as an Xbox pad labels them; cross A on a PlayStation pad) or auto (nintendo for a pad with Nintendo
 # labels, xbox for the others). The bind_ lines below apply on top. Changes while the game runs take effect at once.
 # pad_layout = auto
-# Button prompts the game draws: xbox, playstation, keyboard (the default keys), switch (the game's own) or auto (the
-# connected gamepad's: playstation for a PlayStation pad, switch for a Nintendo one, xbox for the others; keyboard
-# without a gamepad). The Xbox and PlayStation prompts follow pad_layout. The setup draws them from your game into
-# prompts/ next to xc2.exe; the game reads them through its add-on content, or through an empty pack of the port's
-# own when none is installed, which unlocks nothing. Takes effect at the next start.
+# Button prompts the game draws: xbox, playstation, keyboard (the keys of the bind_ lines), switch (the game's own) or
+# auto (the connected gamepad's: playstation for a PlayStation pad, switch for a Nintendo one, xbox for the others;
+# keyboard without a gamepad). The Xbox and PlayStation prompts follow pad_layout. The setup draws them from your
+# game into prompts/ next to xc2.exe; the game reads them through its add-on content, or through an empty pack of the
+# port's own when none is installed, which unlocks nothing. Takes effect at the next start, a changed bind_ line too.
 # prompts = auto
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.

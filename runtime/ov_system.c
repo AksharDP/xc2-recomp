@@ -22,6 +22,7 @@
 #include "cfg.h"
 #include "fs.h"
 #include "host.h"
+#include "mods.h"
 #include "ov.h"
 #include "platform/platform.h"
 
@@ -72,11 +73,47 @@ static const char *game_code(const char *code) {
     return NULL;
 }
 
-// Whether the installed game files have text for code. XC2_GAME_LANGS is the list of the codes they have, separated by
-// spaces or commas (the installer writes it from the archive, tools/xc2_languages.py); unset, every code counts.
+// The folder of the game's text for a code of game_codes (tools/xc2_languages.py), NULL for none.
+static const char *text_folder(const char *code) {
+    static const char *const map[][2] = {{"ja", "jp"}, {"en-US", "gb"}, {"en-GB", "gb"}, {"fr", "fr"}, {"fr-CA", "fr"},
+                                         {"de", "ge"}, {"it", "it"}, {"es", "sp"}, {"es-419", "sp"}, {"zh-CN", "cn"},
+                                         {"ko", "kr"}, {"zh-TW", "tw"}};
+    for (size_t i = 0; i < sizeof map / sizeof *map; i++)
+        if (!strcmp(code, map[i][0])) return map[i][1];
+    return NULL;
+}
+
+// Whether an enabled mod brings the text of code: a bdat/<folder> folder in its base RomFS, which the game reads for a
+// language its archive lacks. Translation mods for the western Switch release ship Japanese this way (bdat/jp), and a
+// console, which does not filter the languages, runs them once set to Japanese.
+static int mod_has_text(const char *code) {
+    static const char *const folders[] = {"jp", "gb", "fr", "ge", "it", "sp", "cn", "kr", "tw"};
+    static volatile int8_t seen[sizeof folders / sizeof *folders];   // 0 not looked, 1 no, 2 yes: mods are fixed at start
+    const char *folder = text_folder(code);
+    size_t k = 0;
+    while (folder && k < sizeof folders / sizeof *folders && strcmp(folders[k], folder)) k++;
+    if (!folder || k == sizeof folders / sizeof *folders) return 0;
+    if (seen[k]) return seen[k] == 2;
+    int has = 0;
+    mods_scan();
+    for (int i = 0; i < mods_count() && !has; i++) {
+        const ModInfo *m = mods_at(i);
+        char dir[2200];
+        if (!m || !m->romfs[0] || !mods_started(i)) continue;
+        has = snprintf(dir, sizeof dir, "%s/bdat/%s", m->romfs, folder) < (int)sizeof dir && plat_dir_exists(dir);
+    }
+    if (has) rt_log("oe: an enabled mod brings the game's %s text (bdat/%s)", code, folder);
+    seen[k] = (int8_t)(has ? 2 : 1);
+    return has;
+}
+
+// Whether the installed game files, or an enabled mod (mod_has_text), have text for code. XC2_GAME_LANGS is the list of
+// the codes the game files have, separated by spaces or commas (the installer writes it from the archive,
+// tools/xc2_languages.py); unset, every code counts.
 int ov_language_shipped(const char *code) {
     const char *list = cfg_get("XC2_GAME_LANGS");
     if (!list || !*list) return 1;
+    if (mod_has_text(code)) return 1;
     size_t n = strlen(code);
     for (const char *p = list; *p;) {
         p += strspn(p, " ,");
@@ -138,6 +175,24 @@ static const char *switch_language(const char *tag) {
     return "en-US";
 }
 
+// XC2 turns the console's language into the folder of its text, "gb" for both English codes, and derives the names of
+// the images whose text is baked in from the same code: the D-pad help pages (mnu103_bhelp_1/2, chelp, fhelp_1/2), the
+// title logo, the chapter end cards. Those images ship as one set per language, suffixed _us, _fr, _ge, _it, _sp, _cn,
+// _kr and _tw, and the release has no _gb set, so with English (US) nothing matches and the game falls back to the
+// unsuffixed file, which is the Japanese one (GitHub issue 169). English is therefore reported as en-GB, the code whose
+// images this release ships; both English codes read the same "gb" text. The Japanese release has no en-GB text, so
+// nothing changes there.
+static const char *english_images(const char *code) {
+    if (strcmp(code, "en-US") || !ov_language_shipped("en-GB")) return code;
+    static int logged;
+    if (!logged) {
+        logged = 1;
+        rt_log("oe: English runs as en-GB: its baked-text images (the D-pad help pages, the title logo) ship as the "
+               "\"us\" set, which the game asks for under English (UK)");
+    }
+    return "en-GB";
+}
+
 // The game's language as a Switch language code (XC2_LANG, else XC2_LOCALE, else the Windows user locale), one the
 // installed game files have text for: a language they lack becomes shipped_fallback, as a console only offers a game
 // the languages it supports. XC2_LANG takes the codes of game_codes (and zh-Hans, zh-Hant for zh-CN, zh-TW); any other
@@ -148,7 +203,7 @@ const char *ov_language(void) {
     if (code && *code) {
         want = game_code(code);
         if (!want) {
-            const char *got = shipped_fallback();
+            const char *got = english_images(shipped_fallback());
             static int logged;
             if (!logged) {
                 logged = 1;
@@ -165,8 +220,8 @@ const char *ov_language(void) {
         }
         want = switch_language(tag);
     }
-    if (ov_language_shipped(want)) return want;
-    const char *got = shipped_fallback();
+    if (ov_language_shipped(want)) return english_images(want);
+    const char *got = english_images(shipped_fallback());
     static const char *logged;
     if (logged != want) {
         logged = want;
@@ -1008,15 +1063,37 @@ static void ov_aoc_count(Cpu *c) { ret_x(c, (uint64_t)fs_aoc_list(NULL, 0, 0)); 
 static const char languages[][8] = {"ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru", "zh-TW",
                                     "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
 #define NLANG ((int)(sizeof languages / sizeof *languages))
-static void ov_language_count(Cpu *c) { ret_x(c, NLANG); }   // int GetAvailableLanguageCodeCount()
-// int GetAvailableLanguageCodes(LanguageCode *out, int count)
+
+// Whether this install offers code to the game: the game's own table has it, spelled the same way (game_codes, so
+// zh-Hans, zh-Hant and pt-BR are out, and so are nl, pt and ru, which no release has), and the installed files have
+// its text. The game builds its list of languages from the codes it is offered and matches each one against its own
+// table, so a code whose folder is missing would leave the game on a black screen (GitHub issue 107).
+static int offered(const char *code) {
+    const char *g = game_code(code);
+    return g && !strcmp(g, code) && ov_language_shipped(code);
+}
+
+// The codes this install offers, in languages order. When out is not NULL, up to max of them are written there, 8 bytes
+// each, and the number written is returned; when out is NULL, the number offered is returned.
+int ov_offered_languages(char (*out)[8], int max) {
+    int k = 0;
+    for (int i = 0; i < NLANG; i++) {
+        if (!offered(languages[i])) continue;
+        if (out) {
+            if (k >= max) break;
+            memcpy(out[k], languages[i], 8);
+        }
+        k++;
+    }
+    return k;
+}
+
+static void ov_language_count(Cpu *c) { ret_x(c, ov_offered_languages(NULL, 0)); }   // int GetAvailableLanguageCodeCount()
+// int GetAvailableLanguageCodes(LanguageCode *out, int count): the game asks for 15, the size of its own table
 static void ov_language_codes(Cpu *c) {
-    char *out = arg_p(c, 0);
+    char (*out)[8] = arg_p(c, 0);
     int n = (int)arg_x(c, 1);
-    if (n > NLANG) n = NLANG;
-    if (!out || n < 0) n = 0;
-    for (int i = 0; i < n; i++) memcpy(out + 8 * i, languages[i], 8);
-    ret_x(c, (uint64_t)n);
+    ret_x(c, out ? (uint64_t)ov_offered_languages(out, n) : 0);
 }
 
 // ngc::ProfanityFilter: Initialize and SetMaskMode succeed; MaskProfanityWordsInText(int *count, char *, uint32)

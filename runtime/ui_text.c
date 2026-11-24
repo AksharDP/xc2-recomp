@@ -58,7 +58,15 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_GRAPHICS] = "Picture",
     [UI_MENU_OUTPUT_RES] = "Game resolution",
     [UI_MENU_OUTPUT_RES_DESC] = "The size the game draws its picture and interface in; the game's own is 1280 x 720. Above it the game needs "
-                                "more video memory and GPU time.",
+                                "more video memory and GPU time. A size beyond the game's graphics memory is drawn "
+                                "smaller at the same shape (3840 x 1600 as 3536 x 1472, 5120 x 1440 as 4304 x 1210) "
+                                "and scaled to the window. The 21:9 and 32:9 sizes show more of the world at the "
+                                "sides; the interface stays in a 16:9 area at the left unless Fit the interface to "
+                                "wide screens is on.",
+    [UI_MENU_HUD_CENTER] = "Fit the interface to wide screens",
+    [UI_MENU_HUD_CENTER_DESC] = "At a game resolution wider than 16:9: centres menus and moves the field and battle HUD "
+                                "to the screen's edges, instead of keeping the interface in a 16:9 area at the left. "
+                                "No effect at 16:9.",
     [UI_MENU_RENDER_SCALE] = "3D render scale",
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game scales it up to "
                                   "that size. Game leaves it to the game's dynamic resolution (70 to 100 %); a "
@@ -136,8 +144,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox (A bottom)", [UI_MENU_PAD_LAYOUT_IN_USE] = "in use: %s",
     [UI_MENU_PROMPTS] = "Button prompts",
     [UI_MENU_PROMPTS_DESC] = "Which buttons the game shows in its text and menus. Automatic follows the connected "
-                             "controller (the keyboard without one). Xbox and PlayStation follow the button layout. "
-                             "Needs add-on content installed. Applies at the next start.",
+                             "controller (the keyboard without one). Xbox and PlayStation follow the button layout; "
+                             "Keyboard shows the keys you bound. Applies at the next start, a remapped key too.",
     [UI_MENU_PROMPTS_AUTO] = "Automatic", [UI_MENU_PROMPTS_SWITCH] = "Switch (the game's own)",
     [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PLAYSTATION] = "PlayStation", [UI_MENU_PROMPTS_KEYBOARD] = "Keyboard",
     [UI_MENU_LSTICK_DEADZONE] = "Left stick dead zone", [UI_MENU_RSTICK_DEADZONE] = "Right stick dead zone",
