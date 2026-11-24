@@ -295,7 +295,7 @@ static int init(VkCtx *c) {
 }
 
 // The version ids the upscaler offers, named like "4.1.2" or "3.1.6". Only the 2.x loader answers; 1.1.4 has no such
-// query. *id receives the newest id of the wanted major version.
+// query. 1 and in *id the newest id of the wanted major version, 0 when the answer has none, -1 without an answer.
 static int offered_version(PfnFfxQuery query, VkDeviceContext *dev, int major, uint64_t *id) {
     struct ffxQueryDescGetVersions q;
     memset(&q, 0, sizeof q);
@@ -304,14 +304,14 @@ static int offered_version(PfnFfxQuery query, VkDeviceContext *dev, int major, u
     q.device = dev;
     uint64_t n = 0;
     q.outputCount = &n;
-    if (query(NULL, &q.header) != FFX_API_RETURN_OK || !n || n > 64) return 0;
+    if (query(NULL, &q.header) != FFX_API_RETURN_OK || !n || n > 64) return -1;
     uint64_t ids[64];
     const char *names[64];
     memset(names, 0, sizeof names);
     q.outputCount = &n;
     q.versionIds = ids;
     q.versionNames = names;
-    if (query(NULL, &q.header) != FFX_API_RETURN_OK) return 0;
+    if (query(NULL, &q.header) != FFX_API_RETURN_OK) return -1;
     char want[4];
     snprintf(want, sizeof want, "%d.", major);
     for (uint64_t i = 0; i < n && i < 64; i++)
@@ -324,7 +324,7 @@ static int offered_version(PfnFfxQuery query, VkDeviceContext *dev, int major, u
 }
 
 static int pick_version(int major, uint64_t *id) {
-    return F.api == API_LOADER && F.query && offered_version(F.query, &F.dev, major, id);
+    return F.api == API_LOADER && F.query && offered_version(F.query, &F.dev, major, id) > 0;
 }
 
 static void free_image(VkCtx *c, int i, int p) {
@@ -835,15 +835,18 @@ int vk_fsr3_version4(void) {
         offered = 0;
         char path[1024];
         void *lib = c->props.vendorID == 0x1002 ? open_library(FFX_LOADER, path, sizeof path) : NULL;   // no other GPU has FSR 4
+        if (c->props.vendorID == 0x1002) offered = -1;   // without an answer the choice stays open: a failed context closes it
         if (lib) {
             PfnFfxQuery query = (PfnFfxQuery)plat_lib_sym(lib, "ffxQuery");
             VkDeviceContext dev = {.vkDevice = c->device, .vkPhysicalDevice = c->phys, .vkDeviceProcAddr = device_proc};
             uint64_t id;
             plat_mutex_lock(&ffx_lock);
-            offered = query && offered_version(query, &dev, 4, &id);
+            if (query) offered = offered_version(query, &dev, 4, &id);
             plat_mutex_unlock(&ffx_lock);
         }
-        rt_log("vk: FSR 4 is %soffered on this GPU", offered ? "" : "not ");
+        rt_log("vk: FSR 4 is %s on this GPU", offered > 0 ? "offered" : offered ? "perhaps offered (AMD's library does not say)"
+                                                                           : "not offered");
+        offered = offered != 0;
     }
     return offered && !__atomic_load_n(&no_version4, __ATOMIC_ACQUIRE) ? VK_FSR4_YES : VK_FSR4_NO_DEVICE;
 }
