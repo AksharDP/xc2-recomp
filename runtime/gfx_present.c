@@ -60,14 +60,12 @@ void gfx_window_focus_changed(int in) {
 // done.
 void gfx_window_closed(void) { gfx_exit_saved("window closed"); }
 
-static void shot_drain(void);
-
 // Ends the process after the saves, the screenshots already taken and the profile are written: the window close and
 // XC2_STOP_FRAME both end this way.
 void gfx_exit_saved(const char *why) {
     rt_log("gfx: %s; exiting", why);
     fs_save_flush();
-    shot_drain();
+    gfx_screenshot_drain();
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers
     plat_exit(0);
@@ -129,7 +127,7 @@ static uint32_t g_flip_idx;
 // takes a press drops it when the press is older than SHOT_STALE_NS (a minimised window) or SHOT_MAX shots are still
 // waiting to be written; presses before the same present make one shot. The buffer goes away once its copy is done; one
 // whose present did not complete stays until that fence slot signals or the device is idle, as the GPU may still write
-// it. gfx_exit_saved waits up to SHOT_EXIT_MS for the shots already taken.
+// it. Every orderly exit waits up to SHOT_EXIT_MS for the shots already taken (gfx_screenshot_drain).
 #define SHOT_MAX 2
 #define SHOT_STALE_NS 2000000000ull
 #define SHOT_EXIT_MS 5000
@@ -672,7 +670,9 @@ static int shot_queue(ShotJob *j) {
     return ok;
 }
 
-static void shot_drain(void) {
+// g_shot_busy counts a shot from shot_begin until the writer thread has written it, and shot_begin and shot_finish run
+// in one present_image call under g_pl, so a caller after a present (rt_frame_presented) waits only for queued shots.
+void gfx_screenshot_drain(void) {
     int n = plat_cas32(&g_shot_busy, 0, 0);
     if (!n) return;
     rt_log("gfx: waiting for %d screenshot%s to be written", n, n > 1 ? "s" : "");

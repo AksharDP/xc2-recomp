@@ -295,6 +295,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     fflush(stdout);
     fflush(stderr);
     fs_save_flush();
+    gfx_screenshot_drain();   // a Capture press (or a scripted CAPTURE) just before the deadline still gets its file
     vk_pipeline_save();   // no-op without the Vulkan back end
     prof_write();
     fflush(stderr);
