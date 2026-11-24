@@ -10,7 +10,6 @@ when the extraction has to run again. Prints JSON events on stdout (events.py). 
 2 bad command line, 3 cancelled (Ctrl+C or Ctrl+Break).
 """
 import argparse
-import hashlib
 import signal
 import sys
 import time
@@ -20,7 +19,7 @@ from . import layout as layouts
 from . import state as statefile
 from .events import LauncherReporter, Reporter
 from .runner import Context, run_steps
-from .steps import all_steps
+from .steps import adopt_old_temp, all_steps
 
 EXIT = {'ok': 0, 'failed': 1, 'cancelled': 3}
 
@@ -29,17 +28,6 @@ class Parser(argparse.ArgumentParser):
     def error(self, message):
         Reporter().error('cli.usage', {'detail': message})
         sys.exit(2)
-
-
-# The temp folder inside the install folder when the layout names none (the Linux release); the check step does not
-# count it when it requires an empty install folder
-TEMP_IN_DEST = '.setup-temp'
-
-
-def temp_folder(base, dest):
-    """One temp folder per install folder, so two installs never share generated files."""
-    tag = hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]
-    return base / f'{dest.name or "root"}-{tag}'
 
 
 def cancel(signum, frame):
@@ -56,8 +44,8 @@ def main(argv=None):
     ap.add_argument('--lang', help='game language, a Switch language code (en-US, en-GB, ja, de, fr, ...)')
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
     ap.add_argument('--root', type=Path, help='release folder or repository (default: the folder above installer/)')
-    ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release on Windows, .setup-temp in '
-                                              'the install folder on Linux, build/install-temp in a repository)')
+    ap.add_argument('--temp', type=Path, help='temp folder (default: build-cache/work in the install folder on Windows, '
+                                              '.setup-temp in it on Linux, build/install-temp in a repository)')
     ap.add_argument('--verify', action='store_true', help='hash every kept file, also those this release made (an update otherwise keeps the RomFS by its '
                               'recorded size and time)')
     ap.add_argument('--progress-lines', action='store_true', help='print "progress <0 to 1> <text>" lines instead of JSON '
@@ -71,10 +59,12 @@ def main(argv=None):
             signal.signal(getattr(signal, name), cancel)
     layout = layouts.find(args.root)
     dest = args.dest.resolve()
-    base = args.temp or layout.temp
-    temp = temp_folder(base.resolve(), dest) if base else dest / TEMP_IN_DEST
+    temp = layouts.temp_for(layout, dest, args.temp)
+    adopted = adopt_old_temp(layout, dest, temp)
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
     rep = (LauncherReporter if args.progress_lines else Reporter)(log_path=log)
+    if adopted:
+        rep.log(adopted)
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)

@@ -5,16 +5,19 @@ Run: python tests/installer_test.py
 """
 import io
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import ini, runner, state  # noqa: E402
+from installer import ini, runner, state, steps  # noqa: E402
+from installer import layout as layouts  # noqa: E402
 from installer.events import LauncherReporter, Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
 
@@ -277,6 +280,206 @@ class IniTest(unittest.TestCase):
             self.assertEqual(ini.get_language(text), 'ja')
 
 
+def fake_release(root, version='1.0+abc'):
+    """A folder release_layout reads as a release: VERSION, the Python file and one file per other kit item."""
+    for name in layouts.KIT_ITEMS:
+        if '.' in name or name == 'VERSION':
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(version + '\n' if name == 'VERSION' else name)
+        else:
+            (root / name).mkdir(parents=True, exist_ok=True)
+            (root / name / 'f.txt').write_text(name)
+    layouts.release_python(root).parent.mkdir(parents=True, exist_ok=True)
+    layouts.release_python(root).write_bytes(b'')
+    (root / 'XC2-Setup.exe').write_bytes(b'launcher')
+    (root / 'installer' / '__pycache__').mkdir()
+    (root / 'installer' / '__pycache__' / 'x.pyc').write_bytes(b'')
+    return layouts.release_layout(root)
+
+
+# KitTest and CleanupTest adapted from totk-pc-recomp tests/installer_test.py @ e7c901b and 35c590b (MIT,
+# Copyright (c) 2026 Valiantsin Dzerakh).
+@unittest.skipUnless(steps.os.name == 'nt', 'the build kit is Windows-only')
+class KitTest(unittest.TestCase):
+    """The build kit: the setup's release folder copied into the install folder, the later steps and the mod
+    command pointed at it, and an unfinished setup's temp folder taken over."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.setup, self.dest = base / 'XC2-Setup', base / 'game'
+        self.dest.mkdir()
+        self.layout = fake_release(self.setup)
+        self.missing = mock.patch.object(Layout, 'missing', lambda self: [])
+        self.missing.start()
+
+    def tearDown(self):
+        self.missing.stop()
+        self.tmp.cleanup()
+
+    def ctx(self, layout):
+        return SimpleNamespace(layout=layout, dest=self.dest, reporter=Reporter(out=io.StringIO()))
+
+    def install(self):
+        ctx = self.ctx(self.layout)
+        kit = steps.Kit()
+        self.assertFalse(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        return ctx, kit
+
+    def test_copies_the_release_and_the_next_steps_run_from_it(self):
+        ctx, kit = self.install()
+        folder = self.dest / 'build-kit'
+        self.assertEqual(ctx.layout.root, folder.resolve())
+        self.assertEqual(ctx.layout.release, '1.0+abc')
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(layouts.KIT_ITEMS))
+        self.assertFalse((folder / 'installer' / '__pycache__').exists())
+        self.assertFalse((self.dest / 'build-kit.new').exists() or (self.dest / 'build-kit.old').exists())
+        self.assertTrue(kit.current(self.ctx(self.layout), {}))
+
+    def test_a_setup_run_from_the_kit_keeps_it(self):
+        ctx, kit = self.install()
+        (self.dest / 'build-kit' / 'tools' / 'mark').write_text('kept')
+        self.assertTrue(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        self.assertEqual((self.dest / 'build-kit' / 'tools' / 'mark').read_text(), 'kept')
+
+    def test_a_newer_setup_replaces_the_kit(self):
+        self.install()
+        (self.dest / 'build-kit' / 'tools' / 'old-only').write_text('old')
+        self.layout = fake_release(Path(self.tmp.name) / 'XC2-Setup-2', '1.1+def')
+        ctx, _ = self.install()
+        self.assertEqual(ctx.layout.release, '1.1+def')
+        self.assertFalse((self.dest / 'build-kit' / 'tools' / 'old-only').exists())
+
+    def test_mod_command_is_relative_to_the_install_folder(self):
+        ctx, _ = self.install()
+        cmd = steps.mod_command(ctx)
+        kit = Path('build-kit')
+        self.assertEqual(cmd[:2], [str(kit / 'python' / 'python.exe'), str(kit / 'tools' / 'mod_code.py')])
+        self.assertEqual(cmd[cmd.index('--clang') + 1], str(kit / 'llvm' / 'bin' / 'clang.exe'))
+        self.assertEqual(cmd[cmd.index('--runtime') + 1], str(kit / 'runtime'))
+        self.assertEqual(cmd[cmd.index('--cache') + 1], 'build-cache')
+        self.assertFalse(any(str(self.dest) in a or str(self.setup) in a for a in cmd))
+
+    def test_dev_mode_has_no_kit(self):
+        ctx = self.ctx(SimpleNamespace(dev=True, release='x', root=ROOT))
+        kit = steps.Kit()
+        self.assertTrue(kit.current(ctx, {}))
+        self.assertEqual(kit.run(ctx), {})
+        kit.settle(ctx)
+        self.assertFalse((self.dest / 'build-kit').exists())
+
+    def test_temp_folder_of_an_unfinished_setup_moves_in(self):
+        old = layouts.temp_folder(self.setup / 'temp', self.dest)
+        (old / 'gen').mkdir(parents=True)
+        (old / 'gen' / '.install-key').write_text('k')
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertEqual(temp, self.dest / 'build-cache' / 'work')
+        self.assertIn('moved', steps.adopt_old_temp(self.layout, self.dest, temp))
+        self.assertEqual((temp / 'gen' / '.install-key').read_text(), 'k')
+        self.assertFalse(old.exists())
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))   # once: the new one exists now
+
+    def test_no_temp_folder_to_take_over(self):
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))
+        self.assertFalse(temp.exists())
+
+
+class CleanupTest(unittest.TestCase):
+    """The cleanup empties the temp folder and writes the command the game builds its mods' code with."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp, root = base / 'game', base / 'temp', base / 'release'
+        self.dest.mkdir()
+        temp.mkdir()
+        self.root = root
+        layout = SimpleNamespace(ini_example=ROOT / 'xc2.ini.example', dev=False, root=root, tools=root / 'tools',
+                                 python=root / 'python' / 'python.exe', runtime=root / 'runtime',
+                                 clang=root / 'llvm' / 'bin' / 'clang.exe', sysroot=None)
+        self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()), dest=self.dest, temp=temp, lang='en-US',
+                                   languages=None, state={}, layout=layout)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def lines(self):
+        steps.Cleanup().run(self.ctx)
+        return (self.dest / 'build-cache' / 'modcode.txt').read_text(encoding='utf-8').splitlines()
+
+    @mock.patch.dict(os.environ, {'APPIMAGE': ''})
+    def test_empties_temp_and_writes_the_mod_command(self):
+        for name in ('gen', 'build', 'check', 'logs'):
+            (self.ctx.temp / name).mkdir()
+        lines = self.lines()
+        self.assertEqual([p.name for p in self.ctx.temp.iterdir()], ['logs'])
+        self.assertEqual(lines, [str(self.root / 'python' / 'python.exe'), str(self.root / 'tools' / 'mod_code.py'),
+                                 '--cache', 'build-cache', '--runtime', str(self.root / 'runtime'), '--clang',
+                                 str(self.root / 'llvm' / 'bin' / 'clang.exe')])
+
+    def test_appimage_mod_command_starts_the_appimage(self):
+        # The AppImage's mount, where its Python lives, is gone once the setup exits
+        appimage = Path(self.tmp.name) / 'XC2-Setup-x86_64.AppImage'
+        appimage.write_bytes(b'')
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(appimage)}):
+            self.assertEqual(self.lines(), [str(appimage.resolve()), '--mod-code', '--cache', 'build-cache'])
+
+    def test_appimage_variable_without_the_file_keeps_the_python_command(self):
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(Path(self.tmp.name) / 'gone.AppImage')}):
+            self.assertEqual(self.lines()[1], str(self.root / 'tools' / 'mod_code.py'))
+
+
+class LiftTest(unittest.TestCase):
+    """Lift.run with the generator replaced: the mods stay out of it, and gen/ of an unfinished run stays."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, self.temp = base / 'game', base / 'temp'
+        (self.dest / 'mods' / 'A' / 'exefs').mkdir(parents=True)
+        (self.dest / 'mods' / 'A' / 'exefs' / 'x.pchtxt').write_text('1')
+        (self.temp / 'gen').mkdir(parents=True)
+        (self.temp / 'gen' / 'kept').write_text('x')
+        self.calls, self.code = [], 0
+        rep = SimpleNamespace(progress=lambda *a, **k: None, log=lambda *a: None)
+        layout = SimpleNamespace(recomp=ROOT / 'recomp', tools=ROOT / 'tools')
+        self.ctx = SimpleNamespace(dest=self.dest, temp=self.temp, layout=layout, reporter=rep,
+                                   keys={'lift': 'k', 'extract': 'e'}, state={}, region=None)
+        self.patcher = mock.patch.object(steps, 'run_tool', self.run_tool)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.tmp.cleanup()
+
+    def run_tool(self, ctx, step, script, args, parse=None):
+        self.calls.append(script.name)
+        return self.code, 'log'
+
+    def test_lifts_without_the_mods(self):
+        steps.Lift().run(self.ctx)
+        self.assertEqual(self.calls, ['gen.py'])
+        self.assertTrue((self.temp / 'gen' / 'kept').is_file())
+        self.assertEqual((self.temp / 'gen' / steps.STAMP).read_text().strip(), 'k')
+
+    def test_the_key_does_not_follow_the_mods(self):
+        before = steps.Lift().key(self.ctx)
+        (self.dest / 'mods' / 'A' / 'exefs' / 'x.pchtxt').write_text('2')
+        self.assertEqual(before, steps.Lift().key(self.ctx))
+
+    def test_a_failed_lift_leaves_no_stamp(self):
+        self.code = 1
+        (self.temp / 'gen' / steps.STAMP).write_text('old')
+        with self.assertRaises(steps.InstallError):
+            steps.Lift().run(self.ctx)
+        self.assertFalse((self.temp / 'gen' / steps.STAMP).exists())
+
+
 class EventsTest(unittest.TestCase):
     def test_lines_are_json_and_the_log_is_english(self):
         with tempfile.TemporaryDirectory() as d:
@@ -409,6 +612,41 @@ class HostVerdictTest(unittest.TestCase):
     def test_software_renderer_warns(self):
         h = host(devices=[gpu('llvmpipe', type_=4)])
         self.assertEqual(self.judge(h), ('v3', ['warn.software_vulkan']))
+
+    def test_the_compile_step_follows_the_level(self):
+        """A processor without AVX2: the host check plans again with the compile key of that level, and the compile
+        step links the v2 library; on others nothing changes."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'libxc2rt.a').write_text('v3')
+            (root / 'libxc2rt-v2.a').write_text('v2')
+            for level, tag, lib in ((3, 'v3', 'libxc2rt.a'), (2, 'v2', 'libxc2rt-v2.a')):
+                with self.subTest(level=level):
+                    layout = Layout(root=root, dev=True, release='1.0', python=root, tools=root / 'tools',
+                                    recomp=root / 'recomp', llvm=root / 'llvm', deps=None, runtime=root / 'rt',
+                                    runtime_lib=root / 'libxc2rt.a', ninja=root, xlate=root)
+                    ctx = runner.Context(layout, root / 'dest', root / f'temp{level}', Reporter(out=io.StringIO()),
+                                         SimpleNamespace(inputs={}))
+                    compile_step = self.steps.Compile()
+                    upstream = Fake('lift')
+                    ctx.steps = [upstream, compile_step]
+                    ctx.plan()
+                    before = ctx.keys['compile']
+                    run = mock.Mock(side_effect=[SimpleNamespace(returncode=0, stdout='', stderr=''),
+                                                 SimpleNamespace(returncode=0, stdout=json.dumps(host(cpu_level=level)),
+                                                                 stderr='')])
+                    with mock.patch.object(self.steps.subprocess, 'run', run):
+                        self.steps.Check().host(ctx)
+                    self.assertEqual(ctx.keys['compile'] == before, level == 3)
+                    self.assertEqual(self.steps.cpu_tag(ctx), tag)
+                    self.assertEqual(self.steps.cpu_runtime_lib(layout, tag).name, lib)
+                    with mock.patch.object(self.steps, 'run_tool', return_value=(1, root / 'log')) as tool, \
+                            mock.patch.object(Layout, 'expected', lambda self, *a: root / 'expected.json'), \
+                            self.assertRaises(self.steps.InstallError):
+                        compile_step.run(ctx)
+                    args = tool.call_args.args[3]
+                    self.assertEqual(args[args.index('--cpu') + 1], tag)
+                    self.assertEqual(Path(args[args.index('--runtime-lib') + 1]).name, lib)
 
     def test_older_host_check_output_is_judged_as_before(self):
         old = {'x86_64_v3': True, 'loader': True, 'instance': 0,

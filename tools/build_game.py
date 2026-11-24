@@ -73,6 +73,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import mod_abi
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
@@ -103,7 +104,7 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 # faster in camera turns and in still play (interleaved pairs, 2026-11-13), and a 40k-line function file peaks at the same
 # 206 MiB of compile memory at either level. -march for the FP/SIMD lowering.
 GEN_FLAGS = ['-O2', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
-             '-march=x86-64-v3']
+             '-march=x86-64-v3', '-DRT_FN_HOOKS=1']   # RT_FN_HOOKS: runtime/cpu.h FN_ENTER
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
 if WIN:
     LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xc2.map"']   # the map feeds tools/prof_report.py
@@ -358,9 +359,34 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version, title_id, name=None):
+def mod_base(gen, out):
+    """<out>/build-cache/mod-base: what the mods' code needs of this lift (tools/mod_abi.py). A lift from before
+    patches.txt existed has no mod code: its key is empty."""
+    base = out / 'build-cache' / 'mod-base'
+    table, folded = gen / 'patches.txt', gen / 'main' / 'folded.txt'
+    if not (table.is_file() and folded.is_file()):
+        shutil.rmtree(base, ignore_errors=True)
+        return ''
+    base.mkdir(parents=True, exist_ok=True)
+    write_if_changed(base / 'patches.txt', table.read_text())
+    write_if_changed(base / 'folded.txt', folded.read_text())
+    return mod_abi.mod_abi(RUNTIME, base)
+
+
+def mod_command(version, out):
+    """<out>/build-cache/modcode.txt of a source build: the command the game builds its mods' code with
+    (runtime/modcode.c). It takes this checkout's patch table, so an edit of it reaches the game at its next start
+    (XC2_MODS_BUILD=always) without a build."""
+    table = ROOT / 'recomp' / f'patches-{version}.txt'
+    cmd = [sys.executable, ROOT / 'tools' / 'mod_code.py', '--cache', 'build-cache', '--runtime', RUNTIME, '--clang',
+           CLANG, *(['--patches', table] if table.is_file() else [])]
+    write_if_changed(out / 'build-cache' / 'modcode.txt', '\n'.join(map(str, cmd)) + '\n')
+
+
+def module_glue(layout, linked, hashes, paths, version, title_id, name=None, abi=''):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version, the release's application id and the default game paths (host.h)."""
+    expected ExeFS hashes, the game version, the release's application id, the default game paths (host.h) and the key
+    of the mods' code (tools/mod_abi.py)."""
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -389,7 +415,7 @@ def module_glue(layout, linked, hashes, paths, version, title_id, name=None):
     number = GAME_VERSIONS.get(version, 0)   # 1.4.3 -> 143; XCX 2.0.0 and XC2 3.0.1 -> 0
     out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};',
             f'const char rt_game_name[] = {c_string(name or GAME_NAMES.get(version, ""))};',
-            f'const uint64_t rt_title_id = {title_id:#018x}ull;', '']
+            f'const uint64_t rt_title_id = {title_id:#018x}ull;', f'const char rt_mod_abi[] = {c_string(abi)};', '']
     return '\n'.join(out)
 
 
@@ -747,7 +773,9 @@ class ObjectCache:
         named = [('gen', gen), ('rt', RUNTIME), ('tc', toolchain), ('deps', DEPS), ('sys', sysroot)]
         self.roots = sorted(((t, Path(p).resolve()) for t, p in named if p), key=lambda r: -len(str(r[1])))
         version = subprocess.run([str(CLANG), '--version'], capture_output=True, text=True).stdout
-        version = '\n'.join(l for l in version.splitlines() if not l.startswith('InstalledDir'))
+        # llvm-mingw's clang also names its configuration file, in the folder it runs from
+        version = '\n'.join(l for l in version.splitlines()
+                            if not l.startswith(('InstalledDir:', 'Configuration file:')))
         flags = ' '.join(GEN_FLAGS)
         for t, p in self.roots:
             for form in (cmd_path(p), flag_path(p), str(p), p.as_posix()):
@@ -1157,6 +1185,8 @@ def main():
         print(f'build_game: profile-guided optimization with {flag_path(DEFAULT_PGO)} (--no-pgo builds without it)')
     if args.pgo_generate or args.pgo_use:
         use_pgo(args.pgo_generate, args.pgo_use.resolve() if args.pgo_use else None)
+    global RUNTIME
+    RUNTIME = (args.runtime or RUNTIME).resolve()
     if args.make_runtime_lib:
         # The library reads nothing of the game (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX stand in for layout.h), so it
         # builds without generated/ or extracted files: CI builds the release from a bare checkout
@@ -1176,7 +1206,8 @@ def main():
         if missing:
             sys.exit(f'{expected}: no exefs_sha256 for {missing}')
         write_if_changed(out / 'modules.c',
-                         module_glue(layout, linked, hashes, paths, args.version, title_id, game_name))
+                         module_glue(layout, linked, hashes, paths, args.version, title_id, game_name,
+                                     mod_base(gen, out)))
         if (paths['romfs'] / 'index.json').is_file():
             count, size, dt = romfs_index.write(paths['romfs'], out)
             print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
@@ -1185,8 +1216,6 @@ def main():
             print(f'build_game: warning: no {paths["romfs"] / "index.json"}; {EXE} will have no RomFS', file=sys.stderr)
         copy_romfs_patches(args.version, out)
         copy_prompts(args.version, out)
-    global RUNTIME
-    RUNTIME = (args.runtime or RUNTIME).resolve()
     stale = stale_shaders(RUNTIME)
     if stale:
         sys.exit(f'{stale[0]}: its SPIR-V header no longer matches; run python tools/build_shaders.py')
@@ -1262,6 +1291,8 @@ def main():
     if args.make_runtime_lib:
         print(f'{below_root(exe)}: {mib(exe.stat().st_size)}')
         return
+    if not args.runtime_lib:   # the setup writes its own (installer/steps.py mod_command)
+        mod_command(args.version, out)
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xc2.exe
         shutil.copy2(dll, exe.parent / dll.name)
     copy_translator(exe.parent)
