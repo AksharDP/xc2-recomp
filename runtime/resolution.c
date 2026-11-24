@@ -208,6 +208,12 @@ static void wide_hud(uint8_t *page) {
     // +0xe0: written by the minimap capture's region site (main+0x8365fc), the capture pane's group shift kept for its
     // draw-back (main+0x8367a0), since the children's draws rewrite +0xcc in between
     memset(page + 0xe0, 0, 8);   // and +0xe4, the thin-picture threshold res_hud_frame sets each frame
+    // +0xec: a 12-bit frame counter (res_hud_frame), from which the container sites (main+0x833ca4) tell a pane drawn on the
+    // frame before from one that was hidden
+    // +0x100: 4096 * 1080 / height, which turns a group's contents rectangle, kept in the frame's pixels, into 1080p
+    // pixels for the same sites' test of a centred group
+    uint32_t to_1080 = wide ? (4096u * 1080 + X.h / 2) / X.h : 4096;
+    memcpy(page + 0x100, &to_1080, sizeof to_1080);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;
@@ -224,6 +230,15 @@ void res_hud_frame(void) {
     memcpy(&seen, hud_page + 0xb4, sizeof seen);
     memcpy(&unit, hud_page + 0x9c, sizeof unit);
     field = seen > 8.0f * unit ? 0.0f : 1.0f;
+    // The title screen draws few full-width pictures but is laid out as a menu: its list, cursor glow and dialogs are
+    // centred under containers that start left of the middle, which the edge shift moved toward the frame's left edge, and
+    // its dialog bands are as thin as the title card. The title's object (title_main.cpp, made once at boot; the
+    // pointer at main+0xc232e8, set by its constructor main+0x14e74c) holds a pointer at +0x1a0 from the time its
+    // screen loads until a game starts (New Game or a loaded save, measured), so while it is set the frame is a menu.
+    uint64_t title = 0, screen = 0;
+    if (plat_mem_read(RT_MAIN_BASE + 0xc232e8, &title, sizeof title) && title &&
+        plat_mem_read(title + 0x1a0, &screen, sizeof screen) && screen)
+        field = 0.0f;
     memcpy(hud_page + 0xb0, &field, sizeof field);
     memset(hud_page + 0xb4, 0, sizeof seen);
     // +0xe4: the least height (the picture matrix's y scale, in units of 1 / frame width) of a full-width picture that
@@ -232,6 +247,9 @@ void res_hud_frame(void) {
     // design, such as the opening's "Xenoblade Chronicles 2" title card (0.067), keeps its shape
     float thin = field ? 384.0f / X.w : 0.0f;
     memcpy(hud_page + 0xe4, &thin, sizeof thin);
+    static uint16_t count;
+    count = (count + 1) & 0xfff;
+    memcpy(hud_page + 0xec, &count, sizeof count);
 }
 
 // A mod's ExeFS patch that holds xc2size off writes the graphics device's size getters (main+0x6e3fc8 width,
