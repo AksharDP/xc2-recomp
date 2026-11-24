@@ -33,7 +33,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Keyboard, mouse and gamepad
 - AMD FSR 1 scaling when the window is bigger than the game picture; bilinear is the other option
 - AMD FSR upscaling in place of the game's temporal anti-aliasing and scaling (FSR 3.1, or FSR 4 on Radeon RX 6000 and
-  newer), and frame generation between drawn frames, both off by default
+  newer), and frame generation between drawn frames, both off by default and in the Windows release only (AMD ships
+  the libraries for Windows). The performance overlay's *Upscaler* line shows the FSR version that is running
 - Mods for Switch emulators and Atmosphere, in a `mods` folder next to `xc2.exe` ([docs/mods.md](docs/mods.md))
 - Ultrawide game resolutions (21:9 and 32:9): a wider view of the world, menus centred and the field and battle HUD at
   the screen's edges (Fit the interface to wide screens, on by default)

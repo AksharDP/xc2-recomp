@@ -117,6 +117,12 @@ static struct {
 static VkFsrFrame FR, FR_shown;
 static uint32_t images_gen;
 
+// What the performance overlay reports (vk_fsr3_shown): the provider version of the last upscale and when it ran.
+// record_upscale writes both on the replay thread; the overlay reads them on the present thread.
+static PlatMutex status_lock = PLAT_MUTEX_INIT;
+static char status_version[64];
+static uint64_t status_ns;
+
 static void warn_once(uint32_t bit, const char *what) {
     if (F.warned & bit) return;
     F.warned |= bit;
@@ -157,15 +163,20 @@ static PFN_vkVoidFunction VKAPI_CALL device_proc(VkDevice device, const char *na
     return f;
 }
 
+// The path of dll next to the executable in *path; 0 when the executable's path is unknown.
+static int library_path(const char *dll, char *path, size_t size) {
+    if (!plat_exe_path(path, size - strlen(dll) - 1)) return 0;
+    char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
+    if (back > end) end = back;
+    if (!end) return 0;
+    snprintf(end + 1, size - (size_t)(end + 1 - path), "%s", dll);
+    return 1;
+}
+
 // The library next to the executable: plat_lib_open searches only the system folder for a bare name. *path receives the
 // file it found, for the log.
 static void *open_library(const char *dll, char *path, size_t size) {
-    if (!plat_exe_path(path, size - strlen(dll) - 1)) return NULL;
-    char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
-    if (back > end) end = back;
-    if (!end) return NULL;
-    snprintf(end + 1, size - (size_t)(end + 1 - path), "%s", dll);
-    return plat_lib_open(path);
+    return library_path(dll, path, size) ? plat_lib_open(path) : NULL;
 }
 
 static int init(VkCtx *c) {
@@ -466,6 +477,27 @@ static void note_picture(VkExec *ex) {
     }
 }
 
+// The size the game drew its last 3D scene in, for the overlay (resolution.c res_sizes): the width in the upper half,
+// the height in the lower one, 0 until the first scene. The replay thread writes it at every resolve, with FSR on or off.
+static uint64_t scene_size;
+
+// The resolve's uniform block holds the rendered size, whether the game chose it (dynamic resolution) or XC2_RENDER_SCALE.
+static void note_scene_size(VkExec *ex) {
+    const VkTexImage *scene = bound(ex, 0);
+    if (!scene || scene->format != SCENE_FORMAT || !ex->color[4].img) return;   // a pass at boot has the same targets
+    const float *c4 = block_of(&ex->ubo[1][1], 96);
+    if (!c4) return;
+    float w = c4[3 * 4], h = c4[3 * 4 + 1];
+    if (!(w >= 1 && h >= 1 && w <= (float)ex->pass_w && h <= (float)ex->pass_h)) return;
+    __atomic_store_n(&scene_size, (uint64_t)(uint32_t)w << 32 | (uint32_t)h, __ATOMIC_RELAXED);
+}
+
+int vk_scene_size(unsigned out[2]) {
+    uint64_t s = __atomic_load_n(&scene_size, __ATOMIC_RELAXED);
+    if (s) out[0] = (unsigned)(s >> 32), out[1] = (unsigned)s;
+    return s != 0;
+}
+
 void vk_fsr3_note(VkExec *ex) {
     if (ex->pass_ncolor == 1) {
         if (F.stage) note_picture(ex);
@@ -477,6 +509,7 @@ void vk_fsr3_note(VkExec *ex) {
         return;
     int unfinished = F.stage != STAGE_NONE;
     F.stage = STAGE_NONE;
+    note_scene_size(ex);
     if (!cfg_bool("XC2_FSR3")) return;   // frame generation is off without it too (vk_fg_wanted)
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
@@ -624,6 +657,10 @@ static void record_upscale(VkExec *ex) {
         F.ok = 0;
         return;
     }
+    plat_mutex_lock(&status_lock);
+    if (strcmp(status_version, F.version)) snprintf(status_version, sizeof status_version, "%s", F.version);
+    status_ns = kern_now_ns();   // not now: the first dispatch can take long enough to make that old
+    plat_mutex_unlock(&status_lock);
     memory_barrier(cb);
     VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                           .srcOffsets = {{0, 0, 0}, {(int)F.ow, (int)F.oh, 1}},
@@ -675,6 +712,36 @@ void vk_fsr3_release(void) {
     memset(&F, 0, sizeof F);
     memset(&FR, 0, sizeof FR);
     memset(&FR_shown, 0, sizeof FR_shown);
+    plat_mutex_lock(&status_lock);
+    status_ns = 0;
+    plat_mutex_unlock(&status_lock);
+}
+
+// Which of the two libraries init accepts are next to the executable: bit 0 the AMD FSR SDK 2.x loader (which frame
+// generation and the version choice need too), bit 1 the FidelityFX SDK 1.1.4 library. Nothing is loaded here; init
+// does that on the replay thread once FSR is turned on. The Linux release ships neither, so there the menu greys the
+// FSR rows out. The answer is kept: the files do not come and go while the game runs.
+int vk_fsr3_libraries(void) {
+    static int have = -1;
+    if (have < 0) {
+        char path[1024];
+        int bits = 0;
+        if (library_path(FFX_LOADER, path, sizeof path) && plat_file_exists(path)) bits |= 1;
+        if (library_path(FFX_LEGACY, path, sizeof path) && plat_file_exists(path)) bits |= 2;
+        have = bits;
+    }
+    return have;
+}
+
+// 1 with the provider version ("4.1.2", "3.1.4") in buf when FSR upscaled a frame within the last second; 0 when it did
+// not (turned off, no library, failed, or no 3D scene to upscale, as on a loading screen).
+int vk_fsr3_shown(char *buf, size_t size) {
+    plat_mutex_lock(&status_lock);
+    uint64_t now = kern_now_ns();   // under the lock: read before it, it could be older than status_ns
+    int on = status_ns && now - status_ns < 1000000000ull;
+    if (on && size) snprintf(buf, size, "%s", status_version);
+    plat_mutex_unlock(&status_lock);
+    return on;
 }
 
 // ---- --probe-fsr: the upscaler alone, without the game

@@ -379,6 +379,11 @@ static unsigned scene_side(unsigned side, float scale) {
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.on || R.xc2 ? R.ow : BASE_W, out[1] = R.on || R.xc2 ? R.oh : BASE_H;
+    if (R.xc2) {   // XC2 has no sceneread: the size the last scene was drawn in, the set share before the first one
+        float share = R.scale ? (float)R.scale / 100.0f : 1.0f;
+        if (!vk_scene_size(scene)) scene[0] = scene_side(out[0], share), scene[1] = scene_side(out[1], share);
+        return;
+    }
     uint8_t *page = rt_patch_page();
     uint32_t used[2] = {0, 0};   // the patch set sceneread
     if (page) {
