@@ -22,8 +22,9 @@ def config_path():
 
 
 def defaults():
-    """Return empty values for the installer's remembered fields."""
-    return {'base': '', 'update': '', 'dlc': [], 'keys': '', 'dest': ''}
+    """Return empty values for the installer's remembered fields. check_updates: whether the window asks GitHub for a
+    newer setup when it opens (installer/selfupdate.py); "check_updates": false in the file turns that off."""
+    return {'base': '', 'update': '', 'dlc': [], 'keys': '', 'dest': '', 'check_updates': True}
 
 
 def load(target=None):
@@ -44,6 +45,8 @@ def load(target=None):
     dlc = data.get('dlc')
     if isinstance(dlc, list):
         values['dlc'] = [path for path in dlc if isinstance(path, str)]
+    if isinstance(data.get('check_updates'), bool):
+        values['check_updates'] = data['check_updates']
     return values
 
 
@@ -56,6 +59,7 @@ def save(values, target=None):
         data[name] = value if isinstance(value, str) else ''
     dlc = values.get('dlc', ())
     data['dlc'] = [item for item in dlc if isinstance(item, str)] if isinstance(dlc, (list, tuple)) else []
+    data['check_updates'] = values.get('check_updates', True) is not False
     temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

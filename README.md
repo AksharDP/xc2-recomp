@@ -63,7 +63,7 @@ Requirements: Windows 10 or later, or Linux 6.7 or later with glibc 2.34, an x86
 On Linux, download `XC2-Setup-<version>-linux.AppImage` instead, make it executable and start it; the steps are the
 same and the game is `xc2` in the install folder ([docs/installer.md](docs/installer.md), "Linux release").
 
-To update, run a newer `XC2-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) describes most of them). Controls: [docs/controls.md](docs/controls.md).
+To update, start the setup again: when a newer release is out it says so, and *Download and update* fetches the new setup and updates your install folder with it. Running a newer `XC2-Setup.exe` on the same folder does the same. Saves and settings are kept either way. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) describes most of them). Controls: [docs/controls.md](docs/controls.md).
 
 ## Credits
 
