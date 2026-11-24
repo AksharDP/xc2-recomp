@@ -274,30 +274,30 @@ static int fonts_up(float scale, const char *menu_lang) {
     enum { N = 4 };
     // ImGui keeps the first font's glyph of a character (ImFontAtlasBuildWithStbTruetype, GlyphsSet), and the languages
     // share characters: a Chinese menu loads its own font first, so that no character of its text comes from another one
-    static const char *const order_en[N] = {"ja", "ko", "zh-Hans", "zh-Hant"},
-                      *const order_hans[N] = {"zh-Hans", "zh-Hant", "ja", "ko"},
+    static const char *const order_hans[N] = {"zh-Hans", "zh-Hant", "ja", "ko"},
                       *const order_hant[N] = {"zh-Hant", "zh-Hans", "ja", "ko"};
     bool hans = !strcmp(menu_lang, "zh-Hans"), hant = !strcmp(menu_lang, "zh-Hant");
-    const char *const *order = hans ? order_hans : hant ? order_hant : order_en;
+    const char *const *order = hant ? order_hant : order_hans;
     ImFontAtlas *fa = ImGui::GetIO().Fonts;
     fa->Clear();
     ImFontConfig fc;
     fc.FontDataOwnedByAtlas = false;
     fa->AddFontFromMemoryTTF((void *)roboto_ttf, (int)sizeof roboto_ttf, 26.0f * scale, &fc, kRanges);
-    ImFontGlyphRangesBuilder zh;   // what both Chinese fonts are asked for
+    ImFontGlyphRangesBuilder names;   // what every font is asked for: a mod or cheat may be named in any of the languages
+    for (int i = 0; i < mods_count(); i++)
+        if (const ModInfo *m = mods_at(i)) names.AddText(m->name);
+    for (int i = 0; i < cheats_count(); i++)
+        if (const CheatInfo *c = cheats_info(i)) {
+            const char *texts[] = {c->mod, c->name, c->note};
+            for (const char *text : texts)
+                if (text) names.AddText(text);
+        }
+    ImFontGlyphRangesBuilder zh = names;   // what both Chinese fonts are asked for
     if (hans || hant) {
         zh.AddRanges(fa->GetGlyphRangesChineseSimplifiedCommon());
         zh.AddRanges(kCjkPunct);
         for (int id = 0; id < UI_TEXT_COUNT; id++) zh.AddText(ui_text_in(menu_lang, (UiTextId)id));
     }
-    for (int i = 0; i < mods_count(); i++)
-        if (const ModInfo *m = mods_at(i)) zh.AddText(m->name);
-    for (int i = 0; i < cheats_count(); i++)
-        if (const CheatInfo *c = cheats_info(i)) {
-            const char *texts[] = {c->mod, c->name, c->note};
-            for (const char *text : texts)
-                if (text) zh.AddText(text);
-        }
     uint8_t *data[N] = {};
     ImVector<ImWchar> ranges[N];
     int merged = 0, chinese = 0;
@@ -307,8 +307,9 @@ static int fonts_up(float scale, const char *menu_lang) {
         uint64_t size = 0;
         if (!plat_font_path(order[i], path, sizeof path, &face) || !(data[i] = plat_file_read(path, &size))) continue;
         merged++;
-        ImFontGlyphRangesBuilder b;
-        if (!strncmp(order[i], "zh", 2)) b = zh, chinese++;
+        bool is_zh = !strncmp(order[i], "zh", 2);
+        chinese += is_zh;
+        ImFontGlyphRangesBuilder b = is_zh ? zh : names;
         b.AddText(ui_text_in("en", lang_name(order[i])));
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
