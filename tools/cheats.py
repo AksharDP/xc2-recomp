@@ -174,7 +174,7 @@ def vm_ok(o):
 
 class Main:
     def __init__(self, path):
-        n = Nso(str(path))
+        n = self.nso = Nso(str(path))
         self.image = bytes(n.image)
         self.text = n.text   # (offset, size)
         self.code_end = n.rodata[0]   # .text and its padding up to .rodata, where code caves go
