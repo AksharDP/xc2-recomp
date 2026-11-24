@@ -365,14 +365,18 @@ int plat_font_path(const char *lang, char *out, size_t cap, int *face);
 int plat_os_version(char *out, size_t cap);
 // The file the process's stderr (the log) goes to, as a UTF-8 path; 0 when stderr is not a file (a console, a pipe).
 int plat_stderr_path(char *out, size_t cap);
+// 1 when stderr is a console or terminal, where a line can be drawn over with \r.
+int plat_stderr_console(void);
 
 // ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success
 int plat_folder_can_open(void);                        // 1 when the shell opens folders for this process; 0 at low integrity, where the path is copied instead
 int plat_open_folder(const char *path);                   // shows the folder in the file manager; 1 on success
 // Runs argv[0] with the arguments argv[1..] (NULL-terminated, UTF-8) in folder cwd, without a window, and waits for it as
-// plat_run_self does; its exit code, -1 when it could not start (modcode.c).
-int plat_run(const char *const *argv, const char *cwd, char *out, size_t cap, uint32_t timeout_ms);
+// plat_run_self does; its exit code, -1 when it could not start (modcode.c). on_output gets what it writes as it comes, in
+// pieces that end anywhere, on the caller's thread.
+typedef void (*PlatOutput)(void *ctx, const char *bytes, size_t n);
+int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms);
 // Starts this executable again with the same arguments and env_name=env_value added to its environment; the caller then
 // ends this process. 0 when it could not.
 int plat_restart(const char *env_name, const char *env_value);

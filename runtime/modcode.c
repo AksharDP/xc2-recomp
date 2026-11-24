@@ -16,6 +16,9 @@
 // start with nothing new. XC2_MODS_BUILD=off never runs it; =always runs it at each start (a developer who edits the
 // patch table). When it fails, the game starts without the code it could not make: the cheats stay off and a mod with
 // unbuilt ExeFS patches stays off as a whole (mods.c); the next start tries again.
+//
+// The tool runs before the game has a window, so its progress is a bar in the console the game was started in, or that
+// Windows opened for it; its other lines go to the log as they come. A log file gets the lines only.
 #include "modcode.h"
 
 #include <stdio.h>
@@ -94,6 +97,58 @@ int modcode_current(void) {
     return find_dir() && rt_mod_abi[0] && current(path, sizeof path);
 }
 
+enum { BAR_WIDTH = 76 };   // under the 80 columns of the narrowest usual console: a wrapped line cannot be drawn over
+
+typedef struct {
+    char line[1024], last[sizeof g_error];   // the line so far; the last whole one
+    size_t n;
+    int bar;   // a bar is on the console's current line
+} ToolOut;
+
+static void bar_clear(ToolOut *o) {
+    char b[BAR_WIDTH + 3];
+    if (!o->bar) return;
+    int n = snprintf(b, sizeof b, "\r%*s\r", BAR_WIDTH, "");
+    fwrite(b, 1, (size_t)n, stderr);
+    o->bar = 0;
+}
+
+static void bar_draw(ToolOut *o, int percent, const char *text) {
+    enum { CELLS = 24 };
+    if (!plat_stderr_console()) return;
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    char cells[CELLS + 1], s[BAR_WIDTH + 1], b[BAR_WIDTH + 2];
+    for (int i = 0; i < CELLS; i++) cells[i] = i < percent * CELLS / 100 ? '#' : '-';
+    cells[CELLS] = 0;
+    snprintf(s, sizeof s, "Preparing mods [%s] %3d %%  %s", cells, percent, text);
+    int n = snprintf(b, sizeof b, "\r%-*s", BAR_WIDTH, s);
+    fwrite(b, 1, (size_t)n, stderr);
+    o->bar = 1;
+}
+
+static void tool_line(ToolOut *o) {
+    o->line[o->n] = 0;
+    o->n = 0;
+    if (!o->line[0]) return;
+    int percent, at = 0;
+    if (sscanf(o->line, "progress %d %n", &percent, &at) == 1 && at) {
+        bar_draw(o, percent, o->line + at);
+        return;
+    }
+    bar_clear(o);
+    rt_log("  %s", o->line);
+    snprintf(o->last, sizeof o->last, "%s", o->line);
+}
+
+static void tool_output(void *ctx, const char *p, size_t n) {
+    ToolOut *o = (ToolOut *)ctx;
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] == '\n') tool_line(o);
+        else if (p[i] != '\r' && o->n + 1 < sizeof o->line) o->line[o->n++] = p[i];
+    }
+}
+
 // Runs the command in modcode.txt; 1 when it worked.
 static int run_tool(void) {
     char *cmd = cache_text("modcode.txt"), program[PLAT_PATH_MAX + 64];
@@ -110,24 +165,21 @@ static int run_tool(void) {
     argv[argc++] = mods_dir();
     argv[argc++] = "--abi";
     argv[argc++] = rt_mod_abi;
+    argv[argc++] = "--progress";
     argv[argc] = NULL;
     // the platform starts a relative program from this process's working folder, which a shortcut may set
     if (!plat_path_absolute(argv[0]) && snprintf(program, sizeof program, "%s%s", g_dir, argv[0]) < (int)sizeof program)
         argv[0] = program;
-    char *out = (char *)malloc(1 << 16);
-    if (!out) rt_fatal("modcode: out of memory");
+    ToolOut o = {0};
+    bar_draw(&o, 0, "starting");
     uint64_t t0 = plat_now_ms();
-    int code = plat_run(argv, g_dir, out, 1 << 16, TOOL_TIMEOUT_MS);
-    rt_log("modcode: %s: exit code %d, %llu ms", argv[0], code, (unsigned long long)(plat_now_ms() - t0));
-    const char *l[200], *last = "";
-    int n = code == -1 ? 0 : lines_of(out, l, 200);
-    for (int i = 0; i < n; i++) {
-        rt_log("  %s", l[i]);
-        last = l[i];
-    }
+    int code = plat_run(argv, g_dir, tool_output, &o, TOOL_TIMEOUT_MS);
+    tool_line(&o);   // a last line without its end
+    bar_clear(&o);
+    rt_log("modcode: %s: exit code %d, %llu ms%s", argv[0], code, (unsigned long long)(plat_now_ms() - t0),
+           code ? "; the game starts without the code it could not make" : "");
     if (!code) g_error[0] = 0;
-    else snprintf(g_error, sizeof g_error, "%s", code == -1 ? "tools/mod_code.py did not start" : last);
-    free(out);
+    else snprintf(g_error, sizeof g_error, "%s", code == -1 ? "tools/mod_code.py did not start" : o.last);
     free(cmd);
     return code == 0;
 }

@@ -4,7 +4,7 @@ library (runtime/modcode_abi.h), a DLL with only the functions they change, lift
 library; xc2.exe itself never changes. One to three seconds, most of it the compiler.
 
   python tools/mod_code.py --exefs <dir> --mods <dir> --cache <build-cache> --runtime <dir> --clang <clang>
-                           [--patches <patch file>] [--sysroot <dir>] [--abi <key>]
+                           [--patches <patch file>] [--sysroot <dir>] [--abi <key>] [--progress]
 
 --cache is the build-cache folder beside xc2.exe. Read there: mod-base/ (tools/mod_abi.py). Written there, all at the end
 of a run that worked, so a failed one leaves the last good state:
@@ -19,7 +19,8 @@ functions changed.
 --patches is the patch table the mods' sites go on top of (default: mod-base/patches.txt, the one the exe was built with).
 A developer's edited table (recomp/patches-v301.txt) works too: a function whose sites differ from the built ones goes
 into the library, so a change to the port's own patches runs after a restart instead of a build of the game. --abi is
-the key in the exe; another key than this folder's stops the run (exit 3).
+the key in the exe; another key than this folder's stops the run (exit 3). --progress prints a line "progress <percent>
+<what it does>" at each step, which the game draws as a bar in its console.
 
 A patch the generator refuses costs its own file or cheat only: its status line becomes unsupported with the reason.
 
@@ -32,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
@@ -246,6 +248,11 @@ def without_sets(path, sets):
     path.write_text('\n'.join(lines) + '\n')
 
 
+def progress(args, percent, text):
+    if args.progress:
+        print(f'progress {percent:.0f} {text}', flush=True)
+
+
 def run(cmd, env):
     try:
         p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, errors='replace', env=env,
@@ -271,6 +278,8 @@ def compile_lib(args, key, parts, added, first):
     env = dict(os.environ)
     env['PATH'] = str(args.clang.parent) + os.pathsep + env.get('PATH', '')
 
+    lock, done = threading.Lock(), 0
+
     def build(unit):
         (name, text), digest = unit
         o = obj / f'{digest}.o'
@@ -286,9 +295,19 @@ def compile_lib(args, key, parts, added, first):
             tmp.unlink(missing_ok=True)
         return o
 
+    def counted(unit):
+        nonlocal done
+        o = build(unit)
+        with lock:
+            done += 1
+            progress(args, 35 + 55 * done / len(units), f'compiled {done} of {len(units)} parts')
+        return o
+
     if not lib.is_file():
+        progress(args, 35, f'compiling {len(units)} parts')
         with ThreadPoolExecutor(os.cpu_count() or 4) as ex:
-            objects = list(ex.map(build, zip(units, hashes)))
+            objects = list(ex.map(counted, zip(units, hashes)))
+        progress(args, 92, 'linking')
         tmp = folder / f'{lib.stem}.{os.getpid()}.tmp'
         try:
             run([args.clang, '-shared', '-fuse-ld=lld', *sysroot, *objects, '-o', tmp], env)
@@ -328,7 +347,9 @@ def build(args):
     work = args.cache / 'mods' / f'work-{os.getpid()}'
     work.mkdir(parents=True, exist_ok=True)
     try:
+        progress(args, 5, 'reading the mods and cheats')
         table = run_tools(args, work)
+        progress(args, 20, "reading the game's code")
         mods = layout(args.exefs)
         base = patches.load(args.cache / 'mod-base' / 'patches.txt', mods)
         while True:
@@ -342,6 +363,7 @@ def build(args):
         t1 = time.perf_counter()
         lib = compile_lib(args, key, parts, added, len(base.sets)) if parts else None
         publish(args, work, key, lib)
+        progress(args, 100, 'done')
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print(f'mod_code: {sum(len(p.fns) for p in parts)} functions, {len(added)} patch sets, '
@@ -358,8 +380,9 @@ def main():
     ap.add_argument('--patches', type=Path, help='patch table to use instead of the one the exe was built with')
     ap.add_argument('--sysroot', type=Path)
     ap.add_argument('--abi', help='the key in the exe (rt_mod_abi)')
+    ap.add_argument('--progress', action='store_true', help='print a line at each step for a progress bar')
     args = ap.parse_args()
-    sys.stdout.reconfigure(errors='replace')
+    sys.stdout.reconfigure(errors='replace', line_buffering=True)   # the game shows the lines as they come
     try:
         build(args)
     except AbiError as e:

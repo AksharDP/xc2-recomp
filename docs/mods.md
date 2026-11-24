@@ -176,7 +176,9 @@ version. Renaming them does not help: their offsets point at different code in 3
 Nothing here needs the setup, your game files or the keys: put a mod in the folder, or change one, and start the game.
 Files in `romfs` and cheats that write memory work as they are. New or changed code patches and code cheats are compiled
 first: the game start takes a few seconds longer that once (about 1 s plus the compiler, which works only on the game
-functions the mod changes). Switching a mod on or off compiles nothing.
+functions the mod changes). A progress bar shows it in the console window that opens with the game; a game started
+without a console (a Linux desktop launcher, a launcher that hides it) shows nothing. Switching a mod on or off compiles
+nothing.
 
 - If something cannot be built, the game starts without it and tries again at its next start. The Mods and Cheats tabs
   say so with the reason; the log has the rest.

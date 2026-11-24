@@ -1336,6 +1336,8 @@ int plat_os_version(char *out, size_t cap) {
     return snprintf(out, cap, "%s (Linux %s)", name, u.release) < (int)cap;
 }
 
+int plat_stderr_console(void) { return isatty(STDERR_FILENO); }
+
 int plat_stderr_path(char *out, size_t cap) {
     struct stat st;
     if (fstat(2, &st) || !S_ISREG(st.st_mode)) return 0;
@@ -1423,9 +1425,10 @@ long plat_tz_west(void) {
     return timezone;
 }
 
-// The child's output into out (NUL-terminated, the rest discarded), then its exit code; -1 when it never started. A
-// child still running after timeout_ms is killed.
-static int run_child(const char *exe, char *const *argv, const char *cwd, char *out, size_t cap, uint32_t timeout_ms) {
+// The child's output into out (NUL-terminated, the rest discarded) and to on_output (may be NULL) as it comes, then its
+// exit code; -1 when it never started. A child still running after timeout_ms is killed.
+static int run_child(const char *exe, char *const *argv, const char *cwd, char *out, size_t cap, PlatOutput on_output,
+                     void *ctx, uint32_t timeout_ms) {
     int p[2];
     if (pipe2(p, O_CLOEXEC)) return -1;
     posix_spawn_file_actions_t fa;
@@ -1453,9 +1456,11 @@ static int run_child(const char *exe, char *const *argv, const char *cwd, char *
         if (ready < 0 && errno == EINTR) continue;
         if (ready <= 0) break;
         int full = len + 1 >= cap;
-        k = read(p[0], full ? sink : out + len, full ? sizeof sink : cap - 1 - len);
+        char *to = full ? sink : out + len;
+        k = read(p[0], to, full ? sizeof sink : cap - 1 - len);
         if (k < 0 && errno == EINTR) continue;
         if (k <= 0) break;
+        if (on_output) on_output(ctx, to, (size_t)k);
         if (!full) len += (size_t)k;
     }
     if (cap) out[len] = 0;
@@ -1472,8 +1477,8 @@ static int run_child(const char *exe, char *const *argv, const char *cwd, char *
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
 }
 
-int plat_run(const char *const *argv, const char *cwd, char *out, size_t cap, uint32_t timeout_ms) {
-    return run_child(argv[0], (char *const *)argv, cwd, out, cap, timeout_ms);
+int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms) {
+    return run_child(argv[0], (char *const *)argv, cwd, NULL, 0, on_output, ctx, timeout_ms);
 }
 
 // The arguments of this process, from /proc/self/cmdline; NULL when there are none.
@@ -1493,7 +1498,7 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     char exe[PATH_MAX], **argv = self_args();
     if (!argv || !plat_exe_path(exe, sizeof exe)) return -1;
     setenv(env_name, env_value, 1);
-    int code = run_child(exe, argv, NULL, out, cap, timeout_ms);
+    int code = run_child(exe, argv, NULL, out, cap, NULL, NULL, timeout_ms);
     unsetenv(env_name);
     return code;
 }

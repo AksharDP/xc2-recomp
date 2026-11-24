@@ -786,9 +786,10 @@ static size_t quote_arg(const wchar_t *a, wchar_t *out, size_t cap, size_t at) {
     return at;
 }
 
-// The child's output into out (NUL-terminated, the rest discarded), then its exit code; -1 when it never started. A
-// child still running after timeout_ms is killed.
-static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, size_t cap, uint32_t timeout_ms) {
+// The child's output into out (NUL-terminated, the rest discarded) and to on_output (may be NULL) as it comes, then its
+// exit code; -1 when it never started. A child still running after timeout_ms is killed.
+static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, size_t cap, PlatOutput on_output, void *ctx,
+                     uint32_t timeout_ms) {
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
     HANDLE rd, wr;
     if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
@@ -806,23 +807,25 @@ static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, s
     DWORD got, avail;
     char sink[512];
     ULONGLONG end = GetTickCount64() + (timeout_ms ? timeout_ms : INFINITE);
-    int alive = 1;
-    while (alive && (!timeout_ms || GetTickCount64() < end)) {
+    for (int alive = 1, last = 0; !last;) {
         // a grandchild may hold the pipe open after the child ended, and one that hangs writes nothing: read what is
-        // there, else look whether the child still runs
+        // there, else look whether the child still runs; once more after it ended
+        last = !alive;
         while (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail) {
             int full = len + 1 >= cap;
-            if (!ReadFile(rd, full ? sink : out + len, (DWORD)(full ? sizeof sink : cap - 1 - len), &got, NULL)) break;
+            char *to = full ? sink : out + len;
+            if (!ReadFile(rd, to, (DWORD)(full ? sizeof sink : cap - 1 - len), &got, NULL)) break;
+            if (on_output) on_output(ctx, to, got);
             if (!full) len += got;
+            if (timeout_ms && GetTickCount64() >= end) break;
         }
-        alive = WaitForSingleObject(pi.hProcess, 5) != WAIT_OBJECT_0;
+        if (timeout_ms && GetTickCount64() >= end) break;
+        if (alive) alive = WaitForSingleObject(pi.hProcess, 5) != WAIT_OBJECT_0;
     }
-    while (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail && len + 1 < cap &&
-           ReadFile(rd, out + len, (DWORD)(cap - 1 - len), &got, NULL))
-        len += got;
     if (cap) out[len] = 0;
     CloseHandle(rd);
-    if (alive) TerminateProcess(pi.hProcess, 1), WaitForSingleObject(pi.hProcess, INFINITE);
+    if (WaitForSingleObject(pi.hProcess, 0) != WAIT_OBJECT_0)
+        TerminateProcess(pi.hProcess, 1), WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
@@ -830,7 +833,7 @@ static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, s
     return (int)code;
 }
 
-int plat_run(const char *const *argv, const char *cwd, char *out, size_t cap, uint32_t timeout_ms) {
+int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms) {
     enum { CMD = 32768 };
     wchar_t *cmd = calloc(CMD, sizeof *cmd), *arg = malloc(WPATH * sizeof *arg), *dir = malloc(WPATH * sizeof *dir);
     int ok = cmd && arg && dir && argv[0] && widen(cwd, dir, WPATH), code = -1;
@@ -841,7 +844,7 @@ int plat_run(const char *const *argv, const char *cwd, char *out, size_t cap, ui
     }
     if (ok && at < CMD && at > 0) {
         cmd[at - 1] = 0;   // the last separator
-        code = run_child(cmd, dir, CREATE_NO_WINDOW, out, cap, timeout_ms);
+        code = run_child(cmd, dir, CREATE_NO_WINDOW, NULL, 0, on_output, ctx, timeout_ms);
     }
     free(cmd);
     free(arg);
@@ -852,7 +855,7 @@ int plat_run(const char *const *argv, const char *cwd, char *out, size_t cap, ui
 int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
     wchar_t *cmdline = _wcsdup(GetCommandLineW());
     SetEnvironmentVariableA(env_name, env_value);
-    int code = run_child(cmdline, NULL, 0, out, cap, timeout_ms);
+    int code = run_child(cmdline, NULL, 0, out, cap, NULL, NULL, timeout_ms);
     SetEnvironmentVariableA(env_name, NULL);
     free(cmdline);
     return code;
@@ -1165,6 +1168,11 @@ int plat_os_version(char *out, size_t cap) {
     snprintf(out, cap, ubr ? "Windows %lu.%lu.%lu.%lu" : "Windows %lu.%lu.%lu", v.dwMajorVersion, v.dwMinorVersion,
              v.dwBuildNumber, ubr);
     return 1;
+}
+
+int plat_stderr_console(void) {
+    DWORD mode;
+    return GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &mode) != 0;
 }
 
 int plat_stderr_path(char *out, size_t cap) {
