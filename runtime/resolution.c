@@ -210,6 +210,10 @@ static void wide_hud(uint8_t *page) {
     memset(page + 0xe0, 0, 8);   // and +0xe4, the thin-picture threshold res_hud_frame sets each frame
     // +0xec: a 12-bit frame counter (res_hud_frame), from which the container sites (main+0x833ca4) tell a pane drawn on the
     // frame before from one that was hidden
+    // +0x100: 4096 * 1080 / height, which turns a group's contents rectangle, kept in the frame's pixels, into 1080p
+    // pixels for the same sites' test of a centred group
+    uint32_t to_1080 = wide ? (4096u * 1080 + X.h / 2) / X.h : 4096;
+    memcpy(page + 0x100, &to_1080, sizeof to_1080);
     int on = wide && rt_patch_enabled(set);   // rt_patches_init read XC2_HUD_CENTER
     rt_patch_switch(set, on);
     hud_page = on ? page : NULL;
