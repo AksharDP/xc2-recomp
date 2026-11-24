@@ -422,6 +422,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FSR_VERSION_AUTO] = "自动", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR 帧生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 帧生成会在每两帧渲染画面之间插入一帧插值画面，使输出帧率接近翻倍。需同时开启 AMD FSR 以提供深度、运动矢量与无 HUD 画面；建议将帧率上限设为显示器刷新率的一半左右。默认关闭。",
+    [UI_MENU_FSR_MISSING] = "不可用：游戏目录中没有 AMD FSR 库（Linux 版本不附带）。",
+    [UI_MENU_FSR_LOADER_MISSING] = "需要在游戏目录中放置 amd_fidelityfx_loader_vk.dll。",
 
     [UI_MENU_FPS_LIMIT] = "帧率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "游戏每秒绘制的最大帧数，游戏时钟同步随帧率步进。默认为 120。超过 60 FPS 目前仍属于实验性功能。",
@@ -658,10 +660,12 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "游戏 %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "每帧 %.1f 次",
     [UI_MENU_OV_WINDOW] = "窗口", [UI_MENU_OV_OUTPUT] = "游戏画面", [UI_MENU_OV_SCENE] = "3D 场景",
-    [UI_MENU_OV_SCALING] = "缩放方式", [UI_MENU_OV_LIMIT] = "帧率上限", [UI_MENU_OV_PRESENT] = "呈现模式",
+    [UI_MENU_OV_UPSCALER] = "超分", [UI_MENU_OV_SCALING] = "窗口缩放", [UI_MENU_OV_LIMIT] = "帧率上限", [UI_MENU_OV_PRESENT] = "呈现模式",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，锐度 %d%%", [UI_MENU_OV_SCALE_NONE] = "无 (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "双线性",
+    [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "游戏 (TAA)",
+    [UI_MENU_OV_UPSCALE_NO_LIB] = "游戏：无 FSR 库", [UI_MENU_OV_UPSCALE_IDLE] = "游戏：FSR 未运行",
 };
 
 static const char *const text_zh_hant[UI_TEXT_COUNT] = {
@@ -718,6 +722,8 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_FSR_VERSION_AUTO] = "自動", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR 影格生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 影格生成會在兩張實際算繪影格之間插入一張補插影格，使顯示幀率接近倍增。需開啟 AMD FSR 以取得深度、運動向量與無介面影像；建議將幀率上限設為螢幕更新率的一半左右。預設關閉。",
+    [UI_MENU_FSR_MISSING] = "無法使用：遊戲資料夾中沒有 AMD FSR 函式庫（Linux 版本不附帶）。",
+    [UI_MENU_FSR_LOADER_MISSING] = "需在遊戲資料夾中放置 amd_fidelityfx_loader_vk.dll。",
 
     [UI_MENU_FPS_LIMIT] = "幀率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "遊戲每秒繪製的最高幀數，遊戲時鐘同步跟隨。預設為 120。高於 60 FPS 目前仍屬實驗性功能。",
@@ -954,10 +960,12 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "遊戲 %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "每幀 %.1f 次",
     [UI_MENU_OV_WINDOW] = "視窗", [UI_MENU_OV_OUTPUT] = "遊戲影像", [UI_MENU_OV_SCENE] = "3D 場景",
-    [UI_MENU_OV_SCALING] = "縮放", [UI_MENU_OV_LIMIT] = "幀率上限", [UI_MENU_OV_PRESENT] = "呈現",
+    [UI_MENU_OV_UPSCALER] = "升頻", [UI_MENU_OV_SCALING] = "視窗縮放", [UI_MENU_OV_LIMIT] = "幀率上限", [UI_MENU_OV_PRESENT] = "呈現",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，銳利度 %d%%", [UI_MENU_OV_SCALE_NONE] = "無 (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "雙線性",
+    [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "遊戲 (TAA)",
+    [UI_MENU_OV_UPSCALE_NO_LIB] = "遊戲：無 FSR 函式庫", [UI_MENU_OV_UPSCALE_IDLE] = "遊戲：FSR 未執行",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
