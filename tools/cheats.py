@@ -174,7 +174,7 @@ def vm_ok(o):
 
 class Main:
     def __init__(self, path):
-        n = Nso(str(path))
+        n = self.nso = Nso(str(path))
         self.image = bytes(n.image)
         self.text = n.text   # (offset, size)
         self.code_end = n.rodata[0]   # .text and its padding up to .rodata, where code caves go
@@ -356,6 +356,10 @@ def main():
     ap.add_argument('--status', type=Path, required=True)
     args = ap.parse_args()
     sys.stdout.reconfigure(errors='replace')   # cheat names in a console without their characters
+    build(args)
+
+
+def build(args):
     m = Main(args.exefs / 'main')
     text = args.patches.read_text() if args.patches and args.patches.is_file() else ''
     files = cheat_files(args.mods, build_id(args.exefs / 'main'))

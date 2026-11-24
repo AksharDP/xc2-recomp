@@ -583,6 +583,14 @@ int plat_mem_protect(uint64_t addr, uint64_t n, int prot) {
     return VirtualProtect((void *)(uintptr_t)addr, n, p, &old) != 0;
 }
 
+int plat_code_write(void *dst, const void *src, size_t n) {
+    DWORD old, tmp;
+    if (!VirtualProtect(dst, n, PAGE_EXECUTE_READWRITE, &old)) return 0;
+    memcpy(dst, src, n);
+    VirtualProtect(dst, n, old, &tmp);
+    return FlushInstructionCache(GetCurrentProcess(), dst, n) != 0;
+}
+
 int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     MEMORY_BASIC_INFORMATION mbi;
     if (!VirtualQuery((void *)(uintptr_t)addr, &mbi, sizeof mbi)) {
@@ -757,7 +765,31 @@ long plat_tz_west(void) {
     return west;
 }
 
-int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
+// One argument of a command line as CommandLineToArgvW reads it back: in quotes, a backslash run doubled before a quote
+// and at the end, a quote escaped. (quote_arg from totk-pc-recomp runtime/platform/win32.c @ 501f0d3,
+// MIT, Copyright (c) 2026 Valiantsin Dzerakh.)
+static size_t quote_arg(const wchar_t *a, wchar_t *out, size_t cap, size_t at) {
+#define PUT(c) do { if (at + 1 < cap) out[at] = (c); at++; } while (0)
+    PUT(L'"');
+    for (const wchar_t *p = a;; p++) {
+        size_t slashes = 0;
+        while (*p == L'\\') p++, slashes++;
+        size_t times = !*p || *p == L'"' ? 2 : 1;
+        for (size_t k = 0; k < slashes * times; k++) PUT(L'\\');
+        if (!*p) break;
+        if (*p == L'"') PUT(L'\\');
+        PUT(*p);
+    }
+    PUT(L'"');
+    PUT(L' ');
+#undef PUT
+    return at;
+}
+
+// The child's output into out (NUL-terminated, the rest discarded) and to on_output (may be NULL) as it comes, then its
+// exit code; -1 when it never started. A child still running after timeout_ms is killed, with the processes it started.
+static int run_child(wchar_t *cmd, const wchar_t *dir, DWORD flags, char *out, size_t cap, PlatOutput on_output, void *ctx,
+                     uint32_t timeout_ms) {
     SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
     HANDLE rd, wr;
     if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
@@ -765,30 +797,87 @@ int plat_run_self(const char *env_name, const char *env_value, char *out, size_t
     STARTUPINFOW si = {.cb = sizeof si, .dwFlags = STARTF_USESTDHANDLES, .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
                        .hStdOutput = wr, .hStdError = wr};
     PROCESS_INFORMATION pi;
-    wchar_t *cmdline = _wcsdup(GetCommandLineW());
-    SetEnvironmentVariableA(env_name, env_value);
-    BOOL ok = cmdline && CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
-    SetEnvironmentVariableA(env_name, NULL);
-    free(cmdline);
+    BOOL ok = cmd && CreateProcessW(NULL, cmd, NULL, NULL, TRUE, flags | CREATE_SUSPENDED, NULL, dir, &si, &pi);
     CloseHandle(wr);
     if (!ok) {
         CloseHandle(rd);
         return -1;
     }
+    HANDLE job = CreateJobObjectW(NULL, NULL);   // suspended until it is in: its own children join it
+    if (job && !AssignProcessToJobObject(job, pi.hProcess)) CloseHandle(job), job = NULL;
+    ResumeThread(pi.hThread);
     size_t len = 0;
-    DWORD got;
+    DWORD got, avail;
     char sink[512];
-    while (len + 1 < cap && ReadFile(rd, out + len, (DWORD)(cap - 1 - len), &got, NULL) && got) len += got;
+    ULONGLONG end = GetTickCount64() + (timeout_ms ? timeout_ms : INFINITE);
+    for (int alive = 1, last = 0; !last;) {
+        // a grandchild may hold the pipe open after the child ended, and one that hangs writes nothing: read what is
+        // there, else look whether the child still runs; once more after it ended
+        last = !alive;
+        while (PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL) && avail) {
+            int full = len + 1 >= cap;
+            char *to = full ? sink : out + len;
+            if (!ReadFile(rd, to, (DWORD)(full ? sizeof sink : cap - 1 - len), &got, NULL)) break;
+            if (on_output) on_output(ctx, to, got);
+            if (!full) len += got;
+            if (timeout_ms && GetTickCount64() >= end) break;
+        }
+        if (timeout_ms && GetTickCount64() >= end) break;
+        if (alive) alive = WaitForSingleObject(pi.hProcess, 5) != WAIT_OBJECT_0;
+    }
     if (cap) out[len] = 0;
-    while (ReadFile(rd, sink, sizeof sink, &got, NULL) && got) {}
     CloseHandle(rd);
-    if (WaitForSingleObject(pi.hProcess, timeout_ms ? timeout_ms : INFINITE) != WAIT_OBJECT_0)
-        TerminateProcess(pi.hProcess, 1), WaitForSingleObject(pi.hProcess, INFINITE);
+    if (WaitForSingleObject(pi.hProcess, 0) != WAIT_OBJECT_0) {
+        if (!job || !TerminateJobObject(job, 1)) TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+    }
+    if (job) CloseHandle(job);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     return (int)code;
+}
+
+int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms) {
+    enum { CMD = 32768 };
+    wchar_t *cmd = calloc(CMD, sizeof *cmd), *arg = malloc(WPATH * sizeof *arg), *dir = malloc(WPATH * sizeof *dir);
+    int ok = cmd && arg && dir && argv[0] && widen(cwd, dir, WPATH), code = -1;
+    size_t at = 0;
+    for (int i = 0; ok && argv[i]; i++) {
+        ok = widen(argv[i], arg, WPATH);
+        if (ok) at = quote_arg(arg, cmd, CMD, at);
+    }
+    if (ok && at < CMD && at > 0) {
+        cmd[at - 1] = 0;   // the last separator
+        code = run_child(cmd, dir, CREATE_NO_WINDOW, NULL, 0, on_output, ctx, timeout_ms);
+    }
+    free(cmd);
+    free(arg);
+    free(dir);
+    return code;
+}
+
+int plat_run_self(const char *env_name, const char *env_value, char *out, size_t cap, uint32_t timeout_ms) {
+    wchar_t *cmdline = _wcsdup(GetCommandLineW());
+    SetEnvironmentVariableA(env_name, env_value);
+    int code = run_child(cmdline, NULL, 0, out, cap, NULL, NULL, timeout_ms);
+    SetEnvironmentVariableA(env_name, NULL);
+    free(cmdline);
+    return code;
+}
+
+int plat_restart(const char *env_name, const char *env_value) {
+    wchar_t *cmdline = _wcsdup(GetCommandLineW());
+    STARTUPINFOW si = {.cb = sizeof si};
+    PROCESS_INFORMATION pi;
+    SetEnvironmentVariableA(env_name, env_value);
+    BOOL ok = cmdline && CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    free(cmdline);
+    if (!ok) return 0;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 1;
 }
 
 int plat_random(void *out, size_t n) {
@@ -1087,6 +1176,11 @@ int plat_os_version(char *out, size_t cap) {
     return 1;
 }
 
+int plat_stderr_console(void) {
+    DWORD mode;
+    return GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &mode) != 0;
+}
+
 int plat_stderr_path(char *out, size_t cap) {
     HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
     wchar_t w[WPATH];
@@ -1197,6 +1291,10 @@ void *plat_lib_open(const char *name) {
 }
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
+
+void plat_lib_close(void *lib) {
+    if (lib) FreeLibrary((HMODULE)lib);
+}
 
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.

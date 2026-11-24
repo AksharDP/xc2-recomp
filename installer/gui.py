@@ -7,6 +7,8 @@ files have text for (the two releases differ). Decisions live in guilogic.py; th
 
     --selftest [--shots DIR]   build every screen in all UI languages and close by itself (PNG per screen with --shots)
     --lang zh-Hans|zh-Hant|en  window language (default: the OS display language)
+    --mod-code ...             no window: tools/mod_code.py with the release's compiler and headers (the Linux AppImage,
+                               which the game starts to build its mods' code: steps.py mod_command)
 """
 import argparse
 import json
@@ -807,7 +809,17 @@ def selftest(layout, shots=None):
     return 0 if len(steps) == len(UI_LANGUAGES) and all(steps) and mixed == [False] else 1
 
 
+def mod_code(argv):
+    layout = layouts.find()
+    return subprocess.run([str(layout.python), str(layout.tools / 'mod_code.py'), '--runtime', str(layout.runtime),
+                           '--clang', str(layout.clang), *(['--sysroot', str(layout.sysroot)] if layout.sysroot else []),
+                           *argv]).returncode
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ['--mod-code']:
+        return mod_code(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--shots', type=Path)

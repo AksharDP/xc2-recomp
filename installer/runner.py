@@ -50,6 +50,10 @@ class Step:
         """Do the work. Returns fields to record with the step."""
         return {}
 
+    def settle(self, ctx):
+        """After the step ran or was skipped: a step whose output the later steps run from (the build kit) points the
+        context at it."""
+
 
 class Context:
     def __init__(self, layout, dest, temp, reporter, options, state=None, verify=False):
@@ -123,6 +127,7 @@ def run_steps(steps, ctx):
         for s in steps:
             if not ctx.runs[s.id]:
                 rep.step(s.id, 'skipped', reason=ctx.reasons[s.id])
+                s.settle(ctx)
                 continue
             current = s.id
             rep.step(s.id, 'started')
@@ -134,6 +139,7 @@ def run_steps(steps, ctx):
                                             'finished': now_utc(), 'seconds': seconds, **fields}
             ctx.save()   # the first save, after the check, creates the install folder
             rep.step(s.id, 'done', seconds=seconds)
+            s.settle(ctx)
             current = None
         ctx.state['release'] = ctx.layout.release
         ctx.save()

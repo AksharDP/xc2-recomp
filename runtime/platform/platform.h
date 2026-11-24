@@ -195,6 +195,8 @@ void *plat_mem_alloc(size_t n);
 int plat_mem_commit(uint64_t addr, size_t n);             // read-write pages inside a reserved range; 1 on success
 int plat_mem_decommit(uint64_t addr, uint64_t n);          // contents dropped: committed again, the pages read zero
 int plat_mem_protect(uint64_t addr, uint64_t n, int prot); // committed pages only; 1 on success
+// Writes n bytes of this executable's code at dst (fnhook.c). No other thread may be running them. 1 on success.
+int plat_code_write(void *dst, const void *src, size_t n);
 // The page at addr: PLAT_PROT_* when committed, else PLAT_MEM_RESERVED or PLAT_MEM_FREE (not reserved by us). *end
 // gets the end of the run of pages in the same state, at most limit.
 int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end);
@@ -337,6 +339,17 @@ static inline char *plat_last_sep(const char *path) {
         if (*p == '/' || *p == '\\') last = (char *)p;
     return last;
 }
+// 1 when path does not depend on the working directory: it starts with a separator (a root or UNC path) or, on
+// Windows, with a drive letter and a separator.
+static inline int plat_path_absolute(const char *path) {
+    if (path[0] == '/' || path[0] == '\\') return 1;
+#ifdef _WIN32
+    char c = path[0];
+    return ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) && path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+#else
+    return 0;
+#endif
+}
 // Environment variable as UTF-8 into out; its length, or 0 when unset, empty or too long for cap.
 size_t plat_getenv(const char *name, char *out, size_t cap);
 // The user's UI language as a BCP-47 tag ("zh-CN", "zh-TW", "en-US"); "" when the system gives none. Valid for the process.
@@ -352,11 +365,21 @@ int plat_font_path(const char *lang, char *out, size_t cap, int *face);
 int plat_os_version(char *out, size_t cap);
 // The file the process's stderr (the log) goes to, as a UTF-8 path; 0 when stderr is not a file (a console, a pipe).
 int plat_stderr_path(char *out, size_t cap);
+// 1 when stderr is a console or terminal, where a line can be drawn over with \r.
+int plat_stderr_console(void);
 
 // ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success
 int plat_folder_can_open(void);                        // 1 when the shell opens folders for this process; 0 at low integrity, where the path is copied instead
 int plat_open_folder(const char *path);                   // shows the folder in the file manager; 1 on success
+// Runs argv[0] with the arguments argv[1..] (NULL-terminated, UTF-8) in folder cwd, without a window, and waits for it as
+// plat_run_self does; its exit code, -1 when it could not start (modcode.c). on_output gets what it writes as it comes, in
+// pieces that end anywhere, on the caller's thread.
+typedef void (*PlatOutput)(void *ctx, const char *bytes, size_t n);
+int plat_run(const char *const *argv, const char *cwd, PlatOutput on_output, void *ctx, uint32_t timeout_ms);
+// Starts this executable again with the same arguments and env_name=env_value added to its environment; the caller then
+// ends this process. 0 when it could not.
+int plat_restart(const char *env_name, const char *env_value);
 // Shows a fatal error to a player who has no terminal to read it in, and returns when they close it: a message box when
 // the game was started from the desktop (Windows: it owns its console window, which closes with it). Nothing when it
 // runs in a terminal or under a test, whose output already holds the message.
@@ -366,6 +389,7 @@ void plat_fatal_notice(const char *utf8);
 // in the system directories only. NULL when missing.
 void *plat_lib_open(const char *name);
 void *plat_lib_sym(void *lib, const char *name);
+void plat_lib_close(void *lib);   // NULL: nothing
 
 // ---- machine load for the performance overlay (perfmon.c's sampling thread; each call can take milliseconds). A number
 // the system does not give is -1.

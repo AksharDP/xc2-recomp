@@ -221,6 +221,7 @@ extern const int rt_exefs_sha256_count;
 extern const char rt_default_exefs[], rt_default_romfs[], rt_default_profile[];
 extern const int rt_game_version;                          // the game build: 121 (1.2.1) or 143 (1.4.3)
 extern const char rt_port_version[];                       // VERSION at the build's root: 0.1.0, 0.1.0+973c626 in a release
+extern const char rt_mod_abi[];                            // the key of the mods' code (tools/mod_abi.py), "" none
 extern const uint64_t rt_title_id;                         // the release's application id (tools/xc2_titles.py):
                                                            // 0100E95004038000 the Americas and Europe,
                                                            // 0100F3400332C000 Japan
@@ -298,7 +299,8 @@ int vk_scene_size(unsigned out[2]);                        // vk_fsr3.c: the siz
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets
-int rt_patch_set(const char *name);                        // index of a set of generated patches.h, -1 if absent
+int rt_patch_set(const char *name);                         // index of a set of generated patches.h or of the mods' code
+                                                           // (rt_patches_add), -1 if absent
 int rt_patch_enabled(int set);                             // the set is on (0 for -1)
 void rt_patch_disable(int set);                            // before the guest starts: a set needs another that is off
 void rt_patch_switch(int set, int on);                     // at run time (live settings): each site takes the new code

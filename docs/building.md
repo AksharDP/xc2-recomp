@@ -104,6 +104,17 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    .venv-py314\Scripts\python tools\make_romfs_patches.py --version <ver>
    ```
 
+   Lifting again into the same folder translates only the chunks whose inputs changed (`generated\<ver>\<module>\lift_cache.json`,
+   keyed by the generator, the module and the patch sets that fall into a chunk); a change to one patch set takes a few
+   seconds instead of a whole lift. `--no-cache` or `XC2_LIFT_CACHE=0` lifts everything. Lifter changes empty the cache by
+   themselves. `tests\lift_cache_test.py` checks it; anything new that a chunk's text depends on has to go into
+   `chunk_key` in `recomp\gen.py`. Edit patch sets in one generated and one build folder: a new `--gen` or `--out` folder
+   compiles every chunk unless `--object-cache` names a folder with their objects.
+   To try an edit of `recomp\patches-v301.txt` without any of that, start a build that has been linked once with
+   `XC2_MODS_BUILD=always`: the game compiles only the functions whose sites changed and runs them in place of its own
+   (`tools\mod_code.py`, about 1-3 s; the XC2_ setting and default of a new set come from the table too). A build that
+   ships still needs the lift. `tests\mod_code_test.py` checks the tool.
+
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
    The generated C is linked with ThinLTO, so small lifted functions are inlined across files (a 6 % better 1 % low on
    the issue 112 route). The first link takes about 100 s and 1.7 GiB on 20 threads; `build\<ver>\lto-cache` keeps its
