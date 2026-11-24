@@ -64,7 +64,9 @@ the flags, so the object cache, the LTO cache and the main build's objects of on
 A prebuilt --runtime-lib must be of the same level: runtime/cpu_check.c references the runtime's mark of its own
 level, so a library of the other level fails the link with an undefined rt_cpu_level_v2 or rt_cpu_level_v3. With
 --cpu v2, tools/check_isa.py reads every runtime object before the link or the archive and stops the build on an
-instruction above x86-64-v2 (check_runtime_isa).
+instruction above x86-64-v2 (check_runtime_isa). The mods' code (tools/mod_code.py) is compiled for the same level:
+build-cache/mod-base/cpu-level.txt records it and the key in the exe (rt_mod_abi, tools/mod_abi.py) holds it, so the
+game does not load a mod library of the other level.
 
 Standard library only.
 """
@@ -419,8 +421,9 @@ def runtime_object(out, src):
 
 
 def mod_base(gen, out):
-    """<out>/build-cache/mod-base: what the mods' code needs of this lift (tools/mod_abi.py). A lift from before
-    patches.txt existed has no mod code: its key is empty."""
+    """<out>/build-cache/mod-base: what the mods' code needs of this lift and this build (tools/mod_abi.py), the x86-64
+    level (use_cpu) among it, so tools/mod_code.py compiles the mods' code for the processors this exe runs on. A lift
+    from before patches.txt existed has no mod code: its key is empty."""
     base = out / 'build-cache' / 'mod-base'
     table, folded = gen / 'patches.txt', gen / 'main' / 'folded.txt'
     if not (table.is_file() and folded.is_file()):
@@ -429,6 +432,7 @@ def mod_base(gen, out):
     base.mkdir(parents=True, exist_ok=True)
     write_if_changed(base / 'patches.txt', table.read_text())
     write_if_changed(base / 'folded.txt', folded.read_text())
+    write_if_changed(base / mod_abi.LEVEL_FILE, f'{CPU_LEVELS[CPU]}\n')
     return mod_abi.mod_abi(RUNTIME, base)
 
 

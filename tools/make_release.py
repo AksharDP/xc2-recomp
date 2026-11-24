@@ -12,7 +12,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, the sources of
-               build_game.py INSTALL_SIDE (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
+               build_game.py INSTALL_SIDE (compiled per install) and tools/mod_abi.py SOURCES (compiled into mod
+               libraries), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe, amd_fidelityfx_vk.dll (AMD's signed
                build, out of the FidelityFX SDK release)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
@@ -50,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import check_content  # noqa: E402
+import mod_abi  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN_ROOT = (ROOT / 'build').resolve().parent   # build/, generated/, toolchain/ and refs/ are junctions in a worktree
@@ -125,6 +127,9 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
                'check_isa.py']   # build_game.py --cpu v2 checks the runtime objects with it (processors without AVX2)
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes, the prompts' icons
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
+# The runtime sources a release ships: build_game.py INSTALL_SIDE, compiled per install, and those tools/mod_code.py
+# compiles into a mod library (mod_abi.SOURCES, runtime/fma.c for x86-64-v2)
+RUNTIME_SOURCES = sorted(build_game.INSTALL_SIDE | {n for names in mod_abi.SOURCES.values() for n in names})
 
 VERSION_TAG = 'v301'   # installer/layout.py version_tag: the generated/ and build/extracted/ name of 3.0.1
 EXPECTED = 'expected-xc2-3.0.1.json'
@@ -413,7 +418,7 @@ def runtime_lib(out, llvm):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in sorted(build_game.INSTALL_SIDE):
+    for name in RUNTIME_SOURCES:
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 
 

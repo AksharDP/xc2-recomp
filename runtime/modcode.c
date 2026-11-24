@@ -7,7 +7,8 @@
 //
 //   modcode.txt         the command of tools/mod_code.py, one argument per line; it runs in the folder of xc2.exe
 //                       (installer/steps.py write_mod_command; tools/build_game.py for a source build)
-//   mod-base/           the patch table the exe was lifted with, and the bytes its code folded
+//   mod-base/           the patch table the exe was lifted with, the bytes its code folded and the x86-64 level it was
+//                       compiled for (a library holds code of that level; tools/mod_abi.py)
 //   cheats.status, exefs.status, exefs.data    what the last run made of each file (cheats.c, mods.c)
 //   mods/current.txt    the key of the build it was made for, and the library's file name or "-"
 //

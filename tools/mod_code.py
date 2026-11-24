@@ -14,7 +14,8 @@ of a run that worked, so a failed one leaves the last good state:
   mods/current.txt                           the build's key, the library's name or "-", one per line
 
 mods/obj keeps the compiled objects (the newest of earlier runs too), so an edit compiles again only the objects whose
-functions changed.
+functions changed. The library is compiled for the x86-64 level of the exe, which mod-base/cpu-level.txt records
+(tools/mod_abi.py flags); for level 2 it holds runtime/fma.c too.
 
 --patches is the patch table the mods' sites go on top of (default: mod-base/patches.txt, the one the exe was built with).
 A developer's edited table (recomp/patches-v301.txt) works too: a function whose sites differ from the built ones goes
@@ -289,9 +290,13 @@ def compile_lib(args, key, parts, added, first):
     obj.mkdir(parents=True, exist_ok=True)
     # tools/build_game.py compiles against the sysroot the same way
     sysroot = ['--target=x86_64-linux-gnu', f'--sysroot={args.sysroot}'] if args.sysroot else []
-    flags = [*mod_abi.FLAGS, *([] if WIN else ['-fPIC']), *sysroot]
+    # the x86-64 level of the exe (mod-base/cpu-level.txt), which the key holds too
+    level = mod_abi.level(args.cache / 'mod-base')
+    flags = [*mod_abi.flags(level), *([] if WIN else ['-fPIC']), *sysroot]
     units = [(f'part{p.number}', p.text()) for p in parts] + [('main', main_text(key, first, added, parts))]
-    salt = f'{key}\0{" ".join(mod_abi.FLAGS)}\0'   # no folder: the AppImage's sysroot has another at each start
+    # the runtime sources the level needs in the library (mod_abi.SOURCES: runtime/fma.c for level 2)
+    units += [(Path(n).stem, (args.runtime / n).read_text(encoding='utf-8')) for n in mod_abi.SOURCES[level]]
+    salt = f'{key}\0{" ".join(mod_abi.flags(level))}\0'   # no folder: the AppImage's sysroot has another at each start
     hashes = [hashlib.sha256((salt + t).encode()).hexdigest()[:24] for _, t in units]
     lib = folder / (hashlib.sha256('\0'.join(hashes).encode()).hexdigest()[:16] + ('.dll' if WIN else '.so'))
     env = dict(os.environ)
@@ -360,7 +365,10 @@ def publish(args, work, key, lib):
 
 def build(args):
     t0 = time.perf_counter()
-    key = mod_abi.mod_abi(args.runtime, args.cache / 'mod-base', TOOLS.parent / 'recomp')
+    try:
+        key = mod_abi.mod_abi(args.runtime, args.cache / 'mod-base', TOOLS.parent / 'recomp')
+    except ValueError as e:   # a mod-base/cpu-level.txt that names no level
+        raise SystemExit(f'mod_code: {e}') from None
     if args.abi and args.abi != key:
         raise AbiError(f'this folder\'s key is {key}, the game\'s is {args.abi}: the game was built by another setup')
     work = args.cache / 'mods' / f'work-{os.getpid()}'

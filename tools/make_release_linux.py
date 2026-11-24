@@ -15,7 +15,8 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
     llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
                sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib --sysroot), the runtime headers, the sources of
-               build_game.py INSTALL_SIDE (compiled per install), xc2.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd
+               build_game.py INSTALL_SIDE (compiled per install) and tools/mod_abi.py SOURCES (compiled into mod
+               libraries), xc2.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd
                built static; SDL3, Opus and libvpx come from the sysroot)
     bin/       xc2_xlate (+ .id), ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION
@@ -210,7 +211,7 @@ def runtime_lib(out, llvm, sysroot):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in build_game.INSTALL_SIDE:
+    for name in mr.RUNTIME_SOURCES:
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
     from PIL import Image   # Tk loads no .ico off Windows: the window and the AppImage take a PNG
     with Image.open(ROOT / 'runtime' / 'xc2.ico') as ico:

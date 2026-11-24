@@ -3,8 +3,9 @@
 // and fnhook.c sends the calls of those functions to it. The library imports nothing: the game fills in the runtime
 // services, the patch switches and the other guest functions it calls.
 //
-// MOD_ABI_VERSION, cpu.h, simd.h, simd_fp.h, this file, the generator, the compile flags and the patch table of the build
-// are all in the key of tools/mod_abi.py, so a library only loads into the build it was made for.
+// MOD_ABI_VERSION, cpu.h, simd.h, simd_fp.h, this file, the generator, the compile flags with the build's x86-64 level
+// and the patch table of the build are all in the key of tools/mod_abi.py, so a library only loads into the build it
+// was made for, and a library of x86-64-v3 code never into an exe built for x86-64-v2 processors.
 #pragma once
 #include "cpu.h"
 
