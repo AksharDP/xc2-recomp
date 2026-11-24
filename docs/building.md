@@ -163,7 +163,8 @@ your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pa
 folder. The folder holds code and data derived from your game: for your own machines only.
 
 The portable packager includes firmware fonts and RomFS patches when present; neither is required for XC2's
-American/European default-language build. Chinese and Korean text still require the shared fonts. Optional FSR DLLs
+American/European build in any of its languages, Korean included; whether Chinese text on the Japanese release asks
+for the shared fonts is unchecked. Optional FSR DLLs
 found beside the source executable are included. The folder keeps its own profile; existing saves are not copied.
 
 ## Linux

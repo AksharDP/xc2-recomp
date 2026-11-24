@@ -187,6 +187,11 @@ No release has Dutch, Portuguese or Russian. The game's own code table has no zh
 goes to it as zh-CN and zh-TW. The NACP's supported-language flags do not match the text (the 3.0.1 update lists ja
 and Chinese, the Japanese base English), so the installer reads the folders instead.
 
+Korean needs no Switch system fonts: main (3.0.1) imports no `nn::pl` function and draws it with
+`menu/font/standard_kr.wifnt` from `bf2.arh`. Chinese on the Japanese release is unchecked, so choosing zh-CN or zh-TW
+warns (`warn.lang_fonts_unchecked`); if the game asks for a system font that is missing, it stops and names it
+(`tools/extract_fonts.py` extracts them from a firmware).
+
 - Window: once the base game and the keys are chosen it runs `python -m installer.probe --base FILE [--update FILE]
   --keys FILE` (one JSON line, `installer/probe.py`, about a second), and the language list holds only those
   languages, with the release named under it. Without an update the list is the base game's (no Korean).

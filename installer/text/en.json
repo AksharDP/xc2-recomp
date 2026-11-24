@@ -84,7 +84,7 @@
  "dlc.extract_failed": "The add-on content in {path} cannot be extracted. Details: {log}",
  "compile.exe_in_use": "{path} is in use. Close the game and run the installer again.",
  "cleanup.ini_failed": "xc2.ini cannot be written: {detail}",
- "warn.lang_needs_fonts": "Text in {lang} needs the Switch system fonts, which the installer does not extract; some text may not show.",
+ "warn.lang_fonts_unchecked": "Text in {lang} has not been checked. If the game asks for the Switch system fonts, which the installer does not extract, it stops and names the missing font.",
  "warn.npdm_differs": "main.npdm differs from the reference {version} dump; only the code modules are used.",
  "warn.cpu_v2": "This processor lacks AVX2, so the game is built for x86-64-v2 processors.",
  "warn.arm64_emulated": "This is Windows on Arm. The game will run as x86-64 code under Windows emulation, not as a native ARM64 application. This configuration is untested and may be slower.",

@@ -1,7 +1,9 @@
 """Extract the Switch system shared fonts (nn::pl) from the user's firmware into build/extracted/firmware/shared-fonts.
 
-XC2 needs them only with Simplified Chinese, Korean or Traditional Chinese text: those font archives fall back to the
-Standard shared font (runtime/ov_system.c). The fonts come from the system data NCAs 0100000000000810..814 of a
+The Americas and Europe release does not need them in any language: its main (3.0.1) imports no nn::pl function, and
+bf2.arh ships its own Korean and Chinese fonts (menu/font/standard_kr.wifnt, chinese_simple.wifnt,
+chinese_original.wifnt). Whether the Japanese release asks for them with Chinese text is unchecked; the runtime stops
+with a named message if a game asks for one that is missing (runtime/ov_system.c). The fonts come from the system data NCAs 0100000000000810..814 of a
 firmware NCA directory (an unpacked firmware, or an emulator's installed `registered` directory such as
 %APPDATA%\\Ryujinx\\bis\\system\\Contents\\registered). The keys file named in config.local.toml decrypts them; key
 values are never printed. Every NCA FS header, all six IVFC levels and each BFTTF header are verified

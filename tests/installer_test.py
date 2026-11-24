@@ -20,6 +20,8 @@ from installer import ini, runner, state, steps  # noqa: E402
 from installer import layout as layouts  # noqa: E402
 from installer.events import LauncherReporter, Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tools'))
+import xc2_languages  # noqa: E402
 
 
 class Fake(runner.Step):
@@ -238,6 +240,11 @@ class IniTest(unittest.TestCase):
         self.assertEqual(ini.recorded_language('de'), 'de')
         self.assertEqual(ini.default_language(['en-GB', 'en-US', 'ko']), 'en-US')
         self.assertEqual(ini.default_language(['ja', 'zh-CN', 'zh-TW']), 'ja')
+
+    def test_only_unchecked_languages_warn_about_fonts(self):
+        # Korean uses the game's own font (bf2.arh menu/font/standard_kr.wifnt) and main imports no nn::pl function
+        self.assertEqual(ini.FONTS_UNCHECKED, ('zh-CN', 'zh-TW'))
+        self.assertFalse(set(ini.FONTS_UNCHECKED) & set(xc2_languages.languages(['fr', 'gb', 'ge', 'it', 'kr', 'sp'])))
 
     def test_codes_match_the_runtime(self):
         # runtime/cfg.c's XC2_LANG values and runtime/ov_system.c game_codes are the installer's codes

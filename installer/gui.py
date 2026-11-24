@@ -890,7 +890,7 @@ SAMPLE_RUN = [
     {'type': 'progress', 'step': 'check', 'phase': 'inputs'},
     {'type': 'space', 'dest': 'Z:/selftest/XC2', 'need': 36_400_000_000, 'free': 210_000_000_000, 'temp': 'C:\\t',
      'temp_need': 0, 'temp_free': 0, 'same_disk': True},
-    {'type': 'warning', 'id': 'warn.lang_needs_fonts', 'params': {'lang': 'ko'}},
+    {'type': 'warning', 'id': 'warn.lang_fonts_unchecked', 'params': {'lang': 'zh-TW'}},
     {'type': 'step', 'step': 'check', 'state': 'done', 'seconds': 12.0},
     {'type': 'step', 'step': 'extract', 'state': 'started'},
     {'type': 'progress', 'step': 'extract', 'phase': 'copy', 'done': 6_000_000_000, 'total': 16_000_000_000,
