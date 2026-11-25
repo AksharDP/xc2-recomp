@@ -47,6 +47,7 @@ typedef struct VkQueueInfoFFXAPI VkQueueInfoFFXAPI;
 
 #define FFX_LOADER "amd_fidelityfx_loader_vk.dll"   // loads amd_fidelityfx_framegeneration_vk.dll for this effect
 #define MAX_IMAGES 16
+#define MAX_QUEUES 8   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
 
 static struct {
     int tried, ok, failed, on;
@@ -121,6 +122,16 @@ static struct FfxApiResource resource(VkImage img, uint32_t fmt, uint32_t w, uin
                                                    .height = h, .depth = 1, .mipCount = 1, .usage = usage}};
 }
 
+// The loader's path next to the executable; 0 when that is unknown.
+static int loader_path(char *path, size_t size) {
+    if (!plat_exe_path(path, size - sizeof FFX_LOADER)) return 0;
+    char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
+    if (back > end) end = back;
+    if (!end) return 0;
+    snprintf(end + 1, size - (size_t)(end + 1 - path), "%s", FFX_LOADER);
+    return 1;
+}
+
 static int init(void) {
     G.tried = 1;
     char path[1024];
@@ -128,11 +139,7 @@ static int init(void) {
 #ifndef _WIN32
     return 0;   // a Windows DLL
 #endif
-    if (!plat_exe_path(path, sizeof path - sizeof FFX_LOADER)) return 0;
-    char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
-    if (back > end) end = back;
-    if (!end) return 0;
-    snprintf(end + 1, sizeof path - (size_t)(end + 1 - path), "%s", FFX_LOADER);
+    if (!loader_path(path, sizeof path)) return 0;
     G.lib = plat_lib_open(path);
     if (!G.lib) {
         rt_log("vk: frame generation: " FFX_LOADER " is not next to the executable");
@@ -220,26 +227,35 @@ static int make_hudless(VkCtx *c) {
     return 1;
 }
 
+// What a frame generation context is made from; desc is the head of the chain.
+static void describe_fg(VkCtx *c, struct ffxCreateBackendVKDesc *backend,
+                        struct ffxCreateContextDescFrameGenerationVersion *version,
+                        struct ffxCreateContextDescFrameGeneration *desc, uint32_t w, uint32_t h, VkFormat fmt) {
+    memset(backend, 0, sizeof *backend);
+    backend->header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
+    backend->deviceContext.vkDevice = c->device;
+    backend->deviceContext.vkPhysicalDevice = c->phys;
+    backend->deviceContext.vkDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetDeviceProcAddr;
+    memset(version, 0, sizeof *version);
+    version->header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION;
+    version->version = FFX_FRAMEGENERATION_VERSION;
+    memset(desc, 0, sizeof *desc);
+    desc->header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
+    desc->header.pNext = &version->header;
+    version->header.pNext = &backend->header;
+    desc->flags = 0;
+    desc->displaySize = (struct FfxApiDimensions2D){w, h};
+    desc->maxRenderSize = (struct FfxApiDimensions2D){w, h};
+    desc->backBufferFormat = ffx_format(fmt);
+}
+
 // The frame generation context: it interpolates and presents, and it is what we configure and prepare each frame.
 static int make_fg_context(VkCtx *c, uint32_t w, uint32_t h, VkFormat fmt) {
     if (G.fg) return 1;
-    memset(&g_backend, 0, sizeof g_backend);
-    g_backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
-    g_backend.deviceContext.vkDevice = c->device;
-    g_backend.deviceContext.vkPhysicalDevice = c->phys;
-    g_backend.deviceContext.vkDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetDeviceProcAddr;
-    memset(&g_fg_version, 0, sizeof g_fg_version);
-    g_fg_version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION;
-    g_fg_version.version = FFX_FRAMEGENERATION_VERSION;
-    memset(&g_fg_desc, 0, sizeof g_fg_desc);
-    g_fg_desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
-    g_fg_desc.header.pNext = &g_fg_version.header;
-    g_fg_version.header.pNext = &g_backend.header;
-    g_fg_desc.flags = 0;
-    g_fg_desc.displaySize = (struct FfxApiDimensions2D){w, h};
-    g_fg_desc.maxRenderSize = (struct FfxApiDimensions2D){w, h};
-    g_fg_desc.backBufferFormat = ffx_format(fmt);
+    vk_fsr3_lib_lock();
+    describe_fg(c, &g_backend, &g_fg_version, &g_fg_desc, w, h, fmt);
     ffxReturnCode_t r = G.create(&G.fg, &g_fg_desc.header, NULL);
+    vk_fsr3_lib_unlock();
     if (r != FFX_API_RETURN_OK) {
         rt_log("vk: frame generation off: ffxCreateContext (frame generation) returned %u", r);
         G.fg = NULL;
@@ -248,12 +264,8 @@ static int make_fg_context(VkCtx *c, uint32_t w, uint32_t h, VkFormat fmt) {
     return 1;
 }
 
-// The library requires four distinct queues (FrameInterpolationSwapchainVK::init refuses anything else): the game's queue,
-// one for presenting, one for its async compute and one for image acquisition. They come from the graphics family's spare
-// queues, then a compute-only family's and a transfer-only one; without four distinct ones frame generation stays off.
-static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fam[4]) {
-    VkQueue pool[8];   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
-    uint32_t fpool[8];
+// The distinct queues of the device that vk_device.c create_device made; returns how many.
+static int queue_pool(VkCtx *c, VkQueue pool[MAX_QUEUES], uint32_t fpool[MAX_QUEUES]) {
     int n = 0;
     pool[n] = c->gfx_queue, fpool[n++] = c->gfx_family;
     for (uint32_t i = 1; i < c->gfx_queue_count; i++) {
@@ -265,6 +277,16 @@ static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fa
         fpool[n++] = c->comp_family;
     }
     if (!c->xfer_shared && c->xfer_queue) pool[n] = c->xfer_queue, fpool[n++] = c->xfer_family;
+    return n;
+}
+
+// The library requires four distinct queues (FrameInterpolationSwapchainVK::init refuses anything else): the game's queue,
+// one for presenting, one for its async compute and one for image acquisition. They come from the graphics family's spare
+// queues, then a compute-only family's and a transfer-only one; without four distinct ones frame generation stays off.
+static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fam[4]) {
+    VkQueue pool[MAX_QUEUES];
+    uint32_t fpool[MAX_QUEUES];
+    int n = queue_pool(c, pool, fpool);
     if (n < 4) {
         rt_log("vk: frame generation off: this device offers %d distinct queues, its swapchain needs 4", n);
         return 0;
@@ -346,7 +368,9 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         g_sc_desc.asyncComputeQueue = (VkQueueInfoFFXAPI){q[2], fam[2], NULL};
         g_sc_desc.presentQueue = (VkQueueInfoFFXAPI){q[1], fam[1], NULL};
         g_sc_desc.imageAcquireQueue = (VkQueueInfoFFXAPI){q[3], fam[3], NULL};
+        vk_fsr3_lib_lock();
         ffxReturnCode_t r = G.create(&G.sc, &g_sc_desc.header, NULL);
+        vk_fsr3_lib_unlock();
         if (r != FFX_API_RETURN_OK) {
             rt_log("vk: frame generation off: the swapchain context could not be created (%u)", r);
             G.sc = NULL;
@@ -610,11 +634,35 @@ int vk_fg_own_wanted(VkCtx *c) {
     return own_usable(c);
 }
 
-int vk_fg_state(void) {
-    VkCtx *c = vk_ctx();
-    if (!c || ((vk_fsr3_libraries() & 1) && !G.failed)) return VK_FSR_OK;   // AMD's library; its failure shows once it is tried
-    return !own_usable(c) ? VK_FSR_NO_DEVICE : O.failed ? VK_FSR_FAILED : VK_FSR_OK;
+// AMD's frame generation loads here: its library gives a context of the effect, and there are the queues its swapchain
+// needs. On the check's own thread (vk_fsr3.c check_main), so nothing of G is touched.
+static int check_lib(VkCtx *c) {
+    VkQueue pool[MAX_QUEUES];
+    uint32_t fpool[MAX_QUEUES];
+    char path[1024];
+    if (!(vk_fsr3_libraries() & 1) || queue_pool(c, pool, fpool) < 4 || !loader_path(path, sizeof path)) return 0;
+    void *lib = plat_lib_open(path);
+    PfnFfxCreateContext create = lib ? (PfnFfxCreateContext)plat_lib_sym(lib, "ffxCreateContext") : NULL;
+    PfnFfxDestroyContext destroy = lib ? (PfnFfxDestroyContext)plat_lib_sym(lib, "ffxDestroyContext") : NULL;
+    if (!create || !destroy) return 0;
+    struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK}};
+    struct ffxCreateContextDescFrameGenerationVersion version;
+    struct ffxCreateContextDescFrameGeneration desc;
+    ffxContext x = NULL;
+    vk_fsr3_lib_lock();
+    describe_fg(c, &backend, &version, &desc, 640, 360, VK_FORMAT_B8G8R8A8_UNORM);
+    ffxReturnCode_t r = create(&x, &desc.header, NULL);
+    if (r == FFX_API_RETURN_OK) destroy(&x, NULL);
+    vk_fsr3_lib_unlock();
+    return r == FFX_API_RETURN_OK;
 }
+
+int vk_fg_check(VkCtx *c) {
+    const char *why;
+    return check_lib(c) | (vk_ffx_usable(c, &why) && vk_ffx_fg_check(c)) << 1;
+}
+
+int vk_fg_loads(int check) { return (check & 1 && !G.failed) || (check & 2 && !O.failed); }
 
 void vk_fg_own_release(void) {
     vk_ffx_fg_destroy();

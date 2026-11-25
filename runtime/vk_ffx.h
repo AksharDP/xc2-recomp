@@ -32,6 +32,9 @@ typedef struct {
 // never used. 1 on success.
 int vk_ffx_up_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh);
 void vk_ffx_up_destroy(void);
+// Whether the upscaler, the interpolation below, can be set up: a small context of its own, made and destroyed. Any thread.
+int vk_ffx_up_check(VkCtx *c);
+int vk_ffx_fg_check(VkCtx *c);
 // Records the upscale into cb. The recorder thread must have nothing queued for cb (rec_drain). 1 on success.
 int vk_ffx_up_dispatch(VkCommandBuffer cb, const VkFfxUpscale *d);
 

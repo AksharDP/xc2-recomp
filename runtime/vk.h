@@ -112,6 +112,8 @@ void vk_present_wait_drawn(void);
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, int dx, int dy, uint32_t dw, uint32_t dh);
 void vk_fsr_release(void);   // before the device goes away
+void vk_fsr3_lib_lock(void); // AMD's loader is entered by one thread at a time
+void vk_fsr3_lib_unlock(void);
 void vk_fsr3_release(void);  // FSR 3.1 / FSR Upscaling 4 (vk_fsr3.c, hooks in vk_exec.h): before the device goes away
 int vk_fsr3_libraries(void); // the FSR libraries next to the executable: bit 0 the 2.x loader, bit 1 the 1.1.4 library
 
@@ -140,6 +142,8 @@ int vk_fsr3_frame_get(VkFsrFrame *out);
 // two frames and presents both. Off, every function below is the plain Vulkan call. Where that library cannot run, the
 // interpolation built into the game (vk_ffx.cpp) does the same on our swapchain (vk_fg_own_wanted, vk_fg_generate).
 int vk_fg_wanted(void);      // the setting is on and the library usable (it needs XC2_FSR3 for its inputs)
+int vk_fg_check(VkCtx *c);   // the menu's check: bit 0 AMD's frame generation loads, bit 1 the built-in one
+int vk_fg_loads(int check);  // whether what it found is still to be had (present thread)
 int vk_fg_active(void);      // the live swapchain is the library's
 // 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is
 // gone, as the library destroys what it is given even when it fails.

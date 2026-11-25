@@ -567,11 +567,11 @@ static const char *present_note(void) {
     return note;
 }
 
-// The FSR rows show only what this machine runs: none where FSR cannot run or failed, the version where FSR 4 is to be had
-// too, frame generation where it runs. Under a row that is on stands whether it is at work, which the setting alone does
+// The FSR rows show only what has loaded on this machine (fsr_state.h): none where FSR did not or failed, the version where
+// FSR 4 did too, frame generation where it did. Under a row that is on stands whether it is at work, which the setting alone does
 // not say (a loading screen has no scene to upscale).
 static void rows_fsr(void) {
-    if (vk_fsr3_state() != VK_FSR_OK) return;
+    if (!vk_fsr3_ready()) return;
     bool on = cfg_bool("XC2_FSR3") != 0;
     char ver[64], note[96];
     if (vk_fsr3_shown(ver, sizeof ver)) snprintf(note, sizeof note, menu_text(UI_MENU_FMT_FSR_RUNNING), ver);
@@ -581,7 +581,7 @@ static void rows_fsr(void) {
         static const UiTextId names[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
         opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, names, 3, UI_MENU_FSR_VERSION_DESC);
     }
-    if (vk_fg_state() != VK_FSR_OK) return;
+    if (!vk_fg_ready()) return;
     if (!on) {   // it takes its inputs from FSR: shown off, whatever the setting
         opt_disable_next(UI_MENU_FRAME_GEN_NEEDS_FSR);
         opt_toggle_text("XC2_FRAME_GEN", menu_text(UI_MENU_FRAME_GEN), menu_text(UI_MENU_FRAME_GEN_DESC), false);

@@ -170,7 +170,7 @@ static FfxResource res(VkImage img, VkFormat f, uint32_t w, uint32_t h, FfxResou
 }
 
 // ---------------------------------------------------------------- the upscaler
-static struct {
+static struct Up {
     bool live;
     FfxFsr3UpscalerContext ctx;
     FfxInterface iface;
@@ -180,50 +180,64 @@ static struct {
     uint64_t ring[FFX_MAX_QUEUED_FRAMES];   // the timeline values of the last dispatches (wait_ring)
     uint32_t n;
     uint64_t waits;
+    bool check;   // vk_ffx_up_check's, no log
 } U;
 
-static bool up_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
+static bool up_create(Up &u, VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
     enum { CONTEXTS = FFX_FSR3UPSCALER_CONTEXT_COUNT + 1 };   // and the shared images'
     FfxFsr3UpscalerContextDescription cd = {};
-    if (!make_backend(c, &cd.backendInterface, &U.scratch, CONTEXTS)) return false;
+    if (!make_backend(c, &cd.backendInterface, &u.scratch, CONTEXTS)) return false;
     // SDR colour, render-size motion vectors without the jitter and standard depth with a finite far plane are the
     // defaults; the render size changes while the game runs.
     cd.flags = FFX_FSR3UPSCALER_ENABLE_DYNAMIC_RESOLUTION;
     cd.maxRenderSize = {w, h};
     cd.maxUpscaleSize = {ow, oh};
     cd.fpMessage = message;
-    TRY(ffxFsr3UpscalerContextCreate(&U.ctx, &cd), "the upscaler's context");
-    U.iface = cd.backendInterface;
-    U.live = true;   // from here vk_ffx_up_destroy takes the context down
+    TRY(ffxFsr3UpscalerContextCreate(&u.ctx, &cd), "the upscaler's context");
+    u.iface = cd.backendInterface;
+    u.live = true;   // from here vk_ffx_up_destroy takes the context down
     FfxFsr3UpscalerSharedResourceDescriptions sd = {};
-    TRY(ffxFsr3UpscalerGetSharedResourceDescriptions(&U.ctx, &sd), "the shared images' descriptions");
-    TRY(U.iface.fpCreateBackendContext(&U.iface, FFX_EFFECT_SHAREDRESOURCES, nullptr, &U.shared_id), "the shared context");
+    TRY(ffxFsr3UpscalerGetSharedResourceDescriptions(&u.ctx, &sd), "the shared images' descriptions");
+    TRY(u.iface.fpCreateBackendContext(&u.iface, FFX_EFFECT_SHAREDRESOURCES, nullptr, &u.shared_id), "the shared context");
     const FfxCreateResourceDescription *rd[3] = {&sd.dilatedDepth, &sd.dilatedMotionVectors, &sd.reconstructedPrevNearestDepth};
     for (int i = 0; i < 3; i++)
-        TRY(U.iface.fpCreateResource(&U.iface, rd[i], U.shared_id, &U.shared[i]), "a shared image");
+        TRY(u.iface.fpCreateResource(&u.iface, rd[i], u.shared_id, &u.shared[i]), "a shared image");
     FfxEffectMemoryUsage mu = {};
-    ffxFsr3UpscalerContextGetGpuMemoryUsage(&U.ctx, &mu);
-    rt_log("vk: FSR 3.1.4 (built in, %s floats) holds %.1f MiB of GPU memory", fp16 ? "16-bit" : "32-bit",
-           (double)mu.totalUsageInBytes / 1048576.0);
+    ffxFsr3UpscalerContextGetGpuMemoryUsage(&u.ctx, &mu);
+    if (!u.check)
+        rt_log("vk: FSR 3.1.4 (built in, %s floats) holds %.1f MiB of GPU memory", fp16 ? "16-bit" : "32-bit",
+               (double)mu.totalUsageInBytes / 1048576.0);
     return true;
 }
 
+static void up_destroy(Up &u) {
+    if (u.live) {
+        if (u.waits) rt_log("vk: FSR: %llu upscales waited for an earlier submission", (unsigned long long)u.waits);
+        for (int i = 0; i < 3; i++)
+            if (u.shared[i].internalIndex) u.iface.fpDestroyResource(&u.iface, u.shared[i], u.shared_id);
+        if (u.shared_id) u.iface.fpDestroyBackendContext(&u.iface, u.shared_id);
+        ffxFsr3UpscalerContextDestroy(&u.ctx);
+    }
+    scratch_free(u.scratch);
+    memset(&u, 0, sizeof u);
+}
+
 int vk_ffx_up_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
-    if (up_create(c, w, h, ow, oh)) return 1;
-    vk_ffx_up_destroy();
+    if (up_create(U, c, w, h, ow, oh)) return 1;
+    up_destroy(U);
     return 0;
 }
 
-void vk_ffx_up_destroy(void) {
-    if (U.live) {
-        if (U.waits) rt_log("vk: FSR: %llu upscales waited for an earlier submission", (unsigned long long)U.waits);
-        for (int i = 0; i < 3; i++)
-            if (U.shared[i].internalIndex) U.iface.fpDestroyResource(&U.iface, U.shared[i], U.shared_id);
-        if (U.shared_id) U.iface.fpDestroyBackendContext(&U.iface, U.shared_id);
-        ffxFsr3UpscalerContextDestroy(&U.ctx);
-    }
-    scratch_free(U.scratch);
-    memset(&U, 0, sizeof U);
+void vk_ffx_up_destroy(void) { up_destroy(U); }
+
+int vk_ffx_up_check(VkCtx *c) {
+    Up *u = (Up *)scratch_alloc((sizeof *u + 255) & ~(size_t)255);   // the context is large for a stack
+    if (!u) return 0;
+    u->check = true;
+    bool ok = up_create(*u, c, 320, 180, 640, 360);
+    up_destroy(*u);
+    scratch_free(u);
+    return ok;
 }
 
 // The backend writes a dispatch's descriptor sets and constants into rings FFX_MAX_QUEUED_FRAMES deep and destroys the
@@ -278,7 +292,7 @@ struct Img {
     VmaAllocation mem;
 };
 
-static struct {
+static struct Fg {
     bool live;
     uint32_t w, h, rw, rh;
     FfxInterface shared, iface;
@@ -293,6 +307,7 @@ static struct {
     uint64_t frame_id;
     Img hudless, out;
     bool fresh;   // the two images have not been in a command buffer yet
+    bool check;   // vk_ffx_fg_check's, no log
 } G;
 
 static bool make_image(VkCtx *c, Img *m, uint32_t w, uint32_t h, VkImageUsageFlags usage) {
@@ -308,29 +323,29 @@ static bool make_image(VkCtx *c, Img *m, uint32_t w, uint32_t h, VkImageUsageFla
     return false;
 }
 
-static bool fg_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {
-    G.w = w, G.h = h, G.rw = rw, G.rh = rh;
-    if (!make_backend(c, &G.shared, &G.scratch_shared, 1) || !make_backend(c, &G.iface, &G.scratch, 2)) return false;
-    TRY(G.shared.fpCreateBackendContext(&G.shared, FFX_EFFECT_SHAREDAPIBACKEND, nullptr, &G.shared_id),
+static bool fg_create(Fg &g, VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {
+    g.w = w, g.h = h, g.rw = rw, g.rh = rh;
+    if (!make_backend(c, &g.shared, &g.scratch_shared, 1) || !make_backend(c, &g.iface, &g.scratch, 2)) return false;
+    TRY(g.shared.fpCreateBackendContext(&g.shared, FFX_EFFECT_SHAREDAPIBACKEND, nullptr, &g.shared_id),
         "frame generation's shared context");
-    G.shared_live = true;
+    g.shared_live = true;
     FfxOpticalflowContextDescription od = {};
-    od.backendInterface = G.iface;
+    od.backendInterface = g.iface;
     od.resolution = {w, h};
-    TRY(ffxOpticalflowContextCreate(&G.of, &od), "the optical flow context");
-    G.of_live = true;
+    TRY(ffxOpticalflowContextCreate(&g.of, &od), "the optical flow context");
+    g.of_live = true;
     FfxFrameInterpolationContextDescription fd = {};   // flags 0: standard depth with a finite far plane
-    fd.backendInterface = G.iface;
+    fd.backendInterface = g.iface;
     fd.maxRenderSize = {rw, rh};
     fd.displaySize = {w, h};
     fd.backBufferFormat = ffxGetSurfaceFormatVK(VK_FORMAT_R8G8B8A8_UNORM);
     fd.previousInterpolationSourceFormat = ffxGetSurfaceFormatVK(VK_FORMAT_R8G8B8A8_UNORM);   // the HUD-less copy's
-    TRY(ffxFrameInterpolationContextCreate(&G.fi, &fd), "the frame interpolation context");
-    G.fi_live = true;
+    TRY(ffxFrameInterpolationContextCreate(&g.fi, &fd), "the frame interpolation context");
+    g.fi_live = true;
     FfxOpticalflowSharedResourceDescriptions ord = {};
-    TRY(ffxOpticalflowGetSharedResourceDescriptions(&G.of, &ord), "the optical flow's descriptions");
+    TRY(ffxOpticalflowGetSharedResourceDescriptions(&g.of, &ord), "the optical flow's descriptions");
     FfxFrameInterpolationSharedResourceDescriptions frd = {};
-    TRY(ffxFrameInterpolationGetSharedResourceDescriptions(&G.fi, &frd), "the frame interpolation's descriptions");
+    TRY(ffxFrameInterpolationGetSharedResourceDescriptions(&g.fi, &frd), "the frame interpolation's descriptions");
     const FfxCreateResourceDescription *rd[R_COUNT] = {};
     rd[R_OF_VECTOR] = &ord.opticalFlowVector;
     rd[R_OF_SCD] = &ord.opticalFlowSCD;
@@ -339,37 +354,50 @@ static bool fg_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh
         rd[R_DILATED_MV + i] = &frd.dilatedMotionVectors;
         rd[R_PREV_DEPTH + i] = &frd.reconstructedPrevNearestDepth;
     }
-    for (; G.n_res < R_COUNT; G.n_res++)
-        TRY(G.shared.fpCreateResource(&G.shared, rd[G.n_res], G.shared_id, &G.res[G.n_res]), "frame generation's shared image");
+    for (; g.n_res < R_COUNT; g.n_res++)
+        TRY(g.shared.fpCreateResource(&g.shared, rd[g.n_res], g.shared_id, &g.res[g.n_res]), "frame generation's shared image");
     const VkImageUsageFlags copy = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!make_image(c, &G.hudless, w, h, copy) || !make_image(c, &G.out, w, h, copy | VK_IMAGE_USAGE_STORAGE_BIT)) return false;
+    if (!make_image(c, &g.hudless, w, h, copy) || !make_image(c, &g.out, w, h, copy | VK_IMAGE_USAGE_STORAGE_BIT)) return false;
     FfxEffectMemoryUsage a = {}, b = {};
-    ffxFrameInterpolationContextGetGpuMemoryUsage(&G.fi, &a);
-    ffxOpticalflowContextGetGpuMemoryUsage(&G.of, &b);
-    rt_log("vk: frame generation (FSR 3.1.4, built in): %ux%u from scenes up to %ux%u, %.1f MiB of GPU memory", w, h, rw, rh,
-           (double)(a.totalUsageInBytes + b.totalUsageInBytes + 2ull * w * h * 4) / 1048576.0);
-    G.fresh = G.live = true;
+    ffxFrameInterpolationContextGetGpuMemoryUsage(&g.fi, &a);
+    ffxOpticalflowContextGetGpuMemoryUsage(&g.of, &b);
+    if (!g.check)
+        rt_log("vk: frame generation (FSR 3.1.4, built in): %ux%u from scenes up to %ux%u, %.1f MiB of GPU memory", w, h, rw,
+               rh, (double)(a.totalUsageInBytes + b.totalUsageInBytes + 2ull * w * h * 4) / 1048576.0);
+    g.fresh = g.live = true;
     return true;
 }
 
+static void fg_destroy(Fg &g) {
+    VkCtx *c = vk_ctx();
+    for (int i = 0; i < g.n_res; i++) g.shared.fpDestroyResource(&g.shared, g.res[i], g.shared_id);
+    if (g.fi_live) ffxFrameInterpolationContextDestroy(&g.fi);
+    if (g.of_live) ffxOpticalflowContextDestroy(&g.of);
+    if (g.shared_live) g.shared.fpDestroyBackendContext(&g.shared, g.shared_id);
+    scratch_free(g.scratch_shared);
+    scratch_free(g.scratch);
+    if (c && g.hudless.img) vmaDestroyImage(c->vma, g.hudless.img, g.hudless.mem);
+    if (c && g.out.img) vmaDestroyImage(c->vma, g.out.img, g.out.mem);
+    memset(&g, 0, sizeof g);
+}
+
 int vk_ffx_fg_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {
-    vk_ffx_fg_destroy();
-    if (fg_create(c, w, h, rw, rh)) return 1;
-    vk_ffx_fg_destroy();
+    fg_destroy(G);
+    if (fg_create(G, c, w, h, rw, rh)) return 1;
+    fg_destroy(G);
     return 0;
 }
 
-void vk_ffx_fg_destroy(void) {
-    VkCtx *c = vk_ctx();
-    for (int i = 0; i < G.n_res; i++) G.shared.fpDestroyResource(&G.shared, G.res[i], G.shared_id);
-    if (G.fi_live) ffxFrameInterpolationContextDestroy(&G.fi);
-    if (G.of_live) ffxOpticalflowContextDestroy(&G.of);
-    if (G.shared_live) G.shared.fpDestroyBackendContext(&G.shared, G.shared_id);
-    scratch_free(G.scratch_shared);
-    scratch_free(G.scratch);
-    if (c && G.hudless.img) vmaDestroyImage(c->vma, G.hudless.img, G.hudless.mem);
-    if (c && G.out.img) vmaDestroyImage(c->vma, G.out.img, G.out.mem);
-    memset(&G, 0, sizeof G);
+void vk_ffx_fg_destroy(void) { fg_destroy(G); }
+
+int vk_ffx_fg_check(VkCtx *c) {
+    Fg *g = (Fg *)scratch_alloc((sizeof *g + 255) & ~(size_t)255);
+    if (!g) return 0;
+    g->check = true;
+    bool ok = fg_create(*g, c, 640, 360, 320, 180);
+    fg_destroy(*g);
+    scratch_free(g);
+    return ok;
 }
 
 int vk_ffx_fg_fits(uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {
