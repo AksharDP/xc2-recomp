@@ -124,6 +124,9 @@ static int init(void) {
     G.tried = 1;
     char path[1024];
     G.failed = 1;   // until it is known to be there
+#ifndef _WIN32
+    return 0;   // a Windows DLL
+#endif
     if (!plat_exe_path(path, sizeof path - sizeof FFX_LOADER)) return 0;
     char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
     if (back > end) end = back;
