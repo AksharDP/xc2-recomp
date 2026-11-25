@@ -21,7 +21,8 @@
 // picture would stay on screen, so after MAX_MISSES resolves without a stretch FSR turns itself off.
 //
 // The jitter comes from the submission's uniform snapshot: the game may already be writing the next frame's block while
-// the replay records this one, and a jitter one frame off would blur the picture.
+// the replay records this one, and a jitter one frame off would blur the picture. The game cycles through 8 positions;
+// while FSR upscales they are as many as its output needs (jitter_phases).
 //
 // What upscales, in this order:
 //
@@ -811,10 +812,46 @@ static float mip_bias(void) {
     return roundf(b * 4.0f) / 4.0f;
 }
 
-// At every present. A frame's materials are drawn before FSR is recorded, so they take the bias of the frame before.
+// The length of the camera jitter (recomp/patches-v301.txt, set xc2jit). AMD's guide: 8 * (output size / render size)^2
+// positions, so that every output pixel is sampled as often as at the full size. The table is written before the game
+// runs, as the patched code reads it with FSR off too.
+#define JITTER_MAX 72    // three times the size, more than a render scale gives
+#define JITTER_TABLE 80
+static uint64_t *jitter_word;   // the patch page's +0x8f8; NULL without the set
+
+static float halton(unsigned i, unsigned base) {
+    float f = 1.0f, r = 0.0f;
+    for (; i; i /= base) f /= (float)base, r += f * (float)(i % base);
+    return r;
+}
+
+void vk_fsr3_jitter_init(void) {
+    uint8_t *page = rt_patch_page();
+    if (!page || !rt_patch_enabled(rt_patch_set("xc2jit"))) return;
+    float t[JITTER_TABLE][2];
+    for (unsigned i = 0; i < JITTER_TABLE; i++) t[i][0] = halton(i + 1, 2), t[i][1] = halton(i + 1, 3);
+    memcpy(page + 0x900, t, sizeof t);
+    jitter_word = (uint64_t *)(page + 0x8f8);
+}
+
+// FSR upscales (or not): the game's jitter takes as many positions as it needs, or the game's own number.
+static void jitter_phases(int on) {
+    uint64_t v = 0;
+    if (!jitter_word) return;
+    if (on && F.rw && F.ow) {
+        float n = (float)F.ow / (float)F.rw;
+        int phases = (int)ceilf(8.0f * n * n - 0.01f);
+        v = (uint64_t)(phases < 8 ? 8 : phases > JITTER_MAX ? JITTER_MAX : phases) << 32 | 0xffffffffu;
+    }
+    __atomic_store_n(jitter_word, v, __ATOMIC_RELAXED);
+}
+
+// At every present. A frame's materials are drawn before FSR is recorded, so they take the bias of the frame before, and
+// the game moves the camera by the count of an earlier one.
 void vk_fsr3_frame_take(VkFsrFrame *out) {
-    vk_sampler_scene_bias(FR.valid && FR.fresh ? mip_bias() : 0.0f);
-    *out = FR;
+    int on = FR.valid && FR.fresh;
+    vk_sampler_scene_bias(on ? mip_bias() : 0.0f);
+    jitter_phases(on);    *out = FR;
     FR.fresh = 0;
 }
 
