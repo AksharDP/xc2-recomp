@@ -96,21 +96,25 @@ def parse(text, mod):
     return out
 
 
-TITLES = xc2_titles.TITLES   # XC2's base title of each release: a mod is laid out under either
+def titles_of(exefs):
+    """The title ids a mod for this ExeFS may be laid out under: its release's, as runtime/mods.c find_root takes the
+    build's own. A folder of the other release must not hide it. Every release's when the ExeFS does not name one."""
+    region = xc2_titles.of_exefs(exefs)
+    return (region.title,) if region else xc2_titles.TITLES
 
 
-def places(part):
+def places(part, titles):
     """The places of <part> (cheats, exefs) inside a mod folder: its own and the Atmosphere and emulator layouts under
-    each release's title id (runtime/mods.c find_root takes the build's own)."""
-    return (part, *(f'{where}{t}/{part}' for t in TITLES for where in ('atmosphere/contents/', 'contents/', '')))
+    each title id, in the order of runtime/mods.c find_root."""
+    return (part, *(f'{where}{t}/{part}' for t in titles for where in ('atmosphere/contents/', 'contents/', '')))
 
 
-def cheat_files(mods, bid):
+def cheat_files(mods, bid, titles):
     """[(mod folder name, cheat file)] of the folders of mods, by name: <mod>/cheats/<bid>.txt or its Atmosphere places
-    (runtime/mods.c find_root), the file name in any case."""
+    under titles (runtime/mods.c find_root), the file name in any case."""
     out = []
     for mod in sorted((d for d in mods.iterdir() if d.is_dir()), key=lambda d: d.name) if mods.is_dir() else []:
-        for where in places('cheats'):
+        for where in places('cheats', titles):
             folder = mod / where
             if folder.is_dir():
                 f = next((p for p in sorted(folder.iterdir()) if p.is_file() and p.name.lower() == f'{bid}.txt'.lower()),
@@ -362,7 +366,7 @@ def main():
 def build(args):
     m = Main(args.exefs / 'main')
     text = args.patches.read_text() if args.patches and args.patches.is_file() else ''
-    files = cheat_files(args.mods, build_id(args.exefs / 'main'))
+    files = cheat_files(args.mods, build_id(args.exefs / 'main'), titles_of(args.exefs))
     cheats = [c for mod, f in files for c in parse(f.read_text(encoding='utf-8-sig', errors='replace'), mod)]
     sets, sites, status = [], [], []
     for c in cheats:

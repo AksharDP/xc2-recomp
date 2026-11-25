@@ -64,22 +64,21 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cheats import Main, convert, fnv, places  # noqa: E402
+from cheats import Main, convert, fnv, places, titles_of  # noqa: E402
 from nso import (DT_JMPREL, DT_NULL, DT_PLTRELSZ, DT_RELA, DT_RELASZ, DT_RELR, DT_RELRSZ, DT_STRSZ,  # noqa: E402
                  DT_STRTAB, DT_SYMTAB, R_AARCH64_JUMP_SLOT)
 
 NSO_HEADER = 0x100
-EXEFS_PLACES = places('exefs')
 RUN_MAX = 256   # bytes per line of the data file (runtime/mods.c reads lines of at most 1024 characters)
 
 
-def patch_files(mods):
+def patch_files(mods, titles):
     """[(mod folder name, path in the mod, file)] of the folders of mods, by name: the .ips and .pchtxt files of the
-    first exefs place that exists (runtime/mods.c find_root) and of atmosphere/exefs_patches/<name>/."""
+    first exefs place under titles that exists (runtime/mods.c find_root) and of atmosphere/exefs_patches/<name>/."""
     out = []
     for mod in sorted((d for d in mods.iterdir() if d.is_dir()), key=lambda d: d.name) if mods.is_dir() else []:
         folders = []
-        exefs = next((mod / w for w in EXEFS_PLACES if (mod / w).is_dir()), None)
+        exefs = next((mod / w for w in places('exefs', titles) if (mod / w).is_dir()), None)
         if exefs:
             folders.append(exefs)
         patches = mod / 'atmosphere' / 'exefs_patches'
@@ -326,7 +325,7 @@ def build(args):
     bid = m.nso.build_id
     text = args.patches.read_text() if args.patches and args.patches.is_file() else ''
     builtin = builtin_sites(text)
-    files = patch_files(args.mods)
+    files = patch_files(args.mods, titles_of(args.exefs))
     sets, sites, status, data_lines, kinds = [], [], [], [], {}
     raws = [f.read_bytes() for _, _, f in files]
     results = [classify(m, md, bid, f, raw) for (_, _, f), raw in zip(files, raws)]

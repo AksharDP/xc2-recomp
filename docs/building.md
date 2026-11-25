@@ -227,6 +227,9 @@ change passes these, all run with `.venv`:
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 
+CI's Python tests (`.github/workflows/python-tests.yml`) run the installer, generator and mod tool tests that need no
+game files, compiler or window, on the Python and packages of the setup (`tools/requirements-installer.txt`).
+
 `--cflags=-march=x86-64-v2` runs `lift.py`, `simd.py`, `atomic.py` and `func.py` on the code a `--cpu v2` build gets, with
 the software fused multiply-add of `runtime\fma.c`; a change to that file or to the FP lowering passes both levels.
 
