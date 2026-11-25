@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "cfg.h"
+#include "fsr_state.h"
 #include "input.h"
 #include "input_map.h"
 #include "perfmon.h"
@@ -39,9 +40,6 @@ void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
-float vk_fg_shown_fps(uint64_t now_ns);
-int vk_fsr3_libraries(void);
-int vk_fsr3_shown(char *buf, size_t size);
 extern const int rt_game_version;
 extern const char rt_game_name[];   // the game version shown, "2.0.0" (tools/build_game.py)
 extern const char rt_port_version[];
@@ -244,7 +242,7 @@ static int vk_up(const MenuTarget *t) {
     ii.Queue = t->queue;
     ii.DescriptorPoolSize = 16;
     ii.MinImageCount = 2;
-    ii.ImageCount = 4;   // vertex buffers rotate per recorded frame: more than gfx_present.c's 2 frames in flight
+    ii.ImageCount = 8;   // vertex buffers rotate per recorded draw: more than gfx_present.c's 4 presents in flight
     ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.UseDynamicRendering = true;
     g_vk_fmt = t->format;
@@ -569,6 +567,36 @@ static const char *present_note(void) {
     return note;
 }
 
+// The FSR rows show only what has loaded on this machine (fsr_state.h): none where FSR did not or failed, the version where
+// FSR 4 did too, frame generation where it did. Under a row that is on stands whether it is at work, which the setting alone does
+// not say (a loading screen has no scene to upscale).
+static void rows_fsr(void) {
+    bool on = cfg_bool("XC2_FSR3") != 0;
+    int ready = vk_fsr3_ready();
+    if (!ready) return;
+    if (ready < 0 && !on) {
+        opt_disable_next(UI_MENU_FSR_CHECKING);
+        opt_toggle_text("XC2_FSR3", menu_text(UI_MENU_FSR3), menu_text(UI_MENU_FSR3_DESC), false);
+        return;
+    }
+    char ver[64], note[96];
+    if (vk_fsr3_shown(ver, sizeof ver)) snprintf(note, sizeof note, menu_text(UI_MENU_FMT_FSR_RUNNING), ver);
+    else snprintf(note, sizeof note, "%s", menu_text(UI_MENU_NOT_RUNNING));
+    opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC, false, on ? note : NULL);
+    if (vk_fsr3_version4()) {
+        static const UiTextId names[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
+        opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, names, 3, UI_MENU_FSR_VERSION_DESC);
+    }
+    if (!vk_fg_ready()) return;
+    if (!on) {   // it takes its inputs from FSR: shown off, whatever the setting
+        opt_disable_next(UI_MENU_FRAME_GEN_NEEDS_FSR);
+        opt_toggle_text("XC2_FRAME_GEN", menu_text(UI_MENU_FRAME_GEN), menu_text(UI_MENU_FRAME_GEN_DESC), false);
+        return;
+    }
+    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC, false,
+               !cfg_bool("XC2_FRAME_GEN") ? NULL : menu_text(vk_fg_running() ? UI_MENU_RUNNING : UI_MENU_NOT_RUNNING));
+}
+
 // ---- the tabs
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
@@ -584,21 +612,11 @@ static void tab_screen(float scale) {
     opt_toggle("XC2_HUD_CENTER", UI_MENU_HUD_CENTER, UI_MENU_HUD_CENTER_DESC);   // resolution.c wide_hud
     row_render_scale();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
-    opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
+    if (vk_fsr1_usable()) opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     static const UiTextId fit[] = {UI_MENU_PICTURE_FIT_KEEP, UI_MENU_PICTURE_FIT_STRETCH};
     opt_choice("XC2_PICTURE_FIT", UI_MENU_PICTURE_FIT, fit, 2, UI_MENU_PICTURE_FIT_DESC);
-    opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
-    // Without AMD's libraries (the Linux release has none) these rows would change nothing: greyed out with the reason.
-    // The version choice and frame generation need the 2.x loader; FSR alone also runs on the older 1.1.4 library.
-    int libs = vk_fsr3_libraries();
-    UiTextId no_loader = libs ? UI_MENU_FSR_LOADER_MISSING : UI_MENU_FSR_MISSING;
-    if (!libs) opt_disable_next(UI_MENU_FSR_MISSING);
-    opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC);
-    static const UiTextId ver[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
-    if (!(libs & 1)) opt_disable_next(no_loader);
-    opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, ver, 3, UI_MENU_FSR_VERSION_DESC);
-    if (!(libs & 1)) opt_disable_next(no_loader);
-    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
+    if (vk_fsr1_usable()) opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    rows_fsr();
     opt_end();
 }
 
@@ -1184,7 +1202,7 @@ static void upscaler_text(char *b, size_t n) {
     char ver[64];
     if (vk_fsr3_shown(ver, sizeof ver)) snprintf(b, n, menu_text(UI_MENU_OV_FMT_UPSCALER), ver);
     else if (!cfg_bool("XC2_FSR3")) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_GAME));
-    else if (!vk_fsr3_libraries()) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_NO_LIB));
+    else if (vk_fsr3_state() != VK_FSR_OK) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_NO_FSR));
     else snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_IDLE));
 }
 

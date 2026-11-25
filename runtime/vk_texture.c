@@ -114,7 +114,9 @@ static int small_pending;
 static uint32_t tex_gen = 1;
 // Bumped with tex_gen and whenever a slot is registered: what vk_texture_by_id returns for any slot may have changed.
 static uint32_t slots_gen = 1;
-static uint32_t samp_gen = 1;   // bumped whenever a sampler slot is registered: vk_sampler_by_id may answer otherwise
+// Bumped whenever a sampler slot is registered or scene_bias changes: vk_sampler_by_id may answer otherwise
+static uint32_t samp_gen = 1;
+static float scene_bias;     // vk_sampler_scene_bias; under tex_lock
 static uint64_t n_checks;    // draw-binding storage checks (make_fresh_snap) since the last perf line
 // tex_gen per storage address (hashed): a slot resolves through the entries at its own address only (slot_resolve), so
 // a slot's resolution stays valid while its address's generation does. XCX finalizes and initializes transient
@@ -1961,17 +1963,36 @@ VkSampler vk_sampler_for(const samp_par *s) {
     return v;
 }
 
-// Samplers live until shutdown, so a slot keeps the one its parameters map to until it is registered again.
+// Samplers live until shutdown, so a slot keeps the one its parameters map to until it is registered again or the bias
+// of its kind changes.
 VkSampler vk_sampler_by_id_locked(int id) {
     VkCtx *c = vk_ctx();
     if (!c) return VK_NULL_HANDLE;
     VkSampler v = VK_NULL_HANDLE;
     if (id >= 0 && id < nsslots && sslots[id].used) {
         SampSlot *s = &sslots[id];
-        if (!s->s) s->s = sampler_for(c, &s->p);
+        if (!s->s) {
+            samp_par k = s->p;
+            if (k.aniso > 1 && k.minf > NVN_MIN_FILTER_LINEAR) k.lod_bias += scene_bias;
+            s->s = sampler_for(c, &k);
+        }
         v = s->s;
     }
     return v;
+}
+
+// Anisotropy is what tells the materials apart: Vulkan adds a sampler's bias to an explicit level too, so it must stay
+// off the reflection cubes, whose level the shaders choose by roughness, and off the blur chains, and those are sampled
+// without anisotropy.
+void vk_sampler_scene_bias(float bias) {
+    lock();
+    if (bias != scene_bias) {
+        scene_bias = bias;
+        for (int i = 0; i < nsslots; i++)
+            if (sslots[i].p.aniso > 1) sslots[i].s = VK_NULL_HANDLE;
+        __atomic_add_fetch(&samp_gen, 1, __ATOMIC_RELEASE);
+    }
+    unlock();
 }
 
 VkSampler vk_sampler_point_by_id_locked(int id) {

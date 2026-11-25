@@ -345,6 +345,7 @@ void rt_boot(void) {
     if (sites) rt_log("fnhook: %d sites written", sites);
     frame_step_init();
     res_init();   // runs a mod's patched code to read its frame size (resolution.c mod_frame_size)
+    vk_fsr3_jitter_init();
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     hostfn_seal();

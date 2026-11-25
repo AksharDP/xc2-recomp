@@ -594,3 +594,19 @@ site xc2qte main 3bb674 sha:2ddbafe335badaf3 bd409e61 1e210800 bd449661 1e202820
 set xc2pulse XC2_PULSE_FIX 1
 site xc2pulse main 670b10 sha:f6998207a2c97b35 bd4006a1 1e212000
 site xc2pulse main 670b14 sha:828d0405fcd42748 540002ca
+# xc2jit (XC2_FSR_JITTER, on): the camera jitter FSR needs. The renderer (main+0x7e3808) moves the projection by one
+# entry of a Halton(2,3) table in its object each frame (+0x9c0, 16 entries of 16 bytes; the next entry's index at
+# +0x9b4), modulo the count in its settings (+0x14c of the pass settings, 8). Those 8 positions are made for the game's
+# own anti-aliasing at the rendered size. FSR builds a larger picture and needs 8 for each output pixel under a rendered
+# one, 32 at half the size: with 8 some output pixels never get a sample of their own, which shows as a fine comb along
+# hard shadow edges. The first site changes the count (w11) by the page's +0x8f8, a mask of the bits to clear and above
+# it the bits to set, one 64-bit word so that the game never reads half a change; 0 leaves the game's count, which is also
+# what keeps the jitter off where the count is below 2 (the branch before the site). The others read the entry from the
+# page's table (+0x900, the same sequence, 8 bytes an entry), which is long enough for every count and for an index left
+# from a longer one. vk_fsr3.c writes both (vk_fsr3_jitter_init, jitter_phases). x10, x9 and x12 are overwritten before
+# they are read again, and no flag is written.
+set xc2jit XC2_FSR_JITTER 1
+site xc2jit main 7e459c sha:e1119b8bd8c8d6fa @page:x12 f9447d8c 0a2c016b d360fd8c 2a0c016b b949b66c
+site xc2jit main 7e45a0 sha:0c4ef1bf4730445a @page:x9 8b0c0d29
+site xc2jit main 7e45ac sha:894eb2555f6a9265 b949012a
+site xc2jit main 7e45b0 sha:2c5c87ebbcaa8bf9 b9490529

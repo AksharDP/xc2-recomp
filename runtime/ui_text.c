@@ -88,20 +88,22 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
     [UI_MENU_FSR3] = "AMD FSR",
     [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
-                          "3D render scale to the game resolution. Needs amd_fidelityfx_loader_vk.dll and "
-                          "amd_fidelityfx_upscaler_vk.dll next to the game, or the older amd_fidelityfx_vk.dll.",
+                          "3D render scale to the game resolution. The note under On says whether it runs, and which "
+                          "version.",
     [UI_MENU_FSR_VERSION] = "FSR version",
-    [UI_MENU_FSR_VERSION_DESC] = "Which upscaler to ask AMD's library for. Auto takes the newest the GPU and driver "
-                                  "support: FSR Upscaling 4.1 on Radeon RX 6000 and newer with a recent driver, FSR 3.1 "
-                                  "everywhere else.",
+    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 needs a Radeon RX 6000 or newer with a recent driver, and takes more of it; FSR "
+                                  "3.1 runs on every graphics card. Auto is the newest version available. Changes "
+                                  "take effect at once.",
     [UI_MENU_FSR_VERSION_AUTO] = "Auto", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR Frame Generation",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation shows an interpolated frame between two drawn ones, so the "
                                "display runs at about twice the frame rate. It needs AMD FSR on for depth, motion "
                                "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
                                "Off by default.",
-    [UI_MENU_FSR_MISSING] = "Not available: AMD's FSR libraries are not next to the game (the Linux release has none).",
-    [UI_MENU_FSR_LOADER_MISSING] = "Needs amd_fidelityfx_loader_vk.dll next to the game.",
+    [UI_MENU_FRAME_GEN_NEEDS_FSR] = "Turn on AMD FSR first.",
+    [UI_MENU_FSR_CHECKING] = "Checking this machine...",
+    [UI_MENU_FMT_FSR_RUNNING] = "Running: FSR %s",
+    [UI_MENU_RUNNING] = "Running", [UI_MENU_NOT_RUNNING] = "Not running right now",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. The default is 120. Above 60 is "
@@ -367,7 +369,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "game (TAA)",
-    [UI_MENU_OV_UPSCALE_NO_LIB] = "game: no FSR library",
+    [UI_MENU_OV_UPSCALE_NO_FSR] = "game: FSR not available",
     [UI_MENU_OV_UPSCALE_IDLE] = "game: FSR not running",
 };
 
@@ -419,14 +421,16 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS] = "FSR 锐度",
     [UI_MENU_SHARPNESS_DESC] = "AMD FSR 1 放大后的锐化强度；设为 0 则关闭锐化。",
     [UI_MENU_FSR3] = "AMD FSR 超分",
-    [UI_MENU_FSR3_DESC] = "使用 AMD FSR 替代游戏原版的时间抗锯齿与分辨率缩放，将较低的 3D 渲染比例高质量放大至游戏分辨率。需要在程序同级目录放置 amd_fidelityfx_loader_vk.dll 与 amd_fidelityfx_upscaler_vk.dll（或旧版 amd_fidelityfx_vk.dll）。",
+    [UI_MENU_FSR3_DESC] = "使用 AMD FSR 替代游戏原版的时间抗锯齿与分辨率缩放，将较低的 3D 渲染比例高质量放大至游戏分辨率。“开启”下方会显示 FSR 是否正在运行及其版本。",
     [UI_MENU_FSR_VERSION] = "FSR 版本",
-    [UI_MENU_FSR_VERSION_DESC] = "向 AMD FidelityFX 库请求的超分版本。“自动”会选用显卡与驱动支持的最新版本（Radeon RX 6000 及更新显卡配合新版驱动时使用 FSR 4.1，其余设备使用 FSR 3.1）。",
+    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 需要 Radeon RX 6000 或更新显卡及新版驱动，性能开销更大；FSR 3.1 可在所有显卡上运行。“自动”选用可用的最新版本。更改立即生效。",
     [UI_MENU_FSR_VERSION_AUTO] = "自动", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR 帧生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 帧生成会在每两帧渲染画面之间插入一帧插值画面，使输出帧率接近翻倍。需同时开启 AMD FSR 以提供深度、运动矢量与无 HUD 画面；建议将帧率上限设为显示器刷新率的一半左右。默认关闭。",
-    [UI_MENU_FSR_MISSING] = "不可用：游戏目录中没有 AMD FSR 库（Linux 版本不附带）。",
-    [UI_MENU_FSR_LOADER_MISSING] = "需要在游戏目录中放置 amd_fidelityfx_loader_vk.dll。",
+    [UI_MENU_FRAME_GEN_NEEDS_FSR] = "请先开启 AMD FSR 超分。",
+    [UI_MENU_FSR_CHECKING] = "正在检测此设备…",
+    [UI_MENU_FMT_FSR_RUNNING] = "运行中：FSR %s",
+    [UI_MENU_RUNNING] = "运行中", [UI_MENU_NOT_RUNNING] = "当前未运行",
 
     [UI_MENU_FPS_LIMIT] = "帧率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "游戏每秒绘制的最大帧数，游戏时钟同步随帧率步进。默认为 120。超过 60 FPS 目前仍属于实验性功能。",
@@ -669,7 +673,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，锐度 %d%%", [UI_MENU_OV_SCALE_NONE] = "无 (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "双线性",
     [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "游戏 (TAA)",
-    [UI_MENU_OV_UPSCALE_NO_LIB] = "游戏：无 FSR 库", [UI_MENU_OV_UPSCALE_IDLE] = "游戏：FSR 未运行",
+    [UI_MENU_OV_UPSCALE_NO_FSR] = "游戏：FSR 不可用", [UI_MENU_OV_UPSCALE_IDLE] = "游戏：FSR 未运行",
 };
 
 static const char *const text_zh_hant[UI_TEXT_COUNT] = {
@@ -720,14 +724,16 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS] = "FSR 銳利度",
     [UI_MENU_SHARPNESS_DESC] = "AMD FSR 1 縮放後的銳化程度；設為 0 表示關閉。",
     [UI_MENU_FSR3] = "AMD FSR 升頻",
-    [UI_MENU_FSR3_DESC] = "以 AMD FSR 取代遊戲原本的時間反鋸齒與縮放，將較低的 3D 算繪比例升頻至遊戲解析度。需在遊戲旁放置 amd_fidelityfx_loader_vk.dll 與 amd_fidelityfx_upscaler_vk.dll（或舊版 amd_fidelityfx_vk.dll）。",
+    [UI_MENU_FSR3_DESC] = "以 AMD FSR 取代遊戲原本的時間反鋸齒與縮放，將較低的 3D 算繪比例升頻至遊戲解析度。「開啟」下方會顯示 FSR 是否正在執行及其版本。",
     [UI_MENU_FSR_VERSION] = "FSR 版本",
-    [UI_MENU_FSR_VERSION_DESC] = "向 AMD FidelityFX 函式庫請求的升頻器版本。「自動」會選用 GPU 與驅動支援的最新版本（Radeon RX 6000 及更新顯示卡搭配新版驅動使用 FSR 4.1，其餘使用 FSR 3.1）。",
+    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 需要 Radeon RX 6000 或更新顯示卡及新版驅動，效能負擔較高；FSR 3.1 可在所有顯示卡上執行。「自動」選用可用的最新版本。變更立即生效。",
     [UI_MENU_FSR_VERSION_AUTO] = "自動", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR 影格生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 影格生成會在兩張實際算繪影格之間插入一張補插影格，使顯示幀率接近倍增。需開啟 AMD FSR 以取得深度、運動向量與無介面影像；建議將幀率上限設為螢幕更新率的一半左右。預設關閉。",
-    [UI_MENU_FSR_MISSING] = "無法使用：遊戲資料夾中沒有 AMD FSR 函式庫（Linux 版本不附帶）。",
-    [UI_MENU_FSR_LOADER_MISSING] = "需在遊戲資料夾中放置 amd_fidelityfx_loader_vk.dll。",
+    [UI_MENU_FRAME_GEN_NEEDS_FSR] = "請先開啟 AMD FSR 升頻。",
+    [UI_MENU_FSR_CHECKING] = "正在檢測此裝置…",
+    [UI_MENU_FMT_FSR_RUNNING] = "執行中：FSR %s",
+    [UI_MENU_RUNNING] = "執行中", [UI_MENU_NOT_RUNNING] = "目前未執行",
 
     [UI_MENU_FPS_LIMIT] = "幀率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "遊戲每秒繪製的最高幀數，遊戲時鐘同步跟隨。預設為 120。高於 60 FPS 目前仍屬實驗性功能。",
@@ -970,7 +976,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1，銳利度 %d%%", [UI_MENU_OV_SCALE_NONE] = "無 (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "雙線性",
     [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "遊戲 (TAA)",
-    [UI_MENU_OV_UPSCALE_NO_LIB] = "遊戲：無 FSR 函式庫", [UI_MENU_OV_UPSCALE_IDLE] = "遊戲：FSR 未執行",
+    [UI_MENU_OV_UPSCALE_NO_FSR] = "遊戲：FSR 無法使用", [UI_MENU_OV_UPSCALE_IDLE] = "遊戲：FSR 未執行",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

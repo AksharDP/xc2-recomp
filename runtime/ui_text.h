@@ -45,7 +45,10 @@ typedef enum {
     UI_MENU_FSR_VERSION, UI_MENU_FSR_VERSION_DESC,
     UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3,
     UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC,
-    UI_MENU_FSR_MISSING, UI_MENU_FSR_LOADER_MISSING,   // why the FSR rows are greyed out
+    UI_MENU_FRAME_GEN_NEEDS_FSR,
+    UI_MENU_FSR_CHECKING,     // until it is known what loads on this machine
+    UI_MENU_FMT_FSR_RUNNING,  // "Running: FSR %s", under the value of the AMD FSR row
+    UI_MENU_RUNNING, UI_MENU_NOT_RUNNING,
 
     // Game
     UI_MENU_FPS_LIMIT, UI_MENU_FPS_LIMIT_DESC, UI_MENU_FPS_30, UI_MENU_FPS_40, UI_MENU_FPS_45, UI_MENU_FPS_60, UI_MENU_FPS_90,
@@ -201,7 +204,7 @@ typedef enum {
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
     UI_MENU_OV_FMT_UPSCALER,  // "AMD FSR %s": the provider version that ran
-    UI_MENU_OV_UPSCALE_GAME, UI_MENU_OV_UPSCALE_NO_LIB, UI_MENU_OV_UPSCALE_IDLE,   // the game's own, and why
+    UI_MENU_OV_UPSCALE_GAME, UI_MENU_OV_UPSCALE_NO_FSR, UI_MENU_OV_UPSCALE_IDLE,   // the game's own, and why
     UI_MENU_LAST_ID = UI_MENU_OV_UPSCALE_IDLE,
     UI_TEXT_COUNT
 } UiTextId;

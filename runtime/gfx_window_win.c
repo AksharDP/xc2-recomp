@@ -261,10 +261,11 @@ static void window_main(void *arg) {
     // while, and must not cover what the player works on meanwhile. The game still counts itself in focus until the
     // first WM_ACTIVATEAPP, so loading goes on, and keyboard input waits for the foreground (input_win.c). Its taskbar
     // button flashes until it is brought up, and XC2_FULLSCREEN waits for that first activation.
-    // XC2_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
+    // XC2_BACKGROUND_WINDOW=1 (test runs): no flashing, never activated, never fullscreen at start, and F11
+    // keeps the window's place.
     int background = g_background = cfg_get("XC2_BACKGROUND_WINDOW") && atoi(cfg_get("XC2_BACKGROUND_WINDOW"));
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"XC2 Recomp", WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT,
-                             r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);
+    g_hwnd = CreateWindowExW(background ? WS_EX_NOACTIVATE : 0, wc.lpszClassName, L"XC2 Recomp", WND_STYLE, CW_USEDEFAULT,
+                             CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, inst, NULL);
     if (!g_hwnd) {
         rt_log("gfx: CreateWindowEx failed (%lu)", GetLastError());
         g_wnd_failed = 1;

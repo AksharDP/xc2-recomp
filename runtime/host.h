@@ -295,6 +295,7 @@ void res_hud_frame(void);                                  // once per presented
                                                            // on or off after the frame's full-width pictures
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
+void vk_fsr3_jitter_init(void);                            // vk_fsr3.c, after rt_patches_init: the table of the set xc2jit
 int vk_scene_size(unsigned out[2]);                        // vk_fsr3.c: the size of the last 3D scene drawn; 0 before one
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch

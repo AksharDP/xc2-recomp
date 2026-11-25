@@ -8,6 +8,7 @@ The same model as the Windows release (tools/make_release.py, whose download cac
 folder carries the setup and a toolchain, never game code; the player's machine builds the game. Everything that runs on
 the player's machine is built against the Steam Runtime 3 "sniper" SDK sysroot (glibc 2.31), so the AppImage and the
 game it builds run on SteamOS and on any distribution at least as new. Needs network access on the first run, make,
+git, glslang (glslangValidator, for the built-in FSR's shaders),
 the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
 
     python/    python-build-standalone 3.14 (with tkinter) + the packages of tools/requirements-installer.txt; a .pth
@@ -390,6 +391,7 @@ def collect_licenses(out, sysroot):
         (WORK / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (out / 'python' / 'lib' / f'python{sys_version(out)}' / 'LICENSE.txt', 'python-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
+        (mr.ffx_sdk.ensure() / 'LICENSE.txt', 'FidelityFX-SDK-1.1.4-LICENSE.txt'),
         (mr.mng_license(), 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:

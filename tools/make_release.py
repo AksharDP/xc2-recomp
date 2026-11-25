@@ -51,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import check_content  # noqa: E402
+import ffx_sdk  # noqa: E402
 import mod_abi  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -95,6 +96,17 @@ PINS = {
             '44c81162337915afecda3185f66fd98268a54454580b2717080c9dfef57fe781'),
     'zstd': (MSYS2 + 'mingw-w64-ucrt-x86_64-zstd-1.5.7-2-any.pkg.tar.zst',   # static libzstd.a (runtime/resolution.c)
              'dbdb8427280046a2b41697780aa4c52983b708082b0da4755951dc3bea96ca89'),
+    # glslangValidator and its DLLs, for the shaders of the built-in FSR (glslang() below); not shipped
+    'glslang': (MSYS2 + 'mingw-w64-ucrt-x86_64-glslang-16.6.0-1-any.pkg.tar.zst',
+                '74742908b850637e4f0710cd9630f511b0def5b0f18d653cf9657197758bda82'),
+    'spirv-tools': (MSYS2 + 'mingw-w64-ucrt-x86_64-spirv-tools-3~1.4.363.0-1-any.pkg.tar.zst',
+                    'd31d67fe918aeee21d1e930fd96360856a60146d23094e4ae8baf071a4049aaa'),
+    'libstdc++': (MSYS2 + 'mingw-w64-ucrt-x86_64-libstdc++-16.2.0-6-any.pkg.tar.zst',
+                  '33c5e58a85a538cf843a8672991cce591f0231d66da3b66a57629712d64be17f'),
+    'libgcc': (MSYS2 + 'mingw-w64-ucrt-x86_64-libgcc-16.2.0-6-any.pkg.tar.zst',
+               '80b2497f019977dd9528b1abc8621b1328a0115ab1f724047ccbb56bf323f11d'),
+    'libwinpthread': (MSYS2 + 'mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r598.ge3d18511f-1-any.pkg.tar.zst',
+                      'c35d6be83d141c8cfbb61f1637dd4b53aac8f5562d766aa26d0741c40bad4e4d'),
     'ffx-loader-vk': (FFX_RAW + 'amd_fidelityfx_loader_vk.dll',
                       '38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9'),
     'ffx-upscaler-vk': (FFX_RAW + 'amd_fidelityfx_upscaler_vk.dll',
@@ -351,6 +363,21 @@ def build_deps(out):
     shutil.copy2(zstd / 'lib' / 'libzstd.a', d / 'lib')
 
 
+def glslang():
+    """glslangValidator with the DLLs it needs in one folder, for the shaders of the built-in FSR (ffx_sdk.py)."""
+    dst = WORK / 'glslang-bin'
+    exe = dst / 'glslangValidator.exe'
+    if not exe.is_file():
+        dst.mkdir(parents=True, exist_ok=True)
+        for pkg, dlls in (('glslang', ('glslang.dll', 'libglslang-default-resource-limits.dll')),
+                          ('spirv-tools', ('libSPIRV-Tools.dll', 'libSPIRV-Tools-opt.dll')),
+                          ('libstdc++', ('libstdc++-6.dll',)), ('libgcc', ('libgcc_s_seh-1.dll',)),
+                          ('libwinpthread', ('libwinpthread-1.dll',)), ('glslang', ('glslangValidator.exe',))):
+            for f in dlls:
+                shutil.copy2(unpack(pkg) / 'ucrt64' / 'bin' / f, dst / f)
+    return exe
+
+
 def mng_license():
     """MacNativeGames' licence: from refs/ when it is checked out, else the copy beside its vendored extractors."""
     ref = MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE'
@@ -368,6 +395,7 @@ def collect_licenses(out):
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
+        (ffx_sdk.ensure(glslang()) / 'LICENSE.txt', 'FidelityFX-SDK-1.1.4-LICENSE.txt'),
         (mng_license(), 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
@@ -399,6 +427,7 @@ def take_prebuilt(out, src):
 
 def runtime_lib(out, llvm):
     """Build libxc2rt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
+    ffx_sdk.ensure(glslang())   # here: the builds below run without git on PATH
     build = MAIN_ROOT / 'build' / 'release-check' / 'rtlib'
     run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--version', VERSION_TAG,
          '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,

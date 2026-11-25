@@ -488,7 +488,8 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False,
+               glslang=None):
     """build.ninja text, and the object lists per module. With prebuilt True the generated objects already exist in
     out/obj and are link inputs without a compile edge; a set names the objects for which that holds (object cache
     hits). runtime_lib: a prebuilt library replaces the runtime objects
@@ -498,6 +499,12 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
+    ffx, ffx_inc, ffx_sources = None, '', []
+    if not runtime_lib:   # AMD's FidelityFX SDK, whose sources compile with the rule cc_ffx; a runtime library has them
+        import ffx_sdk   # not in the releases' tools/, which always link one
+        ffx = ffx_sdk.ensure(glslang)
+        ffx_inc = ' '.join(f'-isystem {cmd_path(ffx / d)}' for d in ffx_sdk.INCLUDES)
+        ffx_sources = ffx_sdk.sources(ffx)
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
     lines = [
         '# Written by tools/build_game.py; do not edit.',
@@ -520,6 +527,15 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '',
         'rule cc_rt',
         '  command = $cc $rtflags -MD -MF $out.d -c $in -o $out',
+        '  deps = gcc',
+        '  depfile = $out.d',
+        '  description = CC $in',
+        '',
+        # AMD's SDK is written for MSVC: ffx_compat.h brings what its headers have on their own; -w as its warnings are
+        # not ours to fix
+        'rule cc_ffx',
+        f'  command = $cc $rtflags {ffx_inc} ' + (f'-I {cmd_path(ffx / "sdk" / "src" / "shared")} ' if ffx else '') +
+        '-include ffx_compat.h -w -MD -MF $out.d -c $in -o $out',
         '  deps = gcc',
         '  depfile = $out.d',
         '  description = CC $in',
@@ -558,13 +574,15 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         sources += [out / 'modules.c']
     else:
         sources += [out / 'modules.c']
-    for src in sources:
+    for src in sources + ffx_sources:
         o = runtime_object(out, src)
         if src.suffix == '.rc':   # windres writes no depfile: the files xc2.rc embeds are listed by hand
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "xc2.manifest")} '
                          f'{ninja_path(RUNTIME / "xc2.ico")}')
         else:
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+            lines.append(f'build {ninja_path(o)}: {"cc_ffx" if src in ffx_sources else "cc_rt"} {ninja_path(src)}')
+            if src.name == 'vk_ffx.cpp':
+                lines.append(f'  rtflags = $rtflags {ffx_inc}')
             if src.name in BASELINE_FILES:
                 lines.append(f'  rtflags = $rtflags {BASELINE_FILES[src.name]}')
         rt.append(o)
@@ -732,7 +750,7 @@ def copy_fsr3(exe_dir):
     """Put AMD's signed FSR libraries next to xc2.exe, where runtime/vk_fsr3.c and runtime/vk_fg.c look for them: the FSR
     SDK 2.4 Vulkan loader with the upscaler and the frame generation effect, and FidelityFX SDK 1.1.4's single
     amd_fidelityfx_vk.dll when it is unpacked too (the older path, also the name OptiScaler replaces). Without them the
-    XC2_FSR3 and XC2_FRAME_GEN settings stay off."""
+    game uses the FSR 3.1 built into it (runtime/vk_ffx.cpp)."""
     dirs = (ROOT / 'build' / 'ffx-sdk-2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin', ROOT / 'build' / 'ffx-dlls',
             ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL')
     names = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
@@ -1155,6 +1173,8 @@ def main():
                                                    'bin/llvm-ar) instead of the clang on PATH')
     ap.add_argument('--ninja', type=Path, help='ninja.exe to build with (default: MSYS2 UCRT64, else bin/ninja.exe of the '
                                                'release folder)')
+    ap.add_argument('--glslang', type=Path, help='glslangValidator for the shaders of the built-in FSR (default: MSYS2 '
+                    'UCRT64 or PATH; needed once, tools/ffx_sdk.py)')
     ap.add_argument('--sysroot', type=Path, help='Linux: the glibc headers and libraries to compile and link against '
                                                  'instead of the host\'s (the release\'s llvm/sysroot)')
     ap.add_argument('--deps', type=Path, help=f'with --toolchain: include/, lib/ and bin/ of Vulkan, SDL3, Opus, libvpx '
@@ -1323,7 +1343,8 @@ def main():
         prebuilt = set(cache.lookup(cache_keys))
         print(f'object cache: {len(prebuilt)} of {len(cache_keys)} generated objects reused '
               f'({time.monotonic() - t0:.1f} s)', flush=True)
-    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, prebuilt, runtime_lib, args.make_runtime_lib)
+    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, prebuilt, runtime_lib, args.make_runtime_lib,
+                               args.glslang)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)

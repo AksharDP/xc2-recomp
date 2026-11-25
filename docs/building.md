@@ -23,7 +23,7 @@ MSYS2 packages, after `pacman -Syuu` (run it twice; the first pass updates the c
 
 ```sh
 pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-{clang,lld,ninja,gcc,make,pkgconf,sdl3,opus,libvpx,zstd,vulkan-devel,\
-vulkan-memory-allocator,vulkan-validation-layers,shaderc,spirv-tools} base-devel git unzip
+vulkan-memory-allocator,vulkan-validation-layers,shaderc,glslang,spirv-tools} base-devel git unzip
 ```
 
 `ffmpeg` from MSYS2 is a GPLv3 build and is never linked; the movies go through libvpx.
@@ -181,7 +181,7 @@ Requirements:
 
   ```sh
   pacman -S --needed clang lld ninja make sdl3 opus libvpx zstd vulkan-headers vulkan-icd-loader \
-      vulkan-validation-layers shaderc spirv-tools dotnet-sdk uv git
+      vulkan-validation-layers shaderc glslang spirv-tools dotnet-sdk uv git
   ```
 
   Vulkan Memory Allocator is a single header (AUR `vulkan-memory-allocator`). Without it, `build_game.py` fetches the
@@ -245,12 +245,15 @@ feedback part: a draw that samples the target it writes must match a reference d
 `XC2_VK_VALIDATION=sync` the layer also checks synchronization (its `VkLayer_khronos_validation.json` must be found through
 `VK_LAYER_PATH`, which names the directory that holds it). `--probe-fsr` runs
 AMD's upscaler alone (1280x720 to 1920x1080, two flat frames, the result checked), needs no game files, and prints the
-provider version the API picked; it needs the FSR libraries next to `xc2.exe` (see below).
+version that ran: the one the FSR libraries next to `xc2.exe` pick (see below), or the built-in FSR 3.1.4 without them or
+with `XC2_FSR_BUILTIN=1`. The built-in effects come from AMD's FidelityFX SDK 1.1.4: the first runtime build fetches
+the folders it needs with git, applies `tools\ffx_sdk.patch` and compiles the shaders with glslangValidator
+(`tools\ffx_sdk.py`, into `toolchain\`).
 
 AMD's FSR libraries: `tools\build_game.py` copies what it finds next to `xc2.exe` for a developer build, from
 `build\ffx-sdk-2.4.0\Kits\FidelityFX\signedbin\` or `build\ffx-dlls\`: `amd_fidelityfx_loader_vk.dll`,
 `amd_fidelityfx_upscaler_vk.dll`, `amd_fidelityfx_framegeneration_vk.dll`. `tools\make_release.py` downloads the same
-tagged files and pins their sha256. Without them the FSR settings stay off and the game runs as before.
+tagged files and pins their sha256. Without them the game uses its built-in FSR 3.1 and has no FSR 4.
 
 Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --translate` extracts every Maxwell shader
 to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; failure groups go to `failures.txt`.

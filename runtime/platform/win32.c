@@ -1287,6 +1287,8 @@ void *plat_lib_open(const char *name) {
     wchar_t w[WPATH];
     if (!widen(name, w, WPATH)) return NULL;
     int bare = !wcschr(w, L'\\') && !wcschr(w, L'/');
+    // No "bad image" box of the system's for a damaged library, nor for one that a library loads later (AMD's FSR loader)
+    SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS);
     return (void *)LoadLibraryExW(w, NULL, bare ? LOAD_LIBRARY_SEARCH_SYSTEM32 : 0);
 }
 

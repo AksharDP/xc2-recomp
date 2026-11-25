@@ -67,6 +67,28 @@ static void wait_until(uint64_t at) {
     while (kern_now_ns() < at) plat_yield();
 }
 
+// The two presents of a frame with a generated picture (the built-in frame generation; both blits are submitted): the
+// generated one at the frame's display time, once the GPU has drawn it, and the game's once it is drawn (timeline value
+// f) and half the smoothed time between generated pictures has passed. Returns when the second one was due.
+static uint64_t last_gen;   // when the last generated picture went out, 0: the last frame had none
+static void present_pair(const PresentJob *j, uint64_t f) {
+    static double interval;
+    vk_present_wait_drawn();
+    wait_until(j->at);
+    uint64_t now = kern_now_ns();
+    double dt = last_gen ? (double)(now - last_gen) : 0;
+    if (dt > 0 && dt < 1e8) interval = interval > 0 ? interval + (dt - interval) * 0.1 : dt;
+    last_gen = now;
+    vk_present_flip();
+    vk_sync_fence_wait(f, 1000000000ull);
+    wait_until(now + (uint64_t)(interval / 2));
+    uint64_t t = kern_now_ns();
+    vk_present_flip();
+    if (rt_trace & RT_TRACE_PRESENT)
+        rt_log("present: frame %llu generated, interval %.3f ms, the game's picture %.3f ms after it",
+               (unsigned long long)j->frame, dt / 1e6, (t - now) / 1e6);
+}
+
 static void present_main(void *arg) {
     (void)arg;
     flight_thread_self(0, "vk present");
@@ -81,7 +103,7 @@ static void present_main(void *arg) {
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_fsr3_frame_show(&j.fsr);
-        vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        int pair = vk_present_blit_pair(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         plat_mutex_lock(&pl);
         blit_seq = j.seq;   // the game's image of this present is free to write once its blit is queued
         plat_cond_broadcast(&pcv);
@@ -95,9 +117,14 @@ static void present_main(void *arg) {
         plat_cond_broadcast(&pcv);
         plat_mutex_unlock(&pl);
         uint64_t t0 = kern_now_ns();
-        if (!vk_fg_active()) wait_until(j.at);   // frame generation paces its own two presents (vk_fg.c)
+        if (pair) {
+            present_pair(&j, f);
+        } else {
+            if (!vk_fg_active()) wait_until(j.at);   // the library paces its own two presents (vk_fg.c)
+            last_gen = 0;   // the next generated picture starts the spacing anew
+        }
         uint64_t t1 = kern_now_ns();
-        vk_present_flip();
+        if (!pair) vk_present_flip();
         // XC2_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)

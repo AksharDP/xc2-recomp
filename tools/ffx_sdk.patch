@@ -1,0 +1,185 @@
+diff --git a/sdk/include/FidelityFX/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_glsl.h b/sdk/include/FidelityFX/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_glsl.h
+index 20c5c29..a88a48b 100644
+--- a/sdk/include/FidelityFX/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_glsl.h
++++ b/sdk/include/FidelityFX/gpu/frameinterpolation/ffx_frameinterpolation_callbacks_glsl.h
+@@ -484,3 +484,3 @@ layout (set = 0, binding = 1000) uniform sampler s_LinearClamp;
+ #ifdef FFX_FRAMEINTERPOLATION_BIND_UAV_OUTPUT
+-	layout(set = 0, binding = FFX_FRAMEINTERPOLATION_BIND_UAV_OUTPUT /* app controlled format */)  uniform image2D    rw_output;
++	layout(set = 0, binding = FFX_FRAMEINTERPOLATION_BIND_UAV_OUTPUT, rgba8 /* XC2 Recomp: was no format (app controlled) */)  uniform image2D    rw_output;
+ 
+diff --git a/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h b/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h
+index d0cbf9d..95fe105 100644
+--- a/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h
++++ b/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_callbacks_glsl.h
+@@ -397,3 +397,5 @@ FfxFloat32x4 SampleHistory(FfxFloat32x2 fUV)
+ #if defined(FSR3UPSCALER_BIND_UAV_LUMA_HISTORY)
+-layout (set = 0, binding = FSR3UPSCALER_BIND_UAV_LUMA_HISTORY, rgba8) uniform image2D  rw_luma_history;
++// TotK Recomp: rgba16f, the format of the luma history images (ffx_fsr3upscaler.cpp, R16G16B16A16_FLOAT). With rgba8
++// the stores and loads do not match the image (the Vulkan validation layer reports it; undefined values).
++layout (set = 0, binding = FSR3UPSCALER_BIND_UAV_LUMA_HISTORY, rgba16f) uniform image2D  rw_luma_history;
+ 
+diff --git a/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h b/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
+index c72f40f..80ff89f 100644
+--- a/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
++++ b/sdk/include/FidelityFX/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
+@@ -62,2 +62,29 @@ void ComputeReprojectedUVs(FFX_PARAMETER_INOUT AccumulationPassCommonParams para
+ 
++#if FFX_FSR3UPSCALER_OPTION_REPROJECT_CATMULL_ROM_5
++// Savage Wind: the history reprojected with a Catmull-Rom filter from 5 bilinear samples (its 4x4 footprint's corners
++// left out) instead of Lanczos on 16 loads: the accumulation's largest cost, ~0.3 ms less at 3840x2160 on an RTX 3060.
++// The history texture is the upscale size (the upscaler's output, fixed).
++FfxFloat32x4 HistorySampleCatmullRom5(FfxFloat32x2 fUv, FfxFloat32x2 fSize)
++{
++    const FfxFloat32x2 fPx = fUv * fSize;
++    const FfxFloat32x2 fPx1 = floor(fPx - 0.5f) + 0.5f;
++    const FfxFloat32x2 f = fPx - fPx1;
++    const FfxFloat32x2 w0 = f * (-0.5f + f * (1.0f - 0.5f * f));
++    const FfxFloat32x2 w1 = 1.0f + f * f * (-2.5f + 1.5f * f);
++    const FfxFloat32x2 w2 = f * (0.5f + f * (2.0f - 1.5f * f));
++    const FfxFloat32x2 w3 = f * f * (-0.5f + 0.5f * f);
++    const FfxFloat32x2 w12 = w1 + w2;
++    const FfxFloat32x2 fUv0 = (fPx1 - 1.0f) / fSize;
++    const FfxFloat32x2 fUv3 = (fPx1 + 2.0f) / fSize;
++    const FfxFloat32x2 fUv12 = (fPx1 + w2 / w12) / fSize;
++    const FfxFloat32 k0 = w12.x * w0.y, k1 = w0.x * w12.y, k2 = w12.x * w12.y, k3 = w3.x * w12.y, k4 = w12.x * w3.y;
++    FfxFloat32x4 c = SampleHistory(FfxFloat32x2(fUv12.x, fUv0.y)) * k0
++                   + SampleHistory(FfxFloat32x2(fUv0.x, fUv12.y)) * k1
++                   + SampleHistory(fUv12) * k2
++                   + SampleHistory(FfxFloat32x2(fUv3.x, fUv12.y)) * k3
++                   + SampleHistory(FfxFloat32x2(fUv12.x, fUv3.y)) * k4;
++    return ffxMax(c / (k0 + k1 + k2 + k3 + k4), FfxFloat32x4(0.0f, 0.0f, 0.0f, 0.0f));
++}
++#endif
++
+ void ReprojectHistoryColor(const AccumulationPassCommonParams params, FFX_PARAMETER_INOUT AccumulationPassData data)
+@@ -65,3 +92,5 @@ void ReprojectHistoryColor(const AccumulationPassCommonParams params, FFX_PARAME
+ {
+-#if FFX_HALF && FFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF
++#if FFX_FSR3UPSCALER_OPTION_REPROJECT_CATMULL_ROM_5
++    const FfxFloat32x4 fReprojectedHistory = HistorySampleCatmullRom5(params.fReprojectedHrUv, FfxFloat32x2(UpscaleSize()));
++#elif FFX_HALF && FFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF
+     const FfxFloat32x4 fReprojectedHistory = FfxFloat32x4(HistorySample16(params.fReprojectedHrUv, UpscaleSize()));
+diff --git a/sdk/include/FidelityFX/host/ffx_types.h b/sdk/include/FidelityFX/host/ffx_types.h
+index ca9bc37..d31e068 100644
+--- a/sdk/include/FidelityFX/host/ffx_types.h
++++ b/sdk/include/FidelityFX/host/ffx_types.h
+@@ -79,3 +79,9 @@
+ 
++// Savage Wind: the contexts hold their resources' wide-string debug names, sized for Windows' 2-byte wchar_t; with
++// Linux's 4-byte one they outgrew this (ffx_frameinterpolation.cpp's static_assert), so twice the room there.
++#if defined(_WIN32)
+ #define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 128)
++#else
++#define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 128 * 2)
++#endif
+ 
+@@ -104,3 +110,3 @@
+ /// @ingroup Defines
+-#define FFX_MAX_QUEUED_FRAMES          (4)
++#define FFX_MAX_QUEUED_FRAMES          (8)  // XC2 Recomp: was 4; frame interpolation records twice a frame, with two frames in flight
+ 
+diff --git a/sdk/src/backends/vk/ffx_vk.cpp b/sdk/src/backends/vk/ffx_vk.cpp
+index d914479..fa271f5 100644
+--- a/sdk/src/backends/vk/ffx_vk.cpp
++++ b/sdk/src/backends/vk/ffx_vk.cpp
+@@ -282,10 +282,10 @@ FFX_API size_t ffxGetScratchMemorySizeVK(VkPhysicalDevice physicalDevice, size_t
+     uint32_t extensionPropArraySize = sizeof(VkExtensionProperties) * numExtensions;
+-    uint32_t gpuJobDescArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), sizeof(uint32_t));
+-    uint32_t resourceViewArraySize = FFX_ALIGN_UP(((maxContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), sizeof(uint32_t));
+-    uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(maxContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, sizeof(uint32_t));
+-    uint32_t pipelineArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), sizeof(uint32_t));
+-    uint32_t resourceArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), sizeof(uint32_t));
+-    uint32_t contextArraySize = FFX_ALIGN_UP(maxContexts * sizeof(BackendContext_VK::EffectContext), sizeof(uint32_t));
++    uint32_t gpuJobDescArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), 64);  // Savage Wind: was sizeof(uint32_t) (clang aligns the members: movdqa)
++    uint32_t resourceViewArraySize = FFX_ALIGN_UP(((maxContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), 64);  // Savage Wind: was sizeof(uint32_t) (clang aligns the members: movdqa)
++    uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(maxContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, 64);  // Savage Wind: was sizeof(uint32_t) (clang aligns the members: movdqa)
++    uint32_t pipelineArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), 64);  // Savage Wind: was sizeof(uint32_t) (clang aligns the members: movdqa)
++    uint32_t resourceArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), 64);  // Savage Wind: was sizeof(uint32_t) (clang aligns the members: movdqa)
++    uint32_t contextArraySize = FFX_ALIGN_UP(maxContexts * sizeof(BackendContext_VK::EffectContext), 64);  // Savage Wind: was sizeof(uint32_t) (clang aligns the members: movdqa)
+     
+-    return FFX_ALIGN_UP(sizeof(BackendContext_VK) + extensionPropArraySize + gpuJobDescArraySize + resourceViewArraySize + stagingRingBufferArraySize +
++    return FFX_ALIGN_UP(64 + sizeof(BackendContext_VK) + extensionPropArraySize  /* Savage Wind: + 64 */ + gpuJobDescArraySize + resourceViewArraySize + stagingRingBufferArraySize +
+                             pipelineArraySize + resourceArraySize + contextArraySize,
+@@ -404,2 +404,6 @@ uint32_t findMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequiremen
+     uint32_t bestCandidate = UINT32_MAX;
++    // TotK Recomp: unified-memory GPUs (Adreno under Turnip) have no device-local type without HOST_VISIBLE: the first
++    // host-visible one is taken rather than failing when no invisible type exists.
++    uint32_t visibleCandidate = UINT32_MAX;
++    VkMemoryPropertyFlags visibleProperties = 0;
+ 
+@@ -408,5 +412,15 @@ uint32_t findMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequiremen
+ 
++            // TotK Recomp: types that need a device feature the application did not enable are skipped. The loop keeps
++            // the last match, and RADV lists protected (TMZ) and AMD device-coherent/uncached device-local types after
++            // the plain ones: FSR 3.1's images landed in them and every pass read noise.
++            if (memProperties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_PROTECTED_BIT | VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD |
++                                                              VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD))
++                continue;
++
+             // if just device-local memory is requested, make sure this is the invisible heap to prevent over-subscribing the local heap
+-            if (requestedProperties == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
++            if (requestedProperties == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
++                if (visibleCandidate == UINT32_MAX)
++                    visibleCandidate = i, visibleProperties = memProperties.memoryTypes[i].propertyFlags;
+                 continue;
++            }
+ 
+@@ -421,2 +435,6 @@ uint32_t findMemoryTypeIndex(VkPhysicalDevice physicalDevice, VkMemoryRequiremen
+ 
++    if (bestCandidate == UINT32_MAX && visibleCandidate != UINT32_MAX) {
++        bestCandidate = visibleCandidate;
++        outProperties = visibleProperties;
++    }
+     return bestCandidate;
+@@ -1404,9 +1422,9 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+         // Map all of our pointers
+-        uint32_t gpuJobDescArraySize   = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), sizeof(uint32_t));
+-        uint32_t resourceViewArraySize = FFX_ALIGN_UP(((backendContext->maxEffectContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), sizeof(uint32_t));
+-        uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, sizeof(uint32_t));
+-        uint32_t pipelineArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), sizeof(uint32_t));
+-        uint32_t resourceArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), sizeof(uint32_t));
+-        uint32_t contextArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * sizeof(BackendContext_VK::EffectContext), sizeof(uint32_t));
+-        uint8_t* pMem = (uint8_t*)((BackendContext_VK*)(backendContext + 1));
++        uint32_t gpuJobDescArraySize   = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), 64);  // Savage Wind: was sizeof(uint32_t)
++        uint32_t resourceViewArraySize = FFX_ALIGN_UP(((backendContext->maxEffectContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), 64);  // Savage Wind: was sizeof(uint32_t)
++        uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, 64);  // Savage Wind: was sizeof(uint32_t)
++        uint32_t pipelineArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), 64);  // Savage Wind: was sizeof(uint32_t)
++        uint32_t resourceArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), 64);  // Savage Wind: was sizeof(uint32_t)
++        uint32_t contextArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * sizeof(BackendContext_VK::EffectContext), 64);  // Savage Wind: was sizeof(uint32_t)
++        uint8_t* pMem = (uint8_t*)FFX_ALIGN_UP((uintptr_t)(backendContext + 1), 64);  // Savage Wind: was backendContext + 1 (8-aligned)
+ 
+@@ -1518,10 +1536,15 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+         // create a global descriptor pool to hold all descriptors we'll need
++        // XC2 Recomp: was FFX_MAX_RESOURCE_COUNT (512) descriptors of each type in each set and FFX_MAX_PASS_COUNT (50) sets, over
++        // two million of each type per backend, which a driver that reserves a pool's memory takes as hundreds of megabytes.
++        // The effects here have at most 12 passes with 14 descriptors of a type.
++        const uint32_t descriptorSets     = backendContext->maxEffectContexts * 16 * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME;
++        const uint32_t descriptorsPerType = descriptorSets * 16;
+         VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
+         VkDescriptorPoolSize poolSizes[] = {
+-            { VK_DESCRIPTOR_TYPE_SAMPLER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+-            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+-            { VK_DESCRIPTOR_TYPE_SAMPLER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
++            { VK_DESCRIPTOR_TYPE_SAMPLER, descriptorsPerType },
++            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, descriptorsPerType },
++            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, descriptorsPerType },
++            { VK_DESCRIPTOR_TYPE_SAMPLER, descriptorsPerType },
++            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptorsPerType },
++            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptorsPerType },
+         };
+@@ -1531,5 +1554,5 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+         descriptorPoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+-        descriptorPoolCreateInfo.poolSizeCount = 5;
++        descriptorPoolCreateInfo.poolSizeCount = 6;  // Savage Wind: was 5, leaving out the storage buffers FSR 3's passes use
+         descriptorPoolCreateInfo.pPoolSizes = poolSizes;
+-        descriptorPoolCreateInfo.maxSets = backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * MAX_PIPELINE_USAGE_PER_FRAME * FFX_MAX_QUEUED_FRAMES;
++        descriptorPoolCreateInfo.maxSets = descriptorSets;
+ 
+@@ -1637,3 +1660,3 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+             VkBuffer testBuffer = VK_NULL_HANDLE;
+-            if (vkCreateBuffer(backendContext->device, &bufferInfo, nullptr, &testBuffer) != VK_SUCCESS)
++            if (backendContext->vkFunctionTable.vkCreateBuffer(backendContext->device, &bufferInfo, nullptr, &testBuffer) != VK_SUCCESS)  // XC2 Recomp: was the global function; runtime/vk_ffx.cpp counts the objects
+             {
