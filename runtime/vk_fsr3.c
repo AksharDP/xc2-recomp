@@ -525,6 +525,7 @@ static int ensure_output(VkCtx *c, uint32_t w, uint32_t h) {
     if (!made && F.l.api != API_BUILTIN && vk_ffx_usable(c, &why)) {
         rt_log("vk: FSR: AMD's library made no context; the built-in FSR 3.1 takes its place");
         F.l.api = API_BUILTIN;
+        __atomic_store_n(&no_version4, 1, __ATOMIC_RELEASE);   // the built-in one has no version to choose
         made = make_context(w, h, want);
     }
     if (!made) {
@@ -807,8 +808,8 @@ void vk_fsr3_resolve(VkExec *ex) {
 // steps of a quarter, as dynamic resolution would make a sampler for every size. Replay thread.
 static float mip_bias(void) {
     int how = cfg_int("XC2_FSR_MIP_BIAS");
-    if (!how || !F.rw || !F.ow) return 0.0f;
-    float b = log2f((float)F.rw / (float)F.ow) - (how > 1 ? 1.0f : 0.0f);
+    if (!how || !FR.rw || !FR.ow) return 0.0f;
+    float b = log2f((float)FR.rw / (float)FR.ow) - (how > 1 ? 1.0f : 0.0f);
     return roundf(b * 4.0f) / 4.0f;
 }
 
@@ -838,8 +839,8 @@ void vk_fsr3_jitter_init(void) {
 static void jitter_phases(int on) {
     uint64_t v = 0;
     if (!jitter_word) return;
-    if (on && F.rw && F.ow) {
-        float n = (float)F.ow / (float)F.rw;
+    if (on && FR.rw && FR.ow) {
+        float n = (float)FR.ow / (float)FR.rw;
         int phases = (int)ceilf(8.0f * n * n - 0.01f);
         v = (uint64_t)(phases < 8 ? 8 : phases > JITTER_MAX ? JITTER_MAX : phases) << 32 | 0xffffffffu;
     }
@@ -851,7 +852,8 @@ static void jitter_phases(int on) {
 void vk_fsr3_frame_take(VkFsrFrame *out) {
     int on = FR.valid && FR.fresh;
     vk_sampler_scene_bias(on ? mip_bias() : 0.0f);
-    jitter_phases(on);    *out = FR;
+    jitter_phases(on);
+    *out = FR;
     FR.fresh = 0;
 }
 
@@ -922,6 +924,7 @@ int vk_fsr3_state(void) {
 // executable or a feature the device reports is not enough. The check makes each context at a small size and destroys
 // it, on a thread of its own as that can take a while, when the menu first asks: who never opens the menu does not load
 // a library they do not use.
+
 // 1 when AMD's library gives a context of the major version (0: any); it is destroyed under the queue lock, as the library
 // may wait for the device then.
 static int check_context(Lib *l, int major) {
@@ -969,9 +972,9 @@ static void check_main(void *arg) {
 
 static int check_done(void) {
     VkCtx *c = vk_ctx();
-    if (check_stage == CHECK_NONE && c) {
+    if (__atomic_load_n(&check_stage, __ATOMIC_ACQUIRE) == CHECK_NONE && c) {
         char ver[64];
-        check_stage = CHECK_RUNS;
+        __atomic_store_n(&check_stage, CHECK_RUNS, __ATOMIC_RELAXED);   // before its thread, which only moves it on
         check_up_runs = vk_fsr3_shown(ver, sizeof ver);
         check_fg_runs = vk_fg_active();
         check_thread = plat_thread_new(check_main, c, "fsr_check");
@@ -1037,6 +1040,10 @@ int probe_fsr(void) {
            check_four, check_fg);
     check_stage = CHECK_NONE;
     if (!F.tried) init(c);
+    if (!F.ok && F.l.api != API_NONE && device_ok(c)) {
+        printf("probe-fsr: FAILED (FSR is here but its setup failed, see the vk: lines)\n");
+        goto out;
+    }
     if (!F.ok) {
         printf("probe-fsr: skipped (no FSR library next to the executable and no built-in FSR on this device)\n");
         vk_shutdown();

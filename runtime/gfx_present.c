@@ -121,7 +121,7 @@ static int g_cap_w, g_cap_h, g_cap_valid;
 // generated picture's and the game's of one frame (vk_present_blit_pair).
 static int g_flip_n;
 static uint32_t g_flip_idx[2];
-static int g_own;                // the swapchain was made for the built-in frame generation (vk_fg_own_wanted)
+static int g_own;                // the swapchain was made for the built-in frame generation (own_wanted)
 // A pair's first pass, for its second: the picture generated, the overlay laid out and the fence slot
 static struct { VkImage gen; int overlay; const char *menu_shot; VkFormat fmt; VkExtent2D ext; unsigned slot; } g_pair;
 
@@ -343,6 +343,12 @@ static uint32_t image_count(const VkSurfaceCapabilitiesKHR *caps) {
     return n > 8 ? 8 : n;
 }
 
+// Whether the swapchain is made for the built-in frame generation. It holds two images at a time, and more than
+// minImageCount are needed for that: with exactly that many the second acquire may wait for ever.
+static int own_wanted(VkCtx *c, const VkSurfaceCapabilitiesKHR *caps) {
+    return vk_fg_own_wanted(c) && (!caps->maxImageCount || caps->maxImageCount > caps->minImageCount);
+}
+
 // Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
 static int create_swapchain(void) {
     flip_locked();   // the acquired images go out before their swapchain is replaced
@@ -378,7 +384,7 @@ static int create_swapchain(void) {
         g_sc = VK_NULL_HANDLE;
     }
     int fg = vk_fg_wanted();
-    g_own = vk_fg_own_wanted(c);
+    g_own = own_wanted(c, &caps);
     if (!g_own) {   // the device is idle
         vk_fg_own_release();
         g_pair.gen = VK_NULL_HANDLE;   // freed: the game's picture of this pair must not read it
@@ -402,7 +408,7 @@ static int create_swapchain(void) {
                 g_sc = old = VK_NULL_HANDLE;
                 ci.oldSwapchain = VK_NULL_HANDLE;
             }
-            g_own = vk_fg_own_wanted(c);   // AMD's library does not do it here: the built-in interpolation, where it can
+            g_own = own_wanted(c, &caps);   // AMD's library does not do it here: the built-in interpolation, where it can
             ci.minImageCount = image_count(&caps);
         }
     }
@@ -805,9 +811,9 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
 // generation makes of the frame (g_own; vk_present_blit_pair): 0 nothing, 1 the interpolation is recorded and the
 // generated picture shown in the game's place, when there is one, 2 the game's picture after such a pass. Screenshots,
 // captures and thumbnails come from the game's picture. 1 when a generated picture's blit was submitted.
+// The callers run gfx_window_start first: it takes g_start_lock and then g_pl, so it must not run with g_pl held.
 static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer, int pass) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL, shown_gen = 0;
-    gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
     if (pass != 2) flip_locked();
@@ -1048,14 +1054,17 @@ out:
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    gfx_window_start();
     present_image(src, layout, fmt, w, h, crop, 0, 0);
 }
 
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    gfx_window_start();
     present_image(src, layout, fmt, w, h, crop, 1, 0);
 }
 
 int vk_present_blit_pair(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    gfx_window_start();
     plat_rmutex_lock(&g_pl);
     if (present_image(src, layout, fmt, w, h, crop, 1, g_own ? 1 : 0)) present_image(src, layout, fmt, w, h, crop, 1, 2);
     int pair = g_flip_n == 2;
