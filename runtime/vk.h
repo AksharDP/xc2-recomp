@@ -414,6 +414,8 @@ uint32_t vk_texture_slots_gen(void);
 // its storage address is created, dropped, released or taken back into use. Unlocked; read it before the lookup it
 // guards (a lookup may create an entry). 0 when the slot was never registered: nothing is kept under 0.
 uint64_t vk_texture_slot_token(int id);
+// GFX_TEX_SINT or GFX_TEX_UINT when the slot samples integers (an integer format or stencil), else 0. Without the lock.
+int vk_texture_slot_component(int id);
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot may answer with another sampler
 // The bias vk_sampler_by_id_locked adds to the mip level of the game's anisotropic samplers, the ones its materials use
 // (vk_fsr3.c mip_bias); 0: none. What the game set and reads back stays as it is.
