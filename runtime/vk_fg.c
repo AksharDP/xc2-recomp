@@ -93,6 +93,7 @@ static struct ffxCreateContextDescFrameGenerationSwapChainVersionVK g_sc_version
 static struct {
     int asked, usable;             // vk_ffx_usable's answer
     int failed;
+    int no_room;                   // the window's surface has no swapchain image to spare for the generated picture
     int gap;                       // the last frame had nothing to interpolate from: the next one starts over
     uint64_t shown, pair_ns;       // presents that went out, and when the last picture was generated
 } O;
@@ -659,7 +660,8 @@ static int check_lib(VkCtx *c) {
     void *lib = plat_lib_open(path);
     PfnFfxCreateContext create = lib ? (PfnFfxCreateContext)plat_lib_sym(lib, "ffxCreateContext") : NULL;
     PfnFfxDestroyContext destroy = lib ? (PfnFfxDestroyContext)plat_lib_sym(lib, "ffxDestroyContext") : NULL;
-    if (!create || !destroy) {
+    if (!create || !destroy || !plat_lib_sym(lib, "ffxDispatch") || !plat_lib_sym(lib, "ffxQuery") ||
+        !plat_lib_sym(lib, "ffxConfigure")) {   // as init
         if (lib) plat_lib_close(lib);
         return 0;
     }
@@ -685,7 +687,14 @@ int vk_fg_check(VkCtx *c, int running) {
     return (running || check_lib(c)) | (vk_ffx_usable(c, &why) && vk_ffx_fg_check(c)) << 1;
 }
 
-int vk_fg_loads(int check) { return (check & 1 && !G.failed) || (check & 2 && !O.failed); }
+int vk_fg_loads(int check) { return (check & 1 && !G.failed) || (check & 2 && !O.failed && !O.no_room); }
+
+void vk_fg_own_room(int room) { O.no_room = !room; }
+
+void vk_fg_own_lost(void) {
+    vk_ffx_fg_lost();
+    O.gap = 1;
+}
 
 void vk_fg_own_release(void) {
     vk_ffx_fg_destroy();

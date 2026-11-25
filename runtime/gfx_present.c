@@ -337,16 +337,20 @@ static void free_shot(void) {
 }
 
 // The images a swapchain asks for: one more than the least the surface needs, and another one where a frame takes two.
+enum { MAX_ASKED = 8 };
 static uint32_t image_count(const VkSurfaceCapabilitiesKHR *caps) {
     uint32_t n = caps->minImageCount + 1 + (g_own ? 1 : 0);
     if (caps->maxImageCount && n > caps->maxImageCount) n = caps->maxImageCount;
-    return n > 8 ? 8 : n;
+    return n > MAX_ASKED ? MAX_ASKED : n;
 }
 
 // Whether the swapchain is made for the built-in frame generation. It holds two images at a time, and more than
-// minImageCount are needed for that: with exactly that many the second acquire may wait for ever.
+// minImageCount are needed for that: with exactly that many the second acquire may wait for ever. image_count asks for
+// MAX_ASKED at the most. The menu offers it by what is told here.
 static int own_wanted(VkCtx *c, const VkSurfaceCapabilitiesKHR *caps) {
-    return vk_fg_own_wanted(c) && (!caps->maxImageCount || caps->maxImageCount > caps->minImageCount);
+    int room = caps->minImageCount < MAX_ASKED && (!caps->maxImageCount || caps->maxImageCount > caps->minImageCount);
+    vk_fg_own_room(room);
+    return room && vk_fg_own_wanted(c);
 }
 
 // Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
@@ -1040,6 +1044,10 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     } else {
         vk_device_fault_report(r);
         rt_log("gfx: present submit failed (%d)", (int)r);
+        if (pass == 1) {   // the interpolation in it never ran
+            vk_fg_own_lost();
+            g_pair.gen = VK_NULL_HANDLE;
+        }
     }
     g_frame++;
     if (cap) {

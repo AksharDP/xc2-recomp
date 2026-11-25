@@ -1041,7 +1041,7 @@ int probe_fsr(void) {
            check_four, check_fg);
     check_stage = CHECK_NONE;
     const char *why;
-    int leaks = vk_ffx_usable(c, &why) ? vk_ffx_probe(c) : 0;
+    int bad = vk_ffx_usable(c, &why) ? vk_ffx_probe(c) : 0;
     if (!F.tried) init(c);
     if (!F.ok && F.l.api != API_NONE && device_ok(c)) {
         printf("probe-fsr: FAILED (FSR is here but its setup failed, see the vk: lines)\n");
@@ -1050,7 +1050,7 @@ int probe_fsr(void) {
     if (!F.ok) {
         printf("probe-fsr: skipped (no FSR library next to the executable and no built-in FSR on this device)\n");
         vk_shutdown();
-        return leaks != 0;
+        return bad != 0;
     }
     if (!ensure_input(c, RW, RH) || !ensure_output(c, OW, OH)) {
         printf("probe-fsr: FAILED (no %ux%u -> %ux%u context)\n", RW, RH, OW, OH);
@@ -1151,7 +1151,7 @@ out:
         printf("probe-fsr: FAILED (%d objects of the built-in FSR are left)\n", vk_ffx_live());
         rc = 1;
     }
-    if (leaks) rc = 1;
+    if (bad) rc = 1;
     vk_shutdown();
     return rc;
 }

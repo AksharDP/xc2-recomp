@@ -28,6 +28,7 @@
 
 extern "C" {
 #include "host.h"
+#include "platform/platform.h"
 }
 
 // The shaders: tools/ffx_shaders.py's blobs in place of the SDK's FidelityFX_SC permutation tables
@@ -36,7 +37,7 @@ extern "C" {
 
 enum { FU_PERM_FP16 = 1 << 7 };  // ffx_fsr3upscaler_private.h FSR3UPSCALER_SHADER_PERMUTATION_ALLOW_FP16
 
-static bool fp16;   // the device has what the 16-bit shaders declare (Float16, Int16); read by the blob lookup
+static bool fp16;   // the device has what the 16-bit shaders declare (Float16, Int16); the blob lookup of any thread reads it
 
 // The shader of a pass. The 16-bit upscaler shaders are taken where the SDK asks for them (the backend found
 // shaderFloat16) and the device also has shaderInt16; vk_device.c enables both wherever the driver reports them.
@@ -46,7 +47,7 @@ extern "C" FfxErrorCode ffxGetPermutationBlobByIndex(FfxEffect effect, FfxPass p
     if (effect == FFX_EFFECT_FRAMEINTERPOLATION && pass < sizeof ffx_fi_blobs / sizeof ffx_fi_blobs[0]) b = &ffx_fi_blobs[pass];
     if (effect == FFX_EFFECT_OPTICALFLOW && pass < sizeof ffx_of_blobs / sizeof ffx_of_blobs[0]) b = &ffx_of_blobs[pass];
     if (effect == FFX_EFFECT_FSR3UPSCALER && pass < sizeof ffx_fu_blobs[0] / sizeof ffx_fu_blobs[0][0])
-        b = &ffx_fu_blobs[(options & FU_PERM_FP16) && fp16][pass];
+        b = &ffx_fu_blobs[(options & FU_PERM_FP16) && __atomic_load_n(&fp16, __ATOMIC_RELAXED)][pass];
     if (!b || !b->data) {
         rt_log("vk: FSR: no built-in shader for effect %d pass %d", (int)effect, (int)pass);
         return FFX_ERROR_INVALID_ARGUMENT;
@@ -93,19 +94,19 @@ static VkResult note_result(VkResult r) {
     return r;
 }
 
+// Room to note n more objects, before they are made: one that could not be noted would be left over.
+static bool reserve(size_t n) {
+    if (!track || track->n + n <= track->cap) return true;
+    size_t cap = track->cap * 2 + 512 + n;
+    Made *p = (Made *)realloc(track->made, cap * sizeof *p);
+    if (!p) return false;
+    track->made = p, track->cap = cap;
+    return true;
+}
+
 static void note_made(Kind kind, uint64_t handle) {
     __atomic_add_fetch(&live, 1, __ATOMIC_RELAXED);
-    if (!track) return;
-    if (track->n == track->cap) {
-        size_t cap = track->cap ? track->cap * 2 : 512;
-        Made *p = (Made *)realloc(track->made, cap * sizeof *p);
-        if (!p) {
-            track->failed = true;
-            return;
-        }
-        track->made = p, track->cap = cap;
-    }
-    track->made[track->n++] = {kind, handle};
+    if (track) track->made[track->n++] = {kind, handle};
 }
 
 static void note_gone(Kind kind, uint64_t handle) {
@@ -122,7 +123,7 @@ static void note_gone(Kind kind, uint64_t handle) {
     static PFN_##create real_##create;                                                                                 \
     static PFN_##destroy real_##destroy;                                                                               \
     static VKAPI_ATTR VkResult VKAPI_CALL t_##create(VkDevice d, const Info *i, const VkAllocationCallbacks *a, T *out) { \
-        if (fails()) return *out = VK_NULL_HANDLE, note_result(VK_ERROR_OUT_OF_DEVICE_MEMORY);                         \
+        if (fails() || !reserve(1)) return *out = VK_NULL_HANDLE, note_result(VK_ERROR_OUT_OF_DEVICE_MEMORY);          \
         VkResult r = __atomic_load_n(&real_##create, __ATOMIC_RELAXED)(d, i, a, out);                                  \
         if (r == VK_SUCCESS) note_made(kind, (uint64_t)*out);                                                          \
         return note_result(r);                                                                                         \
@@ -150,7 +151,7 @@ static PFN_vkDestroyPipeline real_vkDestroyPipeline;
 static VKAPI_ATTR VkResult VKAPI_CALL t_vkCreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
                                                                  const VkComputePipelineCreateInfo *i,
                                                                  const VkAllocationCallbacks *a, VkPipeline *out) {
-    if (fails()) {
+    if (fails() || !reserve(n)) {
         memset(out, 0, n * sizeof *out);
         return note_result(VK_ERROR_OUT_OF_DEVICE_MEMORY);
     }
@@ -224,7 +225,7 @@ int vk_ffx_usable(const VkCtx *c, const char **why) {
     f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     f2.pNext = &f12;
     vkGetPhysicalDeviceFeatures2(c->phys, &f2);
-    fp16 = f12.shaderFloat16 && f2.features.shaderInt16;
+    __atomic_store_n(&fp16, f12.shaderFloat16 && f2.features.shaderInt16, __ATOMIC_RELAXED);
     // What the SPIR-V of the blobs declares
     const VkSubgroupFeatureFlags ops = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
                                        VK_SUBGROUP_FEATURE_QUAD_BIT;
@@ -254,14 +255,30 @@ static void scratch_free(void *p) {
 #endif
 }
 
+// The device as the SDK takes it. ffxGetDeviceVK keeps one copy for the process, which every set-up reads, and the menu's
+// check sets up beside the game: it is written once per device.
+static FfxDevice sdk_device(VkCtx *c) {
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    static VkDevice have;
+    static FfxDevice dev;
+    plat_mutex_lock(&lock);
+    if (have != c->device) {
+        VkDeviceContext dc = {c->device, c->phys, device_proc};
+        dev = ffxGetDeviceVK(&dc);
+        have = c->device;
+    }
+    FfxDevice d = dev;
+    plat_mutex_unlock(&lock);
+    return d;
+}
+
 static bool make_backend(VkCtx *c, FfxInterface *i, void **scratch, size_t contexts) {
     size_t n = (ffxGetScratchMemorySizeVK(c->phys, contexts) + 255) & ~(size_t)255;
     if (!(*scratch = scratch_alloc(n))) {
         rt_log("vk: FSR: no memory for the built-in backend (%zu bytes)", n);
         return false;
     }
-    VkDeviceContext dc = {c->device, c->phys, device_proc};   // ffxGetDeviceVK keeps a copy
-    FfxErrorCode e = ffxGetInterfaceVK(i, ffxGetDeviceVK(&dc), *scratch, n, contexts);
+    FfxErrorCode e = ffxGetInterfaceVK(i, sdk_device(c), *scratch, n, contexts);
     if (e != FFX_OK) rt_log("vk: FSR: the built-in backend failed (%#x)", (unsigned)e);
     return e == FFX_OK;
 }
@@ -339,8 +356,8 @@ static bool up_create(Up &u, VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint
     FfxEffectMemoryUsage mu = {};
     ffxFsr3UpscalerContextGetGpuMemoryUsage(&u.ctx, &mu);
     if (!u.check)
-        rt_log("vk: FSR 3.1.4 (built in, %s floats) holds %.1f MiB of GPU memory", fp16 ? "16-bit" : "32-bit",
-               (double)mu.totalUsageInBytes / 1048576.0);
+        rt_log("vk: FSR 3.1.4 (built in, %s floats) holds %.1f MiB of GPU memory",
+               __atomic_load_n(&fp16, __ATOMIC_RELAXED) ? "16-bit" : "32-bit", (double)mu.totalUsageInBytes / 1048576.0);
     return true;
 }
 
@@ -545,6 +562,8 @@ int vk_ffx_fg_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh)
 
 void vk_ffx_fg_destroy(void) { fg_destroy(G); }
 
+void vk_ffx_fg_lost(void) { G.w = 0; }
+
 int vk_ffx_fg_check(VkCtx *c) {
     Fg *g = (Fg *)scratch_alloc((sizeof *g + 255) & ~(size_t)255);
     if (!g) return 0;
@@ -559,7 +578,7 @@ int vk_ffx_live(void) { return __atomic_load_n(&live, __ATOMIC_RELAXED); }
 
 int vk_ffx_probe(VkCtx *c) {
     const int before = vk_ffx_live();
-    int leaks = 0;
+    int bad = 0;
     for (int fg = 0; fg < 2; fg++) {
         int n = 0, refused = 0;
         for (bool hit = true; hit && n < 4096; n++) {   // ends with the set-up that makes all of its objects
@@ -568,15 +587,19 @@ int vk_ffx_probe(VkCtx *c) {
             hit = fail_in < 0;
             fail_in = -1;
             if (hit && !ok) refused++;
+            if (!hit && !ok) {
+                printf("probe-fsr: the built-in %s could not be set up\n", fg ? "frame generation" : "upscaler");
+                bad++;
+            }
             if (vk_ffx_live() == before) continue;
             printf("probe-fsr: creation %d of the %s's failed: %d objects left\n", n, fg ? "frame generation" : "upscaler",
                    vk_ffx_live() - before);
-            leaks++;
+            bad++;
         }
         printf("probe-fsr: the built-in %s: %d of %d creations failed in turn stop it\n", fg ? "frame generation" : "upscaler",
                refused, n - 1);
     }
-    return leaks;
+    return bad;
 }
 
 int vk_ffx_fg_fits(uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {

@@ -92,9 +92,12 @@ def ensure(glslang=None):
         make(tmp, glslang)
         try:
             os.rename(tmp, dst)
-        except OSError:   # another build made it meanwhile
+        except OSError:   # another build made it meanwhile, or a folder without its shaders is there
             if not (dst / 'spirv' / '.ready').is_file():
-                raise
+                if not dst.is_dir():
+                    raise
+                remove(dst)
+                os.rename(tmp, dst)
     finally:
         if tmp.is_dir():
             remove(tmp)

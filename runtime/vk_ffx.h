@@ -36,7 +36,7 @@ void vk_ffx_up_destroy(void);
 int vk_ffx_up_check(VkCtx *c);
 int vk_ffx_fg_check(VkCtx *c);
 // The Vulkan objects the backend holds now, and --probe-fsr's check that a set-up that fails leaves none behind: it fails
-// every creation of the two checks in turn. How many leave objects.
+// every creation of the two checks in turn, and the last time none. How many leave objects, or fail without cause.
 int vk_ffx_live(void);
 int vk_ffx_probe(VkCtx *c);
 // Records the upscale into cb. The recorder thread must have nothing queued for cb (rec_drain). 1 on success.
@@ -47,6 +47,8 @@ int vk_ffx_up_dispatch(VkCommandBuffer cb, const VkFfxUpscale *d);
 // idle or nothing recorded yet. 1 on success.
 int vk_ffx_fg_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh);
 void vk_ffx_fg_destroy(void);
+// What was recorded last did not reach the GPU: the contexts no longer fit any frame (vk_ffx_fg_fits).
+void vk_ffx_fg_lost(void);
 // 1 when the contexts exist and fit such a frame
 int vk_ffx_fg_fits(uint32_t w, uint32_t h, uint32_t rw, uint32_t rh);
 // Records the interpolation between the last recorded frame and this one into cb: win is the window texture, the

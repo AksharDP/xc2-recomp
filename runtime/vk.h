@@ -162,6 +162,8 @@ int vk_fg_own_wanted(VkCtx *c);
 // VK_NULL_HANDLE when there is none: the frame has no inputs or the last one had none.
 VkImage vk_fg_generate(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, VkImage win, VkFormat fmt, int w, int h);
 void vk_fg_own_release(void);    // its contexts go, the device idle
+void vk_fg_own_lost(void);       // what it recorded was not submitted: the next frame makes the contexts again
+void vk_fg_own_room(int room);   // whether the window's surface has a swapchain image to spare for its picture
 void vk_fg_count_present(void);  // a present went out (for vk_fg_shown_fps)
 void vk_fg_shutdown(VkCtx *c);   // disables and destroys the contexts, and the swapchain they own
 void vk_fg_release(VkCtx *c);    // before the device goes away
