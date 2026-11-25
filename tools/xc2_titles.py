@@ -18,6 +18,7 @@ The installer (installer/steps.py), the extraction (tools/xc2_extract.py, tools/
 (tools/cheats.py, tools/exefs_patches.py) and the build (tools/build_game.py, which bakes the id into modules.c as
 rt_title_id for runtime/fs_host.c, svc.c and mods.c) all read this table.
 """
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,6 +83,19 @@ def of_title(title_id):
     """The release whose base or update title id this is, else None."""
     t = title_id.upper()
     return next((r for r in REGIONS if t in (r.title, r.update_title)), None)
+
+
+def of_exefs(exefs):
+    """The release of an extracted ExeFS, from the program id in its main.npdm (the ACI0 section, at 0x10); None when
+    there is no such file or it names no release."""
+    try:
+        data = (Path(exefs) / 'main.npdm').read_bytes()
+        aci = struct.unpack_from('<I', data, 0x70)[0]
+        if data[:4] != b'META' or data[aci:aci + 4] != b'ACI0':
+            return None
+        return of_title(f'{struct.unpack_from("<Q", data, aci + 0x10)[0]:016X}')
+    except (OSError, struct.error):
+        return None
 
 
 def of_aoc(title_id):
