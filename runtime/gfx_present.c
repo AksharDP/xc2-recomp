@@ -251,11 +251,14 @@ static void window_settings_live(void) {
     static int started;
     static char present[16];   // the XC2_VK_PRESENT the swapchain was made with
     static int fg;             // the XC2_FRAME_GEN it was made with
+    static int fsr;            // the vk_fsr3_state it was made with: FSR can fail while the game runs
     unsigned v = cfg_version();
-    if (started && v == seen) return;
+    int s = vk_fsr3_state();
+    if (started && v == seen && s == fsr) return;
     seen = v;
+    fsr = s;
     const char *e = cfg_value("XC2_VK_PRESENT");
-    int f = cfg_bool("XC2_FRAME_GEN") && cfg_bool("XC2_FSR3");   // what vk_fg_wanted asks, the library aside
+    int f = cfg_bool("XC2_FRAME_GEN") && cfg_bool("XC2_FSR3") && s == VK_FSR_OK;   // as vk_fg_wanted, the library aside
     if (!started || strncmp(e, present, sizeof present - 1) || f != fg) {
         snprintf(present, sizeof present, "%s", e);
         fg = f;

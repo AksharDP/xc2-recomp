@@ -448,6 +448,10 @@ static int make_context(uint32_t w, uint32_t h, const char *want) {
         struct ffxQueryGetProviderVersion pv = {.header = {.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION}};
         if (F.query(&F.ctx, &pv.header) == FFX_API_RETURN_OK && pv.versionName)
             snprintf(F.version, sizeof F.version, "%s", pv.versionName);
+        if (pinned_major == 4 && F.version[0] && F.version[0] != '4') {   // the menu does not offer what does not run
+            rt_log("vk: FSR 4 was asked for, FSR %s runs", F.version);
+            __atomic_store_n(&no_version4, 1, __ATOMIC_RELEASE);
+        }
     }
     if (!F.version[0]) snprintf(F.version, sizeof F.version, "%s", F.api == API_LOADER ? "auto" : "3.1.4");
     if (F.query) {
@@ -829,26 +833,23 @@ int vk_fsr3_state(void) {
 
 int vk_fsr3_version4(void) {
     static int offered = -1;
-    if (!(vk_fsr3_libraries() & 1)) return VK_FSR4_NO_LIBRARY;
+    if (!(vk_fsr3_libraries() & 1)) return 0;
     VkCtx *c = vk_ctx();
     if (offered < 0 && c) {
         offered = 0;
         char path[1024];
         void *lib = c->props.vendorID == 0x1002 ? open_library(FFX_LOADER, path, sizeof path) : NULL;   // no other GPU has FSR 4
-        if (c->props.vendorID == 0x1002) offered = -1;   // without an answer the choice stays open: a failed context closes it
         if (lib) {
             PfnFfxQuery query = (PfnFfxQuery)plat_lib_sym(lib, "ffxQuery");
             VkDeviceContext dev = {.vkDevice = c->device, .vkPhysicalDevice = c->phys, .vkDeviceProcAddr = device_proc};
             uint64_t id;
             plat_mutex_lock(&ffx_lock);
-            if (query) offered = offered_version(query, &dev, 4, &id);
+            if (query) offered = offered_version(query, &dev, 4, &id) > 0;   // without an answer a pin has no id to name
             plat_mutex_unlock(&ffx_lock);
         }
-        rt_log("vk: FSR 4 is %s on this GPU", offered > 0 ? "offered" : offered ? "perhaps offered (AMD's library does not say)"
-                                                                           : "not offered");
-        offered = offered != 0;
+        rt_log("vk: FSR 4 is %s on this GPU", offered ? "offered" : "not offered");
     }
-    return offered && !__atomic_load_n(&no_version4, __ATOMIC_ACQUIRE) ? VK_FSR4_YES : VK_FSR4_NO_DEVICE;
+    return offered > 0 && !__atomic_load_n(&no_version4, __ATOMIC_ACQUIRE);
 }
 
 // 1 with the provider version ("4.1.2", "3.1.4") in buf when FSR upscaled a frame within the last second; 0 when it did

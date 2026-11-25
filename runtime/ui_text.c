@@ -88,25 +88,21 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
     [UI_MENU_FSR3] = "AMD FSR",
     [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
-                          "3D render scale to the game resolution. FSR 3.1 runs on every graphics card; the row below "
-                          "picks FSR 4 where the card has it.",
+                          "3D render scale to the game resolution. The note under On says whether it runs, and which "
+                          "version.",
     [UI_MENU_FSR_VERSION] = "FSR version",
     [UI_MENU_FSR_VERSION_DESC] = "FSR 4 needs a Radeon RX 6000 or newer with a recent driver, and takes more of it; FSR "
-                                  "3.1 runs on every graphics card. Auto is the newest version available; on Linux "
-                                  "only FSR 3.1 is. Changes take effect at once.",
+                                  "3.1 runs on every graphics card. Auto is the newest version available. Changes "
+                                  "take effect at once.",
     [UI_MENU_FSR_VERSION_AUTO] = "Auto", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR Frame Generation",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR Frame Generation shows an interpolated frame between two drawn ones, so the "
                                "display runs at about twice the frame rate. It needs AMD FSR on for depth, motion "
                                "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
                                "Off by default.",
-    [UI_MENU_FSR_NO_DEVICE] = "Not available: the graphics card or its driver lacks what FSR needs.",
-    [UI_MENU_FSR_FAILED] = "Not available: FSR failed on this machine; the log says why.",
-    [UI_MENU_FSR4_NO_LIBRARY] = "FSR 4 needs AMD's Windows library, which is not here.",
-    [UI_MENU_FSR4_NO_DEVICE] = "FSR 4 is not available on this graphics card or driver.",
-    [UI_MENU_FRAME_GEN_NO_DEVICE] = "Not available: the graphics card or its driver lacks what it needs.",
-    [UI_MENU_FRAME_GEN_FAILED] = "Not available: it failed on this machine; the log says why.",
     [UI_MENU_FRAME_GEN_NEEDS_FSR] = "Turn on AMD FSR first.",
+    [UI_MENU_FMT_FSR_RUNNING] = "Running: FSR %s",
+    [UI_MENU_RUNNING] = "Running", [UI_MENU_NOT_RUNNING] = "Not running right now",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws; the game's clock follows it. The default is 120. Above 60 is "
@@ -424,19 +420,15 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS] = "FSR 锐度",
     [UI_MENU_SHARPNESS_DESC] = "AMD FSR 1 放大后的锐化强度；设为 0 则关闭锐化。",
     [UI_MENU_FSR3] = "AMD FSR 超分",
-    [UI_MENU_FSR3_DESC] = "使用 AMD FSR 替代游戏原版的时间抗锯齿与分辨率缩放，将较低的 3D 渲染比例高质量放大至游戏分辨率。FSR 3.1 可在所有显卡上运行；显卡支持时，可在下一项选择 FSR 4。",
+    [UI_MENU_FSR3_DESC] = "使用 AMD FSR 替代游戏原版的时间抗锯齿与分辨率缩放，将较低的 3D 渲染比例高质量放大至游戏分辨率。“开启”下方会显示 FSR 是否正在运行及其版本。",
     [UI_MENU_FSR_VERSION] = "FSR 版本",
-    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 需要 Radeon RX 6000 或更新显卡及新版驱动，性能开销更大；FSR 3.1 可在所有显卡上运行。“自动”选用可用的最新版本；Linux 上仅有 FSR 3.1。更改立即生效。",
+    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 需要 Radeon RX 6000 或更新显卡及新版驱动，性能开销更大；FSR 3.1 可在所有显卡上运行。“自动”选用可用的最新版本。更改立即生效。",
     [UI_MENU_FSR_VERSION_AUTO] = "自动", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR 帧生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 帧生成会在每两帧渲染画面之间插入一帧插值画面，使输出帧率接近翻倍。需同时开启 AMD FSR 以提供深度、运动矢量与无 HUD 画面；建议将帧率上限设为显示器刷新率的一半左右。默认关闭。",
-    [UI_MENU_FSR_NO_DEVICE] = "不可用：显卡或其驱动缺少 FSR 所需的功能。",
-    [UI_MENU_FSR_FAILED] = "不可用：FSR 在此设备上启动失败，原因见日志。",
-    [UI_MENU_FSR4_NO_LIBRARY] = "FSR 4 不可用：缺少 AMD 的库（仅 Windows）。",
-    [UI_MENU_FSR4_NO_DEVICE] = "FSR 4 不可用：显卡或驱动不支持。",
-    [UI_MENU_FRAME_GEN_NO_DEVICE] = "不可用：显卡或其驱动缺少所需的功能。",
-    [UI_MENU_FRAME_GEN_FAILED] = "不可用：在此设备上启动失败，原因见日志。",
     [UI_MENU_FRAME_GEN_NEEDS_FSR] = "请先开启 AMD FSR 超分。",
+    [UI_MENU_FMT_FSR_RUNNING] = "运行中：FSR %s",
+    [UI_MENU_RUNNING] = "运行中", [UI_MENU_NOT_RUNNING] = "当前未运行",
 
     [UI_MENU_FPS_LIMIT] = "帧率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "游戏每秒绘制的最大帧数，游戏时钟同步随帧率步进。默认为 120。超过 60 FPS 目前仍属于实验性功能。",
@@ -730,19 +722,15 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_SHARPNESS] = "FSR 銳利度",
     [UI_MENU_SHARPNESS_DESC] = "AMD FSR 1 縮放後的銳化程度；設為 0 表示關閉。",
     [UI_MENU_FSR3] = "AMD FSR 升頻",
-    [UI_MENU_FSR3_DESC] = "以 AMD FSR 取代遊戲原本的時間反鋸齒與縮放，將較低的 3D 算繪比例升頻至遊戲解析度。FSR 3.1 可在所有顯示卡上執行；顯示卡支援時，可在下一項選擇 FSR 4。",
+    [UI_MENU_FSR3_DESC] = "以 AMD FSR 取代遊戲原本的時間反鋸齒與縮放，將較低的 3D 算繪比例升頻至遊戲解析度。「開啟」下方會顯示 FSR 是否正在執行及其版本。",
     [UI_MENU_FSR_VERSION] = "FSR 版本",
-    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 需要 Radeon RX 6000 或更新顯示卡及新版驅動，效能負擔較高；FSR 3.1 可在所有顯示卡上執行。「自動」選用可用的最新版本；Linux 上僅有 FSR 3.1。變更立即生效。",
+    [UI_MENU_FSR_VERSION_DESC] = "FSR 4 需要 Radeon RX 6000 或更新顯示卡及新版驅動，效能負擔較高；FSR 3.1 可在所有顯示卡上執行。「自動」選用可用的最新版本。變更立即生效。",
     [UI_MENU_FSR_VERSION_AUTO] = "自動", [UI_MENU_FSR_VERSION_4] = "FSR 4", [UI_MENU_FSR_VERSION_3] = "FSR 3.1",
     [UI_MENU_FRAME_GEN] = "FSR 影格生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 影格生成會在兩張實際算繪影格之間插入一張補插影格，使顯示幀率接近倍增。需開啟 AMD FSR 以取得深度、運動向量與無介面影像；建議將幀率上限設為螢幕更新率的一半左右。預設關閉。",
-    [UI_MENU_FSR_NO_DEVICE] = "無法使用：顯示卡或其驅動程式缺少 FSR 所需的功能。",
-    [UI_MENU_FSR_FAILED] = "無法使用：FSR 在此裝置上啟動失敗，原因請見記錄檔。",
-    [UI_MENU_FSR4_NO_LIBRARY] = "FSR 4 無法使用：缺少 AMD 的函式庫（僅 Windows）。",
-    [UI_MENU_FSR4_NO_DEVICE] = "FSR 4 無法使用：顯示卡或驅動程式不支援。",
-    [UI_MENU_FRAME_GEN_NO_DEVICE] = "無法使用：顯示卡或其驅動程式缺少所需的功能。",
-    [UI_MENU_FRAME_GEN_FAILED] = "無法使用：在此裝置上啟動失敗，原因請見記錄檔。",
     [UI_MENU_FRAME_GEN_NEEDS_FSR] = "請先開啟 AMD FSR 升頻。",
+    [UI_MENU_FMT_FSR_RUNNING] = "執行中：FSR %s",
+    [UI_MENU_RUNNING] = "執行中", [UI_MENU_NOT_RUNNING] = "目前未執行",
 
     [UI_MENU_FPS_LIMIT] = "幀率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "遊戲每秒繪製的最高幀數，遊戲時鐘同步跟隨。預設為 120。高於 60 FPS 目前仍屬實驗性功能。",

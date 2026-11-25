@@ -50,6 +50,7 @@ typedef struct VkQueueInfoFFXAPI VkQueueInfoFFXAPI;
 
 static struct {
     int tried, ok, failed, on;
+    uint64_t made_ns;              // when the library last got a frame to generate from
     void *lib;
     PfnFfxCreateContext create;
     PfnFfxDestroyContext destroy;
@@ -153,7 +154,7 @@ static int init(void) {
 // On: the setting is on, the library loaded, and the inputs frame generation needs exist (the upscaler's resolve hook).
 int vk_fg_wanted(void) {
     if (!cfg_bool("XC2_FRAME_GEN")) return 0;
-    if (G.failed || cfg_bool("XC2_FSR_BUILTIN")) return 0;
+    if (G.failed || cfg_bool("XC2_FSR_BUILTIN") || vk_fsr3_state() != VK_FSR_OK) return 0;
     if (!G.tried && !init()) return 0;
     if (!G.ok) return 0;
     if (!cfg_bool("XC2_FSR3")) {
@@ -186,6 +187,11 @@ float vk_fg_shown_fps(uint64_t now_ns) {
     if (g_shown_t0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - g_shown_t0));
     g_shown_t0 = now_ns, shown0 = shown;
     return rate;
+}
+
+int vk_fg_running(void) {
+    uint64_t now = kern_now_ns(), made = G.on ? G.made_ns : O.pair_ns;
+    return made && now - made < 500000000ull;
 }
 
 static void free_hudless(VkCtx *c) {
@@ -582,6 +588,7 @@ int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int re
         warn_once(2, "its prepare dispatch failed");
         return 0;
     }
+    G.made_ns = kern_now_ns();
     return 1;
 }
 
@@ -597,7 +604,9 @@ static int own_usable(VkCtx *c) {
 }
 
 int vk_fg_own_wanted(VkCtx *c) {
-    if (!cfg_bool("XC2_FRAME_GEN") || !cfg_bool("XC2_FSR3") || O.failed || vk_fg_wanted()) return 0;
+    if (!cfg_bool("XC2_FRAME_GEN") || !cfg_bool("XC2_FSR3") || O.failed || vk_fg_wanted() ||
+        vk_fsr3_state() != VK_FSR_OK)
+        return 0;
     return own_usable(c);
 }
 

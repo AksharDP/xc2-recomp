@@ -567,17 +567,28 @@ static const char *present_note(void) {
     return note;
 }
 
-// The FSR versions this machine has. A saved FSR 4 shows as the FSR 3.1 that runs in its place where it is missing.
-static void row_fsr_version(int ver4) {
-    const char *vals[3], *names[3];
-    int n = 0, cur = -1, four = ver4 == VK_FSR4_YES;
-    const char *now = cfg_value("XC2_FSR_VERSION");
-    vals[n] = "auto", names[n++] = menu_text(UI_MENU_FSR_VERSION_AUTO);
-    if (four) vals[n] = "4", names[n++] = menu_text(UI_MENU_FSR_VERSION_4);
-    vals[n] = "3", names[n++] = menu_text(UI_MENU_FSR_VERSION_3);
-    if (!four && !strcmp(now, "4")) cur = n - 1;
-    const char *note = four ? NULL : menu_text(ver4 == VK_FSR4_NO_LIBRARY ? UI_MENU_FSR4_NO_LIBRARY : UI_MENU_FSR4_NO_DEVICE);
-    opt_choice_list("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, vals, names, n, UI_MENU_FSR_VERSION_DESC, cur, note);
+// The FSR rows show only what this machine runs: none where FSR cannot run or failed, the version where FSR 4 is to be had
+// too, frame generation where it runs. Under a row that is on stands whether it is at work, which the setting alone does
+// not say (a loading screen has no scene to upscale).
+static void rows_fsr(void) {
+    if (vk_fsr3_state() != VK_FSR_OK) return;
+    bool on = cfg_bool("XC2_FSR3") != 0;
+    char ver[64], note[96];
+    if (vk_fsr3_shown(ver, sizeof ver)) snprintf(note, sizeof note, menu_text(UI_MENU_FMT_FSR_RUNNING), ver);
+    else snprintf(note, sizeof note, "%s", menu_text(UI_MENU_NOT_RUNNING));
+    opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC, false, on ? note : NULL);
+    if (vk_fsr3_version4()) {
+        static const UiTextId names[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
+        opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, names, 3, UI_MENU_FSR_VERSION_DESC);
+    }
+    if (vk_fg_state() != VK_FSR_OK) return;
+    if (!on) {   // it takes its inputs from FSR: shown off, whatever the setting
+        opt_disable_next(UI_MENU_FRAME_GEN_NEEDS_FSR);
+        opt_toggle_text("XC2_FRAME_GEN", menu_text(UI_MENU_FRAME_GEN), menu_text(UI_MENU_FRAME_GEN_DESC), false);
+        return;
+    }
+    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC, false,
+               !cfg_bool("XC2_FRAME_GEN") ? NULL : menu_text(vk_fg_running() ? UI_MENU_RUNNING : UI_MENU_NOT_RUNNING));
 }
 
 // ---- the tabs
@@ -595,22 +606,11 @@ static void tab_screen(float scale) {
     opt_toggle("XC2_HUD_CENTER", UI_MENU_HUD_CENTER, UI_MENU_HUD_CENTER_DESC);   // resolution.c wide_hud
     row_render_scale();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
-    opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
+    if (vk_fsr1_usable()) opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     static const UiTextId fit[] = {UI_MENU_PICTURE_FIT_KEEP, UI_MENU_PICTURE_FIT_STRETCH};
     opt_choice("XC2_PICTURE_FIT", UI_MENU_PICTURE_FIT, fit, 2, UI_MENU_PICTURE_FIT_DESC);
-    opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
-    // A row that would change nothing on this machine is greyed out with the reason; frame generation takes its inputs from
-    // FSR. The version row lists what this machine has: FSR 4 with its reason under the value when it is missing.
-    int fsr = vk_fsr3_state(), ver4 = vk_fsr3_version4(), fg = vk_fg_state();
-    UiTextId no_fsr = fsr == VK_FSR_NO_DEVICE ? UI_MENU_FSR_NO_DEVICE : UI_MENU_FSR_FAILED;
-    if (fsr != VK_FSR_OK) opt_disable_next(no_fsr);
-    opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC);
-    if (fsr != VK_FSR_OK) opt_disable_next(no_fsr);
-    row_fsr_version(ver4);
-    if (fsr != VK_FSR_OK) opt_disable_next(no_fsr);
-    else if (fg != VK_FSR_OK) opt_disable_next(fg == VK_FSR_NO_DEVICE ? UI_MENU_FRAME_GEN_NO_DEVICE : UI_MENU_FRAME_GEN_FAILED);
-    else if (!cfg_bool("XC2_FSR3")) opt_disable_next(UI_MENU_FRAME_GEN_NEEDS_FSR);
-    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
+    if (vk_fsr1_usable()) opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    rows_fsr();
     opt_end();
 }
 
