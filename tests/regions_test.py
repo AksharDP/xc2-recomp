@@ -1,8 +1,10 @@
-"""The releases of tools/xc2_titles.py and how the extraction and the installer tell them apart. Needs no game files.
+"""The releases of tools/xc2_titles.py, how the extraction and the installer tell them apart, and that mods laid out for
+either are found. Needs no game files; needs cryptography (tools/vendor/macnativegames/extract_exefs.py) and lz4 (recomp/nso.py).
 
     python tests/regions_test.py
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,6 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT))
 
+import cheats  # noqa: E402
+import exefs_patches  # noqa: E402
 import package_select  # noqa: E402
 import xc2_extract  # noqa: E402
 import xc2_titles  # noqa: E402
@@ -93,7 +97,6 @@ class InstallerTest(unittest.TestCase):
 
     def test_release_versions_come_from_data(self):
         import dataclasses
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / 'data'
             data.mkdir()
@@ -106,10 +109,6 @@ class InstallerTest(unittest.TestCase):
             self.assertTrue(lay.supports(JP))
             (data / 'expected-xc2-jp-1.0.0.json').unlink()
             self.assertFalse(lay.supports(JP))
-
-    def test_mod_places(self):
-        self.assertIn(f'atmosphere/contents/{JP.title}/cheats', steps.CHEAT_PLACES)
-        self.assertIn(f'{US.title}/exefs', steps.EXEFS_PLACES)
 
     def test_dlc_of_another_release(self):
         class Fake:
@@ -126,6 +125,32 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(e.exception.id, 'check.dlc_other_region')
         finally:
             steps.container_entries, steps.nca_inventory = saved
+
+
+class ModPlacesTest(unittest.TestCase):
+    """The tools that build the mods' code at game start (tools/mod_code.py runs both) find a mod's files in its own
+    folder and in the Atmosphere and emulator layouts of either release, as find_root of runtime/mods.c does for the
+    release of the build."""
+
+    def check_places(self, part, name, find):
+        """find(mods folder) gives (mod name, path in the mod) of the one file of a mod that has <part>/<name> in each
+        place in turn."""
+        for where in ('', *(f'{w}{r.title}/' for r in (US, JP) for w in ('atmosphere/contents/', 'contents/', ''))):
+            place = f'{where}{part}/{name}'
+            with self.subTest(place=place), tempfile.TemporaryDirectory() as tmp:
+                f = Path(tmp) / 'Mod' / place
+                f.parent.mkdir(parents=True)
+                f.write_bytes(b'')
+                self.assertEqual(find(Path(tmp)), [('Mod', place)])
+
+    def test_cheats(self):
+        bid = '0123456789ABCDEF'
+        self.check_places('cheats', f'{bid}.txt', lambda mods: [
+            (mod, f.relative_to(mods / mod).as_posix()) for mod, f in cheats.cheat_files(mods, bid)])
+
+    def test_exefs_patches(self):
+        self.check_places('exefs', 'a.ips', lambda mods: [
+            (mod, place) for mod, place, _ in exefs_patches.patch_files(mods)])
 
 
 if __name__ == '__main__':
