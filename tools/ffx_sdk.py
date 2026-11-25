@@ -13,7 +13,8 @@ ours; each is marked in it with its origin:
   faulted); the descriptor pool has all six of the sizes it lists and is sized for the passes of these effects, not for
   over two million descriptors of each type; memory types of protected or device-coherent memory, which the runtime does
   not enable, are skipped (RADV lists them last, and the images in them held noise), and a device without device-local
-  memory that is not host visible takes such memory.
+  memory that is not host visible takes such memory; the test buffer is made through the backend's own function table, as it
+  is destroyed, so that runtime/vk_ffx.cpp sees both.
 - ffx_types.h: twice the room for a context outside Windows, where wchar_t is wider, and 8 frames in the backend's rings
   instead of 4 (frame interpolation records twice a frame, with two frames in flight).
 - The luma history is declared rgba16f, its images' format; the interpolation's output rgba8, as Intel's GPUs before Arc

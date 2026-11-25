@@ -152,6 +152,8 @@ static int init(void) {
     G.configure = (PfnFfxConfigure)plat_lib_sym(G.lib, "ffxConfigure");
     if (!G.create || !G.destroy || !G.dispatch || !G.query || !G.configure) {
         rt_log("vk: frame generation: %s lacks an ffx entry point", path);
+        plat_lib_close(G.lib);
+        G.lib = NULL;
         return 0;
     }
     G.failed = 0;
@@ -644,7 +646,10 @@ static int check_lib(VkCtx *c) {
     void *lib = plat_lib_open(path);
     PfnFfxCreateContext create = lib ? (PfnFfxCreateContext)plat_lib_sym(lib, "ffxCreateContext") : NULL;
     PfnFfxDestroyContext destroy = lib ? (PfnFfxDestroyContext)plat_lib_sym(lib, "ffxDestroyContext") : NULL;
-    if (!create || !destroy) return 0;
+    if (!create || !destroy) {
+        if (lib) plat_lib_close(lib);
+        return 0;
+    }
     struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK}};
     struct ffxCreateContextDescFrameGenerationVersion version;
     struct ffxCreateContextDescFrameGeneration desc;

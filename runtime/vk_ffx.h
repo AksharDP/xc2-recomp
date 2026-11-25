@@ -35,6 +35,10 @@ void vk_ffx_up_destroy(void);
 // Whether the upscaler, the interpolation below, can be set up: a small context of its own, made and destroyed. Any thread.
 int vk_ffx_up_check(VkCtx *c);
 int vk_ffx_fg_check(VkCtx *c);
+// The Vulkan objects the backend holds now, and --probe-fsr's check that a set-up that fails leaves none behind: it fails
+// every creation of the two checks in turn. How many leave objects.
+int vk_ffx_live(void);
+int vk_ffx_probe(VkCtx *c);
 // Records the upscale into cb. The recorder thread must have nothing queued for cb (rec_drain). 1 on success.
 int vk_ffx_up_dispatch(VkCommandBuffer cb, const VkFfxUpscale *d);
 

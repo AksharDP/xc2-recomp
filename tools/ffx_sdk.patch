@@ -178,3 +178,8 @@ index d914479..fa271f5 100644
 -        descriptorPoolCreateInfo.maxSets = backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * MAX_PIPELINE_USAGE_PER_FRAME * FFX_MAX_QUEUED_FRAMES;
 +        descriptorPoolCreateInfo.maxSets = descriptorSets;
  
+@@ -1637,3 +1660,3 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+             VkBuffer testBuffer = VK_NULL_HANDLE;
+-            if (vkCreateBuffer(backendContext->device, &bufferInfo, nullptr, &testBuffer) != VK_SUCCESS)
++            if (backendContext->vkFunctionTable.vkCreateBuffer(backendContext->device, &bufferInfo, nullptr, &testBuffer) != VK_SUCCESS)  // XC2 Recomp: was the global function; runtime/vk_ffx.cpp counts the objects
+             {

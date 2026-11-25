@@ -67,9 +67,143 @@ FfxErrorCode ffxSetFrameGenerationConfigToSwapchainVK(FfxFrameGenerationConfig c
 // the runtime enables only with validation) and vkGetBufferMemoryRequirements2KHR (core since 1.1 without the suffix).
 static VKAPI_ATTR void VKAPI_CALL no_label(VkCommandBuffer, const VkDebugUtilsLabelEXT *) {}
 static VKAPI_ATTR void VKAPI_CALL no_label_end(VkCommandBuffer) {}
+
+// A set-up that fails leaves the backend with objects it keeps no handle of (a pipeline's samplers and layout, an image
+// without its memory), and its destroy functions take whole contexts only. The backend makes and destroys its objects
+// through these functions: they note what one set-up made (track_begin), so that a failed one is undone by destroying
+// that. None of it has reached a command buffer yet. live counts every object of the backend, for vk_ffx_probe.
+enum Kind { K_POOL, K_SAMPLER, K_SET_LAYOUT, K_BUFFER, K_BUFFER_VIEW, K_IMAGE, K_IMAGE_VIEW, K_MODULE, K_LAYOUT, K_PIPELINE, K_MEMORY };
+struct Made {
+    Kind kind;
+    uint64_t handle;
+};
+struct Track {
+    Made *made;
+    size_t n, cap;
+    bool failed;   // a creation did: the optical flow reports success all the same, without the pipeline
+};
+static thread_local Track *track;      // the set-up this thread is in
+static thread_local int fail_in = -1;  // vk_ffx_probe: the creation that fails, counted down
+static int live;
+
+static bool fails(void) { return fail_in >= 0 && fail_in-- == 0; }
+
+static VkResult note_result(VkResult r) {
+    if (r != VK_SUCCESS && track) track->failed = true;
+    return r;
+}
+
+static void note_made(Kind kind, uint64_t handle) {
+    __atomic_add_fetch(&live, 1, __ATOMIC_RELAXED);
+    if (!track) return;
+    if (track->n == track->cap) {
+        size_t cap = track->cap ? track->cap * 2 : 512;
+        Made *p = (Made *)realloc(track->made, cap * sizeof *p);
+        if (!p) {
+            track->failed = true;
+            return;
+        }
+        track->made = p, track->cap = cap;
+    }
+    track->made[track->n++] = {kind, handle};
+}
+
+static void note_gone(Kind kind, uint64_t handle) {
+    if (!handle) return;
+    __atomic_sub_fetch(&live, 1, __ATOMIC_RELAXED);
+    for (size_t i = track ? track->n : 0; i-- > 0;)
+        if (track->made[i].kind == kind && track->made[i].handle == handle) {
+            memmove(track->made + i, track->made + i + 1, (--track->n - i) * sizeof *track->made);
+            return;
+        }
+}
+
+#define OBJECT(kind, T, Info, create, destroy)                                                                         \
+    static PFN_##create real_##create;                                                                                 \
+    static PFN_##destroy real_##destroy;                                                                               \
+    static VKAPI_ATTR VkResult VKAPI_CALL t_##create(VkDevice d, const Info *i, const VkAllocationCallbacks *a, T *out) { \
+        if (fails()) return *out = VK_NULL_HANDLE, note_result(VK_ERROR_OUT_OF_DEVICE_MEMORY);                         \
+        VkResult r = __atomic_load_n(&real_##create, __ATOMIC_RELAXED)(d, i, a, out);                                  \
+        if (r == VK_SUCCESS) note_made(kind, (uint64_t)*out);                                                          \
+        return note_result(r);                                                                                         \
+    }                                                                                                                  \
+    static VKAPI_ATTR void VKAPI_CALL t_##destroy(VkDevice d, T h, const VkAllocationCallbacks *a) {                   \
+        note_gone(kind, (uint64_t)h);                                                                                  \
+        __atomic_load_n(&real_##destroy, __ATOMIC_RELAXED)(d, h, a);                                                   \
+    }
+#define OBJECTS(X)                                                                                                     \
+    X(K_POOL, VkDescriptorPool, VkDescriptorPoolCreateInfo, vkCreateDescriptorPool, vkDestroyDescriptorPool)           \
+    X(K_SAMPLER, VkSampler, VkSamplerCreateInfo, vkCreateSampler, vkDestroySampler)                                    \
+    X(K_SET_LAYOUT, VkDescriptorSetLayout, VkDescriptorSetLayoutCreateInfo, vkCreateDescriptorSetLayout,               \
+      vkDestroyDescriptorSetLayout)                                                                                    \
+    X(K_BUFFER, VkBuffer, VkBufferCreateInfo, vkCreateBuffer, vkDestroyBuffer)                                         \
+    X(K_BUFFER_VIEW, VkBufferView, VkBufferViewCreateInfo, vkCreateBufferView, vkDestroyBufferView)                    \
+    X(K_IMAGE, VkImage, VkImageCreateInfo, vkCreateImage, vkDestroyImage)                                              \
+    X(K_IMAGE_VIEW, VkImageView, VkImageViewCreateInfo, vkCreateImageView, vkDestroyImageView)                         \
+    X(K_MODULE, VkShaderModule, VkShaderModuleCreateInfo, vkCreateShaderModule, vkDestroyShaderModule)                 \
+    X(K_LAYOUT, VkPipelineLayout, VkPipelineLayoutCreateInfo, vkCreatePipelineLayout, vkDestroyPipelineLayout)         \
+    X(K_MEMORY, VkDeviceMemory, VkMemoryAllocateInfo, vkAllocateMemory, vkFreeMemory)
+OBJECTS(OBJECT)
+
+static PFN_vkCreateComputePipelines real_vkCreateComputePipelines;
+static PFN_vkDestroyPipeline real_vkDestroyPipeline;
+static VKAPI_ATTR VkResult VKAPI_CALL t_vkCreateComputePipelines(VkDevice d, VkPipelineCache cache, uint32_t n,
+                                                                 const VkComputePipelineCreateInfo *i,
+                                                                 const VkAllocationCallbacks *a, VkPipeline *out) {
+    if (fails()) {
+        memset(out, 0, n * sizeof *out);
+        return note_result(VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    }
+    VkResult r = __atomic_load_n(&real_vkCreateComputePipelines, __ATOMIC_RELAXED)(d, cache, n, i, a, out);
+    for (uint32_t k = 0; k < n; k++)
+        if (out[k]) note_made(K_PIPELINE, (uint64_t)out[k]);
+    return note_result(r);
+}
+static VKAPI_ATTR void VKAPI_CALL t_vkDestroyPipeline(VkDevice d, VkPipeline h, const VkAllocationCallbacks *a) {
+    note_gone(K_PIPELINE, (uint64_t)h);
+    __atomic_load_n(&real_vkDestroyPipeline, __ATOMIC_RELAXED)(d, h, a);
+}
+
+// The tracking function for name, which calls f
+static PFN_vkVoidFunction tracked(const char *name, PFN_vkVoidFunction f) {
+#define PAIR(fn)                                                                                                       \
+    if (!strcmp(name, #fn)) {                                                                                          \
+        __atomic_store_n(&real_##fn, (PFN_##fn)f, __ATOMIC_RELAXED);                                                   \
+        return (PFN_vkVoidFunction)t_##fn;                                                                             \
+    }
+#define BOTH(kind, T, Info, create, destroy) PAIR(create) PAIR(destroy)
+    OBJECTS(BOTH)
+    PAIR(vkCreateComputePipelines)
+    PAIR(vkDestroyPipeline)
+    return f;
+}
+
+static void track_begin(Track *t) {
+    *t = {};
+    track = t;
+}
+
+// keep: the set-up is done and its objects are the contexts' own. Otherwise what is left of it is destroyed, the newest
+// first, so that a view goes before its image and an image before its memory. How many that were.
+static size_t track_end(VkCtx *c, bool keep) {
+    Track *t = track;
+    track = nullptr;
+    size_t n = keep ? 0 : t->n;
+    for (size_t i = n; i-- > 0;) {
+        uint64_t h = t->made[i].handle;
+        switch (t->made[i].kind) {
+#define GONE(kind, T, Info, create, destroy) case kind: t_##destroy(c->device, (T)h, nullptr); break;
+            OBJECTS(GONE)
+            case K_PIPELINE: t_vkDestroyPipeline(c->device, (VkPipeline)h, nullptr); break;
+        }
+    }
+    free(t->made);
+    return n;
+}
+
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL device_proc(VkDevice d, const char *name) {
     PFN_vkVoidFunction f = vkGetDeviceProcAddr(d, name);
-    if (f) return f;
+    if (f) return tracked(name, f);
     if (!strcmp(name, "vkGetBufferMemoryRequirements2KHR")) return vkGetDeviceProcAddr(d, "vkGetBufferMemoryRequirements2");
     if (!strcmp(name, "vkCmdBeginDebugUtilsLabelEXT")) return (PFN_vkVoidFunction)no_label;
     if (!strcmp(name, "vkCmdEndDebugUtilsLabelEXT")) return (PFN_vkVoidFunction)no_label_end;
@@ -210,6 +344,11 @@ static bool up_create(Up &u, VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint
     return true;
 }
 
+static void up_free(Up &u) {
+    scratch_free(u.scratch);
+    memset(&u, 0, sizeof u);
+}
+
 static void up_destroy(Up &u) {
     if (u.live) {
         if (u.waits) rt_log("vk: FSR: %llu upscales waited for an earlier submission", (unsigned long long)u.waits);
@@ -218,15 +357,20 @@ static void up_destroy(Up &u) {
         if (u.shared_id) u.iface.fpDestroyBackendContext(&u.iface, u.shared_id);
         ffxFsr3UpscalerContextDestroy(&u.ctx);
     }
-    scratch_free(u.scratch);
-    memset(&u, 0, sizeof u);
+    up_free(u);
 }
 
-int vk_ffx_up_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
-    if (up_create(U, c, w, h, ow, oh)) return 1;
-    up_destroy(U);
-    return 0;
+// A failed set-up is undone object by object: the SDK's own destroy functions need a whole context.
+static bool up_try(Up &u, VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
+    Track t;
+    track_begin(&t);
+    bool ok = up_create(u, c, w, h, ow, oh) && !t.failed;
+    track_end(c, ok);
+    if (!ok) up_free(u);
+    return ok;
 }
+
+int vk_ffx_up_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) { return up_try(U, c, w, h, ow, oh); }
 
 void vk_ffx_up_destroy(void) { up_destroy(U); }
 
@@ -234,7 +378,7 @@ int vk_ffx_up_check(VkCtx *c) {
     Up *u = (Up *)scratch_alloc((sizeof *u + 255) & ~(size_t)255);   // the context is large for a stack
     if (!u) return 0;
     u->check = true;
-    bool ok = up_create(*u, c, 320, 180, 640, 360);
+    bool ok = up_try(*u, c, 320, 180, 640, 360);
     up_destroy(*u);
     scratch_free(u);
     return ok;
@@ -368,12 +512,8 @@ static bool fg_create(Fg &g, VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint
     return true;
 }
 
-static void fg_destroy(Fg &g) {
+static void fg_free(Fg &g) {
     VkCtx *c = vk_ctx();
-    for (int i = 0; i < g.n_res; i++) g.shared.fpDestroyResource(&g.shared, g.res[i], g.shared_id);
-    if (g.fi_live) ffxFrameInterpolationContextDestroy(&g.fi);
-    if (g.of_live) ffxOpticalflowContextDestroy(&g.of);
-    if (g.shared_live) g.shared.fpDestroyBackendContext(&g.shared, g.shared_id);
     scratch_free(g.scratch_shared);
     scratch_free(g.scratch);
     if (c && g.hudless.img) vmaDestroyImage(c->vma, g.hudless.img, g.hudless.mem);
@@ -381,11 +521,26 @@ static void fg_destroy(Fg &g) {
     memset(&g, 0, sizeof g);
 }
 
+static void fg_destroy(Fg &g) {
+    for (int i = 0; i < g.n_res; i++) g.shared.fpDestroyResource(&g.shared, g.res[i], g.shared_id);
+    if (g.fi_live) ffxFrameInterpolationContextDestroy(&g.fi);
+    if (g.of_live) ffxOpticalflowContextDestroy(&g.of);
+    if (g.shared_live) g.shared.fpDestroyBackendContext(&g.shared, g.shared_id);
+    fg_free(g);
+}
+
+static bool fg_try(Fg &g, VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {   // as up_try
+    Track t;
+    track_begin(&t);
+    bool ok = fg_create(g, c, w, h, rw, rh) && !t.failed;
+    track_end(c, ok);
+    if (!ok) fg_free(g);
+    return ok;
+}
+
 int vk_ffx_fg_create(VkCtx *c, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {
     fg_destroy(G);
-    if (fg_create(G, c, w, h, rw, rh)) return 1;
-    fg_destroy(G);
-    return 0;
+    return fg_try(G, c, w, h, rw, rh);
 }
 
 void vk_ffx_fg_destroy(void) { fg_destroy(G); }
@@ -394,10 +549,34 @@ int vk_ffx_fg_check(VkCtx *c) {
     Fg *g = (Fg *)scratch_alloc((sizeof *g + 255) & ~(size_t)255);
     if (!g) return 0;
     g->check = true;
-    bool ok = fg_create(*g, c, 640, 360, 320, 180);
+    bool ok = fg_try(*g, c, 640, 360, 320, 180);
     fg_destroy(*g);
     scratch_free(g);
     return ok;
+}
+
+int vk_ffx_live(void) { return __atomic_load_n(&live, __ATOMIC_RELAXED); }
+
+int vk_ffx_probe(VkCtx *c) {
+    const int before = vk_ffx_live();
+    int leaks = 0;
+    for (int fg = 0; fg < 2; fg++) {
+        int n = 0, refused = 0;
+        for (bool hit = true; hit && n < 4096; n++) {   // ends with the set-up that makes all of its objects
+            fail_in = n;
+            int ok = fg ? vk_ffx_fg_check(c) : vk_ffx_up_check(c);
+            hit = fail_in < 0;
+            fail_in = -1;
+            if (hit && !ok) refused++;
+            if (vk_ffx_live() == before) continue;
+            printf("probe-fsr: creation %d of the %s's failed: %d objects left\n", n, fg ? "frame generation" : "upscaler",
+                   vk_ffx_live() - before);
+            leaks++;
+        }
+        printf("probe-fsr: the built-in %s: %d of %d creations failed in turn stop it\n", fg ? "frame generation" : "upscaler",
+               refused, n - 1);
+    }
+    return leaks;
 }
 
 int vk_ffx_fg_fits(uint32_t w, uint32_t h, uint32_t rw, uint32_t rh) {

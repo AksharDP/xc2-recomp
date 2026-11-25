@@ -234,6 +234,7 @@ static int load_library(VkCtx *c, Lib *l) {
     if (!l->create || !l->destroy || !l->dispatch) {
         rt_log("vk: FSR: %s has no ffxCreateContext, ffxDestroyContext or ffxDispatch", path);
         l->api = API_NONE;
+        plat_lib_close(lib);
         return 0;
     }
     l->dev.vkDevice = c->device;
@@ -1039,6 +1040,8 @@ int probe_fsr(void) {
     printf("probe-fsr: the menu's check: FSR %d, FSR 4 %d, frame generation %d (1 AMD's library, 2 built in)\n", check_up,
            check_four, check_fg);
     check_stage = CHECK_NONE;
+    const char *why;
+    int leaks = vk_ffx_usable(c, &why) ? vk_ffx_probe(c) : 0;
     if (!F.tried) init(c);
     if (!F.ok && F.l.api != API_NONE && device_ok(c)) {
         printf("probe-fsr: FAILED (FSR is here but its setup failed, see the vk: lines)\n");
@@ -1047,7 +1050,7 @@ int probe_fsr(void) {
     if (!F.ok) {
         printf("probe-fsr: skipped (no FSR library next to the executable and no built-in FSR on this device)\n");
         vk_shutdown();
-        return 0;
+        return leaks != 0;
     }
     if (!ensure_input(c, RW, RH) || !ensure_output(c, OW, OH)) {
         printf("probe-fsr: FAILED (no %ux%u -> %ux%u context)\n", RW, RH, OW, OH);
@@ -1144,6 +1147,11 @@ out:
     if (fence) vkDestroyFence(c->device, fence, NULL);
     if (pool) vkDestroyCommandPool(c->device, pool, NULL);
     vk_fsr3_release();
+    if (vk_ffx_live()) {
+        printf("probe-fsr: FAILED (%d objects of the built-in FSR are left)\n", vk_ffx_live());
+        rc = 1;
+    }
+    if (leaks) rc = 1;
     vk_shutdown();
     return rc;
 }
