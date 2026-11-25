@@ -799,7 +799,21 @@ void vk_fsr3_resolve(VkExec *ex) {
     vk_exec_draw_new_cb();   // the pipelines and descriptors of this work replaced what the replay had bound
 }
 
+// The bias that brings the materials' mip levels back to the output size. The GPU chooses a level by how fast the texture
+// moves across the rendered pixels, so at half the size it takes a level of half the detail, which no upscaler can bring
+// back; with FSR the scene is sampled at other points every frame and the finer level does not shimmer as it would
+// without. AMD's guide: log2(render size / output size) - 1. XC2_FSR_MIP_BIAS: 2 that, 1 without the - 1, 0 none. In
+// steps of a quarter, as dynamic resolution would make a sampler for every size. Replay thread.
+static float mip_bias(void) {
+    int how = cfg_int("XC2_FSR_MIP_BIAS");
+    if (!how || !F.rw || !F.ow) return 0.0f;
+    float b = log2f((float)F.rw / (float)F.ow) - (how > 1 ? 1.0f : 0.0f);
+    return roundf(b * 4.0f) / 4.0f;
+}
+
+// At every present. A frame's materials are drawn before FSR is recorded, so they take the bias of the frame before.
 void vk_fsr3_frame_take(VkFsrFrame *out) {
+    vk_sampler_scene_bias(FR.valid && FR.fresh ? mip_bias() : 0.0f);
     *out = FR;
     FR.fresh = 0;
 }
