@@ -142,7 +142,8 @@ int vk_fsr3_frame_get(VkFsrFrame *out);
 // two frames and presents both. Off, every function below is the plain Vulkan call. Where that library cannot run, the
 // interpolation built into the game (vk_ffx.cpp) does the same on our swapchain (vk_fg_own_wanted, vk_fg_generate).
 int vk_fg_wanted(void);      // the setting is on and the library usable (it needs XC2_FSR3 for its inputs)
-int vk_fg_check(VkCtx *c);   // the menu's check: bit 0 AMD's frame generation loads, bit 1 the built-in one
+// The menu's check: bit 0 AMD's frame generation loads (running: it is at work already), bit 1 the built-in one.
+int vk_fg_check(VkCtx *c, int running);
 int vk_fg_loads(int check);  // whether what it found is still to be had (present thread)
 int vk_fg_active(void);      // the live swapchain is the library's
 // 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is

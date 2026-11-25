@@ -46,6 +46,7 @@ typedef enum {
     UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3,
     UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC,
     UI_MENU_FRAME_GEN_NEEDS_FSR,
+    UI_MENU_FSR_CHECKING,     // until it is known what loads on this machine
     UI_MENU_FMT_FSR_RUNNING,  // "Running: FSR %s", under the value of the AMD FSR row
     UI_MENU_RUNNING, UI_MENU_NOT_RUNNING,
 

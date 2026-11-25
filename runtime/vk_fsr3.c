@@ -135,14 +135,16 @@ static char status_version[64];
 static uint64_t status_ns;
 
 // For the menu, which asks on the present thread (vk_fsr3_state, vk_fsr3_version4): FSR went off for the run; a context
-// of FSR 4 could not be made. ffx_lock: the menu's check (check_main), this module and vk_fg.c do not enter AMD's loader
-// together.
+// of FSR 4 could not be made. ffx_lock: the menu's check (check_main), this module and vk_fg.c do not enter AMD's
+// libraries together, but for what its frame generation does on threads of its own. It is taken after vk_queue_lock, as
+// a swapchain is made under that.
 static int went_off, no_version4;
 static PlatMutex ffx_lock = PLAT_MUTEX_INIT;
 
 // The menu's check of what loads here (check_main)
 enum { CHECK_NONE, CHECK_RUNS, CHECK_DONE };
 static int check_stage, check_up, check_four, check_fg;   // the results are written before CHECK_DONE
+static int check_up_runs, check_fg_runs;                  // what already ran when it started
 static PlatThread *check_thread;
 
 static void off(void) {
@@ -391,7 +393,11 @@ static void forget_frames(void) {
 static int have_context(void) { return F.ctx || F.builtin_ctx; }
 
 static void free_context(void) {
-    if (F.ctx) F.l.destroy(&F.ctx, NULL);
+    if (F.ctx) {
+        plat_mutex_lock(&ffx_lock);
+        F.l.destroy(&F.ctx, NULL);
+        plat_mutex_unlock(&ffx_lock);
+    }
     if (F.builtin_ctx) vk_ffx_up_destroy();
     F.ctx = NULL;
     F.builtin_ctx = 0;
@@ -732,7 +738,9 @@ static int dispatch_upscale(VkCommandBuffer cb, int reset, float ms) {
         .cameraFar = F.far_z, .cameraFovAngleVertical = F.fov, .viewSpaceToMetersFactor = 1.0f,
         .flags = FFX_UPSCALE_FLAG_NON_LINEAR_COLOR_SRGB};
     rec_drain();   // the library's calls come after everything queued so far, on this thread
+    plat_mutex_lock(&ffx_lock);
     ffxReturnCode_t r = F.l.dispatch(&F.ctx, &d.header);
+    plat_mutex_unlock(&ffx_lock);
     if (r != FFX_API_RETURN_OK) rt_log("vk: FSR: ffxDispatch returned %u", r);
     return r == FFX_API_RETURN_OK;
 }
@@ -863,27 +871,36 @@ int vk_fsr3_state(void) {
 // executable or a feature the device reports is not enough. The check makes each context at a small size and destroys
 // it, on a thread of its own as that can take a while, when the menu first asks: who never opens the menu does not load
 // a library they do not use.
-static int check_upscaler(VkCtx *c, int *four) {
+// 1 when AMD's library gives a context of the major version (0: any); it is destroyed under the queue lock, as the library
+// may wait for the device then.
+static int check_context(Lib *l, int major) {
+    ffxContext x = NULL;
+    uint64_t id = 0;
+    char ver[64] = "";
+    plat_mutex_lock(&ffx_lock);
+    int ok = (!major || pick_version(l, major, &id)) &&
+             create_upscaler(l, 320, 180, 640, 360, major ? &id : NULL, &x) == FFX_API_RETURN_OK;
+    if (ok) provider_version(l, &x, ver, sizeof ver);
+    plat_mutex_unlock(&ffx_lock);
+    if (!ok) return 0;
+    vk_queue_lock();
+    plat_mutex_lock(&ffx_lock);
+    l->destroy(&x, NULL);
+    plat_mutex_unlock(&ffx_lock);
+    vk_queue_unlock();
+    return !major || ver[0] == '0' + major;
+}
+
+// running: FSR upscales already, which shows that it loads
+static int check_upscaler(VkCtx *c, int running, int *four) {
     Lib l = {0};
-    int ok = 0;
     *four = 0;
     if (!device_ok(c)) return 0;
     plat_mutex_lock(&ffx_lock);
-    if (vk_fsr3_libraries() && load_library(c, &l)) {
-        ffxContext x = NULL;
-        uint64_t id;
-        ok = create_upscaler(&l, 320, 180, 640, 360, NULL, &x) == FFX_API_RETURN_OK;
-        if (!ok && pick_version(&l, 3, &id)) ok = create_upscaler(&l, 320, 180, 640, 360, &id, &x) == FFX_API_RETURN_OK;
-        if (x) l.destroy(&x, NULL);
-        x = NULL;
-        if (pick_version(&l, 4, &id) && create_upscaler(&l, 320, 180, 640, 360, &id, &x) == FFX_API_RETURN_OK) {
-            char ver[64];
-            provider_version(&l, &x, ver, sizeof ver);
-            *four = ver[0] == '4';
-            l.destroy(&x, NULL);
-        }
-    }
+    int lib = vk_fsr3_libraries() && load_library(c, &l);
     plat_mutex_unlock(&ffx_lock);
+    int ok = running || (lib && (check_context(&l, 0) || check_context(&l, 3)));
+    if (lib) *four = check_context(&l, 4);
     const char *why;
     return ok || (vk_ffx_usable(c, &why) && vk_ffx_up_check(c));
 }
@@ -891,8 +908,8 @@ static int check_upscaler(VkCtx *c, int *four) {
 static void check_main(void *arg) {
     VkCtx *c = arg;
     uint64_t t0 = kern_now_ns();
-    check_up = check_upscaler(c, &check_four);
-    check_fg = vk_fg_check(c);
+    check_up = check_upscaler(c, check_up_runs, &check_four);
+    check_fg = vk_fg_check(c, check_fg_runs);
     rt_log("vk: FSR check: FSR %s, FSR 4 %s, frame generation %s (%.0f ms)", check_up ? "loads" : "does not load",
            check_four ? "loads" : "does not load", check_fg & 1 ? "loads from AMD's library" : check_fg ? "loads, built in"
            : "does not load", (double)(kern_now_ns() - t0) / 1e6);
@@ -902,7 +919,10 @@ static void check_main(void *arg) {
 static int check_done(void) {
     VkCtx *c = vk_ctx();
     if (check_stage == CHECK_NONE && c) {
+        char ver[64];
         check_stage = CHECK_RUNS;
+        check_up_runs = vk_fsr3_shown(ver, sizeof ver);
+        check_fg_runs = vk_fg_active();
         check_thread = plat_thread_new(check_main, c, "fsr_check");
     }
     return __atomic_load_n(&check_stage, __ATOMIC_ACQUIRE) == CHECK_DONE;
@@ -911,7 +931,8 @@ static int check_done(void) {
 int vk_fsr3_ready(void) {
     char ver[64];
     int done = check_done();
-    return vk_fsr3_state() == VK_FSR_OK && (vk_fsr3_shown(ver, sizeof ver) || (done && check_up));
+    if (vk_fsr3_state() != VK_FSR_OK) return 0;
+    return vk_fsr3_shown(ver, sizeof ver) || (done && check_up) ? 1 : done || !check_thread ? 0 : -1;
 }
 
 int vk_fsr3_version4(void) { return check_done() && check_four && !__atomic_load_n(&no_version4, __ATOMIC_ACQUIRE); }

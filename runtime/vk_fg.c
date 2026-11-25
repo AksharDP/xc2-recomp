@@ -652,14 +652,19 @@ static int check_lib(VkCtx *c) {
     vk_fsr3_lib_lock();
     describe_fg(c, &backend, &version, &desc, 640, 360, VK_FORMAT_B8G8R8A8_UNORM);
     ffxReturnCode_t r = create(&x, &desc.header, NULL);
-    if (r == FFX_API_RETURN_OK) destroy(&x, NULL);
     vk_fsr3_lib_unlock();
-    return r == FFX_API_RETURN_OK;
+    if (r != FFX_API_RETURN_OK) return 0;
+    vk_queue_lock();   // the library may wait for the device when a context goes
+    vk_fsr3_lib_lock();
+    destroy(&x, NULL);
+    vk_fsr3_lib_unlock();
+    vk_queue_unlock();
+    return 1;
 }
 
-int vk_fg_check(VkCtx *c) {
+int vk_fg_check(VkCtx *c, int running) {
     const char *why;
-    return check_lib(c) | (vk_ffx_usable(c, &why) && vk_ffx_fg_check(c)) << 1;
+    return (running || check_lib(c)) | (vk_ffx_usable(c, &why) && vk_ffx_fg_check(c)) << 1;
 }
 
 int vk_fg_loads(int check) { return (check & 1 && !G.failed) || (check & 2 && !O.failed); }

@@ -571,8 +571,14 @@ static const char *present_note(void) {
 // FSR 4 did too, frame generation where it did. Under a row that is on stands whether it is at work, which the setting alone does
 // not say (a loading screen has no scene to upscale).
 static void rows_fsr(void) {
-    if (!vk_fsr3_ready()) return;
     bool on = cfg_bool("XC2_FSR3") != 0;
+    int ready = vk_fsr3_ready();
+    if (!ready) return;
+    if (ready < 0 && !on) {
+        opt_disable_next(UI_MENU_FSR_CHECKING);
+        opt_toggle_text("XC2_FSR3", menu_text(UI_MENU_FSR3), menu_text(UI_MENU_FSR3_DESC), false);
+        return;
+    }
     char ver[64], note[96];
     if (vk_fsr3_shown(ver, sizeof ver)) snprintf(note, sizeof note, menu_text(UI_MENU_FMT_FSR_RUNNING), ver);
     else snprintf(note, sizeof note, "%s", menu_text(UI_MENU_NOT_RUNNING));

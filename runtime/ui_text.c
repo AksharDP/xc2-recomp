@@ -101,6 +101,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "vectors and the HUD-less picture; set the frame rate to about half the display rate. "
                                "Off by default.",
     [UI_MENU_FRAME_GEN_NEEDS_FSR] = "Turn on AMD FSR first.",
+    [UI_MENU_FSR_CHECKING] = "Checking this machine...",
     [UI_MENU_FMT_FSR_RUNNING] = "Running: FSR %s",
     [UI_MENU_RUNNING] = "Running", [UI_MENU_NOT_RUNNING] = "Not running right now",
 
@@ -427,6 +428,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN] = "FSR 帧生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 帧生成会在每两帧渲染画面之间插入一帧插值画面，使输出帧率接近翻倍。需同时开启 AMD FSR 以提供深度、运动矢量与无 HUD 画面；建议将帧率上限设为显示器刷新率的一半左右。默认关闭。",
     [UI_MENU_FRAME_GEN_NEEDS_FSR] = "请先开启 AMD FSR 超分。",
+    [UI_MENU_FSR_CHECKING] = "正在检测此设备…",
     [UI_MENU_FMT_FSR_RUNNING] = "运行中：FSR %s",
     [UI_MENU_RUNNING] = "运行中", [UI_MENU_NOT_RUNNING] = "当前未运行",
 
@@ -729,6 +731,7 @@ static const char *const text_zh_hant[UI_TEXT_COUNT] = {
     [UI_MENU_FRAME_GEN] = "FSR 影格生成",
     [UI_MENU_FRAME_GEN_DESC] = "AMD FSR 影格生成會在兩張實際算繪影格之間插入一張補插影格，使顯示幀率接近倍增。需開啟 AMD FSR 以取得深度、運動向量與無介面影像；建議將幀率上限設為螢幕更新率的一半左右。預設關閉。",
     [UI_MENU_FRAME_GEN_NEEDS_FSR] = "請先開啟 AMD FSR 升頻。",
+    [UI_MENU_FSR_CHECKING] = "正在檢測此裝置…",
     [UI_MENU_FMT_FSR_RUNNING] = "執行中：FSR %s",
     [UI_MENU_RUNNING] = "執行中", [UI_MENU_NOT_RUNNING] = "目前未執行",
 
