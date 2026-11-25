@@ -47,6 +47,7 @@ typedef struct VkQueueInfoFFXAPI VkQueueInfoFFXAPI;
 
 #define FFX_LOADER "amd_fidelityfx_loader_vk.dll"   // loads amd_fidelityfx_framegeneration_vk.dll for this effect
 #define MAX_IMAGES 16
+#define STALE_PRESENTS 4   // as many as the library can hold back, and one
 #define MAX_QUEUES 8   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
 
 static struct {
@@ -70,6 +71,7 @@ static struct {
     VkFormat fmt;
     uint64_t frame_id;
     uint64_t first_id;             // frame_id when the swapchain context was made
+    int stale;                     // presents since a rebuild whose result may be the old swapchain's (vk_fg_present)
     // the HUD-less picture at display size, one per frame parity, and its views
     VkImage hudless[2];
     VmaAllocation hudless_alloc[2];
@@ -424,6 +426,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         return -1;
     }
     G.swapchain = *sc;
+    G.stale = STALE_PRESENTS;
     g_shown_t0 = 0;
     G.w = ci->imageExtent.width;
     G.h = ci->imageExtent.height;
@@ -466,6 +469,13 @@ VkResult vk_fg_present(VkQueue q, const VkPresentInfoKHR *pi) {
         trace("present in");
         VkResult r = G.sc_present(q, pi);
         trace("present out");
+        // The library answers with the result of the last present its own thread made. After a rebuild that is still one
+        // to the old swapchain, out of date: it would rebuild the new one at once. A swapchain that is out of date itself
+        // says so again after these.
+        if (G.stale) {
+            G.stale--;
+            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) r = VK_SUCCESS;
+        }
         return r;
     }
     return vkQueuePresentKHR(q, pi);
