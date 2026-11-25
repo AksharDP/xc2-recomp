@@ -1,5 +1,6 @@
 """The releases of tools/xc2_titles.py, how the extraction and the installer tell them apart, and that mods laid out for
-either are found. Needs no game files; needs cryptography (tools/vendor/macnativegames/extract_exefs.py) and lz4 (recomp/nso.py).
+either are found. Needs no game files; needs cryptography (tools/vendor/macnativegames/extract_exefs.py) and lz4
+(recomp/nso.py).
 
     python tests/regions_test.py
 """
