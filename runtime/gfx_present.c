@@ -1015,7 +1015,10 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
         last_write = 0;
         record_thumb(cb, dst, slot);
     }
-    sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
+    // AMD's frame generation swapchain shows images of its own, which it reads in a shader: it takes them in that layout
+    // (ReplacementBufferTransferState in the FidelityFX SDK's FrameInterpolationSwapchainVK.cpp)
+    sync_barrier(cb, dst, last, vk_fg_active() ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                 last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
     vkEndCommandBuffer(cb);
 

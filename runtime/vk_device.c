@@ -354,27 +354,30 @@ static int create_device(void) {
         CHAIN(lr, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR);
     }
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
-    // The networks of FSR Upscaling 4 (AMD's library, vk_fsr3.c) run on the features of the game's device: cooperative
-    // matrices, 8-bit floats on Radeon RX 9000 and the compute derivatives its sample application enables too. Without
-    // them the library has only FSR 3 left to offer. No other vendor's GPU gets FSR 4, so theirs stay as they were.
+    // Shaders of AMD's library (vk_fsr3.c) declare compute derivatives, also those of FSR 3.1.6 that every vendor's GPU
+    // runs.
+    int derivatives = vk_fsr3_libraries() & 1 && has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
+    if (derivatives) {
+        ext[n_ext++] = VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME;
+        CHAIN(deriv, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR);
+    }
+    // The networks of FSR Upscaling 4 run on the features of the game's device: cooperative matrices and, on Radeon RX
+    // 9000, 8-bit floats. Without them the library has only FSR 3 left to offer. No other vendor's GPU gets FSR 4, so
+    // theirs stay as they were.
     if (g_vk.props.vendorID == 0x1002 && vk_fsr3_libraries() & 1) {
-        int got[3] = {has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME),
-                      has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME), 0};
+        int got[2] = {has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME), 0};
         if (got[0]) {
             ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
             CHAIN(coop, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
         }
-        if (got[1]) {
-            ext[n_ext++] = VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME;
-            CHAIN(deriv, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR);
-        }
 #ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
-        if ((got[2] = got[0] && has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME))) {
+        if ((got[1] = got[0] && has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME))) {
             ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
             CHAIN(f8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT);
         }
 #endif
-        rt_log("vk: for FSR 4: cooperative matrix %d, 8-bit floats %d, compute derivatives %d", got[0], got[2], got[1]);
+        rt_log("vk: for FSR 4: cooperative matrix %d, 8-bit floats %d, compute derivatives %d", got[0], got[1],
+               derivatives);
     }
     // GPU breadcrumbs for a lost device (vk_crumbs.c): AMD's drivers and RADV report it.
     if (has_ext(ep, ne, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) { g_vk.has_buffer_marker = 1; ext[n_ext++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME; }

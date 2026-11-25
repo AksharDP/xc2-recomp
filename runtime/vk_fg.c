@@ -69,6 +69,7 @@ static struct {
     uint32_t w, h;                 // display size
     VkFormat fmt;
     uint64_t frame_id;
+    uint64_t first_id;             // frame_id when the swapchain context was made
     // the HUD-less picture at display size, one per frame parity, and its views
     VkImage hudless[2];
     VmaAllocation hudless_alloc[2];
@@ -218,7 +219,8 @@ static int make_hudless(VkCtx *c) {
                                 .format = G.fmt, .extent = {G.w, G.h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                         VK_IMAGE_USAGE_STORAGE_BIT};
+                                         VK_IMAGE_USAGE_STORAGE_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT};   // the library copies from it
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (vmaCreateImage(c->vma, &ci, &ai, &G.hudless[i], &G.hudless_alloc[i], NULL) != VK_SUCCESS) {
             G.hudless[i] = VK_NULL_HANDLE;
@@ -401,6 +403,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
             return -1;
         }
         G.swapchain = *sc;
+        G.first_id = G.frame_id;
         G.on = 1;
         rt_log("vk: frame generation on: %ux%u, %s", G.w, G.h,
                "FSR Frame Generation (3.1.7 analytical on this hardware, 4.0.2 ML on Radeon RX 9000)");
@@ -478,7 +481,7 @@ void vk_fg_shutdown(VkCtx *c) {
     fg_drain();
     if (G.sc_count && G.swapchain)
         rt_log("vk: frame generation presented %llu frames for %llu drawn", (unsigned long long)G.sc_count(G.swapchain),
-               (unsigned long long)G.frame_id);
+               (unsigned long long)(G.frame_id - G.first_id));
     G.destroy(&G.sc, NULL);
     G.sc = NULL;
     G.on = 0;
