@@ -59,8 +59,9 @@ Each release installs into its own folder, so both can sit side by side: `xc2-in
 the game sees, and the title id folders `runtime/mods.c` looks in), and the code patch table is the release's
 (`Region.patch_table` in `tools/xc2_titles.py`: Japan's 3.0.0 has the code and data of 3.0.1 and shares
 `recomp/patches-v301.txt`; an update without a table runs at the console's 30 fps and 1280x720, since the
-runtime's frame rate and resolution code reads `main`'s data only with those patch sets). Mods may be laid out under
-either title id.
+runtime's frame rate and resolution code reads `main`'s data only with those patch sets). A mod's title id folders are
+the installed release's, so a mod that holds folders of both works on either. `tools/cheats.py` and
+`tools/exefs_patches.py` take the release from the program id in `main.npdm`.
 
 ## Updating the port
 
