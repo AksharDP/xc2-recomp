@@ -782,6 +782,7 @@ static uint8_t snap_untracked[SNAP_REGIONS];
 // the replay's own snapshot of the region would only repeat the query (a PAGEMAP_SCAN, a fifth of the replay thread
 // on the Steam Deck); writes after it are the next capture's.
 static uint32_t snap_capgen[SNAP_REGIONS];
+#define SNAP_FROZEN_SPAN 16u   // frozen 2 MiB regions one capture query may span (snap_regions)
 static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
 static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
 
@@ -806,12 +807,28 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         }
         uint64_t k = r;   // one query over a run of regions not seen in this epoch
         while (k + 1 <= r1 && (!epoch || snap_at[k + 1] != epoch) && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
+        // The capture's query also spans up to SNAP_FROZEN_SPAN frozen regions to the next region that is not frozen.
+        // The reset of a query costs a TLB flush on every processor the process runs on, about 15 us and up to 130 us
+        // a call against about 2 us a MiB for the walk, and the flush also costs the other threads their TLB entries;
+        // frozen regions in a pool cut its run into pieces, about 20 queries a frame on the walk route, 8 this way.
+        // A frozen region has no written pages to return, and one thawed meanwhile is stamped like any other.
+        while (!epoch) {
+            uint64_t j = k + 1;
+            while (j <= r1 && j - k <= SNAP_FROZEN_SPAN && mem_frozen(j << SNAP_SHIFT)) j++;
+            if (j > r1 || j - k > SNAP_FROZEN_SPAN) break;
+            k = j;
+            while (k + 1 <= r1 && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
+        }
         uint64_t a = r << SNAP_SHIFT, b = (k + 1) << SNAP_SHIFT;
         if (!g) g = ++gen_now;
         int tracked = query_stamp(a, b, g);
         calls++;
         for (uint64_t j = r; j <= k; j++) {
             if (epoch) snap_at[j] = epoch;
+            if (!epoch && mem_frozen(j << SNAP_SHIFT)) {   // a frozen region the query spanned
+                snap_untracked[j] = 0;
+                continue;
+            }
             snap_untracked[j] = (uint8_t)!tracked;
             if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
                 ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
