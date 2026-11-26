@@ -1351,11 +1351,12 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
         s->ce = slot_resolve(s, &v, &hv);   // entry_of may create an entry and bump g: g read before it
         s->cview = v, s->chas_view = (uint8_t)hv;
         s->cgen = g;
-        // The slot may follow a texture of another format at its storage (slot_resolve): the draws after this one ask for
-        // a shader that samples that one, and slots_gen makes them look the shader up again.
+        // The slot may follow a texture of another format at its storage (slot_resolve), or have no image yet, when a
+        // float stand-in is bound for it (vk_exec_draw.c tex_info_full): the draws after this one ask for a shader that
+        // samples what is bound, and slots_gen makes them look the shader up again.
         int stencil = hv && v.set_dsmode && v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
         uint8_t comp = s->ce ? component_of(s->ce->pub.format, s->ce->pub.aspect, stencil) : 0;
-        if (s->ce && comp != scomp[id]) __atomic_store_n(&scomp[id], comp, __ATOMIC_RELEASE), slots_gen++;
+        if (comp != scomp[id]) __atomic_store_n(&scomp[id], comp, __ATOMIC_RELEASE), slots_gen++;
         s->cepoch = 0;
     }
     Tex *e = s->ce;

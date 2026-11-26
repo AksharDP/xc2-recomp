@@ -691,10 +691,14 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
     return 1;
 }
 
-// Texture and image types of a stage's first 32 slots, each kept with the handle and the generation and slot token it
-// was looked up under: a slot is looked up again, a hash probe, only when the handle changed or its slot may resolve
-// otherwise (slot_still).
-static struct { uint64_t tex[32], img[32], ttok[32], itok[32]; uint32_t tgen[32], igen[32]; uint8_t tt[32], it[32]; } AC[6];
+// Texture and image types of a stage's first 32 slots and their integer components (vk_texture_slot_component), each
+// kept with the handle and the generation and slot token it was looked up under: a slot is looked up again, a hash
+// probe, only when the handle changed or its slot may resolve otherwise (slot_still).
+static struct {
+    uint64_t tex[32], img[32], ttok[32], itok[32];
+    uint32_t tgen[32], igen[32];
+    uint8_t tt[32], it[32], tc[32], ic[32];
+} AC[6];
 
 // vk_texture_slot_token of the slot a texture or image handle names; an empty handle always resolves to nothing.
 static uint64_t token_of(uint64_t h) { return h ? vk_texture_slot_token((int)(h & 0xfffff)) : 1; }
@@ -773,26 +777,33 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, SlotMask mask, G
     // again.
     uint32_t gen = vk_texture_slots_gen();
     int locked = 0, check = shader_memo_on() == 2;
-    for (uint32_t m = mask.m; m; m &= m - 1) {
+    // A slot's component is read after its lookup, which resolves the slot (vk_texture_by_id_locked keeps the component
+    // of what the slot resolves to): one registered with an integer format at storage that now holds a float image, or
+    // with no image at all, answers float, as its descriptor (or the stand-in) is.
+    for (uint32_t m = mask.m | mask.texs | mask.imgs; m; m &= m - 1) {
         int slot = __builtin_ctz(m);
         uint64_t h = ex->tex[st][slot], hi = ex->img[st][slot];
         int tmiss = c->tex[slot] != h || !c->ttok[slot] || !slot_still(&c->tgen[slot], c->ttok[slot], h, gen);
         int imiss = c->img[slot] != hi || !c->itok[slot] || !slot_still(&c->igen[slot], c->itok[slot], hi, gen);
         uint64_t tt = tmiss ? token_of(h) : 0, it = imiss ? token_of(hi) : 0;
         if ((tmiss || imiss || check) && !locked) vk_texture_lock(), locked = 1, BS.ac_miss++;
-        if (tmiss) c->tt[slot] = type_of_handle(h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
-        if (imiss) c->it[slot] = type_of_handle(hi), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
-        if (check && (type_of_handle(h) != c->tt[slot] || type_of_handle(hi) != c->it[slot]))   // XC2_SHADER_MEMO=check
+        if (tmiss) {
+            c->tt[slot] = type_of_handle(h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
+            c->tc[slot] = h ? (uint8_t)vk_texture_slot_component((int)(h & 0xfffff)) : 0;
+        }
+        if (imiss) {
+            c->it[slot] = type_of_handle(hi), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+            c->ic[slot] = hi ? (uint8_t)vk_texture_slot_component((int)(hi & 0xfffff)) : 0;
+        }
+        if (check && (type_of_handle(h) != c->tt[slot] || type_of_handle(hi) != c->it[slot] ||   // XC2_SHADER_MEMO=check
+                      (h ? vk_texture_slot_component((int)(h & 0xfffff)) : 0) != c->tc[slot] ||
+                      (hi ? vk_texture_slot_component((int)(hi & 0xfffff)) : 0) != c->ic[slot]))
             rt_fatal("vk_exec: kept texture types of stage %d slot %d differ from a lookup", st, slot);
-        a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
+        if (mask.m >> slot & 1) a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
+        if (mask.texs >> slot & 1) a->tex_type[slot] |= c->tc[slot];
+        if (mask.imgs >> slot & 1) a->img_type[slot] |= c->ic[slot];
     }
     if (locked) vk_texture_unlock();
-    for (uint32_t m = mask.texs | mask.imgs; m; m &= m - 1) {
-        int slot = __builtin_ctz(m);
-        uint64_t h = mask.texs >> slot & 1 ? ex->tex[st][slot] : 0, hi = mask.imgs >> slot & 1 ? ex->img[st][slot] : 0;
-        if (h) a->tex_type[slot] |= (uint8_t)vk_texture_slot_component((int)(h & 0xfffff));
-        if (hi) a->img_type[slot] |= (uint8_t)vk_texture_slot_component((int)(hi & 0xfffff));
-    }
 }
 
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
@@ -1581,7 +1592,8 @@ static void snap_live_note(const VkExecTarget *t, uint32_t slot) {
 // it reads as storage images; the draw's descriptors then read the copies (tex_info_full). A storage image must be in
 // GENERAL, so it cannot be a target in the feedback layout, and reading a target in any other layout is undefined in the
 // pass that writes or loads it (VUID-vkCmdDrawIndexed-None-10795, -12338): a copy is the only defined read, so it is
-// made on every GPU and for XC2_FEEDBACK_SNAP=0 too. XC2's decals do this: they load the normal target's pixel, blend
+// made on every GPU and for XC2_FEEDBACK_SNAP=0 too (a shape snap_fits does not take is still read live, as a sampled
+// read of one is: snap_live_note logs it, and XC2 has none). XC2's decals do this: they load the normal target's pixel, blend
 // the decal's normal into it and write it back. They are few (1 to 5 draws a frame), and a run of them shares one copy
 // as the sampled reads do. Returns the targets the copies cover: the copied ones, and any other read slot holding the
 // same image as a copied one (tex_info_full sends that slot to the copy too). Returns FB_SKIP when a copy could not be
@@ -1805,7 +1817,8 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
                 break;
             }
         if (img) view = get_view(ex, img, &v, hv, r->type, storage, r->format), *image = img->image;
-        if (img && storage) vk_texture_storage_bound_locked(img);
+        // A copy is no registered entry, and a draw reading one does not store through it (the copy is only for loads).
+        if (img && storage && img != &copy) vk_texture_storage_bound_locked(img);
         if (img && !storage && ex->nfbl && in_fbl(ex, img->image)) layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
         if (!storage && !separate) {
             // A depth texture sampled without a compare reads one texel on the Switch, whatever the sampler's filter:
