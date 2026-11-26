@@ -243,7 +243,7 @@ static void ftg_report(uint64_t now) {
     uint64_t low = ft_low_ns(ftg.hist, ftg.frames);
     rt_log("frametime: from frame %llu (%s): %llu frames in %.1f s, mean %.1f fps, 1%% low %.1f fps, over 25 ms %llu, 50 ms %llu, 100 ms %llu",
            (unsigned long long)ftg.first, ftg_frame ? "XC2_FT_FROM_FRAME" : "XC2_FT_FROM_WORLD",
-           (unsigned long long)ftg.frames, (now - ftg.t0) / 1e9, ftg.frames * 1e9 / ftg.sum, low ? 1e9 / low : 0.0,
+           (unsigned long long)ftg.frames, ftg.sum / 1e9, ftg.frames * 1e9 / ftg.sum, low ? 1e9 / low : 0.0,
            (unsigned long long)ftg.over25, (unsigned long long)ftg.over50, (unsigned long long)ftg.over100);
 }
 
@@ -263,17 +263,17 @@ void perf_summary_flush(void) {   // at exit (prof_write)
 // Returns the replay time since the previous present.
 static uint64_t ft_frame(uint64_t frame, uint64_t now, uint64_t d) {
     int64_t rep = plat_xchg64(&frame_replay_ns, 0);
+    // Not play: the title screen, a movie or a cutscene (30 fps by design), and the boot before the title has first been
+    // seen (its start-up stalls are seconds long, and the game shows no title until it is over). Without the XC2 build
+    // (kind -1) nothing is left out. The first present counts as a sighting too.
+    static int title_seen;
+    int kind = frame_menu_kind();
+    if (kind == 1) title_seen = 1;
     if (!summary_t0) {   // the first present starts the period; there is no interval yet
         summary_t0 = now;
         ft.t0 = now;
         return (uint64_t)rep;
     }
-    // Not play: the title screen, a movie or a cutscene (30 fps by design), and the boot before the title has first been
-    // seen (its start-up stalls are seconds long, and the game shows no title until it is over). Without the XC2 build
-    // (kind -1) nothing is left out.
-    static int title_seen;
-    int kind = frame_menu_kind();
-    if (kind == 1) title_seen = 1;
     if (kind > 0 || (kind == 0 && !title_seen)) {
         ft.skipped++;
         if (now - summary_t0 >= FT_PERIOD_NS) {

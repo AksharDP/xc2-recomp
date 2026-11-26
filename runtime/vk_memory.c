@@ -2024,7 +2024,9 @@ void *vk_mem_capture(void) {
             }
         }
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
-        cap->gen = gen_now;
+        // A generation of its own, also when nothing was queried: a region stamped by an earlier capture and not covered
+        // by this one (its pool refused since) must not pass the replay's snap_capgen test for this submission.
+        cap->gen = ++gen_now;
         // The regions just queried (frozen ones count: nothing wrote them), as the shadow captures mark theirs: the
         // replay's texture checks of this submission take their stamps instead of querying them again on its thread.
         for (int i = 0; i < nruns; i++)
@@ -2051,7 +2053,7 @@ void *vk_mem_capture(void) {
             PoolRec *r = pool_index.e[i].buf;
             if (r->kind == POOL_IMPORT && r->smap && r->import_hi > r->import_lo) pools += (uint64_t)shadow_capture_pool(r);
         }
-        cap->gen = gen_now;
+        cap->gen = ++gen_now;   // a generation of its own, as above
         for (int i = 0; i < pool_index.n; i++) {   // the regions just queried (frozen ones count: nothing wrote them)
             const PoolRec *r = pool_index.e[i].buf;
             if (r->kind != POOL_IMPORT || !r->smap || r->import_hi <= r->import_lo) continue;
