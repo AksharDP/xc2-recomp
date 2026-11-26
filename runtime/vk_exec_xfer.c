@@ -15,7 +15,8 @@
 // Samples passed (NVN_COUNTER_TYPE_SAMPLES_PASSED) is a running count on the queue: RESET_COUNTER zeroes it, every
 // draw after it adds the samples that passed the depth and stencil tests, REPORT_COUNTER writes the running value.
 // XCX resets and reports it 3 to 8 times a frame in the field and its CPU reads the results back (f_70010c3298); a 0
-// there culls what the query tested. The replay counts with Vulkan occlusion queries ("occlusion counts" below).
+// there culls what the query tested. XC2 reports about 40 a frame and its shaders read some of them as uniform data
+// in the same frame. The replay counts with Vulkan occlusion queries ("occlusion counts" below).
 //
 // Conditional rendering is a CPU-side skip, not VK_EXT_conditional_rendering: the extension compares one 32-bit word
 // with zero, NVN compares the counter words at addr and addr + 16. The condition is evaluated when the op is recorded
@@ -122,6 +123,19 @@ static unsigned pending_head;
 // report into guest memory. Slots come from one ring; the completion thread reads and host-resets them
 // (hostQueryReset, Vulkan 1.2), so the replay records no reset commands. A full ring (no slot read back yet) leaves the
 // draw uncounted and the segment's count at least 1, as does a query still unavailable after its fence. Without hostQueryReset the counts stay 0.
+//
+// The completion thread's write reaches the CPU, but a draw later in the same submission binds the submit-time uniform
+// snapshot, or memory the count is not in yet: on the console the GPU writes the report in command order and the draw
+// reads it. XC2's CPU never reads some of its counts; its shaders do. At the guild at Goldmouth it tests a proxy near the
+// cloud sea only while the camera looks up: the first frame the proxy is drawn again, the shader read the 0 left from
+// the last time, and for that frame the sea was not drawn and what it hides showed (a one-frame flicker each time the
+// camera turned up). So a report whose count is one query, or none, after a reset (every report on that route) is also
+// written by the GPU, in command order (gpu_write): vkCmdCopyQueryPoolResults of the query, or a fill with 0 for none,
+// into the counter word. Copies cannot be recorded in a pass, so the writes of a pass wait for its end
+// (vk_exec_oq_after_pass); the draws that read the count come in later passes, and the next pass begins with a full
+// barrier. Like every GPU write into a buffer, it drops the uniform snapshot of those bytes, so later draws read the
+// buffer (note_gpu_write). A cumulative count (oq_keep), a segment of several queries or one with a draw left uncounted
+// reaches the GPU only through memory, as before. XC2_OQ_GPU=0 leaves every count to the CPU.
 #define OQ_N 4096
 #define LOG_ONCE(...) do { static volatile char once_; if (!__atomic_exchange_n(&once_, 1, __ATOMIC_RELAXED)) rt_log(__VA_ARGS__); } while (0)
 static VkQueryPool oq_pool;
@@ -137,6 +151,10 @@ static uint32_t *oq_seg;                 // replay: slots closed since the last 
 static uint32_t oq_nseg, oq_capseg;
 static int oq_lost;                      // replay: the segment missed a draw (ring full)
 static uint64_t oq_count;                // completion thread: samples since the last reset
+typedef struct { uint64_t addr; int q; } OqWrite;   // q: the query whose count goes to addr, -1 for 0
+static OqWrite *oq_w;                    // replay: GPU writes waiting for the end of the pass
+static uint32_t oq_nw, oq_capw;
+static int oq_gpu = -1;                  // XC2_OQ_GPU: reports are also written by the GPU
 
 typedef struct { uint64_t addr; int reset, lost; uint32_t n; uint32_t q[]; } OqSegment;
 
@@ -193,12 +211,54 @@ void vk_exec_oq_draw(VkExec *ex) {
     oq_open = (int)q;
 }
 
+// The GPU writes of the reports so far, outside a pass. Earlier reads of the counter words finish, and earlier writes
+// to them land, before the writes begin.
+static void oq_flush(VkExec *ex) {
+    if (!oq_nw) return;
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                           .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                           .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(ex->cb, &di);
+    ex->recorded++;
+    for (uint32_t i = 0; i < oq_nw; i++) {
+        VkMemSpan d;
+        if (!vk_mem_resolve(oq_w[i].addr, 8, &d) || d.avail < 8) continue;
+        VK_MEM_PICK(d, 8);
+        if (oq_w[i].q < 0) vkCmdFillBuffer(ex->cb, d.buffer, d.offset, 8, 0);
+        else
+            vkCmdCopyQueryPoolResults(ex->cb, oq_pool, (uint32_t)oq_w[i].q, 1, d.buffer, d.offset, 8,
+                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        vk_mem_gpu_wrote(&d, 8);
+        ex->recorded++;
+        vk_mem_count(d.cls, VK_MUSE_GPU_WRITE, 8);
+        note_gpu_write(ex, oq_w[i].addr, 8);
+    }
+    oq_nw = 0;
+}
+
+// The pass ends: its open query closes, and the GPU writes of its reports go after it (vk_exec.c vk_exec_pass_end).
 void vk_exec_oq_pass_end(VkExec *ex) { oq_close(ex); }
+void vk_exec_oq_after_pass(VkExec *ex) { oq_flush(ex); }
+
+// A report whose count is exact on the GPU: one query (q) or none (-1) since a reset. Outside a pass it is written now.
+static void gpu_write(VkExec *ex, uint64_t addr, int q) {
+    if (oq_gpu < 0) oq_gpu = cfg_bool("XC2_OQ_GPU") && !(cfg_get("XC2_OQ_VISIBLE") && !strcmp(cfg_get("XC2_OQ_VISIBLE"), "1"));
+    if (!oq_gpu || (addr & 7)) return;
+    if (oq_nw == oq_capw) {
+        oq_capw = oq_capw ? oq_capw * 2 : 64;
+        oq_w = realloc(oq_w, sizeof *oq_w * oq_capw);
+        if (!oq_w) rt_fatal("vk: out of memory");
+    }
+    oq_w[oq_nw++] = (OqWrite){addr, q};
+    if (!ex->in_pass) oq_flush(ex);
+}
 
 void vk_exec_xfer_shutdown(void) {
     if (oq_state > 0) vkDestroyQueryPool(vk_ctx()->device, oq_pool, NULL);
     oq_pool = VK_NULL_HANDLE, oq_state = 0, oq_next = 0, oq_counting = oq_reported = oq_keep = 0, oq_open = -1;
-    oq_nseg = 0, oq_lost = 0, oq_count = 0;
+    oq_nseg = 0, oq_lost = 0, oq_count = 0, oq_nw = 0;
     memset((void *)oq_busy, 0, sizeof oq_busy);
 }
 
@@ -258,12 +318,15 @@ static void reset_counter(VkExec *ex, const p_reset_counter *p) {
     oq_counting = 1, oq_reported = 0;
 }
 
-// A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
-// reset, unless reports came without resets before.
-static void oq_report(VkExec *ex, uint64_t addr) {
+// A samples-passed report to addr: the segment goes with it (to the CPU when cpu is set) and counting stops until the
+// next reset, unless reports came without resets before. A count of one query or none since a reset is also written
+// by the GPU.
+static void oq_report(VkExec *ex, uint64_t addr, int cpu) {
     LOG_ONCE("vk: the game reports samples-passed counters (occlusion culling); first report at %#llx",
              (unsigned long long)addr);
-    oq_segment(ex, addr, 0);
+    oq_close(ex);
+    if (oq_counting && !oq_reported && !oq_keep && !oq_lost && oq_nseg <= 1) gpu_write(ex, addr, oq_nseg ? (int)oq_seg[0] : -1);
+    oq_segment(ex, cpu ? addr : 0, 0);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;
         rt_log("vk: samples passed reported twice without a reset: counting every draw from now on");
@@ -282,14 +345,14 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
 static void report_counter(VkExec *ex, const p_report_counter *p) {
     int samples = p->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && oq_ready();
     if (nvn_gpu_only(p->addr)) {   // CPU-invisible pool: no host memory behind it
-        if (samples) oq_report(ex, 0);
+        if (samples) oq_report(ex, p->addr, 0);
         return;
     }
     VkMemSpan m;
     if (!vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m))
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
-    if (samples) oq_report(ex, p->addr);
+    if (samples) oq_report(ex, p->addr, 1);
     else {
         uint64_t *a = malloc(sizeof *a);
         if (!a) rt_fatal("vk: out of memory");

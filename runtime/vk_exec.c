@@ -650,6 +650,7 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
     if (ex->fsr3_armed) vk_fsr3_resolve(ex);
+    vk_exec_oq_after_pass(ex);
 }
 
 // A layout transition of one colour image, with the stages and accesses of its two sides.

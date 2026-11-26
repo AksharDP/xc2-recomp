@@ -229,3 +229,5 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+// After the pass ended: the GPU writes of the samples-passed reports made in it (vk_exec_xfer.c gpu_write).
+void vk_exec_oq_after_pass(VkExec *ex);
