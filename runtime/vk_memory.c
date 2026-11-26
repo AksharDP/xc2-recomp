@@ -1967,20 +1967,29 @@ void *vk_mem_capture(void) {
         // ones not used as buffers yet, so that a first use finds the writes before this submit call already stamped.
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
         int have = 0;
-        for (int i = 0; i < pool_index.n; i++) {
-            const PoolRec *r = pool_index.e[i].buf;
-            if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
-            if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
-            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
-            if (b >= SNAP_REGIONS) continue;
-            if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
-                if (b > run1) run1 = b;
-                continue;
+        static uint64_t (*runs)[2];   // gen_lock: the runs queried, marked in snap_capgen below
+        static int cruns;
+        int nruns = 0;
+        for (int i = 0; i <= pool_index.n; i++) {
+            const PoolRec *r = i < pool_index.n ? pool_index.e[i].buf : NULL;
+            uint64_t a = 0, b = 0;
+            if (r) {
+                if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
+                if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
+                a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+                if (b >= SNAP_REGIONS) continue;
+                if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
+                    if (b > run1) run1 = b;
+                    continue;
+                }
             }
-            if (have) q += snap_regions(run0, run1, 0);
-            run0 = a, run1 = b, have = 1;
+            if (have) {
+                q += snap_regions(run0, run1, 0);
+                if (nruns == cruns) grow((void **)&runs, &cruns, sizeof *runs);
+                runs[nruns][0] = run0, runs[nruns][1] = run1, nruns++;
+            }
+            if (r) run0 = a, run1 = b, have = 1;
         }
-        if (have) q += snap_regions(run0, run1, 0);
         qb = ww_bytes - b0;
         perf_count_by(PERF_CNT_MIRROR_KB, qb >> 10);
         // A capture that queries a large part of the pools (a load, a title screen): say how large, a few times a run.
@@ -1999,6 +2008,10 @@ void *vk_mem_capture(void) {
         }
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
         cap->gen = gen_now;
+        // The regions just queried (frozen ones count: nothing wrote them), as the shadow captures mark theirs: the
+        // replay's texture checks of this submission take their stamps instead of querying them again on its thread.
+        for (int i = 0; i < nruns; i++)
+            for (uint64_t k = runs[i][0]; k <= runs[i][1]; k++) snap_capgen[k] = cap->gen;
     } else if (shadow_cap) {   // the same over the shadow pools, all of them: the replay has not resolved any yet
         cap->shadow = 1;
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
