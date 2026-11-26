@@ -92,7 +92,13 @@ DISPATCHED_OBJECTS = [
     (re.compile(r'_(avx|avx2|avx512\w*)\.c\.o$'),
      'libvpx run-time CPU detection (vpx_dsp_rtcd / vp9_rtcd: x86_simd_caps); an AVX kernel object of libvpx'),
 ]
+# lld's map of a COFF link: RVA, size, alignment, then the input section, an archive member by its own name
+# ("avg_intrin_avx2.c.o:(.text)").
 MAP_ROW = re.compile(r'^([0-9a-f]{8,16}) ([0-9a-f]{8,16})\s+\d+\s{3,}(\S.*?):\((\.text[^)]*)\)\s*$')
+# lld's map of an ELF link (the Linux build): VMA, LMA, size, alignment, then the input section, an archive member
+# inside its archive's name ("libvpx.a(avg_intrin_avx2.c.o):(.text)").
+ELF_MAP_ROW = re.compile(r'^\s+([0-9a-f]+)\s+[0-9a-f]+\s+([0-9a-f]+)\s+\d+\s+(\S.*?):\((\.text[^)]*)\)\s*$')
+ARCHIVE_MEMBER = re.compile(r'\(([^()]+)\)$')
 # What zstd's BMI2_TARGET_ATTRIBUTE, __attribute__((target("lzcnt,bmi,bmi2"))), lets the compiler emit: BMI1, BMI2, LZCNT
 BMI_LZCNT = {'andn', 'bextr', 'blsi', 'blsmsk', 'blsr', 'bzhi', 'mulx', 'pdep', 'pext', 'rorx', 'sarx', 'shlx', 'shrx',
              'lzcnt'}
@@ -102,17 +108,21 @@ ZSTD_BMI2_OBJECTS = {'entropy_common.c.obj', 'fse_decompress.c.obj', 'huf_decomp
 
 
 class LinkMap:
-    """The input sections of an lld map (build_game.py writes xc2.map beside the exe): address -> object file."""
+    """The input sections of an lld map (build_game.py writes xc2.map beside the exe): address -> object file. Reads
+    the COFF map of the Windows build and the ELF map of the Linux one; image_base is 0 for the latter, whose map gives
+    addresses rather than RVAs (image_base())."""
 
     def __init__(self, path, image_base):
         self.base, rows = image_base, []
         with path.open(encoding='utf-8', errors='replace') as source:
             for line in source:
-                m = MAP_ROW.match(line)
+                m = MAP_ROW.match(line) or ELF_MAP_ROW.match(line)
                 if m:
                     section = m.group(4)
                     symbol = section.removeprefix('.text$') if section.startswith('.text$') else None
-                    rows.append((int(m.group(1), 16), int(m.group(2), 16), Path(m.group(3)).name, symbol))
+                    name = Path(m.group(3)).name
+                    member = ARCHIVE_MEMBER.search(name)
+                    rows.append((int(m.group(1), 16), int(m.group(2), 16), member.group(1) if member else name, symbol))
         rows.sort()
         self.starts = [r[0] for r in rows]
         self.rows = rows
@@ -138,6 +148,11 @@ class LinkMap:
 
 
 def image_base(objdump, path):
+    """What the map's addresses count from: a PE image's ImageBase (lld's COFF map gives RVAs), 0 for an ELF file (its
+    map gives the addresses the disassembly shows), None when neither is known."""
+    with open(path, 'rb') as f:
+        if f.read(4) == b'\x7fELF':
+            return 0
     out = subprocess.run([objdump, '-p', str(path)], capture_output=True, text=True, errors='replace').stdout
     m = re.search(r'^ImageBase\s+([0-9a-fA-F]+)', out, re.M)
     return int(m.group(1), 16) if m else None
@@ -199,7 +214,9 @@ def reviewed_dispatch(name, obj, mnemonics):
     HUF_flags_bmi2 is set (ZSTD_cpuSupportsBmi2). libvpx inv_txfm_ssse3.c calls the two idct32 helpers only from
     vpx_idct32x32_{34,135}_add_ssse3, selected by vpx_dsp_rtcd. GCC random.cc random_device::_M_init tests CPUID
     leaf 1 ECX bit 30 and leaf 7 EBX bit 18 before selecting the RDRAND and RDSEED functions; the linked code was
-    also checked. Object and opcode restrictions prevent an unrelated function or future SIMD code being excused.
+    also checked, in MSYS2's libstdc++ (whose GCC mangles the helpers' internal linkage as _N_1L12...) and in the
+    Steam Runtime sniper sysroot's GCC 10 one the Linux release links (_N_112..., without the L). Object and opcode
+    restrictions prevent an unrelated function or future SIMD code being excused.
 
     MSYS2's libzstd.a (mingw-w64-ucrt-x86_64-zstd 1.5.7, the package tools/make_release.py pins) is GCC code without
     function sections, and the linked executable keeps no symbol for its static functions, so the disassembly names
@@ -224,7 +241,8 @@ def reviewed_dispatch(name, obj, mnemonics):
     if obj == 'inv_txfm_ssse3.c.o' and name in ('idct32_135_8x32_ssse3', 'idct32_34_8x32_ssse3'):
         if ops <= {'pmulhrsw'}:
             return 'libvpx vpx_idct32x32_34/135_add_ssse3 via vpx_dsp_rtcd'
-    if obj == 'random.o' and re.fullmatch(r'_ZNSt12_GLOBAL__N_1L(?:12__x86_(?:rdrand|rdseed)|19__x86_rdseed_rdrand)EPv', name):
+    if obj == 'random.o' and re.fullmatch(r'_ZNSt12_GLOBAL__N_1L?(?:12__x86_(?:rdrand|rdseed)|19__x86_rdseed_rdrand)EPv',
+                                          name):
         if ops <= {'rdrand', 'rdseed'}:
             return 'libstdc++ random_device::_M_init CPUID RDRAND/RDSEED checks'
     return None

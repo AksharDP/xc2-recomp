@@ -13,19 +13,22 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
 
     python/    python-build-standalone 3.14 (with tkinter) + the packages of tools/requirements-installer.txt; a .pth
                file puts the folder, tools/ and recomp/ on sys.path
-    llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
-               sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
-    runtime/   libxc2rt.a (build_game.py --make-runtime-lib --sysroot), the runtime headers, the sources of
-               build_game.py INSTALL_SIDE (compiled per install) and tools/mod_abi.py SOURCES (compiled into mod
-               libraries), xc2.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd
-               built static; SDL3, Opus and libvpx come from the sysroot)
+    llvm/      LLVM 23 (clang, lld, llvm-ar, llvm-objdump, the clang resource headers) and llvm/sysroot: the files of the
+               sniper SDK sysroot the game's compile and link read, nothing else (recorded while building the runtime
+               libraries). llvm-objdump: build_game.py --cpu v2 reads the install-side objects with tools/check_isa.py
+    runtime/   libxc2rt.a and libxc2rt-v2.a (build_game.py --make-runtime-lib --sysroot, the second with --cpu v2 for
+               processors without AVX2; the setup picks it there, installer/steps.py cpu_runtime_lib), the runtime
+               headers, the sources of build_game.py INSTALL_SIDE (compiled per install) and tools/mod_abi.py SOURCES
+               (compiled into mod libraries), xc2.png (the window icon), deps/ (Vulkan headers 1.4.363, VMA, zstd built
+               static; SDL3, Opus and libvpx come from the sysroot)
     bin/       xc2_xlate (+ .id), ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION
     recomplauncher.json   how RecompLauncher sets the game up and starts it; it is /recomplauncher.json inside the AppImage
     AppRun, xc2-setup.desktop, xc2-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
 
 --appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --prove compiles
-generated/v301 (3.0.1) and links build/release-linux-check/xc2 with the folder's tools only, then runs the probes beside it.
+generated/v301 (3.0.1) and links build/release-linux-check/game/xc2 with the folder's tools only, once per processor level
+(game-v2/ with libxc2rt-v2.a, whose executable tools/check_isa.py must clear), then runs the probes beside each.
 
 The folder contains nothing derived from the game: check_content runs over it before the script finishes, then the
 folder's own python runs a check-only installer pass and the window's --selftest.
@@ -84,8 +87,11 @@ PINS = {
 mr.PINS.update(PINS)   # one cache (toolchain/release-dl) and one fetch for both releases
 
 # What clang, lld and the runtime build need from the LLVM release (the rest of its 8 GB stays packed).
+# llvm-objdump: the setup's build_game.py --cpu v2 disassembles the install-side objects (check_runtime_isa), and
+# SteamOS and many desktops ship no binutils for it to fall back on.
 LLVM_MEMBERS = [f'bin/clang-{LLVM_MAJOR}', 'bin/clang', 'bin/clang++', 'bin/lld', 'bin/ld.lld', 'bin/llvm-ar',
-                'bin/llvm-ranlib', 'bin/llvm-objcopy', 'bin/llvm-strip', f'lib/clang/{LLVM_MAJOR}/include']
+                'bin/llvm-ranlib', 'bin/llvm-objcopy', 'bin/llvm-strip', 'bin/llvm-objdump',
+                f'lib/clang/{LLVM_MAJOR}/include']
 # The parts of the sniper SDK a C/C++ compile and link for x86_64 can read.
 SNIPER_MEMBERS = ['usr/include', 'usr/share/pkgconfig', 'usr/lib/x86_64-linux-gnu', 'usr/lib/gcc/x86_64-linux-gnu',
                   'lib/x86_64-linux-gnu', 'lib64', 'usr/share/doc/libsdl3-0', 'usr/share/doc/libopus0',
@@ -104,9 +110,10 @@ def run(cmd, **kw):
 
 
 def tar_extract(name, dest, members, strip=0):
-    """Extract only members (path prefixes inside the archive) of a pinned tarball with the system tar, once."""
+    """Extract only members (path prefixes inside the archive) of a pinned tarball with the system tar, once per list of
+    members: the stamp records them, so adding one (llvm-objdump to LLVM_MEMBERS) unpacks again."""
     stamp = dest / '.unpacked'
-    if stamp.is_file():
+    if stamp.is_file() and stamp.read_text() == '\n'.join(members):
         return dest
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
@@ -115,7 +122,7 @@ def tar_extract(name, dest, members, strip=0):
     run(['tar', '-xf', path, '-C', dest, f'--strip-components={strip}', '--wildcards', '--no-wildcards-match-slash',
          *members])
     print(f'{name}: unpacked in {time.time() - t0:.0f} s')
-    stamp.write_text('')
+    stamp.write_text('\n'.join(members))
     return dest
 
 
@@ -201,13 +208,20 @@ def build_bin(out, llvm, sysroot):
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
 
 def runtime_lib(out, llvm, sysroot):
-    build = CHECK / 'rtlib'
-    shutil.rmtree(build, ignore_errors=True)
-    run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--version', mr.VERSION_TAG,
-         '--expected', ROOT / 'tools' / 'data' / mr.EXPECTED, '--toolchain', llvm, '--sysroot', sysroot,
-         '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja', '--out', build])
+    """The runtime library of each processor level into runtime/: libxc2rt.a (x86-64-v3) and libxc2rt-v2.a, which the
+    setup links on a processor without AVX2 (installer/steps.py cpu_runtime_lib; without it the setup refuses such a
+    processor). build_game.py --cpu v2 stops on any instruction above x86-64-v2 in its objects (check_runtime_isa).
+    Then the runtime headers, the install-side sources and the window icon. Returns the build folders."""
     rt = out / 'runtime'
-    shutil.copy2(build / 'libxc2rt.a', rt / 'libxc2rt.a')
+    builds = []
+    for cpu in build_game.CPU_LEVELS:
+        build = CHECK / ('rtlib' if cpu == 'v3' else f'rtlib-{cpu}')
+        shutil.rmtree(build, ignore_errors=True)
+        run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--cpu', cpu,
+             '--version', mr.VERSION_TAG, '--expected', ROOT / 'tools' / 'data' / mr.EXPECTED, '--toolchain', llvm,
+             '--sysroot', sysroot, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja', '--out', build])
+        shutil.copy2(build / build_game.lib_name(cpu), rt / build_game.lib_name(cpu))
+        builds.append(build)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -218,15 +232,15 @@ def runtime_lib(out, llvm, sysroot):
     with Image.open(ROOT / 'runtime' / 'xc2.ico') as ico:
         ico.size = max(ico.ico.sizes())
         ico.convert('RGBA').save(rt / 'xc2.png')
-    return build
+    return builds
 
 
-def used_sysroot_files(out, llvm, sysroot, rtlib_build):
-    """The sysroot files a game build reads: the headers of the runtime's compile (its .d files), of the install-side
-    sources and of hostcheck, and every library and object of a link (lld --trace) of the runtime library with the
+def used_sysroot_files(out, llvm, sysroot, rtlib_builds):
+    """The sysroot files a game build reads: the headers of the runtime's compiles (their .d files), of the install-side
+    sources and of hostcheck, and every library and object of a link (lld --trace) of each runtime library with the
     flags and libraries build_game.py uses, its references to the generated code left unresolved."""
     used = set()
-    for dep in rtlib_build.rglob('*.d'):
+    for dep in (d for build in rtlib_builds for d in build.rglob('*.d')):
         used.update(re.findall(r'\S+', dep.read_text(encoding='utf-8', errors='replace').replace('\\\n', ' ')))
     probe = CHECK / 'sysroot-probe'
     shutil.rmtree(probe, ignore_errors=True)
@@ -240,15 +254,16 @@ def used_sysroot_files(out, llvm, sysroot, rtlib_build):
                        capture_output=True)
         if (probe / f'{i}.d').is_file():
             used.update(re.findall(r'\S+', (probe / f'{i}.d').read_text().replace('\\\n', ' ')))
-    trace = subprocess.run([str(c) for c in [
-        llvm / 'bin' / 'clang', '--target=x86_64-linux-gnu', f'--sysroot={sysroot}', *build_game.LINK_FLAGS[:3],
-        '-Wl,--trace', '-Wl,--unresolved-symbols=ignore-all', '-Wl,--whole-archive', out / 'runtime' / 'libxc2rt.a',
-        '-Wl,--no-whole-archive', '-L', out / 'runtime' / 'deps' / 'lib',
-        *RELEASE_LIBS, '-o', probe / 'trace.out']],
-        capture_output=True, text=True)
-    if trace.returncode:
-        sys.exit(f'sysroot trace link failed:\n{trace.stderr[-3000:]}')
-    used.update(line.split('(')[0] for line in trace.stdout.splitlines())
+    for cpu in build_game.CPU_LEVELS:
+        trace = subprocess.run([str(c) for c in [
+            llvm / 'bin' / 'clang', '--target=x86_64-linux-gnu', f'--sysroot={sysroot}', *build_game.LINK_FLAGS[:3],
+            '-Wl,--trace', '-Wl,--unresolved-symbols=ignore-all', '-Wl,--whole-archive',
+            out / 'runtime' / build_game.lib_name(cpu), '-Wl,--no-whole-archive', '-L', out / 'runtime' / 'deps' / 'lib',
+            *RELEASE_LIBS, '-o', probe / 'trace.out']],
+            capture_output=True, text=True)
+        if trace.returncode:
+            sys.exit(f'sysroot trace link of {build_game.lib_name(cpu)} failed:\n{trace.stderr[-3000:]}')
+        used.update(line.split('(')[0] for line in trace.stdout.splitlines())
     root = str(sysroot.resolve())
     files = set()
     for p in used:
@@ -499,35 +514,50 @@ def check_bundle(out):
 
 
 def prove(out):
-    """Compile generated/v301 (3.0.1) and link xc2 with the folder's tools only, then run the probes beside it."""
+    """For each processor level, compile generated/v301 (3.0.1) and link xc2 with the folder's tools only, as the setup
+    does, then run the probes beside it. The v2 executable must also clear tools/check_isa.py: nothing above x86-64-v2
+    outside a function with a CPU check of its own, the sniper sysroot's static libraries (libvpx, libstdc++) included."""
     out = out.resolve()
+    failed = []
+    for cpu in build_game.CPU_LEVELS:
+        failed += [f'{cpu} {p}' for p in prove_level(out, cpu)]
+    if failed:
+        sys.exit(f'probes failed: {failed}')
+
+
+def prove_level(out, cpu):
+    """prove for one level (build_game.py --cpu) in build/release-linux-check/game (v3) or game-<level>; returns the
+    probes that failed."""
     gen = MAIN_ROOT / 'generated' / mr.VERSION_TAG
     ext = MAIN_ROOT / 'build' / 'extracted' / mr.VERSION_TAG
-    chk = CHECK / 'game'
+    chk = CHECK / ('game' if cpu == 'v3' else f'game-{cpu}')
     env = dict(os.environ, PATH=os.pathsep.join([str(out / 'llvm' / 'bin'), str(out / 'bin'), '/usr/bin', '/bin']))
+    py = out / 'python' / 'bin' / 'python3'
     t0 = time.time()
-    run([out / 'python' / 'bin' / 'python3', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm',
+    run([py, out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm', '--cpu', cpu,
          '--sysroot', out / 'llvm' / 'sysroot', '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
-         '--runtime-lib', out / 'runtime' / 'libxc2rt.a', '--ninja', out / 'bin' / 'ninja', '--version', mr.VERSION_TAG,
-         '--expected', ROOT / 'tools' / 'data' / mr.EXPECTED, '--gen', gen, '--out', chk,
+         '--runtime-lib', out / 'runtime' / build_game.lib_name(cpu), '--ninja', out / 'bin' / 'ninja',
+         '--version', mr.VERSION_TAG, '--expected', ROOT / 'tools' / 'data' / mr.EXPECTED, '--gen', gen, '--out', chk,
          '--exefs', ext / 'exefs', '--romfs', ext / 'romfs', '--profile', chk / 'profile'], env=env)
-    print(f'prove: build {time.time() - t0:.0f} s')
+    print(f'prove {cpu}: build {time.time() - t0:.0f} s')
+    if cpu != 'v3':
+        run([py, out / 'tools' / 'check_isa.py', chk / 'xc2', '--level', str(build_game.CPU_LEVELS[cpu]),
+             '--objdump', out / 'llvm' / 'bin' / 'llvm-objdump', '--json', chk / 'isa.json'], env=env)
     shutil.copy2(out / 'bin' / 'libSDL3.so.0', chk / 'libSDL3.so.0')
     needed = subprocess.run(['readelf', '-d', str(chk / 'xc2')], capture_output=True, text=True).stdout
-    print('prove: needs', ', '.join(re.findall(r'\[(lib[^\]]+)\]', needed)))
+    print(f'prove {cpu}: needs', ', '.join(re.findall(r'\[(lib[^\]]+)\]', needed)))
     glibc = sorted(set(re.findall(r'GLIBC_(\d+\.\d+)', subprocess.run(['readelf', '-V', str(chk / 'xc2')],
                                                                          capture_output=True, text=True).stdout)),
                    key=lambda v: tuple(map(int, v.split('.'))))
-    print(f'prove: newest glibc symbol version {glibc[-1] if glibc else "none"}')
+    print(f'prove {cpu}: newest glibc symbol version {glibc[-1] if glibc else "none"}')
     failed = []
     for probe in ['--selftest', *mr.PROBES]:
         r = subprocess.run([str(chk / 'xc2'), probe], cwd=chk, capture_output=True, text=True, timeout=900)
         tail = (r.stdout.strip().splitlines() or [''])[-1]
-        print(f'{probe}: exit {r.returncode}: {tail}')
+        print(f'{cpu} {probe}: exit {r.returncode}: {tail}')
         if r.returncode:
             failed.append(probe)
-    if failed:
-        sys.exit(f'probes failed: {failed}')
+    return failed
 
 
 def main():
@@ -547,8 +577,8 @@ def main():
     sysroot = full_sysroot()
     build_deps(out, llvm, sysroot)
     build_bin(out, llvm, sysroot)
-    rtlib = runtime_lib(out, llvm, sysroot)
-    build_sysroot(out, sysroot, used_sysroot_files(out, llvm, sysroot, rtlib))
+    rtlibs = runtime_lib(out, llvm, sysroot)
+    build_sysroot(out, sysroot, used_sysroot_files(out, llvm, sysroot, rtlibs))
     build_python(out, llvm, sysroot)
     mr.build_sources(out)
     collect_licenses(out, sysroot)
