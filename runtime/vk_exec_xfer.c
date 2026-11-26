@@ -47,7 +47,7 @@
 #include "vk.h"
 #include "vk_exec.h"
 
-enum { W_FORMAT, W_REGION, W_BUFFER, W_OVERLAP, W_COPY, W_CLEAR, W_QUERY, W_COUNT };
+enum { W_FORMAT, W_REGION, W_BUFFER, W_OVERLAP, W_COPY, W_CLEAR, W_QUERY, W_OQ_WRITE, W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -224,7 +224,11 @@ static void oq_flush(VkExec *ex) {
     ex->recorded++;
     for (uint32_t i = 0; i < oq_nw; i++) {
         VkMemSpan d;
-        if (!vk_mem_resolve(oq_w[i].addr, 8, &d) || d.avail < 8) continue;
+        if (!vk_mem_resolve(oq_w[i].addr, 8, &d) || d.avail < 8) {
+            warn_once(W_OQ_WRITE, "samples-passed report at %#llx is in no memory pool: the GPU does not write it",
+                      (unsigned long long)oq_w[i].addr);
+            continue;
+        }
         VK_MEM_PICK(d, 8);
         if (oq_w[i].q < 0) vkCmdFillBuffer(ex->cb, d.buffer, d.offset, 8, 0);
         else
