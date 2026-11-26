@@ -108,6 +108,7 @@ typedef struct VkExec {
                                          // or the last in-pass barrier
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled, fb_loaded;   // fb_sampled, fb_loaded: what feedback_scan found
+    uint32_t fb_gen;                     // vk_texture_slots_gen of that scan
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
     VkImage snap_of[8], snap[8];         // this draw's targets it reads itself and their copies (feedback_snapshot)
     uint32_t snap_img;                   // bit i: snap[i] may be bound as a storage image

@@ -1401,14 +1401,16 @@ static uint32_t feedback_scan_kind(VkExec *ex, const GfxShader *fs, int kind, ui
 }
 
 // Attachments of the open pass the fragment shader fs samples, and in *loaded the ones it reads as storage images; kept
-// while the shader, the texture and image bindings and the pass stay the same.
+// while the shader, the texture and image bindings, the pass and the slot generation stay the same (a slot registered
+// again may now name a target of the pass without a bind).
 static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs, uint32_t *loaded) {
-    if (ex->fb_fs != fs || ex->fb_serial != ex->tex_serial || ex->fb_pass != ex->pass_serial) {
+    uint32_t gen = vk_texture_slots_gen();   // before the scan, whose lookups may bump it
+    if (ex->fb_fs != fs || ex->fb_serial != ex->tex_serial || ex->fb_pass != ex->pass_serial || ex->fb_gen != gen) {
         uint32_t stored = 0;
         ex->fb_sampled = feedback_scan_kind(ex, fs, GFX_RES_TEX, &stored);
         ex->fb_loaded = feedback_scan_kind(ex, fs, GFX_RES_IMG, &stored);
         if (stored) warn_once(W_FB_STORE, "a draw stores into a target of its own pass through a storage image (slots %#x)", stored);
-        ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_pass = ex->pass_serial;
+        ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_pass = ex->pass_serial, ex->fb_gen = gen;
     }
     *loaded = ex->fb_loaded;
     return ex->fb_sampled;
