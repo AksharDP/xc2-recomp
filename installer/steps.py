@@ -364,8 +364,8 @@ class Check(Step):
             raise InstallError('check.lang_missing')
         if langs and lang not in langs:
             raise InstallError('check.lang_not_in_game', lang=lang, known=', '.join(langs))
-        if lang in ini.NEED_SHARED_FONTS:
-            ctx.reporter.warning('warn.lang_needs_fonts', lang=lang)
+        if lang in ini.FONTS_UNCHECKED:
+            ctx.reporter.warning('warn.lang_fonts_unchecked', lang=lang)
         ctx.lang, ctx.languages = lang, langs
 
     def dlc_files(self, ctx):

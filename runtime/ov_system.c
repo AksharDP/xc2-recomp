@@ -945,9 +945,11 @@ static void ov_location_updated(Cpu *c) {
 
 // ==== nn::pl shared fonts (shared_font.c). XCX asks for them only from its font loader, only with Simplified Chinese,
 // Korean or Traditional Chinese text, and only for type 0; tools/extract_fonts.py writes
-// them from the user's firmware. Each type is read on first use into guest-visible memory as the BFTTF file the pl
-// shared memory holds; Address is 8 bytes past the file start (after the BFTTF header) and Size the decoded font size,
-// as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
+// them from the user's firmware. XC2's main of the Americas and Europe release (3.0.1) imports no nn::pl function: it
+// draws Korean with menu/font/standard_kr.wifnt from bf2.arh, and runs in Korean to the opening without these files.
+// The overrides stay for the Japanese release, whose Chinese text is unchecked. Each type is read on first use into
+// guest-visible memory as the BFTTF file the pl shared memory holds; Address is 8 bytes past the file start (after the
+// BFTTF header) and Size the decoded font size, as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
 // Address/Size instead of a hang. XC2_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
 #define BFTTF_MAGIC 0x7f9a0218u
@@ -1000,7 +1002,7 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         snprintf(path, sizeof path, "%s/%s", ov_shared_font_dir(dir, sizeof dir), font_files[t]);
         FILE *f = fopen(path, "rb");
         if (!f)
-            rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (needed for Chinese and Korean text); run "
+            rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (the game asked for a Switch system font); run "
                      "tools/extract_fonts.py --firmware <firmware NCA dir> or set XC2_SHARED_FONTS", fn, (long long)t,
                      caller(c, lr, sizeof lr), path);
         plat_fseek64(f, 0, SEEK_END);

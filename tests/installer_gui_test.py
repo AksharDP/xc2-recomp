@@ -115,8 +115,8 @@ class ModelTest(unittest.TestCase):
         self.assertIn('C:\\t', m.need_text(Catalog('en')))
 
     def test_warnings_collect(self):
-        m = fold(START, {'type': 'warning', 'id': 'warn.lang_needs_fonts', 'params': {'lang': 'ko'}})
-        self.assertEqual(m.warnings, [('warn.lang_needs_fonts', {'lang': 'ko'})])
+        m = fold(START, {'type': 'warning', 'id': 'warn.lang_fonts_unchecked', 'params': {'lang': 'zh-CN'}})
+        self.assertEqual(m.warnings, [('warn.lang_fonts_unchecked', {'lang': 'zh-CN'})])
 
     def test_finish_without_end_event(self):
         m = fold(START, {'type': 'step', 'step': 'lift', 'state': 'started'})
@@ -153,7 +153,7 @@ class RunStatesTest(unittest.TestCase):
     FAILED = [START, {'type': 'step', 'step': 'check', 'state': 'started'}, {'type': 'step', 'step': 'check', 'state': 'done'},
               {'type': 'step', 'step': 'extract', 'state': 'started'},
               {'type': 'error', 'id': 'extract.romfs_mismatch', 'step': 'extract', 'params': {}},
-              {'type': 'warning', 'id': 'warn.lang_needs_fonts', 'params': {'lang': 'ko'}},
+              {'type': 'warning', 'id': 'warn.lang_fonts_unchecked', 'params': {'lang': 'zh-CN'}},
               {'type': 'end', 'result': 'failed', 'seconds': 1}]
 
     def test_ok_run_has_only_done_and_skipped_steps(self):
@@ -317,7 +317,12 @@ class CheckLanguageTest(unittest.TestCase):
             self.resolve('ko', state={'languages': self.JP})
 
     def test_fonts_warning_and_no_languages(self):
-        self.assertEqual(self.resolve('ko', self.US)[2], ['warn.lang_needs_fonts'])
+        # Korean draws with the game's own font (bf2.arh menu/font/standard_kr.wifnt); Chinese is unchecked
+        for code in self.US:
+            self.assertEqual(self.resolve(code, self.US)[2], [], code)
+        self.assertEqual(self.resolve('ja', self.JP)[2], [])
+        for code in ('zh-CN', 'zh-TW'):
+            self.assertEqual(self.resolve(code, self.JP)[2], ['warn.lang_fonts_unchecked'])
         self.assertEqual(self.resolve('de')[0], 'de')   # an install from before the languages were recorded
         with self.assertRaises(InstallError) as e:
             self.resolve(None)
@@ -691,8 +696,8 @@ class CatalogTest(unittest.TestCase):
 
     def test_codes_become_names(self):
         cat = Catalog('en')
-        self.assertIn('Korean', cat('warn.lang_needs_fonts', lang='ko'))
-        self.assertNotIn(' ko ', cat('warn.lang_needs_fonts', lang='ko'))
+        self.assertIn('Chinese (Traditional, Taiwan)', cat('warn.lang_fonts_unchecked', lang='zh-TW'))
+        self.assertNotIn('zh-TW', cat('warn.lang_fonts_unchecked', lang='zh-TW'))
         self.assertNotIn('extract', cat('state.output_changed', step='extract'))
         for word in ('base', 'update', 'keys'):
             self.assertIn(cat('param.input.' + word), cat('check.keys_wrong', input=word))

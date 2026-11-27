@@ -84,7 +84,7 @@
  "dlc.extract_failed": "無法擷取 {path} 中的新增內容。詳情請見 {log}",
  "compile.exe_in_use": "{path} 正在使用中。請關閉遊戲後再執行安裝程式。",
  "cleanup.ini_failed": "無法寫入 xc2.ini：{detail}",
- "warn.lang_needs_fonts": "顯示{lang}文字需要 Switch 系統共享字型，安裝程式不會自動擷取；若遊戲目錄缺少 shared-fonts，部分文字可能無法顯示。",
+ "warn.lang_fonts_unchecked": "{lang}文字尚未經過檢查。如果遊戲要求 Switch 系統共享字型（安裝程式不會自動擷取），遊戲會停止並指出缺少的字型。",
  "warn.npdm_differs": "main.npdm 與參考 {version} 版本轉儲有差異；僅使用程式碼模組。",
  "warn.cpu_v2": "此處理器不支援 AVX2，因此將為 x86-64-v2 處理器編譯遊戲。",
  "warn.arm64_emulated": "此系統為 Windows on Arm。遊戲將以 x86-64 程式的形式在 Windows 模擬環境中執行，而非原生 ARM64 應用程式。此組態未經測試，執行速度可能較慢。",
