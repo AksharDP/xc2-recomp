@@ -7,6 +7,12 @@ whose folder is missing leaves the game on a black screen (GitHub issue 107). Th
 Europe base has fr gb ge it sp and update 3.0.1 adds kr; the Japanese base has jp cn tw. No release has nl, pt or ru.
 The game knows no zh-Hans, zh-Hant or pt-BR (Switch codes newer than its SDK), so they are never offered.
 
+The NACP's supported-language flags are not the text: the Americas and Europe base (1.0.0) lists British English,
+French, German, Spanish and Italian, and update 3.0.1 adds Japanese, Korean and both Chinese, but its RomFS has no jp,
+cn or tw folder (only the cn and tw title logos, D-pad help images and fonts), so only the folders decide. Asked for ja,
+zh-CN or zh-TW, that release's game shows its English text (checked to the opening with XC2_GAME_LANGS unset), so
+offering them would only rename English.
+
 Sources, each giving the folders of the game as it runs:
   from_romfs(dir)                      an extracted or installed RomFS (romfs.bin and index.json)
   from_game(base, keys, update=None)   the game files read in place: the base RomFS, or with an update the RomFS that

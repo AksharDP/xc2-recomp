@@ -255,6 +255,27 @@ class IniTest(unittest.TestCase):
         codes = re.findall(r'"([^"]+)"', re.search(r'game_codes\[\] = \{([^}]+)\}', ov).group(1))
         self.assertEqual(sorted(codes), sorted(ini.LANGUAGES))
 
+    def test_each_release_offers_every_language_it_has_text_for(self):
+        # the bdat folders of bf2.arh (tools/xc2_languages.py): the Americas and Europe base, its update 3.0.1 (adds
+        # kr) and the Japanese base. The 3.0.1 NACP also lists ja and both Chinese, whose folders that release lacks.
+        import xc2_languages   # on the path through installer.ini
+        us_base = ['fr', 'gb', 'ge', 'it', 'sp']
+        self.assertEqual(xc2_languages.languages(us_base),
+                         ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419'])
+        self.assertEqual(xc2_languages.languages(us_base + ['kr']),
+                         ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'ko'])
+        self.assertEqual(xc2_languages.languages(['cn', 'jp', 'tw']), ['ja', 'zh-CN', 'zh-TW'])
+        self.assertEqual(xc2_languages.languages(['nl', 'pt', 'ru']), [])
+        self.assertEqual(set(xc2_languages.FOLDER.values()), {'gb', 'jp', 'fr', 'ge', 'it', 'sp', 'kr', 'cn', 'tw'})
+
+    def test_the_in_game_menu_names_every_text_folder(self):
+        # runtime/ui/menu.cpp row_game_lang: one entry per text folder; en-GB, fr-CA and es-419 show as their folder's
+        import xc2_languages   # on the path through installer.ini
+        menu = (ROOT / 'runtime' / 'ui' / 'menu.cpp').read_text(encoding='utf-8')
+        row = re.search(r'row_game_lang\(void\) \{(.*?)\};', menu, re.S).group(1)
+        codes = re.findall(r'\{"([^"]+)", UI_MENU_LANGNAME_', row)
+        self.assertEqual(sorted(xc2_languages.FOLDER[c] for c in codes), sorted(set(xc2_languages.FOLDER.values())))
+
     def test_game_langs_is_written_beside_lang(self):
         example = self.EXAMPLE + '# game_langs = en-US\n'
         out = ini.set_value(ini.set_language(example, 'ja'), 'game_langs', 'ja zh-CN zh-TW')
