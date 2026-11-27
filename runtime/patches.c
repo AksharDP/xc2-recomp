@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "host.h"
+#include "modcode_abi.h"
 
 #if __has_include("patches.h")
 #include "patches.h"
@@ -25,7 +26,13 @@
 #define RT_PATCH_COUNT 0
 #endif
 
-uint8_t rt_patch_on[RT_PATCH_COUNT > 0 ? RT_PATCH_COUNT : 1];   // read by the generated C at every patched site
+// The switches of the build's sets, then those of the mods' code (modcode.c), which is made at game start and has sets
+// the build lacks.
+enum { PATCH_MAX = 4096 };   // tools/mod_code.py MAX_SETS
+_Static_assert(RT_PATCH_COUNT < PATCH_MAX, "patch sets");
+uint8_t rt_patch_on[PATCH_MAX];   // read by the generated C at every patched site
+static const ModSet *added;   // the sets after the build's
+static int total = RT_PATCH_COUNT;
 
 #if RT_PATCH_COUNT
 static const struct { const char *name, *env; int on; } sets[] = {
@@ -56,23 +63,49 @@ void rt_patches_init(void) {
 #endif
 }
 
+int rt_patches_add(int first, const ModSet *s, int n) {
+    if (first != RT_PATCH_COUNT || total != RT_PATCH_COUNT || n < 0 || n > PATCH_MAX - RT_PATCH_COUNT) return 0;
+    added = s;
+    for (int i = 0; i < n; i++) {
+        const char *e = cfg_get(s[i].env);
+        rt_patch_on[first + i] = (uint8_t)(e && *e ? strcmp(e, "0") != 0 : s[i].on);
+    }
+    total = first + n;
+    return 1;
+}
+
 int rt_patch_set(const char *name) {
 #if RT_PATCH_COUNT
     for (int i = 0; i < RT_PATCH_COUNT; i++)
         if (!strcmp(sets[i].name, name)) return i;
 #endif
-    (void)name;
+    for (int i = RT_PATCH_COUNT; i < total; i++)
+        if (!strcmp(added[i - RT_PATCH_COUNT].name, name)) return i;
     return -1;
 }
 
-int rt_patch_enabled(int set) { return set >= 0 && set < RT_PATCH_COUNT && rt_patch_on[set]; }
+int rt_patch_enabled(int set) { return set >= 0 && set < total && rt_patch_on[set]; }
 
 void rt_patch_disable(int set) {
-    if (set >= 0 && set < RT_PATCH_COUNT) rt_patch_on[set] = 0;
+    if (set >= 0 && set < total) rt_patch_on[set] = 0;
 }
 
+// A held set stays off: a mod's ExeFS patch replaces it (mods.c mods_exefs_switch), and the port's own switches made
+// later at start (resolution.c res_init and the like) must not turn it back on, or its sites, earlier in the patch file,
+// would win over the mod's at the addresses both patch.
+static uint8_t held[PATCH_MAX];
+
+void rt_patch_hold(int set) {
+    if (set < 0 || set >= total) return;
+    held[set] = 1;
+    __atomic_store_n(&rt_patch_on[set], 0, __ATOMIC_RELAXED);
+}
+
+int rt_patch_held(int set) { return set >= 0 && set < total && held[set]; }
+
 void rt_patch_switch(int set, int on) {
-    if (set >= 0 && set < RT_PATCH_COUNT) __atomic_store_n(&rt_patch_on[set], (uint8_t)(on != 0), __ATOMIC_RELAXED);
+    if (set < 0 || set >= total || (on && held[set])) return;
+    __atomic_store_n(&rt_patch_on[set], (uint8_t)(on != 0), __ATOMIC_RELAXED);
 }
 
 void *rt_patch_page(void) {

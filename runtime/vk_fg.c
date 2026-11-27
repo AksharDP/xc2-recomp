@@ -18,6 +18,11 @@
 // The upscaler runs on the tone-mapped picture at the game's output size, so the HUD-less picture is only the same size
 // as the swapchain when output_res matches the window; otherwise this module scales it into one of its own images first
 // (a blit, for UI extraction only).
+//
+// Where that library cannot run (Linux has none, some GPUs have fewer than four queues) or XC2_FSR_BUILTIN=1 says so (a
+// test), FSR 3's interpolation built into the game (vk_ffx.cpp) takes its place on our own swapchain: the present records
+// it into its command buffer (vk_fg_generate) and presents the generated picture and the game's, spaced by vk_backend.c.
+// It works on the game's picture before that is scaled into the window, so the HUD-less picture always has its size.
 #include "vk.h"
 
 #include <stdbool.h>
@@ -27,6 +32,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "vk_ffx.h"
 
 #ifndef _WIN32
 #define __declspec(x)
@@ -41,9 +47,12 @@ typedef struct VkQueueInfoFFXAPI VkQueueInfoFFXAPI;
 
 #define FFX_LOADER "amd_fidelityfx_loader_vk.dll"   // loads amd_fidelityfx_framegeneration_vk.dll for this effect
 #define MAX_IMAGES 16
+#define STALE_PRESENTS 4   // as many as the library can hold back, and one
+#define MAX_QUEUES 8   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
 
 static struct {
     int tried, ok, failed, on;
+    uint64_t made_ns;              // when the library last got a frame to generate from
     void *lib;
     PfnFfxCreateContext create;
     PfnFfxDestroyContext destroy;
@@ -61,6 +70,8 @@ static struct {
     uint32_t w, h;                 // display size
     VkFormat fmt;
     uint64_t frame_id;
+    uint64_t first_id;             // frame_id when the swapchain context was made
+    int stale;                     // presents since a rebuild whose result may be the old swapchain's (vk_fg_present)
     // the HUD-less picture at display size, one per frame parity, and its views
     VkImage hudless[2];
     VmaAllocation hudless_alloc[2];
@@ -77,6 +88,15 @@ static struct ffxCreateContextDescFrameGenerationVersion g_fg_version;
 static struct ffxCreateContextDescFrameGeneration g_fg_desc;
 static struct ffxCreateContextDescFrameGenerationSwapChainVK g_sc_desc;
 static struct ffxCreateContextDescFrameGenerationSwapChainVersionVK g_sc_version;
+
+// The built-in interpolation's state, on the present thread (g_pl of gfx_present.c held)
+static struct {
+    int asked, usable;             // vk_ffx_usable's answer
+    int failed;
+    int no_room;                   // the window's surface has no swapchain image to spare for the generated picture
+    int gap;                       // the last frame had nothing to interpolate from: the next one starts over
+    uint64_t shown, pair_ns;       // presents that went out, and when the last picture was generated
+} O;
 
 static void warn_once(int bit, const char *what) {
     if (G.warned[bit]) return;
@@ -106,18 +126,27 @@ static struct FfxApiResource resource(VkImage img, uint32_t fmt, uint32_t w, uin
                                                    .height = h, .depth = 1, .mipCount = 1, .usage = usage}};
 }
 
-static int init(void) {
-    G.tried = 1;
-    char path[1024];
-    if (!plat_exe_path(path, sizeof path - sizeof FFX_LOADER)) return 0;
+// The loader's path next to the executable; 0 when that is unknown.
+static int loader_path(char *path, size_t size) {
+    if (!plat_exe_path(path, size - sizeof FFX_LOADER)) return 0;
     char *end = strrchr(path, '/'), *back = strrchr(path, '\\');
     if (back > end) end = back;
     if (!end) return 0;
-    snprintf(end + 1, sizeof path - (size_t)(end + 1 - path), "%s", FFX_LOADER);
+    snprintf(end + 1, size - (size_t)(end + 1 - path), "%s", FFX_LOADER);
+    return 1;
+}
+
+static int init(void) {
+    G.tried = 1;
+    char path[1024];
+    G.failed = 1;   // until it is known to be there
+#ifndef _WIN32
+    return 0;   // a Windows DLL
+#endif
+    if (!loader_path(path, sizeof path)) return 0;
     G.lib = plat_lib_open(path);
     if (!G.lib) {
-        rt_log("vk: frame generation off: " FFX_LOADER " is not next to the executable");
-        G.failed = 1;
+        rt_log("vk: frame generation: " FFX_LOADER " is not next to the executable");
         return 0;
     }
     G.create = (PfnFfxCreateContext)plat_lib_sym(G.lib, "ffxCreateContext");
@@ -126,17 +155,19 @@ static int init(void) {
     G.query = (PfnFfxQuery)plat_lib_sym(G.lib, "ffxQuery");
     G.configure = (PfnFfxConfigure)plat_lib_sym(G.lib, "ffxConfigure");
     if (!G.create || !G.destroy || !G.dispatch || !G.query || !G.configure) {
-        rt_log("vk: frame generation off: %s lacks an ffx entry point", path);
-        G.failed = 1;
+        rt_log("vk: frame generation: %s lacks an ffx entry point", path);
+        plat_lib_close(G.lib);
+        G.lib = NULL;
         return 0;
     }
+    G.failed = 0;
     return G.ok = 1;
 }
 
 // On: the setting is on, the library loaded, and the inputs frame generation needs exist (the upscaler's resolve hook).
 int vk_fg_wanted(void) {
     if (!cfg_bool("XC2_FRAME_GEN")) return 0;
-    if (G.failed) return 0;
+    if (G.failed || cfg_bool("XC2_FSR_BUILTIN") || vk_fsr3_state() != VK_FSR_OK) return 0;
     if (!G.tried && !init()) return 0;
     if (!G.ok) return 0;
     if (!cfg_bool("XC2_FSR3")) {
@@ -153,21 +184,27 @@ int vk_fg_active(void) { return G.on; }
 static uint64_t g_shown_t0;
 
 // Frames a second reaching the screen over the last half second, drawn and generated together, from the library's
-// present count. Negative while frame generation is off. On the present thread, once a frame, like vk_fg_frame and
-// vk_fg_shutdown.
+// present count or ours. Negative while frame generation is off or generates nothing. On the present thread, once a
+// frame, like vk_fg_frame and vk_fg_shutdown.
 float vk_fg_shown_fps(uint64_t now_ns) {
     static uint64_t shown0;
     static float rate;
-    if (!G.on || !G.sc_count || !G.swapchain) {
+    int lib = G.on && G.sc_count && G.swapchain, own = !lib && O.pair_ns && now_ns - O.pair_ns < 500000000ull;
+    if (!lib && !own) {
         g_shown_t0 = 0;
         rate = 0;
         return -1;
     }
     if (g_shown_t0 && now_ns - g_shown_t0 < 500000000ull) return rate;
-    uint64_t shown = G.sc_count(G.swapchain);
+    uint64_t shown = lib ? G.sc_count(G.swapchain) : O.shown;
     if (g_shown_t0) rate = (float)((shown - shown0) * 1e9 / (double)(now_ns - g_shown_t0));
     g_shown_t0 = now_ns, shown0 = shown;
     return rate;
+}
+
+int vk_fg_running(void) {
+    uint64_t now = kern_now_ns(), made = G.on ? G.made_ns : O.pair_ns;
+    return made && now - made < 500000000ull;
 }
 
 static void free_hudless(VkCtx *c) {
@@ -185,7 +222,8 @@ static int make_hudless(VkCtx *c) {
                                 .format = G.fmt, .extent = {G.w, G.h, 1}, .mipLevels = 1, .arrayLayers = 1,
                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                 .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                                         VK_IMAGE_USAGE_STORAGE_BIT};
+                                         VK_IMAGE_USAGE_STORAGE_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT};   // the library copies from it
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (vmaCreateImage(c->vma, &ci, &ai, &G.hudless[i], &G.hudless_alloc[i], NULL) != VK_SUCCESS) {
             G.hudless[i] = VK_NULL_HANDLE;
@@ -196,26 +234,35 @@ static int make_hudless(VkCtx *c) {
     return 1;
 }
 
+// What a frame generation context is made from; desc is the head of the chain.
+static void describe_fg(VkCtx *c, struct ffxCreateBackendVKDesc *backend,
+                        struct ffxCreateContextDescFrameGenerationVersion *version,
+                        struct ffxCreateContextDescFrameGeneration *desc, uint32_t w, uint32_t h, VkFormat fmt) {
+    memset(backend, 0, sizeof *backend);
+    backend->header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
+    backend->deviceContext.vkDevice = c->device;
+    backend->deviceContext.vkPhysicalDevice = c->phys;
+    backend->deviceContext.vkDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetDeviceProcAddr;
+    memset(version, 0, sizeof *version);
+    version->header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION;
+    version->version = FFX_FRAMEGENERATION_VERSION;
+    memset(desc, 0, sizeof *desc);
+    desc->header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
+    desc->header.pNext = &version->header;
+    version->header.pNext = &backend->header;
+    desc->flags = 0;
+    desc->displaySize = (struct FfxApiDimensions2D){w, h};
+    desc->maxRenderSize = (struct FfxApiDimensions2D){w, h};
+    desc->backBufferFormat = ffx_format(fmt);
+}
+
 // The frame generation context: it interpolates and presents, and it is what we configure and prepare each frame.
 static int make_fg_context(VkCtx *c, uint32_t w, uint32_t h, VkFormat fmt) {
     if (G.fg) return 1;
-    memset(&g_backend, 0, sizeof g_backend);
-    g_backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
-    g_backend.deviceContext.vkDevice = c->device;
-    g_backend.deviceContext.vkPhysicalDevice = c->phys;
-    g_backend.deviceContext.vkDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetDeviceProcAddr;
-    memset(&g_fg_version, 0, sizeof g_fg_version);
-    g_fg_version.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION;
-    g_fg_version.version = FFX_FRAMEGENERATION_VERSION;
-    memset(&g_fg_desc, 0, sizeof g_fg_desc);
-    g_fg_desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
-    g_fg_desc.header.pNext = &g_fg_version.header;
-    g_fg_version.header.pNext = &g_backend.header;
-    g_fg_desc.flags = 0;
-    g_fg_desc.displaySize = (struct FfxApiDimensions2D){w, h};
-    g_fg_desc.maxRenderSize = (struct FfxApiDimensions2D){w, h};
-    g_fg_desc.backBufferFormat = ffx_format(fmt);
+    vk_fsr3_lib_lock();
+    describe_fg(c, &g_backend, &g_fg_version, &g_fg_desc, w, h, fmt);
     ffxReturnCode_t r = G.create(&G.fg, &g_fg_desc.header, NULL);
+    vk_fsr3_lib_unlock();
     if (r != FFX_API_RETURN_OK) {
         rt_log("vk: frame generation off: ffxCreateContext (frame generation) returned %u", r);
         G.fg = NULL;
@@ -224,12 +271,8 @@ static int make_fg_context(VkCtx *c, uint32_t w, uint32_t h, VkFormat fmt) {
     return 1;
 }
 
-// The library requires four distinct queues (FrameInterpolationSwapchainVK::init refuses anything else): the game's queue,
-// one for presenting, one for its async compute and one for image acquisition. They come from the graphics family's spare
-// queues, then a compute-only family's and a transfer-only one; without four distinct ones frame generation stays off.
-static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fam[4]) {
-    VkQueue pool[8];   // at most 4 graphics, 3 compute and 1 transfer (vk_device.c create_device)
-    uint32_t fpool[8];
+// The distinct queues of the device that vk_device.c create_device made; returns how many.
+static int queue_pool(VkCtx *c, VkQueue pool[MAX_QUEUES], uint32_t fpool[MAX_QUEUES]) {
     int n = 0;
     pool[n] = c->gfx_queue, fpool[n++] = c->gfx_family;
     for (uint32_t i = 1; i < c->gfx_queue_count; i++) {
@@ -241,6 +284,16 @@ static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fa
         fpool[n++] = c->comp_family;
     }
     if (!c->xfer_shared && c->xfer_queue) pool[n] = c->xfer_queue, fpool[n++] = c->xfer_family;
+    return n;
+}
+
+// The library requires four distinct queues (FrameInterpolationSwapchainVK::init refuses anything else): the game's queue,
+// one for presenting, one for its async compute and one for image acquisition. They come from the graphics family's spare
+// queues, then a compute-only family's and a transfer-only one; without four distinct ones frame generation stays off.
+static int pick_queues(VkCtx *c, VkSurfaceKHR surface, VkQueue q[4], uint32_t fam[4]) {
+    VkQueue pool[MAX_QUEUES];
+    uint32_t fpool[MAX_QUEUES];
+    int n = queue_pool(c, pool, fpool);
     if (n < 4) {
         rt_log("vk: frame generation off: this device offers %d distinct queues, its swapchain needs 4", n);
         return 0;
@@ -322,7 +375,9 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         g_sc_desc.asyncComputeQueue = (VkQueueInfoFFXAPI){q[2], fam[2], NULL};
         g_sc_desc.presentQueue = (VkQueueInfoFFXAPI){q[1], fam[1], NULL};
         g_sc_desc.imageAcquireQueue = (VkQueueInfoFFXAPI){q[3], fam[3], NULL};
+        vk_fsr3_lib_lock();
         ffxReturnCode_t r = G.create(&G.sc, &g_sc_desc.header, NULL);
+        vk_fsr3_lib_unlock();
         if (r != FFX_API_RETURN_OK) {
             rt_log("vk: frame generation off: the swapchain context could not be created (%u)", r);
             G.sc = NULL;
@@ -351,6 +406,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
             return -1;
         }
         G.swapchain = *sc;
+        G.first_id = G.frame_id;
         G.on = 1;
         rt_log("vk: frame generation on: %ux%u, %s", G.w, G.h,
                "FSR Frame Generation (3.1.7 analytical on this hardware, 4.0.2 ML on Radeon RX 9000)");
@@ -371,6 +427,7 @@ int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) 
         return -1;
     }
     G.swapchain = *sc;
+    G.stale = STALE_PRESENTS;
     g_shown_t0 = 0;
     G.w = ci->imageExtent.width;
     G.h = ci->imageExtent.height;
@@ -413,6 +470,13 @@ VkResult vk_fg_present(VkQueue q, const VkPresentInfoKHR *pi) {
         trace("present in");
         VkResult r = G.sc_present(q, pi);
         trace("present out");
+        // The library answers with the result of the last present its own thread made. After a rebuild that is still one
+        // to the old swapchain, out of date: it would rebuild the new one at once. A swapchain that is out of date itself
+        // says so again after these.
+        if (G.stale) {
+            G.stale--;
+            if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) r = VK_SUCCESS;
+        }
         return r;
     }
     return vkQueuePresentKHR(q, pi);
@@ -428,7 +492,7 @@ void vk_fg_shutdown(VkCtx *c) {
     fg_drain();
     if (G.sc_count && G.swapchain)
         rt_log("vk: frame generation presented %llu frames for %llu drawn", (unsigned long long)G.sc_count(G.swapchain),
-               (unsigned long long)G.frame_id);
+               (unsigned long long)(G.frame_id - G.first_id));
     G.destroy(&G.sc, NULL);
     G.sc = NULL;
     G.on = 0;
@@ -564,11 +628,122 @@ int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int re
         warn_once(2, "its prepare dispatch failed");
         return 0;
     }
+    G.made_ns = kern_now_ns();
     return 1;
+}
+
+// ---------------------------------------------------------------- the built-in interpolation
+static int own_usable(VkCtx *c) {
+    if (!O.asked) {
+        const char *why;
+        O.asked = 1;
+        O.usable = vk_ffx_usable(c, &why);
+        if (!O.usable) rt_log("vk: the built-in frame generation does not run here: the device lacks %s", why);
+    }
+    return O.usable;
+}
+
+int vk_fg_own_wanted(VkCtx *c) {
+    if (!cfg_bool("XC2_FRAME_GEN") || !cfg_bool("XC2_FSR3") || O.failed || vk_fg_wanted() ||
+        vk_fsr3_state() != VK_FSR_OK)
+        return 0;
+    return own_usable(c);
+}
+
+// AMD's frame generation loads here: its library gives a context of the effect, and there are the queues its swapchain
+// needs. On the check's own thread (vk_fsr3.c check_main), so nothing of G is touched.
+static int check_lib(VkCtx *c) {
+    VkQueue pool[MAX_QUEUES];
+    uint32_t fpool[MAX_QUEUES];
+    char path[1024];
+    if (!(vk_fsr3_libraries() & 1) || queue_pool(c, pool, fpool) < 4 || !loader_path(path, sizeof path)) return 0;
+    void *lib = plat_lib_open(path);
+    PfnFfxCreateContext create = lib ? (PfnFfxCreateContext)plat_lib_sym(lib, "ffxCreateContext") : NULL;
+    PfnFfxDestroyContext destroy = lib ? (PfnFfxDestroyContext)plat_lib_sym(lib, "ffxDestroyContext") : NULL;
+    if (!create || !destroy || !plat_lib_sym(lib, "ffxDispatch") || !plat_lib_sym(lib, "ffxQuery") ||
+        !plat_lib_sym(lib, "ffxConfigure")) {   // as init
+        if (lib) plat_lib_close(lib);
+        return 0;
+    }
+    struct ffxCreateBackendVKDesc backend = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK}};
+    struct ffxCreateContextDescFrameGenerationVersion version;
+    struct ffxCreateContextDescFrameGeneration desc;
+    ffxContext x = NULL;
+    vk_fsr3_lib_lock();
+    describe_fg(c, &backend, &version, &desc, 640, 360, VK_FORMAT_B8G8R8A8_UNORM);
+    ffxReturnCode_t r = create(&x, &desc.header, NULL);
+    vk_fsr3_lib_unlock();
+    if (r != FFX_API_RETURN_OK) return 0;
+    vk_queue_lock();   // the library may wait for the device when a context goes
+    vk_fsr3_lib_lock();
+    destroy(&x, NULL);
+    vk_fsr3_lib_unlock();
+    vk_queue_unlock();
+    return 1;
+}
+
+int vk_fg_check(VkCtx *c, int running) {
+    const char *why;
+    return (running || check_lib(c)) | (vk_ffx_usable(c, &why) && vk_ffx_fg_check(c)) << 1;
+}
+
+int vk_fg_loads(int check) { return (check & 1 && !G.failed) || (check & 2 && !O.failed && !O.no_room); }
+
+void vk_fg_own_room(int room) { O.no_room = !room; }
+
+void vk_fg_own_lost(void) {
+    vk_ffx_fg_lost();
+    O.gap = 1;
+}
+
+void vk_fg_own_release(void) {
+    vk_ffx_fg_destroy();
+    O.gap = 1;
+    O.pair_ns = 0;
+}
+
+void vk_fg_count_present(void) { O.shown++; }
+
+VkImage vk_fg_generate(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, VkImage win, VkFormat fmt, int w, int h) {
+    // The interpolation finds the HUD by comparing the window texture with the picture before it, texel by texel
+    int have = fr && fr->valid && fr->fresh && fr->ow == (uint32_t)w && fr->oh == (uint32_t)h &&
+               (fmt == VK_FORMAT_R8G8B8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_UNORM);
+    if (fr && fr->valid && fr->fresh && !have) {
+        static int logged;
+        if (!logged++) rt_log("vk: frame generation waits: the window texture is %dx%d (format %d), the scene %ux%u", w, h,
+                              (int)fmt, fr->ow, fr->oh);
+    }
+    int reset = O.gap;
+    O.gap = !have;
+    if (!have || O.failed) return VK_NULL_HANDLE;
+    if (!vk_ffx_fg_fits(fr->ow, fr->oh, fr->rw, fr->rh)) {
+        uint32_t rw = fr->rw > fr->ow ? fr->rw : fr->ow, rh = fr->rh > fr->oh ? fr->rh : fr->oh;
+        vk_queue_lock();
+        vkDeviceWaitIdle(c->device);
+        int ok = vk_ffx_fg_create(c, fr->ow, fr->oh, rw, rh);
+        vk_queue_unlock();
+        if (!ok) {
+            rt_log("vk: frame generation off: the built-in interpolation could not be set up");
+            O.failed = 1;
+            return VK_NULL_HANDLE;
+        }
+        rt_log("vk: frame generation presents two pictures per frame: set fps_limit to about half the display rate");
+        reset = 1;
+    }
+    VkImage gen = vk_ffx_fg_record(cb, fr, win, fmt, reset);
+    if (!gen) {
+        O.failed = 1;
+        return VK_NULL_HANDLE;
+    }
+    if (reset) return VK_NULL_HANDLE;   // nothing to interpolate from yet: the result is this frame
+    O.pair_ns = kern_now_ns();
+    return gen;
 }
 
 void vk_fg_release(VkCtx *c) {
     if (!c) return;
     if (G.tried) vk_fg_shutdown(c);
+    vk_ffx_fg_destroy();
     memset(&G, 0, sizeof G);
+    memset(&O, 0, sizeof O);
 }

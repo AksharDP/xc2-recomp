@@ -23,6 +23,8 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "cpu_level.h"
+#include "fnhook.h"
 #include "host.h"
 #include "replay.h"
 #include "platform/platform.h"
@@ -33,6 +35,9 @@
 #include "sha256.h"
 
 #define MAX_MODULES 16
+
+// The x86-64 level this runtime is compiled for (cpu_level.h); runtime/cpu_check.c references it.
+const int RT_CPU_MARK(XC2_CPU_LEVEL) = XC2_CPU_LEVEL;
 
 // ---- logging, tracing, hashing
 unsigned rt_trace;
@@ -376,10 +381,9 @@ static volatile int host_probe_hits;
 static void host_probe(Cpu *c) { host_probe_hits++; c->x[0] = 42; }
 
 static void check_cpu(void) {
-    __builtin_cpu_init();
-    int ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2");
-    printf("cpu: x86-64-v3 (AVX2, FMA, BMI2) %s\n", ok ? "present" : "MISSING");
-    CHECK(ok, "the lifted code is built for x86-64-v3");
+    int have = cpu_level_host();
+    printf("cpu: build x86-64-v%d, processor x86-64-v%d\n", XC2_CPU_LEVEL, have);
+    CHECK(have >= XC2_CPU_LEVEL, "the build is compiled for x86-64-v%d", XC2_CPU_LEVEL);
 }
 
 // Layout: ascending, no overlap, below 2^39, and inside the window mem_init reserved.
@@ -525,6 +529,17 @@ static int selftest(void) {
           "a registered host function does not dispatch through rt_call");
     CHECK(!rt_dispatch_lookup(probe + 16), "an unregistered host-function address dispatches");
     CHECK(rt_dispatch_lookup(RT_RET_HOST), "the rt_call return sentinel is not registered");
+    // a hooked function's every site runs the replacement: here its own entry's, through the dispatcher
+    long sites = fnhook_sites();
+    CHECK(sites >= (long)s.functions && fnhook_probe(), "FN_ENTER sites: %ld for %llu functions, or one is not a no-op",
+          sites, (unsigned long long)s.functions);
+    uint64_t target = mods[0].addrs[mods[0].count / 2];
+    int hits = host_probe_hits;
+    fnhook_replace(target, host_probe);
+    int written = fnhook_install();
+    r = rt_call(c, target, 1, (uint64_t)7);
+    CHECK(written > 0 && r == 42 && host_probe_hits == hits + 1, "a hooked function does not run its replacement");
+    printf("fnhook: %ld sites, %d written for %#llx\n", sites, written, (unsigned long long)target);
     plat_aligned_free(c);
     bench(mods, n);
 

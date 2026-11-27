@@ -53,9 +53,20 @@ from MSYS2. The libraries and headers MSYS2 supplies (Vulkan, SDL3, Opus, libvpx
 (default toolchain/deps-mingw: include/, lib/ with the import libraries and libvpx.a, bin/ with the DLLs), and the C++
 runtime is libc++ from llvm-mingw. Such a build never reuses another build's generated objects.
 
-Split build. --make-runtime-lib compiles only runtime/ into <out>/libxc2rt.a (what CI prebuilds). --runtime-lib PATH
-then compiles only the generated C and the install-time files (modules.c and INSTALL_SIDE, which bake the player's
-game hashes and version in) and links them with that library. The library holds no game-derived data.
+Split build. --make-runtime-lib compiles only runtime/ into <out>/libxc2rt.a (libxc2rt-v2.a with --cpu v2; what CI
+prebuilds). --runtime-lib PATH then compiles only the generated C and the install-time files (modules.c and
+INSTALL_SIDE, which bake the player's game hashes and version in) and links them with that library. The library holds
+no game-derived data.
+
+Processor level. --cpu v3 (default) compiles the generated C and the runtime with -march=x86-64-v3 (AVX2, FMA, BMI2);
+--cpu v2 with -march=x86-64-v2 (SSE4.2, POPCNT), for processors without AVX2 (runtime/cpu_level.h). The level is part of
+the flags, so the object cache, the LTO cache and the main build's objects of one level never stand in for the other.
+A prebuilt --runtime-lib must be of the same level: runtime/cpu_check.c references the runtime's mark of its own
+level, so a library of the other level fails the link with an undefined rt_cpu_level_v2 or rt_cpu_level_v3. With
+--cpu v2, tools/check_isa.py reads every runtime object before the link or the archive and stops the build on an
+instruction above x86-64-v2 (check_runtime_isa). The mods' code (tools/mod_code.py) is compiled for the same level:
+build-cache/mod-base/cpu-level.txt records it and the key in the exe (rt_mod_abi, tools/mod_abi.py) holds it, so the
+game does not load a mod library of the other level.
 
 Standard library only.
 """
@@ -73,6 +84,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import mod_abi
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
@@ -103,8 +115,14 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 # faster in camera turns and in still play (interleaved pairs, 2026-11-13), and a 40k-line function file peaks at the same
 # 206 MiB of compile memory at either level. -march for the FP/SIMD lowering.
 GEN_FLAGS = ['-O2', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
-             '-march=x86-64-v3']
+             '-march=x86-64-v3', '-DRT_FN_HOOKS=1']   # RT_FN_HOOKS: runtime/cpu.h FN_ENTER
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
+# --cpu: the x86-64 level of the generated C and the runtime (runtime/cpu_level.h)
+CPU_LEVELS = {'v3': 3, 'v2': 2}
+CPU = 'v3'   # the level of this build (use_cpu)
+# The start-up check that the processor has the build's level is compiled for any x86-64 processor: the -march after
+# the build's own wins
+BASELINE_FILES = {'cpu_check.c': '-march=x86-64'}
 if WIN:
     LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '"-Wl,--Map=$builddir/xc2.map"']   # the map feeds tools/prof_report.py
     LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
@@ -116,6 +134,42 @@ else:
                   '"-Wl,-Map=$builddir/xc2.map"']
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
+
+
+def use_cpu(level):
+    """-march=x86-64-v<level> for the generated C and the runtime, and XC2_CPU_LEVEL for runtime/cpu_level.h. Level 2
+    keeps the lifted code free of AVX: its FP fused multiply-adds call runtime/fma.c, whose software implementation
+    rounds once and honors the guest's FTZ/DAZ state. The C library's fallback disagrees on some operands."""
+    global GEN_FLAGS, RT_FLAGS, CPU
+    CPU = level
+    march = f'-march=x86-64-v{CPU_LEVELS[level]}'
+    GEN_FLAGS = [march if f.startswith('-march=') else f for f in GEN_FLAGS]
+    RT_FLAGS = [march if f.startswith('-march=') else f for f in RT_FLAGS] + [f'-DXC2_CPU_LEVEL={CPU_LEVELS[level]}']
+
+
+def check_runtime_isa(objects):
+    """--cpu v2: stop the build when a runtime object holds an instruction above x86-64-v2, or of an extension outside the
+    levels (AES, SHA, RDRAND), outside a function with a CPU check of its own (tools/check_isa.py DISPATCHED). -march keeps the compiler's code inside the level, but inline
+    assembly and target attributes pass through it: runtime/kernel.c kern_ap_stub saved YMM registers in every build
+    until it got its v2 form. The generated objects are LTO bitcode, which only the linked executable shows in machine
+    code; tools/check_isa.py reads that one."""
+    import check_isa
+    names = ['llvm-objdump.exe', 'objdump.exe'] if WIN else ['llvm-objdump', 'objdump']
+    dirs = [d for d in (TOOLCHAIN_BIN, UCRT if WIN else None) if d]
+    objdump = next((str(d / n) for d in dirs for n in names if (d / n).is_file()), None) or check_isa.find_objdump(None)
+    if not objdump:
+        sys.exit('build_game: --cpu v2 needs llvm-objdump or objdump to check the runtime objects (tools/check_isa.py)')
+    objects = [o for o in objects if o.suffix == '.o']
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
+        results = list(pool.map(lambda o: (o, check_isa.scan(objdump, o, 2)[0]), objects))
+    bad = []
+    for o, found in results:
+        for (fn, _), counts in found.items():
+            if not check_isa.dispatched(fn):   # check_isa.scan counts 'above' and 'optional' instructions alone
+                bad.append(f'{below_root(o)}: {fn}: {", ".join(sorted({mn for _, mn in counts})[:6])}')
+    if bad:
+        sys.exit('build_game: instructions above x86-64-v2 in the runtime (tools/check_isa.py):\n  ' + '\n  '.join(bad[:40]))
+    print(f'check_isa: {len(objects)} runtime objects hold nothing above x86-64-v2', flush=True)
 
 
 def use_lto(jobs):
@@ -209,9 +263,16 @@ LLVM_LINK_LIBS = ['-lpsapi', '-lbcrypt', '-luser32', '-lgdi32', '-ldwmapi', '-lw
 DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h; patches.c, ov_zstd.c and
 # ov_inflate.c include the patches.h of the player's game version (its patch page is the page after that version's
-# main; the host functions of ov_zstd.c and ov_inflate.c sit on it).
-INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'ov_inflate.c'}
-LIB_NAME = 'libxc2rt.a'
+# main; the host functions of ov_zstd.c and ov_inflate.c sit on it); cpu_check.c takes the install's processor level
+# and checks that the library is of the same one.
+INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'ov_inflate.c', 'cpu_check.c'}
+LIB_NAME = 'libxc2rt.a'   # --cpu v2: libxc2rt-v2.a (lib_name), so both levels' libraries can sit side by side
+
+
+def lib_name(level):
+    return LIB_NAME if level == 'v3' else f'libxc2rt-{level}.a'
+
+
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
 WINDRES = UCRT / 'windres.exe'   # runtime/xc2.rc: the manifest of xc2.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
@@ -358,9 +419,36 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version, title_id, name=None):
+def mod_base(gen, out):
+    """<out>/build-cache/mod-base: what the mods' code needs of this lift and this build (tools/mod_abi.py), the x86-64
+    level (use_cpu) among it, so tools/mod_code.py compiles the mods' code for the processors this exe runs on. A lift
+    from before patches.txt existed has no mod code: its key is empty."""
+    base = out / 'build-cache' / 'mod-base'
+    table, folded = gen / 'patches.txt', gen / 'main' / 'folded.txt'
+    if not (table.is_file() and folded.is_file()):
+        shutil.rmtree(base, ignore_errors=True)
+        return ''
+    base.mkdir(parents=True, exist_ok=True)
+    write_if_changed(base / 'patches.txt', table.read_text())
+    write_if_changed(base / 'folded.txt', folded.read_text())
+    write_if_changed(base / mod_abi.LEVEL_FILE, f'{CPU_LEVELS[CPU]}\n')
+    return mod_abi.mod_abi(RUNTIME, base)
+
+
+def mod_command(version, out):
+    """<out>/build-cache/modcode.txt of a source build: the command the game builds its mods' code with
+    (runtime/modcode.c). It takes this checkout's patch table, so an edit of it reaches the game at its next start
+    (XC2_MODS_BUILD=always) without a build."""
+    table = ROOT / 'recomp' / f'patches-{version}.txt'
+    cmd = [sys.executable, ROOT / 'tools' / 'mod_code.py', '--cache', 'build-cache', '--runtime', RUNTIME, '--clang',
+           CLANG, *(['--patches', table] if table.is_file() else [])]
+    write_if_changed(out / 'build-cache' / 'modcode.txt', '\n'.join(map(str, cmd)) + '\n')
+
+
+def module_glue(layout, linked, hashes, paths, version, title_id, name=None, abi=''):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version, the release's application id and the default game paths (host.h)."""
+    expected ExeFS hashes, the game version, the release's application id, the default game paths (host.h) and the key
+    of the mods' code (tools/mod_abi.py)."""
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -389,7 +477,7 @@ def module_glue(layout, linked, hashes, paths, version, title_id, name=None):
     number = GAME_VERSIONS.get(version, 0)   # 1.4.3 -> 143; XCX 2.0.0 and XC2 3.0.1 -> 0
     out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};',
             f'const char rt_game_name[] = {c_string(name or GAME_NAMES.get(version, ""))};',
-            f'const uint64_t rt_title_id = {title_id:#018x}ull;', '']
+            f'const uint64_t rt_title_id = {title_id:#018x}ull;', f'const char rt_mod_abi[] = {c_string(abi)};', '']
     return '\n'.join(out)
 
 
@@ -400,7 +488,8 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False,
+               glslang=None):
     """build.ninja text, and the object lists per module. With prebuilt True the generated objects already exist in
     out/obj and are link inputs without a compile edge; a set names the objects for which that holds (object cache
     hits). runtime_lib: a prebuilt library replaces the runtime objects
@@ -410,6 +499,12 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
+    ffx, ffx_inc, ffx_sources = None, '', []
+    if not runtime_lib:   # AMD's FidelityFX SDK, whose sources compile with the rule cc_ffx; a runtime library has them
+        import ffx_sdk   # not in the releases' tools/, which always link one
+        ffx = ffx_sdk.ensure(glslang)
+        ffx_inc = ' '.join(f'-isystem {cmd_path(ffx / d)}' for d in ffx_sdk.INCLUDES)
+        ffx_sources = ffx_sdk.sources(ffx)
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
     lines = [
         '# Written by tools/build_game.py; do not edit.',
@@ -432,6 +527,15 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '',
         'rule cc_rt',
         '  command = $cc $rtflags -MD -MF $out.d -c $in -o $out',
+        '  deps = gcc',
+        '  depfile = $out.d',
+        '  description = CC $in',
+        '',
+        # AMD's SDK is written for MSVC: ffx_compat.h brings what its headers have on their own; -w as its warnings are
+        # not ours to fix
+        'rule cc_ffx',
+        f'  command = $cc $rtflags {ffx_inc} ' + (f'-I {cmd_path(ffx / "sdk" / "src" / "shared")} ' if ffx else '') +
+        '-include ffx_compat.h -w -MD -MF $out.d -c $in -o $out',
         '  deps = gcc',
         '  depfile = $out.d',
         '  description = CC $in',
@@ -470,19 +574,23 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         sources += [out / 'modules.c']
     else:
         sources += [out / 'modules.c']
-    for src in sources:
+    for src in sources + ffx_sources:
         o = runtime_object(out, src)
         if src.suffix == '.rc':   # windres writes no depfile: the files xc2.rc embeds are listed by hand
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "xc2.manifest")} '
                          f'{ninja_path(RUNTIME / "xc2.ico")}')
         else:
-            lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
+            lines.append(f'build {ninja_path(o)}: {"cc_ffx" if src in ffx_sources else "cc_rt"} {ninja_path(src)}')
+            if src.name == 'vk_ffx.cpp':
+                lines.append(f'  rtflags = $rtflags {ffx_inc}')
+            if src.name in BASELINE_FILES:
+                lines.append(f'  rtflags = $rtflags {BASELINE_FILES[src.name]}')
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
     exe = out / EXE
     if make_lib:
-        exe = out / LIB_NAME
+        exe = out / lib_name(CPU)
         lines += ['', 'rule ar', f'  command = {cmd_arg(AR.as_posix())} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
                   'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
         return '\n'.join(lines), objs, exe
@@ -642,7 +750,7 @@ def copy_fsr3(exe_dir):
     """Put AMD's signed FSR libraries next to xc2.exe, where runtime/vk_fsr3.c and runtime/vk_fg.c look for them: the FSR
     SDK 2.4 Vulkan loader with the upscaler and the frame generation effect, and FidelityFX SDK 1.1.4's single
     amd_fidelityfx_vk.dll when it is unpacked too (the older path, also the name OptiScaler replaces). Without them the
-    XC2_FSR3 and XC2_FRAME_GEN settings stay off."""
+    game uses the FSR 3.1 built into it (runtime/vk_ffx.cpp)."""
     dirs = (ROOT / 'build' / 'ffx-sdk-2.4.0' / 'Kits' / 'FidelityFX' / 'signedbin', ROOT / 'build' / 'ffx-dlls',
             ROOT / 'build' / 'ffx-sdk-1.1.4' / 'PrebuiltSignedDLL')
     names = ('amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
@@ -747,7 +855,9 @@ class ObjectCache:
         named = [('gen', gen), ('rt', RUNTIME), ('tc', toolchain), ('deps', DEPS), ('sys', sysroot)]
         self.roots = sorted(((t, Path(p).resolve()) for t, p in named if p), key=lambda r: -len(str(r[1])))
         version = subprocess.run([str(CLANG), '--version'], capture_output=True, text=True).stdout
-        version = '\n'.join(l for l in version.splitlines() if not l.startswith('InstalledDir'))
+        # llvm-mingw's clang also names its configuration file, in the folder it runs from
+        version = '\n'.join(l for l in version.splitlines()
+                            if not l.startswith(('InstalledDir:', 'Configuration file:')))
         flags = ' '.join(GEN_FLAGS)
         for t, p in self.roots:
             for form in (cmd_path(p), flag_path(p), str(p), p.as_posix()):
@@ -1063,6 +1173,8 @@ def main():
                                                    'bin/llvm-ar) instead of the clang on PATH')
     ap.add_argument('--ninja', type=Path, help='ninja.exe to build with (default: MSYS2 UCRT64, else bin/ninja.exe of the '
                                                'release folder)')
+    ap.add_argument('--glslang', type=Path, help='glslangValidator for the shaders of the built-in FSR (default: MSYS2 '
+                    'UCRT64 or PATH; needed once, tools/ffx_sdk.py)')
     ap.add_argument('--sysroot', type=Path, help='Linux: the glibc headers and libraries to compile and link against '
                                                  'instead of the host\'s (the release\'s llvm/sysroot)')
     ap.add_argument('--deps', type=Path, help=f'with --toolchain: include/, lib/ and bin/ of Vulkan, SDL3, Opus, libvpx '
@@ -1076,6 +1188,9 @@ def main():
                          'headers are unchanged (the installer keeps it in the install folder; see ObjectCache)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--cpu', choices=sorted(CPU_LEVELS), default='v3',
+                    help='x86-64 level of the build: v3 (default; AVX2, FMA, BMI2) or v2 (SSE4.2, POPCNT; processors '
+                         'without AVX2)')
     ap.add_argument('--no-lto', action='store_true',
                     help='compile the generated C to machine code per file, without ThinLTO at the link (faster links, '
                          'slower game: see use_lto)')
@@ -1143,6 +1258,7 @@ def main():
         if not tool.is_file():
             sys.exit(f'{tool} not found: install ' + ('MSYS2 UCRT64 clang, lld and ninja' if WIN else 'clang, lld and ninja')
                      + ' (docs/building.md)')
+    use_cpu(args.cpu)
     cpus = os.cpu_count() or 1
     budget = min(MEM_BUDGET, int(total_ram() * 0.8))
     jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
@@ -1157,6 +1273,8 @@ def main():
         print(f'build_game: profile-guided optimization with {flag_path(DEFAULT_PGO)} (--no-pgo builds without it)')
     if args.pgo_generate or args.pgo_use:
         use_pgo(args.pgo_generate, args.pgo_use.resolve() if args.pgo_use else None)
+    global RUNTIME
+    RUNTIME = (args.runtime or RUNTIME).resolve()
     if args.make_runtime_lib:
         # The library reads nothing of the game (dispatch.h RT_MAIN_BASE, RT_MODULES_MAX stand in for layout.h), so it
         # builds without generated/ or extracted files: CI builds the release from a bare checkout
@@ -1176,7 +1294,8 @@ def main():
         if missing:
             sys.exit(f'{expected}: no exefs_sha256 for {missing}')
         write_if_changed(out / 'modules.c',
-                         module_glue(layout, linked, hashes, paths, args.version, title_id, game_name))
+                         module_glue(layout, linked, hashes, paths, args.version, title_id, game_name,
+                                     mod_base(gen, out)))
         if (paths['romfs'] / 'index.json').is_file():
             count, size, dt = romfs_index.write(paths['romfs'], out)
             print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
@@ -1185,8 +1304,6 @@ def main():
             print(f'build_game: warning: no {paths["romfs"] / "index.json"}; {EXE} will have no RomFS', file=sys.stderr)
         copy_romfs_patches(args.version, out)
         copy_prompts(args.version, out)
-    global RUNTIME
-    RUNTIME = (args.runtime or RUNTIME).resolve()
     stale = stale_shaders(RUNTIME)
     if stale:
         sys.exit(f'{stale[0]}: its SPIR-V header no longer matches; run python tools/build_shaders.py')
@@ -1226,7 +1343,8 @@ def main():
         prebuilt = set(cache.lookup(cache_keys))
         print(f'object cache: {len(prebuilt)} of {len(cache_keys)} generated objects reused '
               f'({time.monotonic() - t0:.1f} s)', flush=True)
-    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, prebuilt, runtime_lib, args.make_runtime_lib)
+    text, objs, exe = ninja_file(gen, out, mods, jobs, skip, prebuilt, runtime_lib, args.make_runtime_lib,
+                               args.glslang)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
@@ -1244,6 +1362,8 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    if CPU != 'v3':
+        check_runtime_isa(objs['runtime'])
     if cache:
         t0 = time.monotonic()
         cache.store(out, {o: k for o, k in cache_keys.items() if o not in prebuilt}, base, env)
@@ -1262,6 +1382,8 @@ def main():
     if args.make_runtime_lib:
         print(f'{below_root(exe)}: {mib(exe.stat().st_size)}')
         return
+    if not args.runtime_lib:   # the setup writes its own (installer/steps.py mod_command)
+        mod_command(args.version, out)
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to xc2.exe
         shutil.copy2(dll, exe.parent / dll.name)
     copy_translator(exe.parent)

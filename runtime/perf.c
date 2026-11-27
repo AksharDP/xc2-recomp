@@ -171,7 +171,7 @@ void perf_count_by(int kind, uint64_t n) {
 #define FT_PERIOD_NS 60000000000ull
 typedef struct { uint64_t frame, ns, wait[PERF_N], replay; } FtWorst;
 static struct {
-    uint64_t t0, frames, sum, over25, over50, over100;
+    uint64_t t0, frames, sum, over25, over50, over100, skipped;   // skipped: title, movie or cutscene presents left out
     uint32_t hist[FT_BINS];
     FtWorst worst[FT_WORST];   // slowest first
     int nworst;
@@ -191,9 +191,13 @@ static uint64_t ft_low_ns(const uint32_t *hist, uint64_t frames) {
 static void ft_report(uint64_t now, const char *tag) {
     if (ft.frames && ft.sum) {
         uint64_t low = ft_low_ns(ft.hist, ft.frames);
-        rt_log("frametime: %s: %llu frames in %.1f s, mean %.1f fps, 1%% low %.1f fps, over 25 ms %llu, 50 ms %llu, 100 ms %llu",
-               tag, (unsigned long long)ft.frames, (now - ft.t0) / 1e9, ft.frames * 1e9 / ft.sum, low ? 1e9 / low : 0.0,
-               (unsigned long long)ft.over25, (unsigned long long)ft.over50, (unsigned long long)ft.over100);
+        // The duration is the time the counted frames took, not the wall time of the period: the title and the
+        // cutscenes are left out of both, so a period that began on the title does not stretch.
+        rt_log("frametime: %s: %llu frames in %.1f s, mean %.1f fps, 1%% low %.1f fps, over 25 ms %llu, 50 ms %llu, 100 ms %llu, "
+               "%llu boot, title or cutscene presents left out",
+               tag, (unsigned long long)ft.frames, ft.sum / 1e9, ft.frames * 1e9 / ft.sum, low ? 1e9 / low : 0.0,
+               (unsigned long long)ft.over25, (unsigned long long)ft.over50, (unsigned long long)ft.over100,
+               (unsigned long long)ft.skipped);
         for (int i = 0; i < ft.nworst; i++) {
             const FtWorst *w = &ft.worst[i];
             rt_log("frametime:   worst frame %llu: %.1f ms; shader translation %.1f, pipeline build %.1f, texture upload %.1f (astc %.1f), replay %.1f, fence/present wait %.1f, pacing %.1f",
@@ -201,6 +205,9 @@ static void ft_report(uint64_t now, const char *tag) {
                    w->wait[PERF_TEX] / 1e6, w->wait[PERF_ASTC] / 1e6, w->replay / 1e6,
                    (w->wait[PERF_FENCE] + w->wait[PERF_DRAIN]) / 1e6, w->wait[PERF_PACE] / 1e6);
         }
+    } else if (ft.skipped) {
+        rt_log("frametime: %s: no play frames, %llu boot, title or cutscene presents left out", tag,
+               (unsigned long long)ft.skipped);
     }
     memset(&ft, 0, sizeof ft);
     ft.t0 = now;
@@ -236,7 +243,7 @@ static void ftg_report(uint64_t now) {
     uint64_t low = ft_low_ns(ftg.hist, ftg.frames);
     rt_log("frametime: from frame %llu (%s): %llu frames in %.1f s, mean %.1f fps, 1%% low %.1f fps, over 25 ms %llu, 50 ms %llu, 100 ms %llu",
            (unsigned long long)ftg.first, ftg_frame ? "XC2_FT_FROM_FRAME" : "XC2_FT_FROM_WORLD",
-           (unsigned long long)ftg.frames, (now - ftg.t0) / 1e9, ftg.frames * 1e9 / ftg.sum, low ? 1e9 / low : 0.0,
+           (unsigned long long)ftg.frames, ftg.sum / 1e9, ftg.frames * 1e9 / ftg.sum, low ? 1e9 / low : 0.0,
            (unsigned long long)ftg.over25, (unsigned long long)ftg.over50, (unsigned long long)ftg.over100);
 }
 
@@ -256,9 +263,23 @@ void perf_summary_flush(void) {   // at exit (prof_write)
 // Returns the replay time since the previous present.
 static uint64_t ft_frame(uint64_t frame, uint64_t now, uint64_t d) {
     int64_t rep = plat_xchg64(&frame_replay_ns, 0);
+    // Not play: the title screen, a movie or a cutscene (30 fps by design), and the boot before the title has first been
+    // seen (its start-up stalls are seconds long, and the game shows no title until it is over). Without the XC2 build
+    // (kind -1) nothing is left out. The first present counts as a sighting too.
+    static int title_seen;
+    int kind = frame_menu_kind();
+    if (kind == 1) title_seen = 1;
     if (!summary_t0) {   // the first present starts the period; there is no interval yet
         summary_t0 = now;
         ft.t0 = now;
+        return (uint64_t)rep;
+    }
+    if (kind > 0 || (kind == 0 && !title_seen)) {
+        ft.skipped++;
+        if (now - summary_t0 >= FT_PERIOD_NS) {
+            ft_report(now, "60 s");
+            summary_t0 = now;
+        }
         return (uint64_t)rep;
     }
     ftg_add(frame, d);

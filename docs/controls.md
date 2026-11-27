@@ -14,23 +14,25 @@ The log names the layout in effect (`input: gamepad layout ...`); the menu shows
 
 The keyboard prompts follow the `bind_` lines (see Remapping) from the next start, as the game loads its prompt art once. A button shows its first key, or its first mouse button when it has no key (ZL shows Z, not the right mouse button); the movement prompt shows the four `LSTICK_` keys, the D-pad prompts the `UP DOWN LEFT RIGHT` keys, and the camera prompt stays the mouse. A button without a key keeps the game's own icon. A punctuation key shows the character the keyboard layout in use puts there, as the remapping rows name it, when there is an icon for it (`: ! ? * + < > ^ " _` and the US ones); otherwise its US character. Numpad digits show the plain digit, and right Shift and Ctrl the plain key. The setup draws the default keys (`prompts/keyboard/`); for other bindings `runtime/prompts_keys.c` draws the set again at start into `prompts/keyboard_bound/`, from the game's layouts and the key icons the setup keeps in `prompts/keys/`. A setup older than this has no `prompts/keys/`: run it again, or the prompts keep the default keys. The game takes these files through its add-on content; with none installed the port lists an empty pack of its own for this, which unlocks nothing and leaves saves as they are.
 
-| Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse | Action in the world |
-|---|---|---|---|
-| Left stick | left stick | W A S D | move |
-| Right stick | right stick | mouse; arrow keys as a second source | camera |
-| Y | west | left mouse button | attack |
-| ZL | left trigger (over 50%) | right mouse button, Z | shield, lock on |
-| ZR | right trigger (over 50%) | F, X | bow |
-| X | north | Space | jump |
-| B | south | Left Shift | run, cancel |
-| A | east | E | interact, pick up |
-| L | left shoulder | Q | abilities |
-| R | right shoulder | R | throw weapon |
-| Left stick click | left stick click | Left Ctrl | crouch |
-| Right stick click | right stick click | C | camera behind the player |
-| D-pad left, up, right, down | D-pad | 1 2 3 4 | quick-select |
-| Plus | Start | Tab | menu, inventory |
-| Minus | Back | M | map |
+The table lists where each Switch button sits; what it does is the game's own (XC2's in-game prompts show it).
+
+| Switch | Gamepad (by position, Nintendo layout) | Keyboard and mouse |
+|---|---|---|
+| Left stick | left stick | W A S D |
+| Right stick | right stick | mouse; arrow keys as a second source |
+| Y | west | left mouse button |
+| ZL | left trigger (over 50%) | right mouse button, Z |
+| ZR | right trigger (over 50%) | F, X |
+| X | north | Space |
+| B | south | Left Shift |
+| A | east | E |
+| L | left shoulder | Q |
+| R | right shoulder | R |
+| Left stick click | left stick click | Left Ctrl |
+| Right stick click | right stick click | C |
+| D-pad left, up, right, down | D-pad | 1 2 3 4 |
+| Plus | Start | Tab |
+| Minus | Back | M |
 
 Esc is unbound in the game; it opens the settings menu and releases the mouse cursor (see Mouse camera). Z and X duplicate ZL and ZR so menu pages turn with two neighbouring keys; the menu tabs (L, R) are Q and R. The mouse wheel is unbound. The bindings are the tables of `input_map` in `runtime/input_map.c`: the keys (platform-neutral key ids) and one gamepad table per layout (gamepad inputs by position); `runtime/input_win.c` translates Win32 virtual keys and SDL buttons.
 
@@ -41,6 +43,9 @@ Esc is unbound in the game; it opens the settings menu and releases the mouse cu
 | F1 or Esc | Minus and Plus together | open or close the settings menu; the game gets no input while it is open |
 | F10 | L3 + R3 (both stick clicks) | performance overlay: off, frame rate, full panel |
 | F11 | | borderless fullscreen on or off, saved to `xc2.ini` |
+| | Capture (Switch Pro Controller, Joy-Con), Share (Xbox Series), microphone button (DualSense) | screenshot |
+
+A screenshot is the next presented frame as the window shows it, without the black bars around the picture, the settings menu or the performance overlay. It goes to `screenshots\xc2-YYYYMMDD-HHMMSS.png` next to `xc2.exe` (local time; `-2`, `-3` and so on after a name already taken), and the log gets one `gfx: screenshot` line with the path, size and the time the file took. The picture is copied on the present thread and encoded by a thread of its own (a compressed RGB PNG, about 0.15 s for 1280x720 and a second or two for 4K), so a press costs the game at most one wait for the GPU. The frame that takes a press drops it, with a log line, when two shots are still waiting to be written at that moment or the press is more than 2 s old (a minimised window); presses before the same frame make one shot. A folder that cannot be written logs `png: cannot write` and the game goes on; a file is renamed into place only once complete, so a name never holds part of a picture. Closing the game waits up to 5 s for shots already taken. The button is SDL's `MISC1`, which cannot be bound and never reaches the game; a controller that does not report it (an Xbox pad through XInput, or one behind Steam Input) cannot take screenshots this way. The keyboard has no screenshot key: F12 is a game key here, and the system's own capture (Win+Alt+PrtScn) or Steam's works on the window.
 
 The Minus+Plus combo never reaches the game. In the menu the arrow keys, the D-pad or the left stick move, Enter or A selects, Q and E or L and R switch tabs, Esc or B goes back (Switch button names, as in the table above).
 
@@ -85,13 +90,13 @@ The stick direction bits (`StickLLeft` to `StickRDown`) are derived from the sti
 `XC2_INPUT_SCRIPT=<file>` replays presses. It is ORed with real input and still applies under `XC2_INPUT=none`. One event per line, `#` starts a comment:
 
 ```
-<frame> <button> [hold_frames]            # A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK; hold defaults to 4
+<frame> <button> [hold_frames]            # A B X Y L R ZL ZR PLUS MINUS LEFT UP RIGHT DOWN LCLICK RCLICK CAPTURE; hold defaults to 4
 <frame> LSTICK|RSTICK <x> <y> [hold_frames]   # -32767..32767, up is +y
 @<ms> <button> [hold_ms]                  # timed on the world clock
 @<ms> LSTICK|RSTICK <x> <y> [hold_ms]
 ```
 
-`<frame>` counts 60 Hz ticks of game time since the first frame (presented frames at 60 fps), so the title menus get the presses at the same game time at any frame limit. `@<ms>` counts milliseconds of the world clock: game time stepped since the end of the first save load (the player leaves the title screen's origin), so a timed event lands at the same game time at any frame rate and load length. A later load, such as fast travel, still shifts what follows. In a script with timed lines the untimed ones stop when the world clock starts, as the load ends at another tick in each run. Each event logs once (`input: script frame N tick T: A`). `tools/input/load_save.txt` loads the first save from the title screen.
+`<frame>` counts 60 Hz ticks of game time since the first frame (presented frames at 60 fps), so the title menus get the presses at the same game time at any frame limit. `@<ms>` counts milliseconds of the world clock: game time stepped since the end of the first save load (the player leaves the title screen's origin), so a timed event lands at the same game time at any frame rate and load length. A later load, such as fast travel, still shifts what follows. In a script with timed lines the untimed ones stop when the world clock starts, as the load ends at another tick in each run. Each event logs once (`input: script frame N tick T: A`). `CAPTURE` presses the Capture button, so a script can take screenshots; it is not recorded. `tools/input/load_save.txt` loads the first save from the title screen.
 
 `XC2_INPUT_RECORD=<file>` (`input_record` in `xc2.ini`, or Input recording in the menu) writes the merged input in the same format, one line per button press and per stick segment: events before the world clock starts by tick, the rest timed; a button or stick held when the world clock starts is cut there and goes on as a timed event. The file replays as a script, which makes it the repro to attach to a bug report.
 

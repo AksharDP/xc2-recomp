@@ -7,7 +7,8 @@
 //                                   "ok <key>" or "fail <key> <message>"; a malformed line gets "fail ? <message>" and the loop continues.
 //   xc2_xlate <jobs.json> <outdir> batch mode: a JSON array of jobs, prints a summary, exit 1 if any failed.
 //   job: { "key", "stage": "vs|ps|cs", "code": path (graphics = 0x50-byte SPH + instructions, compute = instructions), "c1": hex,
-//          "tex": {slot: type}, "img": {slot: {type, fmt}}, "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint},
+//          "tex": {slot: type}, "texint": {slot: sint|uint}, "img": {slot: {type, fmt}}, "imgint": {slot: sint|uint},
+//          "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint},
 //          "local": [x, y, z], "shared": bytes, "debug": bool, "reduced": bool, "softfloat64": bool,
 //          "sbuf_align": int, "subgroup": int, "xfb": {"stride": int, "words": [int]} }
 //   Output: <out>/<key>.spv and <out>/<key>.res.json (bindings, queried slots, notes).
@@ -75,6 +76,19 @@ static class SwshXlate
             string f = _job["img"] is JsonObject t && slot >= 0 && t[slot.ToString()] is JsonObject o ? (string)o["fmt"] : null;
             if (f == null) { Notes.Add($"图像句柄 {handle:X} 槽 {slot} 无 PC 格式，按 R8G8B8A8Unorm"); return TextureFormat.R8G8B8A8Unorm; }
             return Enum.TryParse(f, true, out TextureFormat tf) ? tf : TextureFormat.R8G8B8A8Unorm;
+        }
+        // "texint", "imgint": {slot: "uint" | "sint"}: the combined and separate texture slots, and the image slots, bound
+        // with an integer format, which the instructions do not say (gfx_shader.c handle_slot has the same handle ranges).
+        // The sampled image, or the image declared without a format, gets that type and its integers are the registers'
+        // bits, as on Maxwell.
+        public AttributeType QueryTextureComponentType(int handle, int cbufSlot = -1)
+        {
+            if (cbufSlot >= 0 && (cbufSlot & 0xffff) != 2) return AttributeType.Float;
+            (int off0, _, _) = TextureHandle.UnpackOffsets(handle);
+            int bytes = off0 * 4;
+            int first = bytes >= TexBase ? TexBase : bytes >= 0x120 ? 0x120 : 0x20;
+            if (bytes < first || bytes >= SampBase || _job[first == 0x120 ? "imgint" : "texint"] is not JsonObject t) return AttributeType.Float;
+            return t[((bytes - first) / 8).ToString()] is JsonNode n ? Attr((string)n) : AttributeType.Float;
         }
         int Local(int i) => _job["local"] is JsonArray a && a.Count > i ? (int)a[i] : 1;
         public int QueryComputeLocalSizeX() => Local(0);

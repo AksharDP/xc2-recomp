@@ -15,11 +15,14 @@
 
 #include "cfg.h"
 #include "cheats.h"
+#include "fnhook.h"
+#include "modcode.h"
 #include "fs.h"
 #include "gfx.h"
 #include "kernel.h"
 #include "mods.h"
 #include "nvn_api.h"
+#include "png.h"
 #include "vk.h"
 #include "platform/platform.h"
 
@@ -138,66 +141,15 @@ void rt_boot_event(const char *what, Cpu *c, const char *detail) {
 }
 
 // ---- --seconds S
-// A PNG with stored (uncompressed) deflate blocks: no compression library, and the shot is only read by tools.
-// rt_write_png (declared in vk.h) is shared with the XC2_DUMP frame dump (vk_dump.c).
-static uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n) {
-    static uint32_t table[256];
-    if (!table[1])
-        for (uint32_t i = 0; i < 256; i++) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            table[i] = c;
-        }
-    for (size_t i = 0; i < n; i++) crc = table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
-    return crc;
-}
-
-static void png_chunk(FILE *f, const char *type, const uint8_t *data, uint32_t n) {
-    uint8_t hdr[8] = {(uint8_t)(n >> 24), (uint8_t)(n >> 16), (uint8_t)(n >> 8), (uint8_t)n};
-    memcpy(hdr + 4, type, 4);
-    uint32_t crc = crc32_update(crc32_update(~0u, hdr + 4, 4), data, n) ^ ~0u;
-    uint8_t tail[4] = {(uint8_t)(crc >> 24), (uint8_t)(crc >> 16), (uint8_t)(crc >> 8), (uint8_t)crc};
-    fwrite(hdr, 1, 8, f);
-    if (n) fwrite(data, 1, n, f);
-    fwrite(tail, 1, 4, f);
-}
-
+// The shot is only read by tools, so it keeps the fast stored blocks (png.c, compress 0). rt_write_png (declared in
+// vk.h) is shared with the XC2_DUMP frame dump (vk_dump.c) and the replay captures (replay_rec.c), which stop here on
+// a failure; the screenshots take png_save, which logs one and goes on.
 void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
-    uint64_t row = 1 + 4ull * w, raw_n = row * h;
-    uint8_t *raw = malloc(raw_n);
-    if (!raw) rt_fatal("boot: out of memory for the shot");
-    for (uint32_t y = 0; y < h; y++) {
-        raw[y * row] = 0;   // filter: none
-        memcpy(raw + y * row + 1, rgba + 4ull * w * y, 4ull * w);
-    }
-    uint64_t blocks = (raw_n + 65534) / 65535;
-    uint8_t *z = malloc(2 + raw_n + 5 * blocks + 4);
-    if (!z) rt_fatal("boot: out of memory for the shot");
-    uint64_t zn = 0;
-    z[zn++] = 0x78, z[zn++] = 0x01;
-    uint32_t a = 1, b = 0;
-    for (uint64_t off = 0; off < raw_n; off += 65535) {
-        uint32_t k = raw_n - off > 65535 ? 65535 : (uint32_t)(raw_n - off);
-        z[zn++] = off + k >= raw_n;
-        z[zn++] = (uint8_t)k, z[zn++] = (uint8_t)(k >> 8), z[zn++] = (uint8_t)~k, z[zn++] = (uint8_t)(~k >> 8);
-        memcpy(z + zn, raw + off, k);
-        zn += k;
-        for (uint32_t i = 0; i < k; i++) a = (a + raw[off + i]) % 65521, b = (b + a) % 65521;
-    }
-    uint32_t ad = b << 16 | a;
-    z[zn++] = (uint8_t)(ad >> 24), z[zn++] = (uint8_t)(ad >> 16), z[zn++] = (uint8_t)(ad >> 8), z[zn++] = (uint8_t)ad;
-    FILE *f = fopen(path, "wb");
-    if (!f) rt_fatal("boot: cannot write %s", path);
-    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10};
-    uint8_t ihdr[13] = {(uint8_t)(w >> 24), (uint8_t)(w >> 16), (uint8_t)(w >> 8), (uint8_t)w,
-                        (uint8_t)(h >> 24), (uint8_t)(h >> 16), (uint8_t)(h >> 8), (uint8_t)h, 8, 6, 0, 0, 0};
-    fwrite(sig, 1, 8, f);
-    png_chunk(f, "IHDR", ihdr, 13);
-    png_chunk(f, "IDAT", z, (uint32_t)zn);
-    png_chunk(f, "IEND", NULL, 0);
-    if (fclose(f)) rt_fatal("boot: cannot write %s", path);
-    free(z);
-    free(raw);
+    size_t n = 0;
+    uint8_t *png = png_encode(rgba, w, h, 4, 0, &n);
+    if (!png) rt_fatal("boot: out of memory for the shot");
+    if (!plat_file_write(path, png, n)) rt_fatal("boot: cannot write %s", path);
+    free(png);
 }
 
 static void save_shot(const tex_t *t, const char *path) {
@@ -345,6 +297,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     fflush(stdout);
     fflush(stderr);
     fs_save_flush();
+    gfx_screenshot_drain();   // a Capture press (or a scripted CAPTURE) just before the deadline still gets its file
     vk_pipeline_save();   // no-op without the Vulkan back end
     prof_write();
     fflush(stderr);
@@ -378,15 +331,21 @@ static void prewarm_main(void *arg) {
 
 void rt_boot(void) {
     check_npdm();
+    modcode_prepare();   // before anything reads the mods' files
     if (!rt_config()->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
     // Shaders and pipelines recorded in earlier runs are made ready while the modules load; the guest waits for them.
     PlatThread *warm = plat_thread_new(prewarm_main, NULL, "prewarm");
     ldr_load(rt_config()->exefs);
     rt_patches_init();
+    modcode_load();
     mods_exefs_switch();   // after the patch sets' settings: an enabled mod's ExeFS patches on
+    cheats_init();         // a cheat's set follows its setting
+    modcode_hook();
+    int sites = fnhook_install();   // every hook is named; no guest thread runs yet
+    if (sites) rt_log("fnhook: %d sites written", sites);
     frame_step_init();
-    res_init();
-    cheats_init();   // after the patch sets: a cheat's set follows its setting
+    res_init();   // runs a mod's patched code to read its frame size (resolution.c mod_frame_size)
+    vk_fsr3_jitter_init();
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     hostfn_seal();

@@ -94,23 +94,31 @@ site xc2poll main 6df480 sha:f4cd221e7a1b197a 7281a800
 set xc2zlib XC2_ZLIB_NATIVE 1
 site xc2zlib main 8abc70 sha:8e1534416e8c00af 94350cd8
 
-# xc2res (XC2_OUTPUT_RES, resolution.c): the size the game composes its frame in. XC2 composes 1280x720 (docked and
-# handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720 (main+0x6e3fd0), and the window
-# setup (main+0x700640) sizes the window textures with the same constants. All three read the patch page's +0x70
-# (width) and +0x74 (height) instead.
-set xc2res XC2_OUTPUT_RES 0
-site xc2res main 6e3fc8 sha:ffd5886200ad5493 @page:x0 b9407000
-site xc2res main 6e3fd0 sha:4cdbf2bbc589638e @page:x0 b9407400
-site xc2res main 700640 sha:1310f8325755a90c @page:x21 b94072b5
-site xc2res main 700644 sha:71f543de2911de5f @page:x22 b94076d6
+# xc2size (resolution.c, switched with XC2_OUTPUT_RES): the size the game composes its frame in. XC2 composes
+# 1280x720 (docked and handheld): two getters of its graphics device return 1280 (main+0x6e3fc8) and 720
+# (main+0x6e3fd0), and the window setup (main+0x700640) sizes the window textures with the same constants. All three
+# read the patch page's +0x70 (width) and +0x74 (height) instead. A set of its own, as the 21:9 mods write these same
+# sites with a size of their own: a mod's patch then holds xc2size off (mods.c), resolution.c reads the mod's size from
+# the getters, and the sets below (xc2mem, xc2res, xc2wide) follow it.
+set xc2size XC2_FRAME_SIZE 0
+site xc2size main 6e3fc8 sha:ffd5886200ad5493 @page:x0 b9407000
+site xc2size main 6e3fd0 sha:4cdbf2bbc589638e @page:x0 b9407400
+site xc2size main 700640 sha:1310f8325755a90c @page:x21 b94072b5
+site xc2size main 700644 sha:71f543de2911de5f @page:x22 b94076d6
+# xc2mem (resolution.c): the graphics memory for a frame larger than 1280x720.
+set xc2mem XC2_GFX_MEM 0
 # The graphics heaps (main+0x6f4ee4 fills their sizes, main+0x705c20 carves GLIBCNT, GLIBPXL, GLIBVTX, ... from one
 # block of their sum): the render targets come from GLIBPXL, 0x16a00000 bytes (362 MiB), the high half of x9 here;
 # above 1280x720 the game aborts in its allocator (main+0x6e927c). The size is the page's +0x78 instead
 # (resolution.c xc2_res_init); the movk that follows sets the low half, GLIBCNT, as before.
-site xc2res main 6f4f74 sha:b56a63a9639ad888 @page:x9 b9407929 d3607d29
+site xc2mem main 6f4f74 sha:b56a63a9639ad888 @page:x9 b9407929 d3607d29
 # The game's memory layout (main+0x6421b4, handed to main+0x6e3f34): the main heap, then a 512 MiB graphics block
 # (orr w8, wzr, #0x20000000) that GLIB's heaps are carved from. Its size is the page's +0x7c instead (the same growth).
-site xc2res main 6421c4 sha:a95ccb820bea65ad @page:x8 b9407d08
+site xc2mem main 6421c4 sha:a95ccb820bea65ad @page:x8 b9407d08
+
+# xc2res (XC2_OUTPUT_RES, resolution.c): the interface and the markers on a frame other than 1280x720, whichever set
+# (xc2size or a mod) gives that frame.
+set xc2res XC2_OUTPUT_RES 0
 
 # Markers on the 3D scene (target cursor, damage numbers, talk and quest icons) are placed in the interface's
 # 1280x720 space with the camera's viewport (+0x1e0, +0x1e4), which the world-to-screen (main+0x6c3aa0), the
@@ -228,6 +236,253 @@ site xc2res main 328d98 sha:7a9b8cb2e9b8523b 52805a00
 site xc2res main 329110 sha:447542af428abcce 5280a000
 site xc2res main 329120 sha:89126e7f267c2d70 52805a00
 
+# xc2wide (XC2_HUD_CENTER, resolution.c): the interface in the middle of a game resolution wider than 16:9 (21:9,
+# 32:9). The layout library fits its 1280x720 design to the frame by the smaller of width / 1280 and height / 720 (the
+# screen object at [[main+0xb84720]+0x58], filled by main+0x83919c: +0x558 the fit, +0x564 2 * fit and +0x568
+# -2 * fit * W / H, with positions divided by the frame width W), and each pane's matrix maps design x to the screen as
+# 2 * fit * x / W - 1. The -1 holds the design's left edge on the screen's, so on a wider frame the interface sat in a
+# 16:9 region at the left and the right of the screen was empty. The four builders of those matrices (main+0x829b94,
+# +0x82cbec, +0x82ef1c, +0x82f014) load the -1 from the page's +0x8c instead, -1280 * fit / W: the design's centre on
+# the screen's. x10 is free at each site (written or clobbered by a call before any read).
+# At 16:9 and narrower shapes resolution.c leaves the set off.
+set xc2wide XC2_HUD_CENTER 1
+site xc2wide main 829c1c sha:00c55613fdd90219 @page:x10 bd408d41 bd40cd50 1e302821
+site xc2wide main 82cd00 sha:eb04d7399bb85ba8 @page:x10 bd408d41 bd40cd50 1e302821
+site xc2wide main 82efc4 sha:bc09d16b1be02939 @page:x10 bd408d45 bd40cd55 1e3528a5
+site xc2wide main 82f120 sha:2ce37441f3074713 1e220821 @page:x9 2d535130 1e20c032 7e30e650 0e301e94 1f140421
+site xc2wide main 82f130 sha:b798ae4b3f4f8dfc 1e220821 1f140421
+site xc2wide main 82f144 sha:1163f8d0d7e07740 @page:x10 bd408d42 bd40cd51 1e312842
+site xc2wide main 82f148 sha:141ae56c2aed3d22 1e222881 1f140421
+# Pictures as wide as the design or wider (the black of fades and loading screens, menu backgrounds) cover the frame:
+# under the centred interface they would leave the sides of a wider frame showing the scene. The picture builder
+# (main+0x82ef1c) has the picture's size in its matrix, so after it scales x by +0x564 the first site compares the
+# width |x scale| with the page's +0x98 (98 % of the design's width in clip units) and keeps in s18 either 0 or the
+# page's +0x9c, frame width / design width - 1 (fcmge and a bitwise and, no flags); each store of the x row's two scales
+# and its translation (+0x0, +0x4, +0xc) then adds itself times s18, which scales the row about the frame's centre. The
+# +0x8 term is left: its store follows the join with the branch that skips the screen transform. x9 and s16-s18 are
+# free in the builder's tail (s16-s21 are its product's temporaries). The fill site also adds s18 to the page's +0xb4,
+# so +0xb4 counts the full-width pictures in units of +0x9c: res_hud_frame reads it once a frame and treats more than
+# 8 (a menu draws 16 to 32, the field 1 to 4) as a menu, where the edge shift below stays off.
+# The window panes' pieces (the band behind "Travel to this destination?" and other dialog bars) take their matrix
+# from main+0x82f014, the product of the pane's matrix with the piece's own, which carries its size: the same test and
+# scale run there on the product's x scale (s1) before its three x stores, with x9 and s16, s18 and s20 free (the
+# function is a leaf that uses x8 and s1-s5).
+# In the field and in cutscenes only the full-height layers are stretched: the opening's "Xenoblade Chronicles 2" title
+# card is a picture as wide as the design but only 0.067 of the frame width tall (its y scale |s2|), and stretching it
+# drew the logo twice as wide at 32:9, while the field's full-width pictures are fades (0.33 and up at 3840 wide). The
+# site before the fill test compares |s2| with the page's +0xe4 (res_hud_frame: 384 / frame width in the field, 0 in
+# menus, whose header bars are as thin and must stretch) into s21 (s19 and s21 are free after main+0x82ef80), and the
+# fill site keeps the stretch in s22 = s18 & s21 for the three stores. The count at +0xb4 still adds s18, every
+# full-width picture, so the menu test does not change.
+site xc2wide main 82efb4 sha:f94b55ee0d052bff 1e2708a5 @page:x9 bd40e533 1e20c055 7e33e6b5
+site xc2wide main 82efb8 sha:348da3a97df6504d @page:x9 2d534530 1e20c0b2 7e30e652 0e311e52 0e351e56 1f1614a5 bd000005
+site xc2wide main 82efc8 sha:66be2bdadfaa03c5 1f160c63 bd000403 bd40b537 1e322af7 bd00b537
+site xc2wide main 82efd8 sha:76d1fad955ec734f 1f160c63 bd000c03
+# In the field the HUD goes to the frame's edges by groups, so a widget's parts move together. The layout library draws
+# a tree of panes (main+0x833bf8 draws a container and walks its children through main+0x83311c, passing them a context
+# whose +0x40 points at its global matrix); every pane's draw builds its global matrix from that parent matrix and its
+# own local one (+0x1dc): main+0x82ac8c (text, windows, pictures), main+0x831828 (part panes, whose pictures sit at
+# normalized places in the pane's rectangle) and main+0x833bf8 (containers). After each one has its global x
+# translation and scale, the sites below compute shift(u) = sign(u) * min(s_max, max(0, |u| - a) * m) times the field
+# flag (+0xb0) and store it, in clip units (times +0xd0), at the page's +0xcc, which the builders add to the x of what
+# the pane draws; the matrix itself stays, since the panes' visibility tests read it (main+0x82aa7c's bounds). a, m,
+# s_max and the middle u counts from are at +0xbc, +0xa8, +0xc4 and +0xb8 (resolution.c wide_hud). The matrix is in
+# units of the frame's width in pixels (+0xd4) per interface unit: a pane's u is its centre, (tx + a / 2) * +0xd4,
+# and it decides only when narrower than 98 % of the design (|a| below +0xc8); a container's matrix carries no size
+# (a = 1), so its u is its origin, tx * +0xd4, and one within 4 interface units of the design's left edge (+0xd8) does
+# not move (the title screen's dialog container sits between 0.5 and 4 units from it, and with half a unit its band and
+# text moved to the frame's left edge). A container that is neither under a tag nor a layout's root (tx exactly 0) passes its
+# children's context (+0x51, a byte no reader uses, and +0x52) the tag 0xa5 and its shift in whole interface units as
+# an int16, and every pane and container under that tag takes the inherited shift instead of its own; the pane draws
+# clear +0xcc again after their own pieces (main+0x82adec, main+0x831984, and main+0x82a0c0 for a root without a
+# parent). The sign of u is set before the mask that clears a tagged pane's own shift (s21): a sign bit left on its zero
+# would turn the inherited shift around when it is combined with it, which sent the left half of the enlarged map to the
+# left while the right half went right. So the minimap, clock, area name, Blade Switch, party list, blades and arts move whole, and the compass and
+# the middle of the screen stay. min, max and the sign are fmin, fmax and bit selects, so no site writes flags; x10-x13
+# and s16-s21 are unused in the three functions. A layout's root is drawn by main+0x832704, which builds its children's
+# context at sp+0x20 without setting +0x51..+0x53; main+0x832740 clears them, so a root's children never read a stale
+# tag. The layouts the game places on the 3D scene (field balloons, talk and shop markers) are drawn the same way and
+# sit under full-screen containers that decide a shift, so they are exempted below.
+site xc2wide main 82ad24 sha:b9f68517ef10f1c7 aa0803e1 @page:x10 3941468b 5102956b 4b0b03ec 2a0c016b 131f7d6b bd4033f2
+site xc2wide main 82ad28 sha:c601cb9d0110aa7d 2d419d24 1e20c253 bd40c955 7e35e673 1e270175 0e731eb5 1e2c1011 bd402bf4
+site xc2wide main 82ad2c sha:45f7e90632d67c92 1e270800 1f115251 bd40d550 1e300a31 bd40b950 1e303a31 1e20c232 bd40bd50
+site xc2wide main 82ad30 sha:ae977dbe500144cf 1e240847 1e303a52 bd40a950 1e300a52 bd40c550 1e305a52 2f00e410 1e304a52
+site xc2wide main 82ad34 sha:925ed8e8b7202873 1e272800 bd40b150 1e300a52 0f046410 2eb01e32 0e351e52 79c0a68c 1e220190
+site xc2wide main 82ad38 sha:06ba13fd24c7d190 bd003be0 1e270171 0e711e10 0eb01e52 bd40d150 1e300a50 bd00cd50
+site xc2wide main 82adec sha:600b57fbca6504ce f9412268 @page:x10 b900cd5f
+site xc2wide main 8318b8 sha:34b2e5cce8a3a12a 2d419d04 @page:x10 3941468b 5102956b 4b0b03ec 2a0c016b 131f7d6b bc5e03b2
+site xc2wide main 8318bc sha:03f0e2ea5d69585e 1e270800 1e20c253 bd40c955 7e35e673 1e270175 0e731eb5 1e2c1011 bc5d83b4
+site xc2wide main 8318c0 sha:50118e97b8721b92 1e240821 1f115251 bd40d550 1e300a31 bd40b950 1e303a31 1e20c232 bd40bd50
+site xc2wide main 8318c4 sha:2e3d3a8dbad9d4a9 1e212800 1e303a52 bd40a950 1e300a52 bd40c550 1e305a52 2f00e410 1e304a52
+site xc2wide main 8318c8 sha:f647b70116886dfe bc1e83a0 bd40b150 1e300a52 0f046410 2eb01e32 0e351e52 79c0a68c 1e220190
+site xc2wide main 8318cc sha:193dfd4d2e65d638 2d418500 1e270171 0e711e10 0eb01e52 bd40d150 1e300a50 bd00cd50
+site xc2wide main 831984 sha:d04345d41bc1c1b7 f9412268 @page:x10 b900cd5f
+site xc2wide main 833c80 sha:a2ad8c40f203fb9d 2d419d24 @page:x10 3941442b 5102956b 4b0b03ec 2a0c016b 131f7d6b bc5d83b4
+site xc2wide main 833c84 sha:662fb0317cc69036 1e270800 5ea0da93 1e20c296 bd40d955 7eb6e6b6 1e270175 0e761eb5 bd40d550
+site xc2wide main 833c88 sha:001fec2e0d3c7895 1e240847 1e300a91 bd40b950 1e303a31 1e20c232 bd40bd50 1e303a52 bd40a950
+site xc2wide main 833c8c sha:d9505efff8726881 1e272800 1e300a52 bd40c550 1e305a52 2f00e410 1e304a52 bd40b150 1e300a52
+site xc2wide main 833c90 sha:79571923dc17a2b2 bc1e83a0 0f046410 2eb01e32 0e351e52 79c0a42c 1e220190 1e270171 0e711e10
+site xc2wide main 833c94 sha:88631bb5a0251c07 2d418920 0eb01e52 bd40d150 1e300a50 bd00cd50 1e26026c 0a0b018c 2a2c03ec
+site xc2wide main 833c98 sha:bb14bb37eea13aa5 1e220821 528014ad 0a0c01ad 1e38024c
+site xc2wide main 833d44 sha:c161fbbf6672e031 390143e9 390147ed 7900a7ec
+site xc2wide main 82a0c0 sha:5c999edc6fe8d528 f9400268 @page:x10 b900cd5f
+site xc2wide main 832740 sha:f63edfc5a4890376 79418676 3901c7ff 7900e7ff
+# Objects on the 3D scene. The game's screen objects carry their layout's pane at +0xd0 and are placed by
+# main+0x690ffc(object, position) (x0 the object holder, the screen object at its +8). Two callers place what belongs
+# to the scene: main+0x68610c puts a field balloon or marker (talk, shop) at its speaker's or object's screen position
+# (main+0x686310), and main+0x685b84 slides a balloon's tail toward its speaker within the box (main+0x685c8c). Both
+# have checked the screen object before (main+0x690e44). Before those calls the sites write 0xa5 to the placed pane's
+# +0xac, a byte the game zeroes when it builds a pane (main+0x82e7f8 and three like it) and never reads; a null pane
+# gets a dummy address below the stack instead. Other placers were tried and left out: marking every call of the
+# setter (main+0x690390) or every caller in main+0x680000..0x688000 also froze pieces of the minimap, and
+# main+0x686824, which copies one object's place onto another, also reaches what look like the battle party gauges.
+# After each pane draw has stored its shift (the sites above), main+0x82ad3c, main+0x8318d0 and main+0x833c9c clear
+# +0xcc for a pane carrying that byte, and a container carrying it also passes its children shift 0 under the tag
+# (w12, stored at main+0x833d44), so the whole object stays where the game put it. The full-screen containers these
+# objects live in still decide a shift, which reaches their other children. The byte test is (b - 0xa5)^2 negated and
+# shifted right arithmetically, -1 unless b is 0xa5, so no flags are written. The marking sites use registers free before the call (x9-x11 at main+0x686308; x10-x12 at
+# main+0x685c7c, where w8 and w9 carry the new position): they carry no argument and the called function overwrites
+# them.
+site xc2wide main 686308 sha:36675614a6124935 910043e1 f9400669 f9406929 d10403ea cb0903eb aa09016b 937ffd6b 8a0b0129
+site xc2wide main 68630c sha:16e368dea7dce66d aa1303e0 8a2b014a aa0a0129 528014aa 3902b12a
+site xc2wide main 685c7c sha:0bc247562b5cccc7 910033e1 f940066a f940694a d10403eb cb0a03ec aa0a018c 937ffd8c 8a0c014a
+site xc2wide main 685c80 sha:c5275a9b455621e5 aa1303e0 8a2c016b aa0b014a 528014ab 3902b14b
+site xc2wide main 82ad3c sha:6757f27df3157d0b 2d418920 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b bd40cd50
+site xc2wide main 82ad40 sha:43813573d73ff1e2 1e220821 1e270171 0e311e10 bd00cd50
+site xc2wide main 8318d0 sha:0dfd5dd85183e2d6 1e210842 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b bd40cd50
+site xc2wide main 8318d4 sha:72e5c312ed8f14e0 1e210861 1e270171 0e311e10 bd00cd50
+site xc2wide main 833c9c sha:b63f376f6d4a84b1 1e2008a0 @page:x10 3942b26b 5102956b 1b0b7d6b 4b0b03eb 131f7d6b 0a0b018c
+site xc2wide main 833ca0 sha:fe8af182b35022d5 1e202820 bd40cd50 1e270171 0e311e10 bd00cd50
+# Containers that slide in. A layout's full-screen containers rest at tx 0, where they pass no tag and their children
+# decide alone; while one slides in or out (the field HUD after a load, the battle palettes, Current Objective) its tx
+# crosses the ramp, and the decision it tagged its children with moved the whole palette to the other edge or to its
+# 16:9 place until it came to rest. No field of the pane tells such a container from one the game placed (the minimap's
+# map, the party gauges, a popup), but their motion does: a slider moves every draw until it is at 0, a placed one is
+# still on the draw after it appears. So a container passes its tag once it has settled, and until then its children
+# decide alone. The sites below, after the container's decision, keep in the pane's free bytes +0xac (below 0x80, so no
+# mark), +0xad and +0xae (zeroed when the game builds it) its state and its last position in quarter interface units
+# (int16). With u the position and d the step since the last draw:
+#   far   |u| >= 16         near  |d| <= 4 units when far, 1.25 otherwise
+#   cont  drawn this frame or the one before (the page's +0xec counts frames in 12 bits, res_hud_frame; +0xad bits 0-4
+#         and an unmarked +0xac's bits 0-6 hold it; with the 5 bits alone a panel that came back a multiple of 32
+#         frames after it slid out passed for one that had not moved)
+#   recent  moved on this draw or one of the two before it (+0xad bits 5 and 6 hold the two)
+#   zone  |u| < 4 and recent; the decision itself gives 0 there
+#   scaled  the global x scale (a, at [x29 - 0x20]) is not 1 (floor(256 a) is neither 255 nor 256)
+#   settled (+0xad bit 7) = cont and (settled or (near and far and not zone)) and not (tx is 0 and not recent) and not
+#           scaled
+# An unmarked container that is not under a tag passes
+#   no tag                  when scaled, or not settled, in (zone or cont) and not (near and outside the zone)
+#   the tag and -s_max      when settled and in the zone (a gauge arriving at 0, a popup leaving across it, the
+#                           minimap's map scrolling past it)
+#   its decision as before  otherwise, which includes a pane's first draw, where a slider is still off the screen
+# and a marked one always passes the tag (with shift 0, above), since one that stands exactly at tx 0 for a frame is
+# not a layout's root. A scaled container zooms about a point in its middle, so its origin says nothing about its place:
+# the button challenge's ring (its origin 192 units times the scale left of the centre it keeps) was sent left by it,
+# and its parts, which stand at the centre, decide 0 themselves.
+# An unmarked container that is not under a tag also passes the tag with shift 0 when its contents are centred: the game
+# keeps their rectangle (int16 x at +0x190 and width at +0x194, in the frame's pixels, which the page's +0x100 turns into
+# 1080p ones, 1.5 to an interface unit) from its own origin, and when that is 384 to 1599 wide, its middle is within 128
+# units of 640 and the origin is far, the group stays whole where it is. The prompt for the next Special ("(A) Wind") is one: its container starts at 65, so its
+# label went left while its portrait stayed in the middle. The sides of the screen never have their middle there (the
+# palettes, party list, clock and Current Objective lie 180 to 490 units off it); an origin near 0 is a layout's root, or a
+# palette about to rest at one, whose children decide alone.
+# The last part (from main+0x833cec) makes a container that follows a capture pane (below) among its siblings take the
+# capture's shift. The minimap's layout draws the map into its frame with two capture panes and, after them, two
+# containers with the map's tiles and icons, which are as large as the whole map: their origins lie far left of the
+# design, so they decided -s_max while the frame went right, and the minimap showed no map. A capture pane keeps 0xc3
+# at +0xac and the shift of its captures at +0xae (the sites at main+0x836600); an unmarked container that is not under
+# a tag and whose previous sibling (pane +8) carries 0xc3 passes the tag with that shift, and writes both to its own
+# +0xac and +0xae so the next container follows as well. In those +0xae is no longer a last position, which only the
+# settled state reads and this rule overrides. A container without a previous sibling tests itself.
+# The values are masks in s16-s19, s22 and s24-s30 (unused in the function): s17 near, s18 settled, s19 cont, s21 the
+# unmarked mask, s22 the frame count and the moved bits, s23 -s_max as an integer, s24 zone, s25 not under a tag (and
+# unmarked), s27 far, s28 scaled, s29 the frame count, s30 the +0x100 factor, then centred contents; the last part reuses s16-s20. x10 and x11 are scratch, and x12 and x13 carry the shift
+# and the tag to main+0x833d44.
+site xc2wide main 833ca4 sha:f9954256b34c0523 bc1e43a0 1e270175 bd40d550 bd40c557 bd40b158 7941d94b bd41015e 1e300a90
+site xc2wide main 833ca8 sha:7e368f447b62d6b1 bd400d21 1e388af7 1e3802ea 1e270157 1e18fa0a 1e27017d 79c15e6b 79015e6a
+site xc2wide main 833cac sha:65885dc6bf5b0619 1e220860 4b0b014b 1b0b7d6b 1b0a7d4a 1e270158 1e270172 530c7d4a 4b0a03ea
+site xc2wide main 833cb0 sha:8df8d22c9a67564a 1e2108c1 131f7d4a 1e27015b 1218014a 4b0a016b 5100816b 131f7d6b 1e270171
+site xc2wide main 833cb4 sha:eb2bdbca806d2fd6 1e212800 bc5e03bc 1e18e38a 5103fd4a 121f794a 4b0a03eb 2a0b014a 131f7d4a
+site xc2wide main 833cb8 sha:4fd1cfbbf3772e37 bd400521 1e27015c fd40ca70 0e0207de 0e7ec210 4f340610 1e26020a 79c15e6b
+site xc2wide main 833cbc sha:3890e2ba9bc0ff2a 1e202820 0b0b056b 0b8b0d4a 0e143e0b 0b0a056a 511e014a 13047d4a 1b0a7d4a
+site xc2wide main 833cc0 sha:74917f380e19ac89 bc1dc3a0 5109014a 5106016b 0a2b014a 5113016b 0a0b014a 131f7d4a 1e27015e
+site xc2wide main 833cc4 sha:71e3cf479c9186a5 f9402429 0e3b1fde 1e26030a 5104014a 131f7d4a 1e270158 1e26024a 4b0a03ea
+site xc2wide main 833cc8 sha:7427ddace0725e31 bd415660 531f7d4a 3942b66b 1e270172 5305196b 331f056a 4b0a03eb 131f7d6b
+site xc2wide main 833ccc sha:0639ef3608dd2cef bd400121 1e270179 1e2603ab 531b094a 3300116a 1e270156 3942b26a 4b0a156b
+site xc2wide main 833cd0 sha:a6b771a26f0b0bc5 1e210800 1e26024a 1200114a 4b0a016b 121f296b 5100056b 131f7d6b 1e270173
+site xc2wide main 833cd4 sha:8088cd7442f89933 bc1b83a0 5ea0da94 0e391f18 0e791e9a 0e781e31 0e311f7b 0e7c1f7b 0ebb1e52
+site xc2wide main 833cd8 sha:f1ddea69110d31b8 bd415a60 0e331e52 0e7a1e52 0e7c1e52 1e26024b 1e2602ca 3300194b 3902b66b
+site xc2wide main 833cdc sha:23ff3f4710bceaac bd400521 13071d6b 1e270172 3941442a 5100054a 131f7d4a 1e2602ab 0a0b014a
+site xc2wide main 833ce0 sha:974b6d2a6830e64d 1e210801 1e270159 0eb81e73 0e721e73 0e711e73 0ebc1e73 0e391e73 0e321f18
+site xc2wide main 833ce4 sha:5fc844bbf739a628 bc1bc3a1 0e391f18 1e26026a 0a2a01ad 1e26030a 0a2a018c 1e2602eb 0a0a016b
+site xc2wide main 833ce8 sha:d4b2ebb057929c01 bd415e60 2a0b018c 1e2602ab 2a2b014a 528014ab 0a0b014a 2a0a01ad 0e391fde
+site xc2wide main 833cec sha:95d5d85f548d40f7 bd400921 1e2603ca 0a2a018c 528014ab 0a0a016b 2a0b01ad f940066a d100054b
+site xc2wide main 833cf0 sha:8d41fb82840c04c5 1e210800 937ffd6b 8a13016b aa0b014a 3942b14b 79c15d4a 1e270151 51030d6b
+site xc2wide main 833cf4 sha:1eed89e43ec8b916 bc1c03a0 1b0b7d6b 4b0b03eb 131f7d6b 1e26032a 0a2b014a 1e26022b 0a0a016b
+site xc2wide main 833cf8 sha:e5ef0dfbe3e73caa bd416260 0a2a018c 2a0b018c 1e270171 1e270152 528014ab 0a0a016b 2a0b01ad
+site xc2wide main 833cfc sha:42348ee6c269c40c bd400d21 3d42b274 2f3b07b0 0e20aa93 2eb31e90 0f06e474 2eb21e90 3d02b270
+site xc2wide main 833d00 sha:1784806ee43920e9 1e210801 79c15e6b 1e26024a 0a2a016b 1e26022a 2a0a016b 79015e6b
+# Panes drawn through a capture (the minimap's and the enlarged map's: what lies in their rectangle is rendered into a
+# texture and drawn back in their frame): main+0x83656c takes the pane's screen bounds from main+0x82aa7c, which count from the left edge without the
+# centring, turns them into the capture's region and projection (main+0x8365ec on), renders the children, which the
+# builders above have centred, into it, and draws the texture back at 2 * fit * x / W - 1. Under the centred interface
+# the children fell outside the region and the texture came back at the left-anchored place, so the minimap's frame was
+# empty, its map was drawn oversized and its icons sat left of it. The first two sites add the page's +0xa0, the
+# centring in the bounds' units ((1 + left) / 2), to the region's two x bounds as this function loads them (x9 and s16
+# are free: x9 is written before its next read, s16 before its next read after a call); the third takes the draw-back's
+# -1 (s1, the constant loaded at main+0x8366b8) from the page's +0x8c. The bounds themselves stay as they are: they also
+# decide which panes are culled, and shifting them there hid the minimap. The region and the draw-back also take the
+# capture pane's group shift (+0xcc, half of it in the bounds' units). The children's draws rewrite +0xcc before the
+# draw-back, so the first site keeps the pane's value at +0xe0 and the draw-back reads it from there.
+# The sites from main+0x836600 also leave the shift in whole interface units (+0xcc / +0xd0) at the pane's +0xae and the
+# mark 0xc3 at its +0xac (x22 is the pane) for the containers that follow it (above). When the previous sibling is a
+# marked capture that shows, the pane takes over its value: the minimap's layout has the minimap's capture first and the
+# enlarged map's, at the design's centre, second, and the containers after both belong to the first. While the enlarged
+# map is open the first is hidden (bit 0 or 3 of +0xaa, the bits main+0x83656c returns on) and the second passes its own
+# shift, 0. The masks are built from differences without flags; x9-x12 and s16-s18 are free there.
+site xc2wide main 8365fc sha:6d1ca0bde65c0ef2 bd417ac0 @page:x9 bd40a130 bd40cd31 bd00e131 1e2c1012 1f124230 1e302800
+site xc2wide main 836600 sha:fbde52beaf05940f bd4172c2 1e302842 bd40d132 1e321a31 1e380229 f94006ca d100054c 937ffd8c
+site xc2wide main 836604 sha:72a45e05933d11d1 bd453303 8a16018b aa0b014a 3942b14b 51030d6b 1b0b7d6b 4b0b03eb 131f7d6b
+site xc2wide main 836608 sha:d6233b520f746991 bd455b04 2a0c016b 3942a94c 2a4c0d8c 1300018c 2a0c016b 79c15d4a 0a2b014a
+site xc2wide main 83660c sha:99e115fe86d411f6 1e220862 0a0b0129 2a0a0129 79015ec9 52801869 3902b2c9
+site xc2wide main 8367a0 sha:ccf15d3b0c96f84d @page:x9 bd408d21 bd40e134 1e342821 1e212a41
+# Panes that clip their children (the Skip Travel map's panel) draw them into a viewport of their own. The clip
+# rectangle is in design units, counted from the design's left edge without the centring. main+0x8399c0 turns it into
+# the viewport and the scissor (main+0x701128 sets both): x times the frame's pixels per unit ([x19+0x558]). The
+# children's projection (main+0x833ee8) maps the same rectangle onto that viewport: sx = W / (w * s),
+# ox = sx - 1 - 2 * x / w on the full-frame clip x. The builders' centring passed through that projection lands c pixels
+# right in the viewport (c = (1 + left) / 2 * W), so the map sat c right of its place and was cut by the viewport's
+# right edge. At 32:9 it fell wholly outside, and the panel was empty. Both get the centring:
+# - the viewport's x gets the page's +0xdc, the centring in pixels, as it is scaled (main+0x839ae8). x9 and s5 are free:
+#   x9 was last read at main+0x839ac8, s5 is not used, and the call to main+0x701128 that follows clobbers both.
+# - the projection's x gets +0x90, the centring in design units, where it is loaded (main+0x833fd8). x8 and s3 are free:
+#   x8 is written at main+0x83404c before any read, and s3 at main+0x833fe4.
+# The rectangle itself stays as it is: main+0x839a6c compares it with the pane's to skip unchanged scissors.
+site xc2wide main 839ae8 sha:30bd861f00d67478 1e230803 @page:x9 bd40dd25 1e252863
+site xc2wide main 833fd8 sha:da1ef6542590620d 2d400a81 @page:x8 bd409103 1e232821
+# The builders draw text (main+0x82cbec) and pictures (main+0x82ef1c) of every layout alike, so the markers on the 3D
+# scene (talk and shop icons, field balloons) would move with the rest. The game places them across the camera viewport
+# (page +0x80, wider than 1280 here) from its left edge: main+0x3290e8 copies the viewport to [main+0xb87218] each
+# frame, and two world-to-screen conversions (main+0x33d6e4, and main+0x571044 that it falls through to) compute
+# x = (ndc + 1) * viewport width / 2 from it, which under the centred interface lies (viewport - 1280) / 2 units right
+# of the object. That distance, the page's +0x90, is subtracted where the two callers that place markers take the x:
+# main+0x33d50c (both conversions; main+0x33d5ec, after its checks for an unset or infinite point, before it rounds the
+# x) and main+0x347ae4 (main+0x571044; main+0x347af4, where it loads the point). The conversions themselves stay as
+# they are: their other callers (main+0x65060, main+0x6a570) use differences of two points, and shifting
+# main+0x571044 itself hid the minimap. At main+0x33d5ec x9 and s2 are free (x9 is written next, s2 is unused in the
+# function's tail); at main+0x347af4 x10 and s3 (x10 is written before any read, s3 is unused after it).
+site xc2wide main 33d5ec sha:ff0840a900c975f7 @page:x9 bd409122 1e223800 1e380015
+site xc2wide main 347af4 sha:c9dd16f47f6ed74a 2d400be1 @page:x10 bd409143 1e233821
+# A field balloon's box (main+0x68610c) is built around its speaker's marker position, which the sites above have put
+# in the centred design's units, and the clamp that keeps it on screen (main+0x697a54, xc2res above) measures from the
+# viewport's left edge across the interface width (+0x80): the two disagree by the centring, so the box was clamped
+# where it was on screen and moved off its speaker. The rectangle's x (sp+8) gets the centring (+0x90, whole units)
+# added before the call (main+0x6862c0) and taken off again after it (main+0x6862c8). x9-x11 and s0 are free on both
+# sides: the call clobbers them, and after it w10 and w9 are written before they are read and x11 and s0 are not read.
+site xc2wide main 6862c0 sha:fb5c588cf819dc82 910023e0 @page:x9 bd409120 1e38000a 794013eb 0b0a016b 790013eb
+site xc2wide main 6862c8 sha:3ede046bc3887487 12000001 @page:x9 bd409120 1e38000a 794013eb 4b0a016b 790013eb
+
 # xc2scale (XC2_RENDER_SCALE, resolution.c): the share of the frame the 3D scene draws in. XC2 takes it from
 # /monolib/shader/lib_nx.ini, parsed by main+0x716e68: red_sclX/Y (1.0, +0x1928/+0x192c of the shader settings) and
 # red_hdsclX/Y (0.75 handheld, +0x193c/+0x1940) when red_Auto is off, and with red_Auto=on (shipped) a dynamic share
@@ -282,22 +537,44 @@ site xc2kill main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 13
 set xc2one XC2_CHEAT_ONE_DAMAGE 0
 site xc2one main 62668 b900027b 913bfa9e b94003de 530f3fde 1adb0f69 0a0903de 131f7f69 0a2903de 52800029 4b1b0129 1b096fdb b900027b
 
-# xc2qte (XC2_QTE_FIX, on): the QTE ring counts the frame time twice. Issues 48 and 72: a Blade Special's QTE ring
-# closes late against the special's animation, the button window opens after the animation and a mash window is
-# short. The update (main+0x1d0bc, the challenge layout) loads the frame message's step ([x21,#4], seconds per
-# frame, measured 0.01663 to 0.01677 at 60 fps) and turns it into frames of 1/30 s by
-# 30 into s8 (main+0x1d0c0, main+0x1d0c4). When the lookup main+0x7b4b0 finds the object, main+0x1d108 to
-# main+0x1d114 multiply s8 by the product of its [x0,#0xcd8] and [x0,#0xec8], which is the frame time in 1/30 s
-# frames again, so at 60 fps the factor is 0.25 instead of 0.5 and the ring advances at half speed. The
-# replacement of that last multiply, fmov s8, s1, keeps the object's product alone: at 30 fps nothing changes (s8
-# was 1.0), and at any other rate the advance is the frame time once. The paths that skip the lookup (the flag
-# nibble at [x19,#0x18], an id of -1, or no object) keep the step times 30 they already had. masagrator's
-# FPSLocker 3.0.1 set (BID 4F5C96E2D97F45AC) writes 1.0 into s8 at main+0x1d0c4 instead, which gives the same
-# factor when the lookup succeeds but 1.0, twice the console's rate at 60 fps, on the paths that skip it. Only s8
-# changes (s1 keeps the product, main+0x1d118 copies s8 to s0 for the call) and no flag is written.
+# xc2qte (XC2_QTE_FIX, on): the Blade Special button challenges at any frame rate (issues 48, 72 and 177). One object
+# runs a challenge (the battle UI object with the update tasks main+0x3b8188 and main+0x3bb644): a ring shrinks over a
+# light band and then a dark disc, and a press is graded by the band the ring is on, excellent in the light band, good
+# in the dark disc, a miss outside. Three parts of it are per frame or count the frame time twice.
+#
+# main+0x1d0c4, the rate the battle sends the challenge each frame (the message 0x102): frame step ([x21,#4]) times 30,
+# then the product of the attacker's two motion speeds ([x0,#0xcd8], [x0,#0xec8], 1.0 in a normal special) where
+# main+0x1d0c8 to main+0x1d104 find the attacker. The receivers multiply the rate with their own frame step again
+# (main+0x3b81e0, main+0x3bb7e8), so the step was counted twice, the challenge ran at fps / 30 of its speed and closed
+# late against the special's animation. The replacement fmov s8, #1.0 is the console's value (its step is 1/30 s),
+# as in masagrator's FPSLocker 3.0.1 set (BID 4F5C96E2D97F45AC). Measured at 30, 60 and 120 fps with it: the rate is
+# 1.0 and the challenge's clock and ring both run on real time.
+#
+# main+0x3b87dc and main+0x3b87e0, the grade (main+0x3b8768): it is taken from the challenge's own clock ([x19,#0x490],
+# 1/30 s ticks) less 1, while the bands are drawn from the same tick windows for the ring's position (main+0x3b94d4 to
+# main+0x3b971c; the ring goes from [x20,#0xc] to [x20,#0x10] and the light band is [x20,#0xe] plus and minus
+# [x20,#0x12]). The two clocks start by different paths: the clock with the message that opens the challenge, the ring
+# after an interface timer that counts whole milliseconds a frame and a fade (main+0x3b99d4 to main+0x3b9a8c,
+# main+0x68b638), which end on frame boundaries. Measured, the ring leads the clock by 1 to 2 ticks at 30 fps and 1.3
+# to 1.8 at 120, so with the 1 subtracted a press was graded up to 2.8 ticks behind the ring the player sees: on a
+# level 1 special the excellent window ended 4.3 ticks, half of the dark disc, after the ring had left the light band,
+# and a press in the outer part of the light band was a miss. The console hides part of that behind its longer way from
+# button to picture. The replacement grades the ring itself: the entry's start tick plus the ring's position
+# ([x19+0x48*i+0x3d0], seconds) times 30, rounded, in place of the clock less 1. The tests before it (a press before the
+# challenge starts does nothing) and the windows after it, one tick wider than the light band at both ends, stay.
+#
+# main+0x3bb670 and main+0x3bb674, the rest of a mash challenge after its ring closed (the task main+0x3bb644): the
+# clock gets 1 per frame, so the time to mash shrank to 30 / fps of it. The replacement advances the clock as the first
+# part does (main+0x3b81d8 to main+0x3b8210): the battle's step (main+0x359a90 returns it in s0) times the rate, summed
+# in [x19,#0x494] and rounded in 1/30 s. The call clobbers x8 and x9 only, which are dead there.
+# At an exact 1/30 s step the first and the last of these are the original arithmetic. No replacement writes a flag; the
+# fcvtas rounds half away from 0, as the game's own conversion does.
 set xc2qte XC2_QTE_FIX 1
-site xc2qte main 1d114 sha:6cca7c0d6280bafd 1e204028
-
+site xc2qte main 1d0c4 sha:2be412566151306f 1e2e1008
+site xc2qte main 3b87dc sha:0e61f08ec7edf2af b9408269 5280090a 9b0a4d29 bd43d120 1e27d001 1e210800 1e240009 79401e88
+site xc2qte main 3b87e0 sha:a51b9efa2ff79485 79401a8a 0b0a0129 7940268a
+site xc2qte main 3bb670 sha:bca0d338fa39aedd 97fe7908
+site xc2qte main 3bb674 sha:2ddbafe335badaf3 bd409e61 1e210800 bd449661 1e202820 bd049660 1e27d001 1e210800 1e240008
 # xc2pulse (XC2_PULSE_FIX, on): the glow behind the element icon at the centre of the arts cross grew in battle until
 # the next special reset it (issue 48: it reached 161 interface units against its 8 at the start of a two-minute
 # fight, at 30 fps as at 60). The glow is a looping additive animation of a UI object (main+0x670ad4): its keys hold
@@ -317,3 +594,19 @@ site xc2qte main 1d114 sha:6cca7c0d6280bafd 1e204028
 set xc2pulse XC2_PULSE_FIX 1
 site xc2pulse main 670b10 sha:f6998207a2c97b35 bd4006a1 1e212000
 site xc2pulse main 670b14 sha:828d0405fcd42748 540002ca
+# xc2jit (XC2_FSR_JITTER, on): the camera jitter FSR needs. The renderer (main+0x7e3808) moves the projection by one
+# entry of a Halton(2,3) table in its object each frame (+0x9c0, 16 entries of 16 bytes; the next entry's index at
+# +0x9b4), modulo the count in its settings (+0x14c of the pass settings, 8). Those 8 positions are made for the game's
+# own anti-aliasing at the rendered size. FSR builds a larger picture and needs 8 for each output pixel under a rendered
+# one, 32 at half the size: with 8 some output pixels never get a sample of their own, which shows as a fine comb along
+# hard shadow edges. The first site changes the count (w11) by the page's +0x8f8, a mask of the bits to clear and above
+# it the bits to set, one 64-bit word so that the game never reads half a change; 0 leaves the game's count, which is also
+# what keeps the jitter off where the count is below 2 (the branch before the site). The others read the entry from the
+# page's table (+0x900, the same sequence, 8 bytes an entry), which is long enough for every count and for an index left
+# from a longer one. vk_fsr3.c writes both (vk_fsr3_jitter_init, jitter_phases). x10, x9 and x12 are overwritten before
+# they are read again, and no flag is written.
+set xc2jit XC2_FSR_JITTER 1
+site xc2jit main 7e459c sha:e1119b8bd8c8d6fa @page:x12 f9447d8c 0a2c016b d360fd8c 2a0c016b b949b66c
+site xc2jit main 7e45a0 sha:0c4ef1bf4730445a @page:x9 8b0c0d29
+site xc2jit main 7e45ac sha:894eb2555f6a9265 b949012a
+site xc2jit main 7e45b0 sha:2c5c87ebbcaa8bf9 b9490529

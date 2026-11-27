@@ -23,7 +23,7 @@ MSYS2 packages, after `pacman -Syuu` (run it twice; the first pass updates the c
 
 ```sh
 pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-{clang,lld,ninja,gcc,make,pkgconf,sdl3,opus,libvpx,zstd,vulkan-devel,\
-vulkan-memory-allocator,vulkan-validation-layers,shaderc,spirv-tools} base-devel git unzip
+vulkan-memory-allocator,vulkan-validation-layers,shaderc,glslang,spirv-tools} base-devel git unzip
 ```
 
 `ffmpeg` from MSYS2 is a GPLv3 build and is never linked; the movies go through libvpx.
@@ -104,6 +104,17 @@ From the repository root, in PowerShell. Every step that depends on the game ver
    .venv-py314\Scripts\python tools\make_romfs_patches.py --version <ver>
    ```
 
+   Lifting again into the same folder translates only the chunks whose inputs changed (`generated\<ver>\<module>\lift_cache.json`,
+   keyed by the generator, the module and the patch sets that fall into a chunk); a change to one patch set takes a few
+   seconds instead of a whole lift. `--no-cache` or `XC2_LIFT_CACHE=0` lifts everything. Lifter changes empty the cache by
+   themselves. `tests\lift_cache_test.py` checks it; anything new that a chunk's text depends on has to go into
+   `chunk_key` in `recomp\gen.py`. Edit patch sets in one generated and one build folder: a new `--gen` or `--out` folder
+   compiles every chunk unless `--object-cache` names a folder with their objects.
+   To try an edit of `recomp\patches-v301.txt` without any of that, start a build that has been linked once with
+   `XC2_MODS_BUILD=always`: the game compiles only the functions whose sites changed and runs them in place of its own
+   (`tools\mod_code.py`, about 1-3 s; the XC2_ setting and default of a new set come from the table too). A build that
+   ships still needs the lift. `tests\mod_code_test.py` checks the tool.
+
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
    The generated C is linked with ThinLTO, so small lifted functions are inlined across files (a 6 % better 1 % low on
    the issue 112 route). The first link takes about 100 s and 1.7 GiB on 20 threads; `build\<ver>\lto-cache` keeps its
@@ -151,6 +162,11 @@ your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pa
 `romfs\` next to the exe or point `XC2_ROMFS` at its folder. Run `xc2.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
+The portable packager includes firmware fonts and RomFS patches when present; neither is required for XC2's
+American/European build in any of its languages, Korean included; whether Chinese text on the Japanese release asks
+for the shared fonts is unchecked. Optional FSR DLLs
+found beside the source executable are included. The folder keeps its own profile; existing saves are not copied.
+
 ## Linux
 
 The runtime builds and runs on x86-64 Linux with a window, input and menu on SDL3 (`*_sdl.c`) in place of the Win32
@@ -166,7 +182,7 @@ Requirements:
 
   ```sh
   pacman -S --needed clang lld ninja make sdl3 opus libvpx zstd vulkan-headers vulkan-icd-loader \
-      vulkan-validation-layers shaderc spirv-tools dotnet-sdk uv git
+      vulkan-validation-layers shaderc glslang spirv-tools dotnet-sdk uv git
   ```
 
   Vulkan Memory Allocator is a single header (AUR `vulkan-memory-allocator`). Without it, `build_game.py` fetches the
@@ -208,8 +224,15 @@ change passes these, all run with `.venv`:
 | `tests\diff\func.py` | whole functions as the generator emits them, loops, jump tables and calls included (calls go to a stub that checks the registers at the call) | yes |
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention, on several threads; the ABA cases print "known", as the compare-and-swap monitor misses them | no |
+| `tests\ui_text_test.py` | the catalog of the settings menu and the overlay: English for every id, the same printf conversions in every language; lists the texts without a Chinese translation (CI runs it) | no |
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
+
+CI's Python tests (`.github/workflows/python-tests.yml`) run the installer, generator and mod tool tests that need no
+game files, compiler or window, on the Python and packages of the setup (`tools/requirements-installer.txt`).
+
+`--cflags=-march=x86-64-v2` runs `lift.py`, `simd.py`, `atomic.py` and `func.py` on the code a `--cpu v2` build gets, with
+the software fused multiply-add of `runtime\fma.c`; a change to that file or to the FP lowering passes both levels.
 
 `lift.py`, `simd.py` and `func.py` split their cases into chunks over `--jobs` worker processes (default: every logical
 processor). Each chunk seeds its own generator from `--seed`, so a run gives the same cases with any number of jobs. The
@@ -223,12 +246,15 @@ feedback part: a draw that samples the target it writes must match a reference d
 `XC2_VK_VALIDATION=sync` the layer also checks synchronization (its `VkLayer_khronos_validation.json` must be found through
 `VK_LAYER_PATH`, which names the directory that holds it). `--probe-fsr` runs
 AMD's upscaler alone (1280x720 to 1920x1080, two flat frames, the result checked), needs no game files, and prints the
-provider version the API picked; it needs the FSR libraries next to `xc2.exe` (see below).
+version that ran: the one the FSR libraries next to `xc2.exe` pick (see below), or the built-in FSR 3.1.4 without them or
+with `XC2_FSR_BUILTIN=1`. The built-in effects come from AMD's FidelityFX SDK 1.1.4: the first runtime build fetches
+the folders it needs with git, applies `tools\ffx_sdk.patch` and compiles the shaders with glslangValidator
+(`tools\ffx_sdk.py`, into `toolchain\`).
 
 AMD's FSR libraries: `tools\build_game.py` copies what it finds next to `xc2.exe` for a developer build, from
 `build\ffx-sdk-2.4.0\Kits\FidelityFX\signedbin\` or `build\ffx-dlls\`: `amd_fidelityfx_loader_vk.dll`,
 `amd_fidelityfx_upscaler_vk.dll`, `amd_fidelityfx_framegeneration_vk.dll`. `tools\make_release.py` downloads the same
-tagged files and pins their sha256. Without them the FSR settings stay off and the game runs as before.
+tagged files and pins their sha256. Without them the game uses its built-in FSR 3.1 and has no FSR 4.
 
 Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --translate` extracts every Maxwell shader
 to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; failure groups go to `failures.txt`.

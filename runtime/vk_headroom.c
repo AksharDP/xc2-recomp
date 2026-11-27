@@ -13,6 +13,10 @@
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
 // is allocated.
+// On a discrete GPU, host-visible memory types get no headroom. Their blocks hold the staging and uniform arenas, which fit one 256 MiB
+// block of system memory; the anchor's half block pushed them into a second one, and from that block on every
+// write-watch reset of the process cost about six times as much (15 to 90 us a query on an RTX 4070 Laptop, about 1.5
+// ms a frame on the presenting thread). That block is not the cause in a standalone test, so the mechanism is not known.
 // XC2_VRAM_HEADROOM=0 turns it off.
 
 #include "cfg.h"
@@ -105,8 +109,12 @@ static void headroom_main(void *arg) {
         watch |= (uint64_t)plat_xchg64(&H.types, 0);
         plat_mutex_lock(&H.lock);
         const VkCtx *c = H.stop ? NULL : vk_ctx();
+        // Host-visible types are left out only on a discrete GPU: on an integrated one (the Steam Deck, Intel) nearly
+        // every type is host-visible, and its render-thread allocations would wait for new blocks again; not measured there.
+        int skip_hv = c && c->props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
         for (uint32_t t = 0; c && t < c->mem_props.memoryTypeCount && t < 64; t++)
-            if (watch >> t & 1) top_up(c, t);
+            if (watch >> t & 1 && !(skip_hv && c->mem_props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                top_up(c, t);
         int stop = H.stop;
         if (stop && (c = vk_ctx()))
             for (uint32_t t = 0; t < 64; t++) drop_anchor(c, t);

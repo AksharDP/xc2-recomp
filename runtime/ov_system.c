@@ -22,6 +22,7 @@
 #include "cfg.h"
 #include "fs.h"
 #include "host.h"
+#include "mods.h"
 #include "ov.h"
 #include "platform/platform.h"
 
@@ -72,11 +73,47 @@ static const char *game_code(const char *code) {
     return NULL;
 }
 
-// Whether the installed game files have text for code. XC2_GAME_LANGS is the list of the codes they have, separated by
-// spaces or commas (the installer writes it from the archive, tools/xc2_languages.py); unset, every code counts.
+// The folder of the game's text for a code of game_codes (tools/xc2_languages.py), NULL for none.
+static const char *text_folder(const char *code) {
+    static const char *const map[][2] = {{"ja", "jp"}, {"en-US", "gb"}, {"en-GB", "gb"}, {"fr", "fr"}, {"fr-CA", "fr"},
+                                         {"de", "ge"}, {"it", "it"}, {"es", "sp"}, {"es-419", "sp"}, {"zh-CN", "cn"},
+                                         {"ko", "kr"}, {"zh-TW", "tw"}};
+    for (size_t i = 0; i < sizeof map / sizeof *map; i++)
+        if (!strcmp(code, map[i][0])) return map[i][1];
+    return NULL;
+}
+
+// Whether an enabled mod brings the text of code: a bdat/<folder> folder in its base RomFS, which the game reads for a
+// language its archive lacks. Translation mods for the western Switch release ship Japanese this way (bdat/jp), and a
+// console, which does not filter the languages, runs them once set to Japanese.
+static int mod_has_text(const char *code) {
+    static const char *const folders[] = {"jp", "gb", "fr", "ge", "it", "sp", "cn", "kr", "tw"};
+    static volatile int8_t seen[sizeof folders / sizeof *folders];   // 0 not looked, 1 no, 2 yes: mods are fixed at start
+    const char *folder = text_folder(code);
+    size_t k = 0;
+    while (folder && k < sizeof folders / sizeof *folders && strcmp(folders[k], folder)) k++;
+    if (!folder || k == sizeof folders / sizeof *folders) return 0;
+    if (seen[k]) return seen[k] == 2;
+    int has = 0;
+    mods_scan();
+    for (int i = 0; i < mods_count() && !has; i++) {
+        const ModInfo *m = mods_at(i);
+        char dir[2200];
+        if (!m || !m->romfs[0] || !mods_started(i)) continue;
+        has = snprintf(dir, sizeof dir, "%s/bdat/%s", m->romfs, folder) < (int)sizeof dir && plat_dir_exists(dir);
+    }
+    if (has) rt_log("oe: an enabled mod brings the game's %s text (bdat/%s)", code, folder);
+    seen[k] = (int8_t)(has ? 2 : 1);
+    return has;
+}
+
+// Whether the installed game files, or an enabled mod (mod_has_text), have text for code. XC2_GAME_LANGS is the list of
+// the codes the game files have, separated by spaces or commas (the installer writes it from the archive,
+// tools/xc2_languages.py); unset, every code counts.
 int ov_language_shipped(const char *code) {
     const char *list = cfg_get("XC2_GAME_LANGS");
     if (!list || !*list) return 1;
+    if (mod_has_text(code)) return 1;
     size_t n = strlen(code);
     for (const char *p = list; *p;) {
         p += strspn(p, " ,");
@@ -908,9 +945,11 @@ static void ov_location_updated(Cpu *c) {
 
 // ==== nn::pl shared fonts (shared_font.c). XCX asks for them only from its font loader, only with Simplified Chinese,
 // Korean or Traditional Chinese text, and only for type 0; tools/extract_fonts.py writes
-// them from the user's firmware. Each type is read on first use into guest-visible memory as the BFTTF file the pl
-// shared memory holds; Address is 8 bytes past the file start (after the BFTTF header) and Size the decoded font size,
-// as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
+// them from the user's firmware. XC2's main of the Americas and Europe release (3.0.1) imports no nn::pl function: it
+// draws Korean with menu/font/standard_kr.wifnt from bf2.arh, and runs in Korean to the opening without these files.
+// The overrides stay for the Japanese release, whose Chinese text is unchecked. Each type is read on first use into
+// guest-visible memory as the BFTTF file the pl shared memory holds; Address is 8 bytes past the file start (after the
+// BFTTF header) and Size the decoded font size, as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
 // Address/Size instead of a hang. XC2_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
 #define BFTTF_MAGIC 0x7f9a0218u
@@ -963,7 +1002,7 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         snprintf(path, sizeof path, "%s/%s", ov_shared_font_dir(dir, sizeof dir), font_files[t]);
         FILE *f = fopen(path, "rb");
         if (!f)
-            rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (needed for Chinese and Korean text); run "
+            rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (the game asked for a Switch system font); run "
                      "tools/extract_fonts.py --firmware <firmware NCA dir> or set XC2_SHARED_FONTS", fn, (long long)t,
                      caller(c, lr, sizeof lr), path);
         plat_fseek64(f, 0, SEEK_END);

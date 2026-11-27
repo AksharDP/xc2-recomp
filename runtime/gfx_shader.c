@@ -6,9 +6,10 @@
 //
 // Keys. The code hash is sha256 over stage (u32), the 0x880-byte control section, code_size (u64), the code, the c1
 // length (u32) and bytes. Per code hash and translator the cache holds a use mask (<sha256("TKSU", xlate id, code
-// hash)>.use): the texture/image slots the translator queried (.res.json tex_queried, img_queried), the vertex
-// attributes a VS declares and the colour targets an FS declares (SPIR-V Locations). The input id is sha256 over "TKSI",
-// IN_VERSION, the code hash and the answers with everything outside the mask zeroed (fixed little-endian layout), so
+// hash)>.use): the texture/image slots the translator queried (.res.json tex_queried, img_queried), the texture slots
+// the shader samples and the image slots it declares without a format (whose integer formats it must declare), the
+// vertex attributes a VS declares and the colour targets an FS declares (SPIR-V Locations). The input id is sha256 over
+// "TKSI", IN_VERSION, the code hash and the answers with everything outside the mask zeroed (fixed little-endian layout), so
 // stale bindings in slots the shader never reads do not make new ids; it does not depend on the translator. The cache
 // key is sha256 over "TKSK", KEY_VERSION, the translator identity and the input id. A code hash without a known mask is
 // translated under a provisional key ("TKSP", full answers); its files are renamed to the cache key and the mask stored.
@@ -50,12 +51,13 @@
 #define IN_VERSION 1                                       // in every input id and .in file: bump when the answers layout
                                                            // or the program hash changes (drops every stored input)
 #define USE_MAGIC 0x4d554b54u                              // "TKUM", .use files
-#define USE_VERSION 1
+#define USE_VERSION 2                                      // 2: the texs and imgs masks
 #define IN_MAGIC 0x49534b54u                               // "TKSI", .in files
 #define MAX_SVC 32                                         // translator processes
 
 typedef struct {                                           // which answers a shader's translation depends on
     uint32_t slots;                                        // tex_type, img_type, img_format of these c2 slots
+    uint32_t texs, imgs;                                   // tex_type's and img_type's GFX_TEX_SINT, GFX_TEX_UINT of these
     uint32_t attrs;                                        // attr_type (VS input Locations)
     uint32_t fouts;                                        // frag_out_type (FS output Locations)
 } UseMask;
@@ -705,7 +707,15 @@ static uint32_t json_slot_mask(const char *js, const char *name) {
 }
 
 static UseMask use_of(const GfxShader *s) {
-    UseMask m = {json_slot_mask(s->reflection, "tex_queried") | json_slot_mask(s->reflection, "img_queried"), 0, 0};
+    UseMask m = {.slots = json_slot_mask(s->reflection, "tex_queried") | json_slot_mask(s->reflection, "img_queried")};
+    for (int i = 0; i < s->nres[GFX_RES_TEX]; i++) {       // the slots Program.cs QueryTextureComponentType reads
+        const GfxShaderRes *r = &s->res[GFX_RES_TEX][i];
+        if (r->slot >= 0 && r->slot < 32 && r->count == 1 && !(r->type & 0x400)) m.texs |= 1u << r->slot;
+    }
+    for (int i = 0; i < s->nres[GFX_RES_IMG]; i++) {
+        const GfxShaderRes *r = &s->res[GFX_RES_IMG][i];
+        if (r->slot >= 0 && r->slot < 32 && r->count == 1 && !r->format) m.imgs |= 1u << r->slot;
+    }
     if (s->stage == GFX_STAGE_VS) m.attrs = s->in_mask;
     else if (s->stage == GFX_STAGE_FS) m.fouts = s->out_mask & 0xff;
     return m;
@@ -755,6 +765,10 @@ static int hex_byte(const char *c) {
     return v;
 }
 
+static UseMask use_mask_of_file(const uint32_t f[7]) {
+    return (UseMask){.slots = f[2], .attrs = f[3], .fouts = f[4], .texs = f[5], .imgs = f[6]};
+}
+
 typedef struct { int n, bad; } UsePreload;
 
 // One <64 hex digits>.use file of the cache directory into the table.
@@ -772,11 +786,12 @@ static int use_preload_file(const char *name, void *ctx) {
     if (ok) {
         snprintf(p, sizeof p, "%s/%s", cache_dir, name);
         u = (uint32_t *)read_file(p, &len);
-        ok = u && len == 20 && u[0] == USE_MAGIC && u[1] == USE_VERSION;
+        ok = u && len == 28 && u[0] == USE_MAGIC && u[1] == USE_VERSION;
+        if (u && len >= 8 && u[0] == USE_MAGIC && u[1] < USE_VERSION) return free(u), 1;   // an older build wrote it
     }
     UseFile **slot = ok ? use_file_slot(e.name) : NULL, *x;
     if (slot && !*slot && (x = malloc(sizeof *x))) {
-        e.m.slots = u[2], e.m.attrs = u[3], e.m.fouts = u[4];
+        e.m = use_mask_of_file(u);
         *x = e, *slot = x, st->n++;
     } else if (!ok) {
         st->bad++;
@@ -835,8 +850,8 @@ static int use_find(const uint8_t h[32], UseMask *m) {
         use_path_of(name, p);
         uint64_t n = 0;
         uint32_t *f = (uint32_t *)read_file(p, &n);
-        known = f && n == 20 && f[0] == USE_MAGIC && f[1] == USE_VERSION;
-        if (known) m->slots = f[2], m->attrs = f[3], m->fouts = f[4];
+        known = f && n == 28 && f[0] == USE_MAGIC && f[1] == USE_VERSION;
+        if (known) *m = use_mask_of_file(f);
         free(f);
     }
     plat_mutex_lock(&cache_lock);
@@ -848,7 +863,7 @@ static int use_find(const uint8_t h[32], UseMask *m) {
 static void use_store(const uint8_t h[32], const UseMask *m) {
     char p[PATH_CAP + 80];
     use_path(h, p);
-    uint32_t f[5] = {USE_MAGIC, USE_VERSION, m->slots, m->attrs, m->fouts};
+    uint32_t f[7] = {USE_MAGIC, USE_VERSION, m->slots, m->attrs, m->fouts, m->texs, m->imgs};
     plat_file_write_atomic(p, f, sizeof f);
     plat_mutex_lock(&cache_lock);
     use_put(h, 1, m);
@@ -896,7 +911,11 @@ static void mask_answers(const GfxShaderAnswers *a, const UseMask *m, GfxShaderA
     memset(o, 0, sizeof *o);
     if (!a) return;
     for (int i = 0; i < 32; i++) {
-        if (m->slots >> i & 1) o->tex_type[i] = a->tex_type[i], o->img_type[i] = a->img_type[i], o->img_format[i] = a->img_format[i];
+        const uint8_t integer = GFX_TEX_SINT | GFX_TEX_UINT;
+        uint8_t tm = (m->slots >> i & 1 ? (uint8_t)~integer : 0) | (m->texs >> i & 1 ? integer : 0);
+        uint8_t im = (m->slots >> i & 1 ? (uint8_t)~integer : 0) | (m->imgs >> i & 1 ? integer : 0);
+        o->tex_type[i] = a->tex_type[i] & tm, o->img_type[i] = a->img_type[i] & im;
+        if (m->slots >> i & 1) o->img_format[i] = a->img_format[i];
         if (m->attrs >> i & 1) o->attr_type[i] = a->attr_type[i];
     }
     for (int i = 0; i < 8; i++)
@@ -959,6 +978,15 @@ uint32_t gfx_shader_xfb(const uint8_t *control, uint8_t words[GFX_XFB_WORDS]) {
     return w * 4 == stride ? stride : 0;
 }
 
+// The slots of types[32] with an integer format, as JSON members.
+static size_t put_integers(char *o0, const uint8_t *types) {
+    char *o = o0;
+    for (int i = 0; i < 32; i++)
+        if (types[i] & (GFX_TEX_SINT | GFX_TEX_UINT))
+            o += sprintf(o, "%s\"%d\":\"%s\"", o == o0 ? "" : ",", i, types[i] & GFX_TEX_UINT ? "uint" : "sint");
+    return (size_t)(o - o0);
+}
+
 static size_t build_request(char *o0, const char *hex, const char *stage, const char *code_path, const uint8_t *c1,
                             uint32_t c1_len, const GfxShaderAnswers *a, const uint8_t *control) {
     char *o = o0;
@@ -972,15 +1000,23 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     if (a) {
         const char *sep = "";
         o += sprintf(o, ",\"tex\":{");
-        for (int i = 0; i < 32; i++)
-            if (a->tex_type[i] && a->tex_type[i] < COUNT(tex_names)) o += sprintf(o, "%s\"%d\":\"%s\"", sep, i, tex_names[a->tex_type[i]]), sep = ",";
+        for (int i = 0; i < 32; i++) {
+            int t = a->tex_type[i] & ~(GFX_TEX_SINT | GFX_TEX_UINT);
+            if (t && t < COUNT(tex_names)) o += sprintf(o, "%s\"%d\":\"%s\"", sep, i, tex_names[t]), sep = ",";
+        }
         sep = "";
+        o += sprintf(o, "},\"texint\":{");
+        o += put_integers(o, a->tex_type);
+        o += sprintf(o, "},\"imgint\":{");
+        o += put_integers(o, a->img_type);
         o += sprintf(o, "},\"img\":{");
-        for (int i = 0; i < 32; i++)
-            if (a->img_type[i] && a->img_type[i] < COUNT(tex_names)) {
+        for (int i = 0; i < 32; i++) {
+            int t = a->img_type[i] & ~(GFX_TEX_SINT | GFX_TEX_UINT);
+            if (t && t < COUNT(tex_names)) {
                 const char *f = a->img_format[i] && a->img_format[i] < COUNT(fmt_names) ? fmt_names[a->img_format[i]] : "R8G8B8A8Unorm";
-                o += sprintf(o, "%s\"%d\":{\"type\":\"%s\",\"fmt\":\"%s\"}", sep, i, tex_names[a->img_type[i]], f), sep = ",";
+                o += sprintf(o, "%s\"%d\":{\"type\":\"%s\",\"fmt\":\"%s\"}", sep, i, tex_names[t], f), sep = ",";
             }
+        }
         sep = "";
         o += sprintf(o, "},\"attr\":{");
         for (int i = 0; i < 32; i++)
@@ -1561,9 +1597,14 @@ int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res)
     return s->nres[kind];
 }
 
-// The slots of the use mask: answers outside it select the same translation (mask_answers), so a caller may leave
-// their texture and image types zero. Parses the reflection: callers keep the result.
-uint32_t gfx_shader_slot_mask(const GfxShader *s) { return use_of(s).slots; }
+// The slots of the use mask, and in *texs and *imgs the texture and image slots whose integer formats count (GFX_TEX_SINT,
+// GFX_TEX_UINT): answers outside them select the same translation (mask_answers), so a caller may leave their texture and
+// image types zero. Parses the reflection: callers keep the result.
+uint32_t gfx_shader_slot_mask(const GfxShader *s, uint32_t *texs, uint32_t *imgs) {
+    UseMask m = use_of(s);
+    *texs = m.texs, *imgs = m.imgs;
+    return m.slots;
+}
 
 uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]) {
     if (io) memcpy(io, s->in, sizeof s->in);

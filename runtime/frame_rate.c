@@ -145,6 +145,21 @@ static int xc2_cutscene(void) {
     return mode == 2 ? state == 4 : state >= 2;
 }
 
+// What is on screen, for the frametime summary (perf.c ft_frame): -1 not the XC2 build (no signal), 0 play, 1 the title
+// screen, 2 a cutscene or movie. The title is up while its object's screen pointer is set (main+0xc232e8, then +0x1a0):
+// it is set from the title's load until a game starts, as resolution.c res_hud_frame reads it. The title, a movie and a
+// cutscene run at 30 fps whatever the limit, so their presents are not play.
+int frame_menu_kind(void) {
+    if (!xc2_game) return -1;
+    uint64_t title = 0, screen = 0;
+    if (plat_mem_read(RT_MAIN_BASE + 0xc232e8, &title, sizeof title) && title &&
+        plat_mem_read(title + 0x1a0, &screen, sizeof screen) && screen)
+        return 1;
+    uint8_t on = 0;
+    if (plat_mem_read(RT_MAIN_BASE + 0xbd8f40, &on, 1) && on) return 2;   // the cutscene byte xc2_cutscene reads
+    return movie_playing() ? 2 : 0;
+}
+
 void frame_step_init(void) {
     xc2_rate = rt_patch_set("xcx60");
     if (xc2_rate < 0 && (xc2_rate = rt_patch_set("xc2fps")) >= 0) xc2_game = 1;
@@ -405,6 +420,7 @@ static void xc2_steps_store(double seconds) {
 
 void frame_step_present(uint64_t display_ns, int interval) {
     frame_limit_live();
+    res_hud_frame();
     double step = 0, dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
     if ((step_word || xc2_words) && last_ns) {
         if (dt > STEP_RESET_S || dt < 0.001) {

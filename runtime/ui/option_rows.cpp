@@ -52,6 +52,66 @@ static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", menu_text(UI_MENU_AFTER_RESTART));
 }
 
+// Chinese runs without blanks, and ImGui breaks a line only at blanks and ASCII punctuation: it would end a line early
+// after each Latin word. paragraph() breaks a paragraph of a Chinese menu between any two characters instead, keeping
+// closing punctuation off a line's start and opening punctuation off its end. The caller has set the wrap position.
+static bool cjk(unsigned c) { return c >= 0x2E80; }
+static bool one_of(unsigned c, const char *set) {
+    for (const char *p = set, *end = set + strlen(set); p < end;) {
+        unsigned k;
+        p += ImTextCharFromUtf8(&k, p, end);
+        if (k == c) return true;
+    }
+    return false;
+}
+static bool opens(unsigned c) { return one_of(c, "（「『《〈【“‘("); }
+static bool closes(unsigned c) { return one_of(c, "，。、；：！？）」』》〉】”’…,.;:!?)%"); }
+
+static const char *paragraph(const char *text) {
+    static ImVector<char> out;
+    if (strncmp(menu_text_lang(), "zh", 2)) return text;
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize(), room = ImGui::CalcWrapWidthForPos(ImGui::GetCursorScreenPos(), 0) - 1, line = 0;
+    auto add = [](const char *a, const char *b) { for (; a < b; a++) out.push_back(*a); };
+    out.resize(0);
+    const char *end = text + strlen(text), *s = text;
+    while (s < end) {
+        if (*s == '\n') {
+            out.push_back(*s++);
+            line = 0;
+            continue;
+        }
+        const char *blank = s;
+        while (s < end && *s == ' ') s++;
+        if (s == end || *s == '\n') continue;
+        // one piece: a character with the punctuation it keeps, or a word
+        const char *piece = s;
+        unsigned c, next;
+        bool open;
+        s += ImTextCharFromUtf8(&c, s, end);
+        do {
+            open = opens(c);
+            if (s >= end || *s == ' ' || *s == '\n') break;
+            int n = ImTextCharFromUtf8(&next, s, end);
+            if (!open && !closes(next) && (cjk(c) || cjk(next) || opens(next))) break;
+            s += n;
+            c = next;
+        } while (true);
+        float bw = font->CalcTextSizeA(fs, FLT_MAX, 0, blank, piece).x, w = font->CalcTextSizeA(fs, FLT_MAX, 0, piece, s).x;
+        if (line > 0 && line + bw + w > room) {
+            out.push_back('\n');
+            line = 0;
+        } else {
+            add(blank, piece);
+            line += bw;
+        }
+        add(piece, s);
+        line += w;
+    }
+    out.push_back(0);
+    return out.Data;
+}
+
 void opt_focus_first(void) { g_focus_req = true; }
 
 void opt_focus_key(const char *key) { snprintf(g_focus_key, sizeof g_focus_key, "%s", key); }
@@ -96,7 +156,7 @@ void opt_end(void) {
     ImGui::BeginChild("##desc", ImVec2(0, avail.y), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoNav);
     ImGui::PopStyleVar();
     ImGui::PushTextWrapPos(0);
-    ImGui::TextUnformatted(g_shown.text);
+    ImGui::TextUnformatted(paragraph(g_shown.text));
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
     ImGui::PopID();
@@ -249,8 +309,8 @@ void opt_group_text(const char *title) {
 
 void opt_text_str(const char *text, bool warn) {
     ImGui::PushTextWrapPos(0);
-    if (warn) ImGui::TextColored(ImVec4(0.95f, 0.66f, 0.40f, 1), "%s", text);
-    else ImGui::TextUnformatted(text);
+    if (warn) ImGui::TextColored(ImVec4(0.95f, 0.66f, 0.40f, 1), "%s", paragraph(text));
+    else ImGui::TextUnformatted(paragraph(text));
     ImGui::PopTextWrapPos();
 }
 
@@ -282,11 +342,11 @@ int opt_save_tick(int force) {
 
 // ---- rows
 
-bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted) {
+bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted, const char *note) {
     const CfgMeta *m = cfg_meta(key);
     bool set = cfg_bool(key) != 0, def = m && strcmp(m->def, "0") != 0;
     bool on = set != inverted;   // what the row shows
-    RowView v = {menu_text(on ? UI_MENU_ON : UI_MENU_OFF), set == def, false, NULL};
+    RowView v = {menu_text(on ? UI_MENU_ON : UI_MENU_OFF), set == def, false, note};
     if (!row(key, label, desc, v)) return false;   // any step flips it
     apply(key, set ? "0" : "1");
     return true;
@@ -304,8 +364,8 @@ void opt_group(UiTextId title) {
 
 void opt_text(UiTextId text, bool warn) {
     ImGui::PushTextWrapPos(0);
-    if (warn) ImGui::TextColored(ImVec4(0.95f, 0.66f, 0.40f, 1), "%s", menu_text(text));
-    else ImGui::TextUnformatted(menu_text(text));
+    if (warn) ImGui::TextColored(ImVec4(0.95f, 0.66f, 0.40f, 1), "%s", paragraph(menu_text(text)));
+    else ImGui::TextUnformatted(paragraph(menu_text(text)));
     ImGui::PopTextWrapPos();
 }
 
