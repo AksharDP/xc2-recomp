@@ -1,6 +1,8 @@
 // Vulkan-internal header of the graphics layer. Host code only; the guest never sees it.
 #pragma once
 #include <vulkan/vulkan.h>
+#include "vk_dispatch.h"
+#define vkQueueSubmit2 vk_api.QueueSubmit2
 #include <stdint.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
