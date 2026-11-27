@@ -22,7 +22,7 @@ jobs:
       - name: Run the tests
         run: |
           failed=
-          for t in exefs_patches installer lift_cache mod_code prompts_text regions selfupdate; do
+          for t in build_game_metadata exefs_patches installer lift_cache mod_code prompts_text regions selfupdate; do
             echo "== tests/${t}_test.py"
             python "tests/${t}_test.py" || failed="$failed $t"
           done
