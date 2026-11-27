@@ -5,14 +5,13 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
 #include "vk_mem_alloc.h"
+#include "fsr_state.h"
 #pragma clang diagnostic pop
 #include "nvn_obj.h"   // pool_t, tex_t, view_t, samp_par, NVNcopyRegion (memory and textures block)
 #include "gfx.h"       // GfxShader, GfxShaderRes, GfxShaderAnswers (pipelines block)
 
-// Required (device choice fails without them): Vulkan 1.3; VK_KHR_swapchain, VK_KHR_push_descriptor,
-// VK_EXT_depth_clip_control, VK_EXT_external_memory_host; features timelineSemaphore, dynamicRendering,
-// synchronization2, shaderStorageImageWriteWithoutFormat, depthClipControl, shaderInt64, samplerAnisotropy,
-// independentBlend, geometryShader, textureCompressionBC.
+// Required (device choice fails without them): vk_require.h lists them (Vulkan 1.3, VK_KHR_swapchain,
+// VK_KHR_push_descriptor, VK_EXT_depth_clip_control and ten features); the installer's host check uses the same list.
 // Optional (flag set in VkCtx when enabled): the has_* members.
 typedef struct VkCtx {
     VkInstance instance;
@@ -43,6 +42,7 @@ typedef struct VkCtx {
     // (attachable images get feedback usage, a by-region barrier inside the pass); else (or XC2_FEEDBACK=restart)
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
+    int has_host_import;                    // VK_EXT_external_memory_host enabled; 0: shadow storage (vk_memory.c)
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
     int device_index;                       // index in vkEnumeratePhysicalDevices
     uint64_t vram_held;                     // XC2_VRAM_LIMIT: device-local bytes held unused (vk_device.c vram_limit)
@@ -101,13 +101,21 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
+// The same with the built-in frame generation (vk_fg_generate) where it is on: 1 when two presents wait, the generated
+// picture's and then the game's, one vk_present_flip each; 0 when it is one or none. vk_present_wait_drawn waits for
+// the GPU to have drawn the generated one.
+int vk_present_blit_pair(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
+void vk_present_wait_drawn(void);
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the dw x dh
 // rectangle at {dx, dy} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing
 // recorded (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
 int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                   VkImage dst, int dx, int dy, uint32_t dw, uint32_t dh);
 void vk_fsr_release(void);   // before the device goes away
+void vk_fsr3_lib_lock(void); // AMD's loader is entered by one thread at a time
+void vk_fsr3_lib_unlock(void);
 void vk_fsr3_release(void);  // FSR 3.1 / FSR Upscaling 4 (vk_fsr3.c, hooks in vk_exec.h): before the device goes away
+int vk_fsr3_libraries(void); // the FSR libraries next to the executable: bit 0 the 2.x loader, bit 1 the 1.1.4 library
 
 // What the upscaler's resolve gave frame generation (vk_fg.c) for one frame: the depth and motion it decodes from the
 // game's targets at the render size, the upscaled scene without the HUD, and the camera values both effects take.
@@ -131,10 +139,13 @@ void vk_fsr3_frame_show(const VkFsrFrame *fr);
 int vk_fsr3_frame_get(VkFsrFrame *out);
 
 // AMD FSR Frame Generation (vk_fg.c, XC2_FRAME_GEN): the library's swapchain replaces ours, interpolates the picture of
-// two frames and presents both. Off, every function below is the plain Vulkan call.
-int vk_fg_wanted(void);      // the setting is on and usable (it needs XC2_FSR3 for its inputs)
+// two frames and presents both. Off, every function below is the plain Vulkan call. Where that library cannot run, the
+// interpolation built into the game (vk_ffx.cpp) does the same on our swapchain (vk_fg_own_wanted, vk_fg_generate).
+int vk_fg_wanted(void);      // the setting is on and the library usable (it needs XC2_FSR3 for its inputs)
+// The menu's check: bit 0 AMD's frame generation loads (running: it is at work already), bit 1 the built-in one.
+int vk_fg_check(VkCtx *c, int running);
+int vk_fg_loads(int check);  // whether what it found is still to be had (present thread)
 int vk_fg_active(void);      // the live swapchain is the library's
-float vk_fg_shown_fps(uint64_t now_ns);   // frames a second on screen, negative while frame generation is off
 // 1: *sc is the library's swapchain. 0: not installed, *sc is untouched. -1: not installed and the swapchain *sc held is
 // gone, as the library destroys what it is given even when it fails.
 int vk_fg_swapchain(VkCtx *c, VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc);
@@ -144,6 +155,16 @@ VkResult vk_fg_present(VkQueue q, const VkPresentInfoKHR *pi);
 // The prepare dispatch for the frame being presented, recorded into the present command buffer; rect is where the game
 // picture sits in the swapchain image (x, y, width, height). 0 when frame generation did not take the frame.
 int vk_fg_frame(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, const int rect[4]);
+// The built-in interpolation. 1: the setting is on, AMD's library does not do it and this device can.
+int vk_fg_own_wanted(VkCtx *c);
+// Records the interpolation between the last frame and this one into cb, for the window texture win (the game's picture,
+// w x h, GENERAL) and the frame's inputs fr (NULL none). The generated picture (RGBA8 UNORM, GENERAL) or
+// VK_NULL_HANDLE when there is none: the frame has no inputs or the last one had none.
+VkImage vk_fg_generate(VkCtx *c, VkCommandBuffer cb, const VkFsrFrame *fr, VkImage win, VkFormat fmt, int w, int h);
+void vk_fg_own_release(void);    // its contexts go, the device idle
+void vk_fg_own_lost(void);       // what it recorded was not submitted: the next frame makes the contexts again
+void vk_fg_own_room(int room);   // whether the window's surface has a swapchain image to spare for its picture
+void vk_fg_count_present(void);  // a present went out (for vk_fg_shown_fps)
 void vk_fg_shutdown(VkCtx *c);   // disables and destroys the contexts, and the swapchain they own
 void vk_fg_release(VkCtx *c);    // before the device goes away
 void vk_present_flip(void);
@@ -269,7 +290,9 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 void vk_gpu_written(uint64_t addr, uint64_t size);
 int vk_mem_mirror_probe(uint64_t addr);   // --probe-vkexec: the pool at addr gets its mirror as on a first buffer use;
                                           // 1 when it has one
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m);   // once
+// Once, at the device choice: the memory class and the memory mode. host_import: the device has
+// VK_EXT_external_memory_host; without it CPU-visible pools get shadow storage whatever XC2_SHADOW says.
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m, int host_import);
 int vk_mem_class_of(uint64_t addr);               // VK_MCLS_* of the pool at addr (NONE when unbacked)
 void vk_mem_census(uint64_t frame);               // at each present: pool census and traffic, logged at frame 1800 and,
                                                   // with XC2_TRACE=perf, every 1800 frames
@@ -391,7 +414,12 @@ uint32_t vk_texture_slots_gen(void);
 // its storage address is created, dropped, released or taken back into use. Unlocked; read it before the lookup it
 // guards (a lookup may create an entry). 0 when the slot was never registered: nothing is kept under 0.
 uint64_t vk_texture_slot_token(int id);
-uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
+// GFX_TEX_SINT or GFX_TEX_UINT when the slot samples integers (an integer format or stencil), else 0. Without the lock.
+int vk_texture_slot_component(int id);
+uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot may answer with another sampler
+// The bias vk_sampler_by_id_locked adds to the mip level of the game's anisotropic samplers, the ones its materials use
+// (vk_fsr3.c mip_bias); 0: none. What the game set and reads back stays as it is.
+void vk_sampler_scene_bias(float bias);
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 void vk_texture_storage_bound_locked(const VkTexImage *img);   // bound as a storage image in the recording submission
 uint64_t vk_texture_last_write(const tex_t *t);    // timeline value of the newest submission recorded to write it; 0: none

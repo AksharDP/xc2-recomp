@@ -1,0 +1,234 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -163,6 +163,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 SpvInstruction imageType;
+                 SpvInstruction sampledImageType;
+ 
++                AggregateType componentType = GetBoundComponentType(sampler.Flags, AggregateType.FP32);
++
+                 if (sampler.Type != SamplerType.None)
+                 {
+                     Dim dim = (sampler.Type & SamplerType.Mask) switch
+@@ -176,7 +178,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                     };
+ 
+                     imageType = context.TypeImage(
+-                        context.TypeFP32(),
++                        context.GetType(componentType),
+                         dim,
+                         sampler.Type.HasFlag(SamplerType.Shadow),
+                         sampler.Type.HasFlag(SamplerType.Array),
+@@ -213,7 +215,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                     sampledImageType,
+                     sampledImagePointerType,
+                     sampledImageVariable,
+-                    sampler.ArrayLength != 1));
++                    sampler.ArrayLength != 1,
++                    componentType));
+                 context.SamplersTypes.Add(new(sampler.Set, sampler.Binding), sampler.Type);
+ 
+                 context.Name(sampledImageVariable, sampler.Name);
+@@ -223,6 +226,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             }
+         }
+ 
++        // XC2 (2026-11-25): the component type of the format a texture or image is bound with, when that is an integer one.
++        private static AggregateType GetBoundComponentType(TextureUsageFlags flags, AggregateType declared)
++        {
++            return flags.HasFlag(TextureUsageFlags.UintFormat) ? AggregateType.U32
++                : flags.HasFlag(TextureUsageFlags.SintFormat) ? AggregateType.S32
++                : declared;
++        }
++
+         private static void DeclareImages(CodeGenContext context, IEnumerable<TextureDefinition> images)
+         {
+             bool writeWithoutFormat = false;
+@@ -233,8 +244,10 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+                 Dim dim = GetDim(image.Type);
+ 
++                AggregateType componentType = GetBoundComponentType(image.Flags, image.Format.GetComponentType());
++
+                 SpvInstruction imageType = context.TypeImage(
+-                    context.GetType(image.Format.GetComponentType()),
++                    context.GetType(componentType),
+                     dim,
+                     image.Type.HasFlag(SamplerType.Shadow),
+                     image.Type.HasFlag(SamplerType.Array),
+@@ -264,7 +277,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+                 SpvInstruction imageVariable = context.Variable(imageArrayPointerType, StorageClass.UniformConstant);
+ 
+-                context.Images.Add(new(image.Set, image.Binding), new ImageDeclaration(imageType, imagePointerType, imageVariable, image.ArrayLength != 1));
++                context.Images.Add(new(image.Set, image.Binding), new ImageDeclaration(imageType, imagePointerType, imageVariable, image.ArrayLength != 1, componentType));
+ 
+                 context.Name(imageVariable, image.Name);
+                 context.Decorate(imageVariable, Decoration.DescriptorSet, (LiteralInteger)setIndex);
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/ImageDeclaration.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/ImageDeclaration.cs
+@@ -1,3 +1,4 @@
++using Ryujinx.Graphics.Shader.Translation;
+ using Spv.Generator;
+ 
+ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+@@ -8,13 +9,15 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         public readonly Instruction ImagePointerType;
+         public readonly Instruction Image;
+         public readonly bool IsIndexed;
++        public readonly AggregateType ComponentType;
+ 
+-        public ImageDeclaration(Instruction imageType, Instruction imagePointerType, Instruction image, bool isIndexed)
++        public ImageDeclaration(Instruction imageType, Instruction imagePointerType, Instruction image, bool isIndexed, AggregateType componentType)
+         {
+             ImageType = imageType;
+             ImagePointerType = imagePointerType;
+             Image = image;
+             IsIndexed = isIndexed;
++            ComponentType = componentType;
+         }
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -740,10 +740,17 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 pCoords = Src(AggregateType.S32);
+             }
+ 
+-            SpvInstruction imageComponentType = context.GetType(componentType);
+             AggregateType swizzledResultType = texOp.GetVectorType(componentType);
+ 
+-            SpvInstruction texel = context.ImageRead(context.TypeVector(imageComponentType, 4), image, pCoords, ImageOperandsMask.MaskNone);
++            // XC2 (2026-11-25): an image without a format that holds integers is read as such, and the registers hold their
++            // bits.
++            SpvInstruction texel = context.ImageRead(context.TypeVector(context.GetType(declaration.ComponentType), 4), image, pCoords, ImageOperandsMask.MaskNone);
++
++            if (declaration.ComponentType != componentType)
++            {
++                texel = context.Bitcast(context.TypeVector(context.GetType(componentType), 4), texel);
++            }
++
+             SpvInstruction result = GetSwizzledResult(context, texel, swizzledResultType, texOp.Index);
+ 
+             return new OperationResult(componentType, result);
+@@ -803,7 +810,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 pCoords = Src(AggregateType.S32);
+             }
+ 
+-            AggregateType componentType = texOp.Format.GetComponentType();
++            AggregateType componentType = declaration.ComponentType; // XC2 (2026-11-25): that of the bound format, see GenerateImageLoad
+ 
+             const int ComponentsCount = 4;
+ 
+@@ -1428,7 +1435,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             bool colorIsVector = isGather || !isShadow;
+ 
+-            SpvInstruction resultType = colorIsVector ? context.TypeVector(context.TypeFP32(), 4) : context.TypeFP32();
++            // XC2 (2026-11-25): an integer texture is sampled as integers, whose bits the registers then hold (the bitcast
++            // below).
++            AggregateType componentType = colorIsVector ? declaration.ComponentType : AggregateType.FP32;
++
++            SpvInstruction resultType = colorIsVector ? context.TypeVector(context.GetType(componentType), 4) : context.TypeFP32();
+ 
+             if (intCoords)
+             {
+@@ -1474,6 +1485,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 result = context.ImageSampleImplicitLod(resultType, image, pCoords, operandsMask, operands);
+             }
+ 
++            if (componentType != AggregateType.FP32)
++            {
++                result = context.Bitcast(context.TypeVector(context.TypeFP32(), 4), result);
++            }
++
+             AggregateType swizzledResultType = AggregateType.FP32;
+ 
+             if (colorIsVector)
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SamplerDeclaration.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SamplerDeclaration.cs
+@@ -1,3 +1,4 @@
++using Ryujinx.Graphics.Shader.Translation;
+ using Spv.Generator;
+ 
+ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+@@ -9,19 +10,22 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         public readonly Instruction SampledImagePointerType;
+         public readonly Instruction Image;
+         public readonly bool IsIndexed;
++        public readonly AggregateType ComponentType;
+ 
+         public SamplerDeclaration(
+             Instruction imageType,
+             Instruction sampledImageType,
+             Instruction sampledImagePointerType,
+             Instruction image,
+-            bool isIndexed)
++            bool isIndexed,
++            AggregateType componentType)
+         {
+             ImageType = imageType;
+             SampledImageType = sampledImageType;
+             SampledImagePointerType = sampledImagePointerType;
+             Image = image;
+             IsIndexed = isIndexed;
++            ComponentType = componentType;
+         }
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -460,6 +460,22 @@ namespace Ryujinx.Graphics.Shader
+             return TextureFormat.R8G8B8A8Unorm;
+         }
+ 
++        /// <summary>
++        /// Queries the component type of the format of a sampled texture or of an image (XC2, 2026-11-25).
++        /// </summary>
++        /// <remarks>
++        /// Maxwell texture instructions and formatted surface instructions do not tell an integer format from any other:
++        /// the registers hold the integers. The host image has to be declared with the component type of the format it is
++        /// bound with.
++        /// </remarks>
++        /// <param name="handle">Texture handle</param>
++        /// <param name="cbufSlot">Constant buffer slot for the texture handle</param>
++        /// <returns>Sint or Uint for an integer format, Float for any other</returns>
++        AttributeType QueryTextureComponentType(int handle, int cbufSlot = -1)
++        {
++            return AttributeType.Float;
++        }
++
+         /// <summary>
+         /// Queries transform feedback enable state.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/TextureUsageFlags.cs
++++ b/src/Ryujinx.Graphics.Shader/TextureUsageFlags.cs
+@@ -15,5 +15,10 @@ namespace Ryujinx.Graphics.Shader
+         NeedsScaleValue = 1 << 1,
+         ImageStore = 1 << 2,
+         ImageCoherent = 1 << 3,
++
++        // XC2 (2026-11-25): a sampled texture, or an image declared without a format, that is bound with an integer format
++        // (IGpuAccessor.QueryTextureComponentType).
++        SintFormat = 1 << 4,
++        UintFormat = 1 << 5,
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -302,6 +302,16 @@ namespace Ryujinx.Graphics.Shader.Translation
+                 usageFlags |= TextureUsageFlags.ImageCoherent;
+             }
+ 
++            if ((!isImage || format == TextureFormat.Unknown) && arrayLength == 1 && type != SamplerType.None && !type.HasFlag(SamplerType.Shadow))
++            {
++                usageFlags |= _gpuAccessor.QueryTextureComponentType(handle, cbufSlot) switch
++                {
++                    AttributeType.Sint => TextureUsageFlags.SintFormat,
++                    AttributeType.Uint => TextureUsageFlags.UintFormat,
++                    _ => TextureUsageFlags.None,
++                };
++            }
++
+             // For array textures, we also want to use type as key,
+             // since we may have texture handles stores in the same buffer, but for textures with different types.
+             SamplerType keyType = arrayLength > 1 ? type : SamplerType.None;

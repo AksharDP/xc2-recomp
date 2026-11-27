@@ -12,7 +12,8 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
                the installer is never run)
     llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link xc2.exe
     runtime/   libxc2rt.a (build_game.py --make-runtime-lib with llvm/), the runtime headers, the sources of
-               build_game.py INSTALL_SIDE (compiled per install), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
+               build_game.py INSTALL_SIDE (compiled per install) and tools/mod_abi.py SOURCES (compiled into mod
+               libraries), deps/ (headers and import libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       xc2_xlate.exe (+ .id), SDL3.dll (upstream), libopus-0.dll, ninja.exe, amd_fidelityfx_vk.dll (AMD's signed
                build, out of the FidelityFX SDK release)
     recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example
@@ -50,6 +51,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_game  # noqa: E402
 import check_content  # noqa: E402
+import ffx_sdk  # noqa: E402
+import mod_abi  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 MAIN_ROOT = (ROOT / 'build').resolve().parent   # build/, generated/, toolchain/ and refs/ are junctions in a worktree
@@ -93,6 +96,17 @@ PINS = {
             '44c81162337915afecda3185f66fd98268a54454580b2717080c9dfef57fe781'),
     'zstd': (MSYS2 + 'mingw-w64-ucrt-x86_64-zstd-1.5.7-2-any.pkg.tar.zst',   # static libzstd.a (runtime/resolution.c)
              'dbdb8427280046a2b41697780aa4c52983b708082b0da4755951dc3bea96ca89'),
+    # glslangValidator and its DLLs, for the shaders of the built-in FSR (glslang() below); not shipped
+    'glslang': (MSYS2 + 'mingw-w64-ucrt-x86_64-glslang-16.6.0-1-any.pkg.tar.zst',
+                '74742908b850637e4f0710cd9630f511b0def5b0f18d653cf9657197758bda82'),
+    'spirv-tools': (MSYS2 + 'mingw-w64-ucrt-x86_64-spirv-tools-3~1.4.363.0-1-any.pkg.tar.zst',
+                    'd31d67fe918aeee21d1e930fd96360856a60146d23094e4ae8baf071a4049aaa'),
+    'libstdc++': (MSYS2 + 'mingw-w64-ucrt-x86_64-libstdc++-16.2.0-6-any.pkg.tar.zst',
+                  '33c5e58a85a538cf843a8672991cce591f0231d66da3b66a57629712d64be17f'),
+    'libgcc': (MSYS2 + 'mingw-w64-ucrt-x86_64-libgcc-16.2.0-6-any.pkg.tar.zst',
+               '80b2497f019977dd9528b1abc8621b1328a0115ab1f724047ccbb56bf323f11d'),
+    'libwinpthread': (MSYS2 + 'mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r598.ge3d18511f-1-any.pkg.tar.zst',
+                      'c35d6be83d141c8cfbb61f1637dd4b53aac8f5562d766aa26d0741c40bad4e4d'),
     'ffx-loader-vk': (FFX_RAW + 'amd_fidelityfx_loader_vk.dll',
                       '38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9'),
     'ffx-upscaler-vk': (FFX_RAW + 'amd_fidelityfx_upscaler_vk.dll',
@@ -119,11 +133,15 @@ TOOLS_FILES = ['build_game.py', 'build_shaders.py', 'check_content.py', 'extract
                'xc2_extract.py',   # XC2's Program NCA selection and add-on extraction (package_select.py, installer Dlc)
                'xc2_titles.py',   # the releases and their title ids (installer, xc2_extract.py, build_game.py)
                'xc2_merge_romfs.py',   # the update applied to the game data in place (extract.py, installer Extract)
-               'cheats.py', 'exefs_patches.py',   # the mods folder's code cheats and ExeFS patches (installer Lift)
+               'cheats.py', 'exefs_patches.py', 'mod_code.py', 'mod_abi.py',   # the mods' code (the game runs mod_code.py)
                'xc2_prompts.py',   # the button prompts (installer Prepare)
-               'xc2_languages.py']   # the game languages the game files have text for (installer ini, check, probe)
+               'xc2_languages.py',   # the game languages the game files have text for (installer ini, check, probe)
+               'check_isa.py']   # build_game.py --cpu v2 checks the runtime objects with it (processors without AVX2)
 TOOLS_DIRS = ['vendor/macnativegames', 'data']   # data/: expected hashes, the prompts' icons
 RUNTIME_SUFFIXES = {'.h', '.inc', '.ico'}   # .ico: the installer window icon
+# The runtime sources a release ships: build_game.py INSTALL_SIDE, compiled per install, and those tools/mod_code.py
+# compiles into a mod library (mod_abi.SOURCES, runtime/fma.c for x86-64-v2)
+RUNTIME_SOURCES = sorted(build_game.INSTALL_SIDE | {n for names in mod_abi.SOURCES.values() for n in names})
 
 VERSION_TAG = 'v301'   # installer/layout.py version_tag: the generated/ and build/extracted/ name of 3.0.1
 EXPECTED = 'expected-xc2-3.0.1.json'
@@ -345,6 +363,21 @@ def build_deps(out):
     shutil.copy2(zstd / 'lib' / 'libzstd.a', d / 'lib')
 
 
+def glslang():
+    """glslangValidator with the DLLs it needs in one folder, for the shaders of the built-in FSR (ffx_sdk.py)."""
+    dst = WORK / 'glslang-bin'
+    exe = dst / 'glslangValidator.exe'
+    if not exe.is_file():
+        dst.mkdir(parents=True, exist_ok=True)
+        for pkg, dlls in (('glslang', ('glslang.dll', 'libglslang-default-resource-limits.dll')),
+                          ('spirv-tools', ('libSPIRV-Tools.dll', 'libSPIRV-Tools-opt.dll')),
+                          ('libstdc++', ('libstdc++-6.dll',)), ('libgcc', ('libgcc_s_seh-1.dll',)),
+                          ('libwinpthread', ('libwinpthread-1.dll',)), ('glslang', ('glslangValidator.exe',))):
+            for f in dlls:
+                shutil.copy2(unpack(pkg) / 'ucrt64' / 'bin' / f, dst / f)
+    return exe
+
+
 def mng_license():
     """MacNativeGames' licence: from refs/ when it is checked out, else the copy beside its vendored extractors."""
     ref = MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE'
@@ -362,6 +395,7 @@ def collect_licenses(out):
         (unpack('sdl3-dll') / 'LICENSE.txt', 'SDL3-LICENSE.txt'),
         (unpack('zstd') / 'ucrt64' / 'share' / 'licenses' / 'zstd' / 'LICENSE', 'zstd-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
+        (ffx_sdk.ensure(glslang()) / 'LICENSE.txt', 'FidelityFX-SDK-1.1.4-LICENSE.txt'),
         (mng_license(), 'MacNativeGames-LICENSE.txt'),
     ]
     for src, name in pairs:
@@ -393,6 +427,7 @@ def take_prebuilt(out, src):
 
 def runtime_lib(out, llvm):
     """Build libxc2rt.a with the folder's llvm/ and copy it, the headers and the install-side sources into runtime/."""
+    ffx_sdk.ensure(glslang())   # here: the builds below run without git on PATH
     build = MAIN_ROOT / 'build' / 'release-check' / 'rtlib'
     run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--version', VERSION_TAG,
          '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,
@@ -400,11 +435,18 @@ def runtime_lib(out, llvm):
         env=clean_env(llvm / 'bin', out / 'bin'))
     rt = out / 'runtime'
     shutil.copy2(build / 'libxc2rt.a', rt / 'libxc2rt.a')
+    # The runtime library of a build_game.py --cpu v2 build, for processors without AVX2
+    build_v2 = build.with_name('rtlib-v2')
+    run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--cpu', 'v2', '--version', VERSION_TAG,
+         '--expected', ROOT / 'tools' / 'data' / EXPECTED, '--toolchain', llvm,
+         '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe', '--out', build_v2],
+        env=clean_env(llvm / 'bin', out / 'bin'))
+    shutil.copy2(build_v2 / 'libxc2rt-v2.a', rt / 'libxc2rt-v2.a')
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in sorted(build_game.INSTALL_SIDE):
+    for name in RUNTIME_SOURCES:
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 
 
@@ -419,6 +461,8 @@ def build_sources(out):
     shutil.copy2(ROOT / 'xc2.ini.example', out / 'xc2.ini.example')
     shutil.copy2(ROOT / 'recomplauncher.json', out / 'recomplauncher.json')   # RecompLauncher reads it from the zip's top and the AppImage's root
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
+    (out / 'licenses').mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'runtime' / 'fma-LICENSE.txt', out / 'licenses' / 'musl-fma-LICENSE.txt')   # runtime/fma.c
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
 
@@ -452,12 +496,12 @@ def c_wide(text):
 
 
 def launcher_header(path):
-    """launcher_text.h: the launcher's two messages, taken from the installer's catalog."""
-    lines = ['/* generated by tools/make_release.py from installer/text/en.json */']
-    for lang in ('en',):
+    """launcher_text.h: the launcher's two messages in English, Simplified and Traditional Chinese."""
+    lines = ['/* generated by tools/make_release.py from installer/text/{en,zh-Hans,zh-Hant}.json */']
+    for lang, macro in (('en', 'EN'), ('zh-Hans', 'ZH_HANS'), ('zh-Hant', 'ZH_HANT')):
         texts = json.loads((ROOT / 'installer' / 'text' / f'{lang}.json').read_text(encoding='utf-8'))
         for key in ('title', 'python_missing'):
-            lines.append(f'#define LAUNCHER_{key.upper()}_{lang.upper()} {c_wide(texts["launcher." + key])}')
+            lines.append(f'#define LAUNCHER_{key.upper()}_{macro} {c_wide(texts["launcher." + key])}')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('\n'.join(lines) + '\n', encoding='ascii')
 

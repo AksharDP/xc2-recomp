@@ -24,6 +24,7 @@
 
 extern "C" {
 #include "cfg.h"
+#include "fsr_state.h"
 #include "input.h"
 #include "input_map.h"
 #include "perfmon.h"
@@ -39,7 +40,6 @@ void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 double frame_step_limit_hz(void);
-float vk_fg_shown_fps(uint64_t now_ns);
 extern const int rt_game_version;
 extern const char rt_game_name[];   // the game version shown, "2.0.0" (tools/build_game.py)
 extern const char rt_port_version[];
@@ -47,6 +47,7 @@ extern const char rt_port_version[];
 #include "mods.h"
 }
 void tab_cheats(float scale);   // ui/cheats_tab.cpp
+void rows_unbuilt(void);         // ui/cheats_tab.cpp: code of mods that is not built
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
 #pragma clang diagnostic push
@@ -173,6 +174,7 @@ static int g_failed_flag() { return g_failed.load(std::memory_order_relaxed); }
 static int g_vk_ok;               // back end initialised for g_vk_fmt
 static VkFormat g_vk_fmt;
 static float g_font_scale;        // the scale of the uploaded font atlas; 0 when none is uploaded
+static const char *g_font_lang = "";   // the menu language of the uploaded font atlas (menu_text_lang)
 static float g_style_scale;       // the scale the style was last sized for
 static ImGuiStyle g_base_style;   // the menu's style at 1080 lines
 static uint64_t g_last_ns;
@@ -240,7 +242,7 @@ static int vk_up(const MenuTarget *t) {
     ii.Queue = t->queue;
     ii.DescriptorPoolSize = 16;
     ii.MinImageCount = 2;
-    ii.ImageCount = 4;   // vertex buffers rotate per recorded frame: more than gfx_present.c's 2 frames in flight
+    ii.ImageCount = 8;   // vertex buffers rotate per recorded draw: more than gfx_present.c's 4 presents in flight
     ii.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     ii.UseDynamicRendering = true;
     g_vk_fmt = t->format;
@@ -252,37 +254,68 @@ static int vk_up(const MenuTarget *t) {
     return 1;
 }
 
-// Roboto Medium (Latin, Cyrillic for mod folder names, dashes and quotes) at 26 px per 1080 lines, with the glyphs of
-// the Japanese, Korean and Chinese language names merged in from a system font when there is one (each language is
-// named in its own script). Made again when the window height changes; the old texture goes after the queue is idle
-// (CreateFontsTexture).
+// Roboto Medium (Latin, Cyrillic for mod folder names, dashes and quotes) at 26 px per 1080 lines, with glyphs merged in
+// from the system's fonts when there are any. An English menu takes the language names (each language is named in its
+// own script) and the characters of mod and cheat names; a Chinese one also takes the catalog's and the common Simplified
+// Chinese characters, from the font of its own variant first. Made again when the window height or the menu language
+// changes; the old texture goes after the queue is idle (CreateFontsTexture).
 static const ImWchar kRanges[] = {0x0020, 0x00FF, 0x0400, 0x052F, 0x2010, 0x2027, 0};
-static const struct { const char *lang; UiTextId name; } kCjk[] = {
-    {"ja", UI_MENU_LANGNAME_JA}, {"ko", UI_MENU_LANGNAME_KO}, {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
-    {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
-};
+static const ImWchar kCjkPunct[] = {0x3000, 0x303F, 0xFF00, 0xFFEF, 0};
 
-static int fonts_up(float scale) {
-    enum { N = sizeof kCjk / sizeof *kCjk };
+static UiTextId lang_name(const char *lang) {
+    return !strcmp(lang, "ja")        ? UI_MENU_LANGNAME_JA
+           : !strcmp(lang, "ko")      ? UI_MENU_LANGNAME_KO
+           : !strcmp(lang, "zh-Hans") ? UI_MENU_LANGNAME_ZH_HANS
+                                      : UI_MENU_LANGNAME_ZH_HANT;
+}
+
+static int fonts_up(float scale, const char *menu_lang) {
+    enum { N = 4 };
+    // ImGui keeps the first font's glyph of a character (ImFontAtlasBuildWithStbTruetype, GlyphsSet), and the languages
+    // share characters: a Chinese menu loads its own font first, so that no character of its text comes from another one
+    static const char *const order_hans[N] = {"zh-Hans", "zh-Hant", "ja", "ko"},
+                      *const order_hant[N] = {"zh-Hant", "zh-Hans", "ja", "ko"};
+    bool hans = !strcmp(menu_lang, "zh-Hans"), hant = !strcmp(menu_lang, "zh-Hant");
+    const char *const *order = hant ? order_hant : order_hans;
     ImFontAtlas *fa = ImGui::GetIO().Fonts;
     fa->Clear();
     ImFontConfig fc;
     fc.FontDataOwnedByAtlas = false;
     fa->AddFontFromMemoryTTF((void *)roboto_ttf, (int)sizeof roboto_ttf, 26.0f * scale, &fc, kRanges);
+    ImFontGlyphRangesBuilder names;   // what every font is asked for: a mod or cheat may be named in any of the languages
+    for (int i = 0; i < mods_count(); i++)
+        if (const ModInfo *m = mods_at(i)) names.AddText(m->name);
+    for (int i = 0; i < cheats_count(); i++)
+        if (const CheatInfo *c = cheats_info(i)) {
+            const char *texts[] = {c->mod, c->name, c->note};
+            for (const char *text : texts)
+                if (text) names.AddText(text);
+        }
+    ImFontGlyphRangesBuilder zh = names;   // what both Chinese fonts are asked for
+    if (hans || hant) {
+        zh.AddRanges(fa->GetGlyphRangesChineseSimplifiedCommon());
+        zh.AddRanges(kCjkPunct);
+        for (int id = 0; id < UI_TEXT_COUNT; id++) zh.AddText(ui_text_in(menu_lang, (UiTextId)id));
+    }
     uint8_t *data[N] = {};
     ImVector<ImWchar> ranges[N];
-    int merged = 0;
+    int merged = 0, chinese = 0;
     for (int i = 0; i < N; i++) {
         char path[512];
+        int face = 0;
         uint64_t size = 0;
-        if (!plat_font_path(kCjk[i].lang, path, sizeof path) || !(data[i] = plat_file_read(path, &size))) continue;
+        if (!plat_font_path(order[i], path, sizeof path, &face) || !(data[i] = plat_file_read(path, &size))) continue;
         merged++;
-        ImFontGlyphRangesBuilder b;
-        b.AddText(ui_text_in("en", kCjk[i].name));
+        bool is_zh = !strncmp(order[i], "zh", 2);
+        chinese += is_zh;
+        ImFontGlyphRangesBuilder b = is_zh ? zh : names;
+        b.AddText(ui_text_in("en", lang_name(order[i])));
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
         mc.FontDataOwnedByAtlas = false;
+        mc.OversampleH = 1;
+        mc.FontNo = face;
         fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, ranges[i].Data);
     }
     vk_queue_lock();   // the upload submits on the queue and waits for it
@@ -291,8 +324,13 @@ static int fonts_up(float scale) {
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
-    rt_log("menu: font atlas at %.1f px, language names from %d of %d system fonts", 26.0f * scale, merged, (int)N);
+    rt_log("menu: font atlas at %.1f px for %s, %d of %d system fonts", 26.0f * scale, menu_lang, merged, (int)N);
+    if ((hans || hant) && !chinese) {   // a Linux system may have none: the text would be all question marks
+        rt_log("menu: no system font with Chinese characters; the menu is in English");
+        menu_text_no_chinese();
+    }
     g_font_scale = ok ? scale : 0;
+    g_font_lang = menu_lang;
     return ok;
 }
 
@@ -529,6 +567,36 @@ static const char *present_note(void) {
     return note;
 }
 
+// The FSR rows show only what has loaded on this machine (fsr_state.h): none where FSR did not or failed, the version where
+// FSR 4 did too, frame generation where it did. Under a row that is on stands whether it is at work, which the setting alone does
+// not say (a loading screen has no scene to upscale).
+static void rows_fsr(void) {
+    bool on = cfg_bool("XC2_FSR3") != 0;
+    int ready = vk_fsr3_ready();
+    if (!ready) return;
+    if (ready < 0 && !on) {
+        opt_disable_next(UI_MENU_FSR_CHECKING);
+        opt_toggle_text("XC2_FSR3", menu_text(UI_MENU_FSR3), menu_text(UI_MENU_FSR3_DESC), false);
+        return;
+    }
+    char ver[64], note[96];
+    if (vk_fsr3_shown(ver, sizeof ver)) snprintf(note, sizeof note, menu_text(UI_MENU_FMT_FSR_RUNNING), ver);
+    else snprintf(note, sizeof note, "%s", menu_text(UI_MENU_NOT_RUNNING));
+    opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC, false, on ? note : NULL);
+    if (vk_fsr3_version4()) {
+        static const UiTextId names[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
+        opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, names, 3, UI_MENU_FSR_VERSION_DESC);
+    }
+    if (!vk_fg_ready()) return;
+    if (!on) {   // it takes its inputs from FSR: shown off, whatever the setting
+        opt_disable_next(UI_MENU_FRAME_GEN_NEEDS_FSR);
+        opt_toggle_text("XC2_FRAME_GEN", menu_text(UI_MENU_FRAME_GEN), menu_text(UI_MENU_FRAME_GEN_DESC), false);
+        return;
+    }
+    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC, false,
+               !cfg_bool("XC2_FRAME_GEN") ? NULL : menu_text(vk_fg_running() ? UI_MENU_RUNNING : UI_MENU_NOT_RUNNING));
+}
+
 // ---- the tabs
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
@@ -544,14 +612,11 @@ static void tab_screen(float scale) {
     opt_toggle("XC2_HUD_CENTER", UI_MENU_HUD_CENTER, UI_MENU_HUD_CENTER_DESC);   // resolution.c wide_hud
     row_render_scale();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
-    opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
+    if (vk_fsr1_usable()) opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     static const UiTextId fit[] = {UI_MENU_PICTURE_FIT_KEEP, UI_MENU_PICTURE_FIT_STRETCH};
     opt_choice("XC2_PICTURE_FIT", UI_MENU_PICTURE_FIT, fit, 2, UI_MENU_PICTURE_FIT_DESC);
-    opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
-    opt_toggle("XC2_FSR3", UI_MENU_FSR3, UI_MENU_FSR3_DESC);
-    static const UiTextId ver[] = {UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3};
-    opt_choice("XC2_FSR_VERSION", UI_MENU_FSR_VERSION, ver, 3, UI_MENU_FSR_VERSION_DESC);
-    opt_toggle("XC2_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
+    if (vk_fsr1_usable()) opt_slider("XC2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    rows_fsr();
     opt_end();
 }
 
@@ -561,6 +626,9 @@ static void tab_game(float scale) {
     static const UiTextId cut[] = {UI_MENU_CUTSCENE_30, UI_MENU_CUTSCENE_MIXED, UI_MENU_CUTSCENE_LIMIT};
     opt_choice("XC2_CUTSCENE_30", UI_MENU_CUTSCENE_FPS, cut, 3, UI_MENU_CUTSCENE_FPS_DESC);
     row_game_lang();
+    static const UiTextId menu_langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_ZH_HANS,
+                                          UI_MENU_LANGNAME_ZH_HANT, UI_MENU_LANGNAME_EN};
+    opt_choice("XC2_MENU_LANG", UI_MENU_MENU_LANG, menu_langs, 4, UI_MENU_MENU_LANG_DESC);
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("XC2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_end();
@@ -879,8 +947,8 @@ static void tab_mods(float scale) {
         char code[512] = "", problem[512] = "";
         if (m->nsets && m->overrides[0])
             snprintf(code, sizeof code, menu_text(UI_MENU_MODS_REPLACES_BUILTIN), m->nsets, m->overrides);
-        else if (m->nsets)
-            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets);
+        else if (m->nsets || m->ndata)
+            snprintf(code, sizeof code, menu_text(UI_MENU_MODS_EXEFS_ON), m->nsets + m->ndata);
         switch (m->problem) {
         case MOD_EMPTY: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_EMPTY)); break;
         case MOD_PLUGIN: snprintf(problem, sizeof problem, "%s", menu_text(UI_MENU_MODS_SUBSDK)); break;
@@ -910,7 +978,7 @@ static void tab_mods(float scale) {
             opt_save_soon();
         }
     }
-    if (cheats_unbuilt()) opt_text(UI_MENU_CHEATS_UNBUILT, true);
+    rows_unbuilt();
     static uint64_t open_failed;   // plat_now_ns until which the button says it failed
     if (opt_button("##mods_open", UI_MENU_MODS_OPEN, UI_MENU_MODS_OPEN_DESC,
                    plat_now_ns() < open_failed ? menu_text(UI_MENU_ACTION_FAILED) : "")) {
@@ -1127,35 +1195,47 @@ static void perf_label(UiTextId label, const ImVec4 &c) {
 
 static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
-// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), how the
-// present scales the image to the window (gfx_present.c, the last present), the frame limit and the presentation mode
-// in use.
+// The overlay's Upscaler line: what takes the 3D scene to the game image. AMD FSR with the version that ran when it
+// upscaled within the last second (vk_fsr3.c vk_fsr3_shown), else the game's own temporal anti-aliasing and stretch,
+// with the reason when the FSR setting is on.
+static void upscaler_text(char *b, size_t n) {
+    char ver[64];
+    if (vk_fsr3_shown(ver, sizeof ver)) snprintf(b, n, menu_text(UI_MENU_OV_FMT_UPSCALER), ver);
+    else if (!cfg_bool("XC2_FSR3")) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_GAME));
+    else if (vk_fsr3_state() != VK_FSR_OK) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_NO_FSR));
+    else snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_IDLE));
+}
+
+// The picture lines: the window, the game image the present shows and the 3D scene it holds (resolution.c), what
+// upscales the scene to the image (upscaler_text), how the present scales the image to the window (gfx_present.c, the
+// last present), the frame limit and the presentation mode in use.
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
-    char v[6][64];
+    char v[7][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
+    upscaler_text(v[3], sizeof v[3]);
     if (t->scaler == 2) {
         int s = cfg_int("XC2_SHARPNESS");
-        snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
+        snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
-        snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
+        snprintf(v[4], sizeof v[4], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
     double hz = frame_step_limit_hz();
-    snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
-    if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
+    snprintf(v[5], sizeof v[5], "%s", menu_text(UI_MENU_OV_NONE));
+    if (hz > 0) snprintf(v[5], sizeof v[5], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
-    snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
-                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    snprintf(v[6], sizeof v[6], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
+    static const UiTextId labels[7] = {UI_MENU_OV_WINDOW,  UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,  UI_MENU_OV_UPSCALER,
+                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT,  UI_MENU_OV_PRESENT};
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
     for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         perf_label(labels[i], c);
         ImGui::TableNextColumn();
         perf_right(v[i], false);
@@ -1291,7 +1371,8 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     uint64_t t0 = plat_now_ns();
     if (!g_ctx_ok) make_context();
     float scale = menu_scale(t->height);
-    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale))) {
+    const char *lang = menu_text_lang();
+    if (!vk_up(t) || ((g_font_scale != scale || strcmp(g_font_lang, lang)) && !fonts_up(scale, lang))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
         set_open(0);

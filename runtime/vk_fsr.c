@@ -87,6 +87,8 @@ static int init(VkCtx *c) {
     return F.ok = 1;
 }
 
+int vk_fsr1_usable(void) { return !F.tried || F.ok; }
+
 static void free_images(VkCtx *c) {
     for (int i = 0; i < 2; i++) {
         if (F.view[i]) vkDestroyImageView(c->device, F.view[i], NULL);

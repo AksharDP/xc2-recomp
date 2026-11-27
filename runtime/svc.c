@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "fs.h"
+#include "gfx.h"
 #include "host.h"
 #include "kernel.h"
 #include "vk.h"
@@ -210,11 +211,12 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         return;
     }
     case 0x29: get_info(c, pc); return;
-    case 0x07: {   // ExitProcess, as closing the window (gfx_window_closed): pipeline cache, shader records and
-                   // profile saved, logs flushed, exit code 0
+    case 0x07: {   // ExitProcess, as closing the window (gfx_window_closed): screenshots already taken written,
+                   // pipeline cache, shader records and profile saved, logs flushed, exit code 0
         char at[160];
         rt_log("guest ExitProcess at %s; exiting", ldr_describe(pc, at, sizeof at));
         fs_save_flush();
+        gfx_screenshot_drain();
         vk_pipeline_save();
         prof_write();
         fflush(NULL);

@@ -205,7 +205,7 @@ def build(work, emitted, jobs, cflags):
                      f'int ntests = {len(emitted)};\n' + 'void rt_stub_call(Cpu *c, uint64_t target);\n' +
                      ''.join(f'void {gen.fname(t)}(Cpu *c) {{ rt_stub_call(c, {hex(t)}ull); }}\n'
                              for t in sorted(called)))
-    srcs += [table, ROOT / 'tests' / 'diff' / 'harness.c']
+    srcs += [table, ROOT / 'tests' / 'diff' / 'harness.c', ROOT / 'runtime' / 'fma.c']
     objs, procs = [], []
     for s in srcs:
         o = work / (s.stem + '.o')

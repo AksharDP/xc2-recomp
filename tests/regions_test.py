@@ -1,8 +1,12 @@
-"""The releases of tools/xc2_titles.py and how the extraction and the installer tell them apart. Needs no game files.
+"""The releases of tools/xc2_titles.py, how the extraction and the installer tell them apart, and that mods laid out for
+either are found. Needs no game files; needs cryptography (tools/vendor/macnativegames/extract_exefs.py) and lz4
+(recomp/nso.py).
 
     python tests/regions_test.py
 """
+import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -10,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT))
 
+import cheats  # noqa: E402
+import exefs_patches  # noqa: E402
 import package_select  # noqa: E402
 import xc2_extract  # noqa: E402
 import xc2_titles  # noqa: E402
@@ -25,6 +31,15 @@ def header(bktr=False):
     h = bytearray(0xC00)
     h[0x404] = 4 if bktr else 3
     return bytes(h)
+
+
+def npdm(title):
+    """A main.npdm with nothing but its program id."""
+    d = bytearray(0xC0)
+    d[:4], d[0x80:0x84] = b'META', b'ACI0'
+    struct.pack_into('<I', d, 0x70, 0x80)
+    struct.pack_into('<Q', d, 0x90, int(title, 16))
+    return bytes(d)
 
 
 def rec(title, content_type):
@@ -52,6 +67,18 @@ class TitlesTest(unittest.TestCase):
         self.assertIs(xc2_titles.of_tag('v301jp'), JP)
         self.assertIs(xc2_titles.of_tag('v301'), US)
         self.assertTrue(US.expected('3.0.1').is_file() and US.expected('1.0.0').is_file())
+
+    def test_exefs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            main_npdm = Path(tmp) / 'main.npdm'
+            self.assertIsNone(xc2_titles.of_exefs(tmp))
+            for r in (US, JP):
+                main_npdm.write_bytes(npdm(r.title))
+                self.assertIs(xc2_titles.of_exefs(tmp), r)
+            for other in (npdm('0100F2C0115B6000'), npdm(US.title)[:0x94], npdm(US.title)[:0x72],
+                          b'NPDM' + npdm(US.title)[4:], b''):
+                main_npdm.write_bytes(other)
+                self.assertIsNone(xc2_titles.of_exefs(tmp))
 
     def test_patch_tables(self):
         self.assertEqual(US.patch_table('3.0.1'), 'patches-v301.txt')
@@ -93,7 +120,6 @@ class InstallerTest(unittest.TestCase):
 
     def test_release_versions_come_from_data(self):
         import dataclasses
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / 'data'
             data.mkdir()
@@ -106,10 +132,6 @@ class InstallerTest(unittest.TestCase):
             self.assertTrue(lay.supports(JP))
             (data / 'expected-xc2-jp-1.0.0.json').unlink()
             self.assertFalse(lay.supports(JP))
-
-    def test_mod_places(self):
-        self.assertIn(f'atmosphere/contents/{JP.title}/cheats', steps.CHEAT_PLACES)
-        self.assertIn(f'{US.title}/exefs', steps.EXEFS_PLACES)
 
     def test_dlc_of_another_release(self):
         class Fake:
@@ -126,6 +148,69 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(e.exception.id, 'check.dlc_other_region')
         finally:
             steps.container_entries, steps.nca_inventory = saved
+
+
+class ModPlacesTest(unittest.TestCase):
+    """The tools that build the mods' code at game start (tools/mod_code.py runs both) find a mod's files in its own
+    folder and in the Atmosphere and emulator layouts of the release of the ExeFS, where find_root of runtime/mods.c
+    looks for them."""
+
+    BID = '0123456789ABCDEF'
+    LAYOUTS = ('atmosphere/contents/', 'contents/', '')
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.exefs, self.mods = Path(tmp.name) / 'exefs', Path(tmp.name) / 'mods'
+        self.exefs.mkdir()
+
+    def put(self, mod, *places):
+        for place in places:
+            f = self.mods / mod / place
+            f.parent.mkdir(parents=True)
+            f.write_bytes(b'')
+
+    def found(self, region):
+        """({mod: cheat file}, {mod: patch file}) as paths in the mod, for an ExeFS of region (None: without its
+        main.npdm)."""
+        if region:
+            (self.exefs / 'main.npdm').write_bytes(npdm(region.title))
+        titles = cheats.titles_of(self.exefs)
+        return ({mod: f.relative_to(self.mods / mod).as_posix()
+                 for mod, f in cheats.cheat_files(self.mods, self.BID, titles)},
+                {mod: rel for mod, rel, _ in exefs_patches.patch_files(self.mods, titles)})
+
+    def files(self, where):
+        return f'{where}cheats/{self.BID}.txt', f'{where}exefs/a.ips'
+
+    def test_each_layout(self):
+        want = {}
+        for r in (US, JP):
+            want[r] = {'own': self.files(''), **{f'{r.key}{i}': self.files(f'{w}{r.title}/')
+                                                 for i, w in enumerate(self.LAYOUTS)}}
+            for mod, places in want[r].items():
+                if not (self.mods / mod).is_dir():
+                    self.put(mod, *places)
+        for r in (US, JP):
+            self.assertEqual(self.found(r), tuple({mod: p[k] for mod, p in want[r].items()} for k in (0, 1)))
+
+    def test_folders_of_both_releases(self):
+        for i, w in enumerate(self.LAYOUTS):
+            for r in (US, JP):
+                self.put(f'mod{i}', *self.files(f'{w}{r.title}/'))
+        for r in (US, JP):
+            want = [self.files(f'{w}{r.title}/') for w in self.LAYOUTS]
+            self.assertEqual(self.found(r), tuple({f'mod{i}': p[k] for i, p in enumerate(want)} for k in (0, 1)))
+
+    def test_an_exefs_that_names_no_release_takes_either(self):
+        for r in (US, JP):
+            self.put(r.key, *self.files(f'atmosphere/contents/{r.title}/'))
+        self.assertEqual([sorted(found) for found in self.found(None)], [['jp', 'us']] * 2)
+
+    def test_patches_by_name_belong_to_no_release(self):
+        self.put('mod', 'atmosphere/exefs_patches/x/a.ips')
+        for r in (US, JP, None):
+            self.assertEqual(self.found(r)[1], {'mod': 'atmosphere/exefs_patches/x/a.ips'})
 
 
 if __name__ == '__main__':

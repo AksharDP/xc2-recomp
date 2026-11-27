@@ -23,14 +23,24 @@ uint64_t gfx_vsync_ticks(void);                            // ticks since start
 uint64_t gfx_vsync_time_ns(uint64_t tick);                 // kern_now_ns() time of a tick (pacing)
 double gfx_window_refresh_hz(void);                        // refresh rate of the window's monitor; 0 unknown
 int gfx_window_focused(void);
+// The next presented picture as <exe dir>/screenshots/xc2-<date>-<time>.png, written by a thread of its own (the
+// gamepad's Capture button, input.c). Any thread; returns at once.
+void gfx_screenshot(void);
+// Waits up to 5 s for the screenshots already taken to be written; returns at once when none is waiting. Every orderly
+// exit calls it before plat_exit, which ends the writer thread wherever it is and so loses a shot not yet renamed into
+// place: gfx_exit_saved (window closed, XC2_STOP_FRAME), the --seconds deadline (boot.c rt_frame_presented) and the
+// guest's ExitProcess (svc.c).
+void gfx_screenshot_drain(void);
 
 // ---- shader service client (gfx_shader.c)
 enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS };
 enum { GFX_TEX_1D = 1, GFX_TEX_1D_ARRAY, GFX_TEX_BUFFER, GFX_TEX_2D, GFX_TEX_2D_ARRAY, GFX_TEX_2D_MS,
        GFX_TEX_2D_MS_ARRAY, GFX_TEX_3D, GFX_TEX_CUBE, GFX_TEX_CUBE_ARRAY };   // gfx_shader.c tex_names order
+enum { GFX_TEX_SINT = 0x40, GFX_TEX_UINT = 0x80 };         // with a tex_type or img_type: the slot's format is an integer one
 enum { GFX_TYPE_FLOAT, GFX_TYPE_SINT, GFX_TYPE_UINT };
 typedef struct {                                           // the translator's answers (Program.cs Accessor)
-    uint8_t tex_type[32], img_type[32], img_format[32];    // per c2 slot; 0 = not asked; types are GFX_TEX_*,
+    uint8_t tex_type[32], img_type[32], img_format[32];    // per c2 slot; 0 = not asked; types are GFX_TEX_*, also
+                                                           // GFX_TEX_SINT or GFX_TEX_UINT (with or without a type);
                                                            // img_format is Ryujinx TextureFormat
     uint8_t attr_type[32], frag_out_type[8];               // GFX_TYPE_*
     uint16_t local[3]; uint32_t shared_bytes;
@@ -105,7 +115,8 @@ typedef struct {
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
 int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
-uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read
+// Texture/image slots whose type its translation read; in *texs and *imgs, those whose GFX_TEX_SINT or _UINT it reads.
+uint32_t gfx_shader_slot_mask(const GfxShader *s, uint32_t *texs, uint32_t *imgs);
 uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input Locations (VS attributes, FS varyings) as a mask
 int gfx_shader_builtin_inputs(const GfxShader *s);                    // 1 when an Input is a BuiltIn (VertexIndex...): not in the mask
 uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);   // Output Locations (VS varyings, FS colour targets)

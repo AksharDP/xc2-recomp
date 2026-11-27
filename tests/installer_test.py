@@ -5,18 +5,23 @@ Run: python tests/installer_test.py
 """
 import io
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from installer import ini, runner, state  # noqa: E402
+from installer import ini, runner, state, steps  # noqa: E402
+from installer import layout as layouts  # noqa: E402
 from installer.events import LauncherReporter, Reporter  # noqa: E402
 from installer.layout import Layout  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tools'))
+import xc2_languages  # noqa: E402
 
 
 class Fake(runner.Step):
@@ -236,6 +241,11 @@ class IniTest(unittest.TestCase):
         self.assertEqual(ini.default_language(['en-GB', 'en-US', 'ko']), 'en-US')
         self.assertEqual(ini.default_language(['ja', 'zh-CN', 'zh-TW']), 'ja')
 
+    def test_only_unchecked_languages_warn_about_fonts(self):
+        # Korean uses the game's own font (bf2.arh menu/font/standard_kr.wifnt) and main imports no nn::pl function
+        self.assertEqual(ini.FONTS_UNCHECKED, ('zh-CN', 'zh-TW'))
+        self.assertFalse(set(ini.FONTS_UNCHECKED) & set(xc2_languages.languages(['fr', 'gb', 'ge', 'it', 'kr', 'sp'])))
+
     def test_codes_match_the_runtime(self):
         # runtime/cfg.c's XC2_LANG values and runtime/ov_system.c game_codes are the installer's codes
         cfg = (ROOT / 'runtime' / 'cfg.c').read_text(encoding='utf-8')
@@ -244,6 +254,27 @@ class IniTest(unittest.TestCase):
         ov = (ROOT / 'runtime' / 'ov_system.c').read_text(encoding='utf-8')
         codes = re.findall(r'"([^"]+)"', re.search(r'game_codes\[\] = \{([^}]+)\}', ov).group(1))
         self.assertEqual(sorted(codes), sorted(ini.LANGUAGES))
+
+    def test_each_release_offers_every_language_it_has_text_for(self):
+        # the bdat folders of bf2.arh (tools/xc2_languages.py): the Americas and Europe base, its update 3.0.1 (adds
+        # kr) and the Japanese base. The 3.0.1 NACP also lists ja and both Chinese, whose folders that release lacks.
+        import xc2_languages   # on the path through installer.ini
+        us_base = ['fr', 'gb', 'ge', 'it', 'sp']
+        self.assertEqual(xc2_languages.languages(us_base),
+                         ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419'])
+        self.assertEqual(xc2_languages.languages(us_base + ['kr']),
+                         ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'ko'])
+        self.assertEqual(xc2_languages.languages(['cn', 'jp', 'tw']), ['ja', 'zh-CN', 'zh-TW'])
+        self.assertEqual(xc2_languages.languages(['nl', 'pt', 'ru']), [])
+        self.assertEqual(set(xc2_languages.FOLDER.values()), {'gb', 'jp', 'fr', 'ge', 'it', 'sp', 'kr', 'cn', 'tw'})
+
+    def test_the_in_game_menu_names_every_text_folder(self):
+        # runtime/ui/menu.cpp row_game_lang: one entry per text folder; en-GB, fr-CA and es-419 show as their folder's
+        import xc2_languages   # on the path through installer.ini
+        menu = (ROOT / 'runtime' / 'ui' / 'menu.cpp').read_text(encoding='utf-8')
+        row = re.search(r'row_game_lang\(void\) \{(.*?)\};', menu, re.S).group(1)
+        codes = re.findall(r'\{"([^"]+)", UI_MENU_LANGNAME_', row)
+        self.assertEqual(sorted(xc2_languages.FOLDER[c] for c in codes), sorted(set(xc2_languages.FOLDER.values())))
 
     def test_game_langs_is_written_beside_lang(self):
         example = self.EXAMPLE + '# game_langs = en-US\n'
@@ -275,6 +306,206 @@ class IniTest(unittest.TestCase):
             text = path.read_text()
             self.assertIn('vk_present = fifo', text)
             self.assertEqual(ini.get_language(text), 'ja')
+
+
+def fake_release(root, version='1.0+abc'):
+    """A folder release_layout reads as a release: VERSION, the Python file and one file per other kit item."""
+    for name in layouts.KIT_ITEMS:
+        if '.' in name or name == 'VERSION':
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(version + '\n' if name == 'VERSION' else name)
+        else:
+            (root / name).mkdir(parents=True, exist_ok=True)
+            (root / name / 'f.txt').write_text(name)
+    layouts.release_python(root).parent.mkdir(parents=True, exist_ok=True)
+    layouts.release_python(root).write_bytes(b'')
+    (root / 'XC2-Setup.exe').write_bytes(b'launcher')
+    (root / 'installer' / '__pycache__').mkdir()
+    (root / 'installer' / '__pycache__' / 'x.pyc').write_bytes(b'')
+    return layouts.release_layout(root)
+
+
+# KitTest and CleanupTest adapted from totk-pc-recomp tests/installer_test.py @ e7c901b and 35c590b (MIT,
+# Copyright (c) 2026 Valiantsin Dzerakh).
+@unittest.skipUnless(steps.os.name == 'nt', 'the build kit is Windows-only')
+class KitTest(unittest.TestCase):
+    """The build kit: the setup's release folder copied into the install folder, the later steps and the mod
+    command pointed at it, and an unfinished setup's temp folder taken over."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.setup, self.dest = base / 'XC2-Setup', base / 'game'
+        self.dest.mkdir()
+        self.layout = fake_release(self.setup)
+        self.missing = mock.patch.object(Layout, 'missing', lambda self: [])
+        self.missing.start()
+
+    def tearDown(self):
+        self.missing.stop()
+        self.tmp.cleanup()
+
+    def ctx(self, layout):
+        return SimpleNamespace(layout=layout, dest=self.dest, reporter=Reporter(out=io.StringIO()))
+
+    def install(self):
+        ctx = self.ctx(self.layout)
+        kit = steps.Kit()
+        self.assertFalse(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        return ctx, kit
+
+    def test_copies_the_release_and_the_next_steps_run_from_it(self):
+        ctx, kit = self.install()
+        folder = self.dest / 'build-kit'
+        self.assertEqual(ctx.layout.root, folder.resolve())
+        self.assertEqual(ctx.layout.release, '1.0+abc')
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(layouts.KIT_ITEMS))
+        self.assertFalse((folder / 'installer' / '__pycache__').exists())
+        self.assertFalse((self.dest / 'build-kit.new').exists() or (self.dest / 'build-kit.old').exists())
+        self.assertTrue(kit.current(self.ctx(self.layout), {}))
+
+    def test_a_setup_run_from_the_kit_keeps_it(self):
+        ctx, kit = self.install()
+        (self.dest / 'build-kit' / 'tools' / 'mark').write_text('kept')
+        self.assertTrue(kit.current(ctx, {}))
+        kit.run(ctx)
+        kit.settle(ctx)
+        self.assertEqual((self.dest / 'build-kit' / 'tools' / 'mark').read_text(), 'kept')
+
+    def test_a_newer_setup_replaces_the_kit(self):
+        self.install()
+        (self.dest / 'build-kit' / 'tools' / 'old-only').write_text('old')
+        self.layout = fake_release(Path(self.tmp.name) / 'XC2-Setup-2', '1.1+def')
+        ctx, _ = self.install()
+        self.assertEqual(ctx.layout.release, '1.1+def')
+        self.assertFalse((self.dest / 'build-kit' / 'tools' / 'old-only').exists())
+
+    def test_mod_command_is_relative_to_the_install_folder(self):
+        ctx, _ = self.install()
+        cmd = steps.mod_command(ctx)
+        kit = Path('build-kit')
+        self.assertEqual(cmd[:2], [str(kit / 'python' / 'python.exe'), str(kit / 'tools' / 'mod_code.py')])
+        self.assertEqual(cmd[cmd.index('--clang') + 1], str(kit / 'llvm' / 'bin' / 'clang.exe'))
+        self.assertEqual(cmd[cmd.index('--runtime') + 1], str(kit / 'runtime'))
+        self.assertEqual(cmd[cmd.index('--cache') + 1], 'build-cache')
+        self.assertFalse(any(str(self.dest) in a or str(self.setup) in a for a in cmd))
+
+    def test_dev_mode_has_no_kit(self):
+        ctx = self.ctx(SimpleNamespace(dev=True, release='x', root=ROOT))
+        kit = steps.Kit()
+        self.assertTrue(kit.current(ctx, {}))
+        self.assertEqual(kit.run(ctx), {})
+        kit.settle(ctx)
+        self.assertFalse((self.dest / 'build-kit').exists())
+
+    def test_temp_folder_of_an_unfinished_setup_moves_in(self):
+        old = layouts.temp_folder(self.setup / 'temp', self.dest)
+        (old / 'gen').mkdir(parents=True)
+        (old / 'gen' / '.install-key').write_text('k')
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertEqual(temp, self.dest / 'build-cache' / 'work')
+        self.assertIn('moved', steps.adopt_old_temp(self.layout, self.dest, temp))
+        self.assertEqual((temp / 'gen' / '.install-key').read_text(), 'k')
+        self.assertFalse(old.exists())
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))   # once: the new one exists now
+
+    def test_no_temp_folder_to_take_over(self):
+        temp = layouts.temp_for(self.layout, self.dest)
+        self.assertIsNone(steps.adopt_old_temp(self.layout, self.dest, temp))
+        self.assertFalse(temp.exists())
+
+
+class CleanupTest(unittest.TestCase):
+    """The cleanup empties the temp folder and writes the command the game builds its mods' code with."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, temp, root = base / 'game', base / 'temp', base / 'release'
+        self.dest.mkdir()
+        temp.mkdir()
+        self.root = root
+        layout = SimpleNamespace(ini_example=ROOT / 'xc2.ini.example', dev=False, root=root, tools=root / 'tools',
+                                 python=root / 'python' / 'python.exe', runtime=root / 'runtime',
+                                 clang=root / 'llvm' / 'bin' / 'clang.exe', sysroot=None)
+        self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()), dest=self.dest, temp=temp, lang='en-US',
+                                   languages=None, state={}, layout=layout)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def lines(self):
+        steps.Cleanup().run(self.ctx)
+        return (self.dest / 'build-cache' / 'modcode.txt').read_text(encoding='utf-8').splitlines()
+
+    @mock.patch.dict(os.environ, {'APPIMAGE': ''})
+    def test_empties_temp_and_writes_the_mod_command(self):
+        for name in ('gen', 'build', 'check', 'logs'):
+            (self.ctx.temp / name).mkdir()
+        lines = self.lines()
+        self.assertEqual([p.name for p in self.ctx.temp.iterdir()], ['logs'])
+        self.assertEqual(lines, [str(self.root / 'python' / 'python.exe'), str(self.root / 'tools' / 'mod_code.py'),
+                                 '--cache', 'build-cache', '--runtime', str(self.root / 'runtime'), '--clang',
+                                 str(self.root / 'llvm' / 'bin' / 'clang.exe')])
+
+    def test_appimage_mod_command_starts_the_appimage(self):
+        # The AppImage's mount, where its Python lives, is gone once the setup exits
+        appimage = Path(self.tmp.name) / 'XC2-Setup-x86_64.AppImage'
+        appimage.write_bytes(b'')
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(appimage)}):
+            self.assertEqual(self.lines(), [str(appimage.resolve()), '--mod-code', '--cache', 'build-cache'])
+
+    def test_appimage_variable_without_the_file_keeps_the_python_command(self):
+        with mock.patch.dict('os.environ', {'APPIMAGE': str(Path(self.tmp.name) / 'gone.AppImage')}):
+            self.assertEqual(self.lines()[1], str(self.root / 'tools' / 'mod_code.py'))
+
+
+class LiftTest(unittest.TestCase):
+    """Lift.run with the generator replaced: the mods stay out of it, and gen/ of an unfinished run stays."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.dest, self.temp = base / 'game', base / 'temp'
+        (self.dest / 'mods' / 'A' / 'exefs').mkdir(parents=True)
+        (self.dest / 'mods' / 'A' / 'exefs' / 'x.pchtxt').write_text('1')
+        (self.temp / 'gen').mkdir(parents=True)
+        (self.temp / 'gen' / 'kept').write_text('x')
+        self.calls, self.code = [], 0
+        rep = SimpleNamespace(progress=lambda *a, **k: None, log=lambda *a: None)
+        layout = SimpleNamespace(recomp=ROOT / 'recomp', tools=ROOT / 'tools')
+        self.ctx = SimpleNamespace(dest=self.dest, temp=self.temp, layout=layout, reporter=rep,
+                                   keys={'lift': 'k', 'extract': 'e'}, state={}, region=None)
+        self.patcher = mock.patch.object(steps, 'run_tool', self.run_tool)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.tmp.cleanup()
+
+    def run_tool(self, ctx, step, script, args, parse=None):
+        self.calls.append(script.name)
+        return self.code, 'log'
+
+    def test_lifts_without_the_mods(self):
+        steps.Lift().run(self.ctx)
+        self.assertEqual(self.calls, ['gen.py'])
+        self.assertTrue((self.temp / 'gen' / 'kept').is_file())
+        self.assertEqual((self.temp / 'gen' / steps.STAMP).read_text().strip(), 'k')
+
+    def test_the_key_does_not_follow_the_mods(self):
+        before = steps.Lift().key(self.ctx)
+        (self.dest / 'mods' / 'A' / 'exefs' / 'x.pchtxt').write_text('2')
+        self.assertEqual(before, steps.Lift().key(self.ctx))
+
+    def test_a_failed_lift_leaves_no_stamp(self):
+        self.code = 1
+        (self.temp / 'gen' / steps.STAMP).write_text('old')
+        with self.assertRaises(steps.InstallError):
+            steps.Lift().run(self.ctx)
+        self.assertFalse((self.temp / 'gen' / steps.STAMP).exists())
 
 
 class EventsTest(unittest.TestCase):
@@ -321,6 +552,135 @@ class EventsTest(unittest.TestCase):
             used |= set(re.findall(r"warning\('([a-z_.]+)'", source))
             used |= {f'phase.{s}.{p}' for s, p in re.findall(r"progress\('(\w+)', '(\w+)'[,)]", source)}
         self.assertEqual(sorted(i for i in used if i not in catalog), [])
+
+
+def gpu(name, api=(1, 4, 0), type_=1, usable=True, missing=(), host_import=True):
+    """A device of the host check's JSON (installer/hostcheck.c); type_ is a VkPhysicalDeviceType."""
+    return {'name': name, 'api': list(api), 'type': type_, 'vendor': 0, 'usable': usable, 'missing': list(missing),
+            'host_import': host_import}
+
+
+def host(cpu_level=3, windows=(10, 0, 26100), arch='x64', loader=True, devices=None):
+    return {'cpu_level': cpu_level, 'x86_64_v3': cpu_level >= 3, 'windows': list(windows), 'native_arch': arch,
+            'loader': loader, 'instance': 0, 'devices': [gpu('Iris Xe')] if devices is None else devices}
+
+
+class HostVerdictTest(unittest.TestCase):
+    """installer/steps.py judge_host on made-up PCs: the game's rules for the processor level (runtime/cpu_level.h),
+    Windows and each GPU (runtime/vk_require.h, vk_device.c pick_device)."""
+
+    @classmethod
+    def setUpClass(cls):
+        from installer import steps
+        cls.steps = steps
+        cls.catalog = json.loads((ROOT / 'installer' / 'text' / 'en.json').read_text(encoding='utf-8'))
+
+    def judge(self, h, v2_runtime=True):
+        tag, warnings = self.steps.judge_host(h, v2_runtime)
+        for wid, params in warnings:
+            self.assertIn(wid, self.catalog)
+            self.catalog[wid].format(**params)   # every placeholder of the text is given
+        return tag, [w for w, _ in warnings]
+
+    def refused(self, h, v2_runtime=True):
+        with self.assertRaises(self.steps.InstallError) as cm:
+            self.steps.judge_host(h, v2_runtime)
+        e = cm.exception
+        self.assertIn(e.id, self.catalog)
+        self.catalog[e.id].format(**e.params)
+        return e.id, e.params
+
+    def test_current_pc_builds_v3_without_warnings(self):
+        self.assertEqual(self.judge(host()), ('v3', []))
+
+    def test_processor_without_avx2_builds_v2(self):
+        self.assertEqual(self.judge(host(cpu_level=2)), ('v2', ['warn.cpu_v2']))
+
+    def test_processor_without_avx2_needs_the_v2_runtime(self):
+        self.assertEqual(self.refused(host(cpu_level=2), v2_runtime=False)[0], 'check.cpu_no_avx2')
+
+    def test_processor_below_v2_is_refused(self):
+        self.assertEqual(self.refused(host(cpu_level=1))[0], 'check.cpu_too_old')
+
+    def test_windows_before_10_is_refused_and_10_1507_accepted(self):
+        for old in ((6, 1, 7601), (6, 3, 9600)):
+            self.assertEqual(self.refused(host(windows=old)), ('check.windows_old', {'version': '.'.join(map(str, old))}))
+        self.assertEqual(self.judge(host(windows=(10, 0, 10240)))[0], 'v3')
+
+    def test_windows_on_arm_warns_and_uses_emulated_cpu_level(self):
+        for level in (2, 3):
+            with self.subTest(level=level):
+                tag, warnings = self.judge(host(arch='arm64', cpu_level=level))
+                self.assertEqual(tag, f'v{level}')
+                self.assertIn('warn.arm64_emulated', warnings)
+        self.assertEqual(self.refused(host(arch='arm64', cpu_level=1))[0], 'check.cpu_too_old')
+        self.assertEqual(self.refused(host(arch='arm64', cpu_level=2), v2_runtime=False)[0], 'check.cpu_no_avx2')
+
+    def test_no_loader_or_no_device(self):
+        self.assertEqual(self.refused(host(loader=False, devices=[]))[0], 'check.vulkan_missing')
+        self.assertEqual(self.refused(host(devices=[]))[0], 'check.vulkan_no_device')
+
+    def test_vulkan_1_2_only_is_refused_as_too_old(self):
+        h = host(devices=[gpu('GTX 760', api=(1, 2, 175), type_=2, usable=False, missing=['Vulkan 1.3'])])
+        self.assertEqual(self.refused(h), ('check.vulkan_too_old', {'devices': 'GTX 760 (1.2)'}))
+
+    def test_missing_requirements_are_named_per_gpu(self):
+        h = host(devices=[gpu('Old iGPU', usable=False, missing=['VK_EXT_depth_clip_control', 'geometryShader'])])
+        self.assertEqual(self.refused(h), ('check.vulkan_unusable',
+                                           {'devices': 'Old iGPU: VK_EXT_depth_clip_control, geometryShader'}))
+
+    def test_laptop_plays_on_the_usable_gpu(self):
+        h = host(devices=[gpu('dGPU', type_=2, usable=False, missing=['geometryShader']), gpu('iGPU', host_import=False)])
+        self.assertEqual(self.judge(h), ('v3', ['warn.no_host_import']))
+
+    def test_discrete_gpu_is_the_one_judged_for_host_import(self):
+        h = host(devices=[gpu('iGPU', host_import=False), gpu('dGPU', type_=2)])
+        self.assertEqual(self.judge(h), ('v3', []))
+
+    def test_software_renderer_warns(self):
+        h = host(devices=[gpu('llvmpipe', type_=4)])
+        self.assertEqual(self.judge(h), ('v3', ['warn.software_vulkan']))
+
+    def test_the_compile_step_follows_the_level(self):
+        """A processor without AVX2: the host check plans again with the compile key of that level, and the compile
+        step links the v2 library; on others nothing changes."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'libxc2rt.a').write_text('v3')
+            (root / 'libxc2rt-v2.a').write_text('v2')
+            for level, tag, lib in ((3, 'v3', 'libxc2rt.a'), (2, 'v2', 'libxc2rt-v2.a')):
+                with self.subTest(level=level):
+                    layout = Layout(root=root, dev=True, release='1.0', python=root, tools=root / 'tools',
+                                    recomp=root / 'recomp', llvm=root / 'llvm', deps=None, runtime=root / 'rt',
+                                    runtime_lib=root / 'libxc2rt.a', ninja=root, xlate=root)
+                    ctx = runner.Context(layout, root / 'dest', root / f'temp{level}', Reporter(out=io.StringIO()),
+                                         SimpleNamespace(inputs={}))
+                    compile_step = self.steps.Compile()
+                    upstream = Fake('lift')
+                    ctx.steps = [upstream, compile_step]
+                    ctx.plan()
+                    before = ctx.keys['compile']
+                    run = mock.Mock(side_effect=[SimpleNamespace(returncode=0, stdout='', stderr=''),
+                                                 SimpleNamespace(returncode=0, stdout=json.dumps(host(cpu_level=level)),
+                                                                 stderr='')])
+                    with mock.patch.object(self.steps.subprocess, 'run', run):
+                        self.steps.Check().host(ctx)
+                    self.assertEqual(ctx.keys['compile'] == before, level == 3)
+                    self.assertEqual(self.steps.cpu_tag(ctx), tag)
+                    self.assertEqual(self.steps.cpu_runtime_lib(layout, tag).name, lib)
+                    with mock.patch.object(self.steps, 'run_tool', return_value=(1, root / 'log')) as tool, \
+                            mock.patch.object(Layout, 'expected', lambda self, *a: root / 'expected.json'), \
+                            self.assertRaises(self.steps.InstallError):
+                        compile_step.run(ctx)
+                    args = tool.call_args.args[3]
+                    self.assertEqual(args[args.index('--cpu') + 1], tag)
+                    self.assertEqual(Path(args[args.index('--runtime-lib') + 1]).name, lib)
+
+    def test_older_host_check_output_is_judged_as_before(self):
+        old = {'x86_64_v3': True, 'loader': True, 'instance': 0,
+               'devices': [{'name': 'RX 6600', 'api': [1, 3, 260], 'type': 2}]}
+        self.assertEqual(self.judge(old), ('v3', []))
+        self.assertEqual(self.refused(dict(old, x86_64_v3=False))[0], 'check.cpu_too_old')
 
 
 if __name__ == '__main__':

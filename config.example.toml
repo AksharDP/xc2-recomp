@@ -10,7 +10,8 @@ updates = ['C:\Games\XC2\update-3.0.1.nsp']
 # Keys dumped from your own console. Never printed or copied by the tools.
 keys = 'C:\Switch\prod.keys'
 # Optional: a firmware NCA directory (an unpacked firmware, or an emulator's installed registered/ directory).
-# tools/extract_fonts.py takes the system shared fonts from it; the game needs them only with Chinese or Korean text.
+# tools/extract_fonts.py takes the system shared fonts from it. The Americas and Europe release never asks for them;
+# the Japanese release with Chinese text is unchecked.
 # firmware = 'C:\Switch\firmware'
 
 [work]

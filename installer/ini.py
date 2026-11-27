@@ -22,8 +22,12 @@ LANGUAGES = CODES
 # release, so an update of an install recorded with one switches it to its release's default language.
 REPLACED = {'zh-Hans': 'zh-CN', 'zh-Hant': 'zh-TW'}
 DROPPED_LANGUAGES = ('nl', 'pt', 'pt-BR', 'ru')
-# Their text falls back to the Switch shared fonts (runtime/ov_system.c), which the installer does not extract.
-NEED_SHARED_FONTS = ('ko', 'zh-CN', 'zh-TW')
+# Languages whose need for the Switch shared fonts (nn::pl, runtime/ov_system.c) is unchecked; the installer does not
+# extract those fonts. Korean is not one: main of the Americas and Europe release (3.0.1) imports no nn::pl function and
+# draws Korean with menu/font/standard_kr.wifnt from bf2.arh, and it runs to the opening without them. Chinese is the
+# Japanese release's, whose files were not available to check; bf2.arh ships chinese_simple.wifnt and
+# chinese_original.wifnt in the other release too.
+FONTS_UNCHECKED = ('zh-CN', 'zh-TW')
 
 SECTION = re.compile(r'^\s*\[(.*)\]\s*$')
 

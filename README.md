@@ -33,7 +33,8 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 - Keyboard, mouse and gamepad
 - AMD FSR 1 scaling when the window is bigger than the game picture; bilinear is the other option
 - AMD FSR upscaling in place of the game's temporal anti-aliasing and scaling (FSR 3.1, or FSR 4 on Radeon RX 6000 and
-  newer), and frame generation between drawn frames, both off by default
+  newer with a recent driver, on Windows), and frame generation between drawn frames, both off by default. FSR 3.1 is
+  built into the game and runs on Linux too. The performance overlay's *Upscaler* line shows the FSR version that is running
 - Mods for Switch emulators and Atmosphere, in a `mods` folder next to `xc2.exe` ([docs/mods.md](docs/mods.md))
 - Ultrawide game resolutions (21:9 and 32:9): a wider view of the world, menus centred and the field and battle HUD at
   the screen's edges (Fit the interface to wide screens, on by default)
@@ -62,7 +63,7 @@ Requirements: Windows 10 or later, or Linux 6.7 or later with glibc 2.34, an x86
 On Linux, download `XC2-Setup-<version>-linux.AppImage` instead, make it executable and start it; the steps are the
 same and the game is `xc2` in the install folder ([docs/installer.md](docs/installer.md), "Linux release").
 
-To update, run a newer `XC2-Setup.exe` on the same folder; saves and settings are kept. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) describes most of them). Controls: [docs/controls.md](docs/controls.md).
+To update, start the setup again: when a newer release is out it says so, and *Download and update* fetches the new setup and updates your install folder with it. Running a newer `XC2-Setup.exe` on the same folder does the same. Saves and settings are kept either way. Settings are in the in-game menu and in `xc2.ini` ([xc2.ini.example](xc2.ini.example) describes most of them). Controls: [docs/controls.md](docs/controls.md).
 
 ## Credits
 

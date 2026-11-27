@@ -250,7 +250,7 @@ def build_harness(work, bodies, jobs, cflags):
         f.write(''.join(f'void t{k}(Cpu *c);\n' for k in range(len(bodies))))
         f.write('GuestFn tests[] = {' + ','.join(f't{k}' for k in range(len(bodies))) + '};\n')
         f.write(f'int ntests = {len(bodies)};\n')
-    srcs += [work / 'table.c', ROOT / 'tests' / 'diff' / 'harness.c']
+    srcs += [work / 'table.c', ROOT / 'tests' / 'diff' / 'harness.c', ROOT / 'runtime' / 'fma.c']
     objs, procs = [], []
     for s in srcs:
         o = work / (s.stem + '.o')

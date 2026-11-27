@@ -16,7 +16,8 @@ XC2's inputs; file names inside the game folder (`xc2.exe`, `xc2.ini`) are XC2 R
    - the game language, from the languages the chosen game files have text for ([Game languages](#game-languages)),
      and the install folder.
 3. Waits for the setup, one time. The window shows each step and its progress.
-4. Plays `xc2.exe` from the install folder. The installer and the source NSP or XCI can be deleted.
+4. Plays `xc2.exe` from the install folder. The source NSP or XCI can be deleted, and on Windows the installer too. On
+   Linux the AppImage file has to stay where it is: the game builds the code of mods with it ("Code of mods").
 
 The install folder (`main.c` `portable_paths()` reads this layout; it stays portable):
 
@@ -24,14 +25,16 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 <install folder>/
   xc2.exe, SDL3.dll, libopus-0.dll, xc2_xlate.exe
   amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll, amd_fidelityfx_framegeneration_vk.dll
-                                AMD FSR SDK 2.4 (FSR upscaling and frame generation); without them the FSR settings stay off
+                                AMD FSR SDK 2.4 (FSR upscaling and frame generation, with FSR 4); without them the game's own FSR 3.1 runs
   xc2.ini                       lang and game_langs; the other keys as commented defaults (xc2.ini.example)
   exefs/, romfs/                 extracted from the player's files (base merged with 3.0.1; RomFS about 13 GiB)
   aoc/<index>/                   each add-on's RomFS (about 4.6 GiB for all seven; packs 5 and 6 hold only a key file)
   profile/                       saves
   logs/                          xc2.log of the last run, xc2.1.log to xc2.4.log of the runs before it
   shader and pipeline caches     prepared by the setup
-  build-cache/                   what the build has of the player's mods; objects/: the last build's generated objects
+  build-cache/                   the compiled code of the player's mods; modcode.txt: the command the game builds it with;
+                                objects/: the last build's generated objects; work/: the setup's temp folder
+  build-kit/                     Windows: the setup's tools, which that command uses ("Code of mods")
   xc2-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
@@ -56,8 +59,9 @@ Each release installs into its own folder, so both can sit side by side: `xc2-in
 the game sees, and the title id folders `runtime/mods.c` looks in), and the code patch table is the release's
 (`Region.patch_table` in `tools/xc2_titles.py`: Japan's 3.0.0 has the code and data of 3.0.1 and shares
 `recomp/patches-v301.txt`; an update without a table runs at the console's 30 fps and 1280x720, since the
-runtime's frame rate and resolution code reads `main`'s data only with those patch sets). Mods may be laid out under
-either title id.
+runtime's frame rate and resolution code reads `main`'s data only with those patch sets). A mod's title id folders are
+the installed release's, so a mod that holds folders of both works on either. `tools/cheats.py` and
+`tools/exefs_patches.py` take the release from the program id in `main.npdm`.
 
 ## Updating the port
 
@@ -80,8 +84,61 @@ What keeps an update short:
 - `build-cache/objects/` in the install folder holds the objects of the last build (`tools/build_game.py`
   `ObjectCache`, about 2 GB). The compile reuses every object whose generated C, compiler, flags and included headers
   are unchanged, so a release that changes a few lifted functions or only the runtime library compiles a few chunks
-  or none and relinks. It lives in the install folder because each release folder has its own temp folder. Deleting
-  it only costs a full compile on the next update.
+  or none and relinks. Its keys hold no folder, so it also serves an install folder that was moved. Deleting it only
+  costs a full compile on the next update.
+
+### Download and update
+
+The setup window can fetch the newer setup itself (`installer/selfupdate.py`), so the player does not have to go back to
+the releases page:
+
+1. When the window opens, it asks GitHub for the repository's latest release (`releases/latest`; the repository is
+   `repo` in `recomplauncher.json`, so a fork's release asks the fork). That is one unauthenticated request, sent in a
+   thread, whose User-Agent names only the setup and its version. A failure, GitHub's rate limit or no newer version
+   shows nothing. Drafts and pre-releases are never offered, and neither is a version equal to or below this setup's
+   `VERSION`, build metadata aside.
+2. A newer release shows a banner over the form, with **What's new** (the release page) and, when the release has
+   this platform's file with the SHA-256 GitHub lists for it, **Download and update**. That button needs a setup
+   started from its release folder (with its `XC2-Setup.exe`, which the build kit in an install folder lacks) or from
+   its AppImage; anywhere else the banner links to the release page only.
+3. Download and update fetches `XC2-Setup-<version>-windows.zip`, hashing it as it arrives, and refuses a file whose
+   size or SHA-256 differs. It unpacks the zip without its top folder into `XC2-Setup-<version>.partial`, a folder
+   marked as its own, beside the running setup, and renames that to `XC2-Setup-<version>` once the unpacked
+   `VERSION` names the release. If that parent folder cannot be written, the new setup goes to
+   `%LOCALAPPDATA%\XC2 Recomp\setup\` instead. On Linux the AppImage goes beside the running one (`$APPIMAGE`), else to
+   `$XDG_DATA_HOME/xc2-recomp/setup/`, and is marked executable. A setup of that version already there is used as it
+   is. A zip entry that would land outside the folder stops the unpack before anything is written.
+4. The old window starts the new setup. Windows runs that folder's `python\pythonw.exe -m installer.gui`, as its
+   `XC2-Setup.exe` does, without the Tcl variables the old window set for itself. When the install folder field holds
+   an installation, it passes `--update-install <folder>`, and the new window starts the update at once. The old
+   window closes once the new one has run for 2.5 s; if the new one has ended with an error by then, the old window
+   says so and stays open.
+
+Cancel, or closing the window, stops the download and removes the partial files. The old setup is left where it is.
+On Windows the update replaces the install folder's build kit (`Kit`), so the old setup folder can be deleted. On
+Linux the update's `Cleanup` points `build-cache/modcode.txt` at the new AppImage, which then has to stay where it is
+([Code of mods](#code-of-mods)), and the old AppImage can be deleted. `"check_updates": false` in `launcher.json`, or
+`--no-update-check`, turns the check off. A checkout (dev mode) never checks. RecompLauncher runs the CLI, which has no
+check, and updates the release itself. A window older than this feature cannot update itself, so the step from such a
+release to a newer one is still done by hand. Tests: `tests/selfupdate_test.py` (no network) and `UpdateBannerTest`
+in `tests/installer_gui_test.py`.
+
+## Code of mods
+
+`xc2.exe` holds none of the player's mods, and the setup does not read the mods folder. At start the game compares the
+code patches and code cheats of the enabled mods with what it built last (`build-cache/exefs.status` and
+`cheats.status`). When some are new or changed it runs the command in `build-cache/modcode.txt` and waits
+(`runtime/modcode.c`). `tools/mod_code.py` lifts the functions they change again, with the patches in, compiles them into
+`build-cache/mods/<hash>.dll` and leaves the status files; the game loads that library and sends the calls of those
+functions to it.
+
+- The library fits one build of the game: `build-cache/mod-base/` and the exe carry what ties them (`tools/mod_abi.py`).
+  After an update the first start builds it again. It is compiled for the exe's x86-64 level (`mod-base/cpu-level.txt`),
+  so an exe for processors without AVX2 gets a library without AVX2 too.
+- On Windows the setup copies its folder without `XC2-Setup.exe` into `build-kit/` (`installer/steps.py` `Kit`, about
+  0.5 GB) and runs its later steps from there. The command is relative to the install folder, so the setup's folder can
+  be deleted and the install folder moved. A newer setup replaces the kit. On Linux the command starts the AppImage
+  file, which has to stay where it is.
 
 ## Setup steps
 
@@ -95,22 +152,24 @@ What keeps an update short:
    by `runtime/vk_require.h`, the list the game's device choice uses, so a refusal names what each GPU lacks. A GPU
    without `VK_EXT_external_memory_host`, Windows on Arm and a software renderer get a warning, not a refusal
    ([compatibility.md](compatibility.md)). Each failure is one clear message.
-2. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
+2. **Build kit** (Windows): copies the tools into `build-kit/` ("Code of mods").
+3. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
    the update's BKTR patch while reading both game files in place: it writes the 14 GB RomFS once, decrypting on
    several threads and hashing as it writes, so the folder needs room for the RomFS only.
-3. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
+4. **Add-on content**: each add-on NSP's RomFS into `aoc/<index>/` (`tools/xc2_extract.py` `dlc_romfs`; add-on NCAs
    are encrypted with the title key from the NSP's ticket), up to three packs at once in processes of their own
    (`installer/steps.py` `DLC_JOBS`). Each pack's log is `logs/dlc-<index>.log` in the temp folder.
-4. **Lift** the ExeFS to C (`recomp/gen.py`) into a temp folder next to the installer. A code patch table
+5. **Lift** the ExeFS to C (`recomp/gen.py`) into `gen/` in the temp folder (`installer/layout.py` `temp_for`:
+   `build-cache/work` in the install folder; `.setup-temp` on Linux). A code patch table
    `recomp/patches-v301.txt` is passed when it exists (XC2's frame rate and game resolution). `patches-upd.txt` and the `v121`/`v143`
    tables are XCX's and never used.
-5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
+6. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout
    and RomFS hashes) and link them with the prebuilt runtime library into `xc2.exe` (`build_game.py --runtime-lib`).
    Generated objects come from `build-cache/objects/` where they are current, and the new ones go into it
    (`build_game.py --object-cache`).
-6. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
+7. **Prepare**: puts the shader translator beside `xc2.exe`. XC2 has no shader list to translate ahead of play yet, so
    shaders are translated on first use and cached in `shader-cache/`.
-7. **Clean up** the temp folder (generated C and objects).
+8. **Clean up** the temp folder and write `build-cache/modcode.txt`.
 
 A full first install from the base game, 3.0.1 and all seven add-ons took about 8 minutes on a 24-core machine.
 
@@ -118,10 +177,11 @@ A cancelled or failed setup resumes from the last finished step (`xc2-install.js
 
 ## Game languages
 
-The two releases have text in different languages, and the game shows a black screen in a language its files lack
-(GitHub issue 107): it turns the language into the folder of its text (`bdat/<folder>` in `bf2.arh`) without checking
-that the folder exists. `tools/xc2_languages.py` reads those folders, from the game files in place or from an
-extracted RomFS:
+The two releases have text in different languages, and the game shows a black screen in a language its files lack, such
+as Russian (GitHub issue 107): it turns the language into the folder of its text (`bdat/<folder>` in `bf2.arh`) without
+checking that the folder exists. Asked for Japanese or Chinese, which its 3.0.1 update lists in the NACP (the base lists
+en-GB, fr, de, es and it) but has no folders for, the Americas and Europe release shows its English text instead.
+`tools/xc2_languages.py` reads those folders, from the game files in place or from an extracted RomFS:
 
 | Release | Text folders | Languages offered |
 |---|---|---|
@@ -131,6 +191,11 @@ extracted RomFS:
 No release has Dutch, Portuguese or Russian. The game's own code table has no zh-Hans, zh-Hant or pt-BR, so Chinese
 goes to it as zh-CN and zh-TW. The NACP's supported-language flags do not match the text (the 3.0.1 update lists ja
 and Chinese, the Japanese base English), so the installer reads the folders instead.
+
+Korean needs no Switch system fonts: main (3.0.1) imports no `nn::pl` function and draws it with
+`menu/font/standard_kr.wifnt` from `bf2.arh`. Chinese on the Japanese release is unchecked, so choosing zh-CN or zh-TW
+warns (`warn.lang_fonts_unchecked`); if the game asks for a system font that is missing, it stops and names it
+(`tools/extract_fonts.py` extracts them from a firmware).
 
 - Window: once the base game and the keys are chosen it runs `python -m installer.probe --base FILE [--update FILE]
   --keys FILE` (one JSON line, `installer/probe.py`, about a second), and the language list holds only those
@@ -177,6 +242,7 @@ with that release's `--toolchain` and `--ninja`.
   progress, space line, collapsible log, Cancel (Ctrl+Break to the CLI's process group, then it waits for the exit),
   finish screen with Open folder. English; every sentence is an id in `installer/text/en.json`. A folder with
   `xc2-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen and closes itself.
+  A banner over the form offers a newer release ([Download and update](#download-and-update)).
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and an extracted game; see its docstring).
 - `tests/installer_test.py`: bookkeeping with fake steps. `tests/installer_e2e.py`: a dev-mode run with the files of
@@ -220,10 +286,10 @@ xc2-setup.desktop, xc2-setup.png
 installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, xc2.ini.example, VERSION   as on Windows
 python/               python-build-standalone 3.14 (with tkinter) + the installer's packages; a .pth puts the folder,
                       tools/ and recomp/ on sys.path
-llvm/                 LLVM 23 (clang, lld, llvm-ar) and llvm/sysroot: the files of the Steam Runtime 3 "sniper" SDK the
-                      game's compile and link read (about 130 files)
-runtime/              libxc2rt.a, headers, the install-side sources, xc2.png; deps/ with the Vulkan headers, VMA and a
-                      static zstd
+llvm/                 LLVM 23 (clang, lld, llvm-ar, llvm-objdump) and llvm/sysroot: the files of the Steam Runtime 3
+                      "sniper" SDK the game's compile and link read (about 130 files)
+runtime/              libxc2rt.a and libxc2rt-v2.a (x86-64-v2, for processors without AVX2), headers, the install-side
+                      sources, xc2.png; deps/ with the Vulkan headers, VMA and a static zstd
 bin/                  xc2_xlate, ninja, libSDL3.so.0
 ```
 
@@ -240,6 +306,10 @@ bin/                  xc2_xlate, ninja, libSDL3.so.0
 - The window cancels through SIGTERM to the CLI's process group (the CLI handles
   it as Ctrl+Break on Windows) and opens the finished folder with `xdg-open`.
 - Requirements beyond Windows': Linux 6.7 or later (the write watch, `docs/building.md`) and glibc 2.34.
+- A processor without AVX2 gets the game built for x86-64-v2, as on Windows: the setup links `libxc2rt-v2.a` and
+  passes `--cpu v2`, whose check of the install-side objects runs the bundled `llvm-objdump` (SteamOS has no binutils).
+  `make_release_linux.py --prove` builds and probes both levels and runs `tools/check_isa.py` on the v2 `xc2`, so the
+  sniper sysroot's static libraries (libvpx, libstdc++) are audited too.
 - Building either release needs no game files: the runtime library takes main's base and the module limit from
   `runtime/dispatch.h` (`RT_MAIN_BASE`, `RT_MODULES_MAX`) instead of the generated `layout.h`, and each install's
   `modules.c` checks them against its layout. `.github/workflows/release.yml` builds both releases from a bare
@@ -259,7 +329,8 @@ python\python.exe -m installer --progress-lines --base=... --update=... --keys=.
 On Linux the same arguments go to the AppImage (`AppRun -m installer ...`). The game lands in `game/` next to the
 setup, so an update of the release leaves it in place and the launcher runs the setup again on it. Play starts
 `game/xc2.exe` (`game/xc2` on Linux), and the launcher's settings page edits `game/xc2.ini`. The setup window and the
-command line work as before.
+command line work as before. A new mod that changes the game's frame size makes the game start itself again once, so the launcher may
+show it as closed meanwhile.
 
 ## Constraints
 

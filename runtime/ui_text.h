@@ -1,5 +1,5 @@
 // Text the host shows the player (runtime/ui_text.c): one catalog, keyed by stable ids. The software keyboard reads it
-// in the game's language (ui_text); the menu and the performance overlay are English (menu_text).
+// in the game's language (ui_text); the menu and the performance overlay read it in the menu language (menu_text).
 #pragma once
 
 typedef enum {
@@ -11,7 +11,8 @@ typedef enum {
     UI_SWKBD_CANCEL,
     UI_SWKBD_PAD_HINT,       // how a controller answers
 
-    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English texts.
+    // Menu: window, tabs, bottom row. UI_MENU_FIRST..UI_MENU_LAST_ID carry English texts, and Chinese ones
+    // (Simplified and Traditional) where translated; the others show the English.
     UI_MENU_FIRST,
     UI_MENU_TITLE = UI_MENU_FIRST,
     UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND, UI_MENU_TAB_CONTROLS,
@@ -44,6 +45,10 @@ typedef enum {
     UI_MENU_FSR_VERSION, UI_MENU_FSR_VERSION_DESC,
     UI_MENU_FSR_VERSION_AUTO, UI_MENU_FSR_VERSION_4, UI_MENU_FSR_VERSION_3,
     UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC,
+    UI_MENU_FRAME_GEN_NEEDS_FSR,
+    UI_MENU_FSR_CHECKING,     // until it is known what loads on this machine
+    UI_MENU_FMT_FSR_RUNNING,  // "Running: FSR %s", under the value of the AMD FSR row
+    UI_MENU_RUNNING, UI_MENU_NOT_RUNNING,
 
     // Game
     UI_MENU_FPS_LIMIT, UI_MENU_FPS_LIMIT_DESC, UI_MENU_FPS_30, UI_MENU_FPS_40, UI_MENU_FPS_45, UI_MENU_FPS_60, UI_MENU_FPS_90,
@@ -54,6 +59,7 @@ typedef enum {
     UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC,
     UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC,
     UI_MENU_GAME_LANG, UI_MENU_GAME_LANG_DESC, UI_MENU_GAME_LANG_AUTO,
+    UI_MENU_MENU_LANG, UI_MENU_MENU_LANG_DESC, UI_MENU_MENU_LANG_AUTO,
     UI_MENU_OPERATION_MODE, UI_MENU_OPERATION_MODE_DESC, UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD,
 
     // Sound
@@ -170,10 +176,10 @@ typedef enum {
     UI_MENU_TAB_CHEATS,
     UI_MENU_CHEATS_NONE,      // "%s": <build id>.txt
     UI_MENU_CHEATS_MOD,       // "%s": the mod, "%d": its cheats
-    UI_MENU_CHEATS_UNBUILT,   // code cheats or ExeFS patches wait for the setup to run again
+    UI_MENU_CHEATS_UNBUILT /* "%s": why */, UI_MENU_CHEATS_UNBUILT_OFF,   // code cheats or ExeFS patches not built (OFF: mods_build is off)
     UI_MENU_CHEAT_CODE_DESC, UI_MENU_CHEAT_KEY_DESC /* "%s": the buttons */, UI_MENU_CHEAT_DATA_DESC,
     UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
-    UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
+    UI_MENU_CHEAT_UNBUILT, UI_MENU_CHEAT_UNBUILT_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
     // the port's own cheats (cheats.c), listed above the mods'
     UI_MENU_CHEATS_BUILTIN,
     UI_MENU_CHEAT_GOD_MODE, UI_MENU_CHEAT_GOD_MODE_DESC,
@@ -189,13 +195,17 @@ typedef enum {
     // number formats of the overlay's cells (printf, one number each)
     UI_MENU_OV_FMT_PCT, UI_MENU_OV_FMT_TEMP, UI_MENU_OV_FMT_POWER, UI_MENU_OV_FMT_MHZ, UI_MENU_OV_FMT_GB,
     UI_MENU_OV_FMT_GB_OF, UI_MENU_OV_GAME_GB, UI_MENU_OV_FMT_MS, UI_MENU_OV_PER_FRAME,
-    // the picture lines: window, game image and 3D scene sizes, the scaling to the window, frame limit and presentation
-    UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT,
+    // the picture lines: window, game image and 3D scene sizes, the upscaler, the scaling to the window, frame limit and
+    // presentation
+    UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE, UI_MENU_OV_UPSCALER, UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT,
+    UI_MENU_OV_PRESENT,
     UI_MENU_OV_FMT_SIZE,      // "%ux%u"
     UI_MENU_OV_FMT_SCENE,     // "%ux%u, %.0f%%": the scene and its share of the game image's width
     UI_MENU_OV_FMT_FSR,       // "AMD FSR 1, sharpness %d%%"
     UI_MENU_OV_SCALE_NONE, UI_MENU_OV_SCALE_BILINEAR,
-    UI_MENU_LAST_ID = UI_MENU_OV_SCALE_BILINEAR,
+    UI_MENU_OV_FMT_UPSCALER,  // "AMD FSR %s": the provider version that ran
+    UI_MENU_OV_UPSCALE_GAME, UI_MENU_OV_UPSCALE_NO_FSR, UI_MENU_OV_UPSCALE_IDLE,   // the game's own, and why
+    UI_MENU_LAST_ID = UI_MENU_OV_UPSCALE_IDLE,
     UI_TEXT_COUNT
 } UiTextId;
 
@@ -209,5 +219,10 @@ int ui_text_defined(const char *lang, UiTextId id);
 // The catalog language for a Switch language code ("en-GB" -> "en", "zh-CN" -> "zh-Hans", ...).
 const char *ui_text_lang(const char *switch_code);
 
-// Menu and overlay text: ui_text_in("en", id).
+// Menu and overlay text: ui_text_in(menu language, id). Follows XC2_MENU_LANG ("zh-Hans" / "zh-Hant" / "en"), or the
+// system UI language when unset.
 const char *menu_text(UiTextId id);
+// The resolved catalog language currently used by menu_text ("zh-Hans", "zh-Hant" or "en").
+const char *menu_text_lang(void);
+// The menu has no font with Chinese characters: menu_text is English from now on, whatever the setting says.
+void menu_text_no_chinese(void);

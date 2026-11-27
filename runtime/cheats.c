@@ -6,11 +6,10 @@
 // cheats of one name keep their own switches.
 //
 // Code cheats (opcode 0 writes into main's code) cannot be applied here: the game's code is lifted C. tools/cheats.py
-// turns the code cheats of every mod into patch sets cheat_<hash> when the game is built and writes
-// build-cache\cheats.status next to xc2.exe, one line per cheat: name hash, content hash, kind, buttons, note
-// (tools/cheats.py has the format). A cheat whose status line is missing or has another content hash was added or
-// edited after the build: a data cheat runs anyway, a code cheat waits for the setup to run again (TotK Recomp starts
-// that rebuild itself; this port only says so in the log and the Cheats tab).
+// turns the code cheats of every mod into patch sets cheat_<hash>, which tools/mod_code.py makes into the mods' library
+// at game start (modcode.c), and writes build-cache\cheats.status next to xc2.exe, one line per cheat: name hash,
+// content hash, kind, buttons, note (tools/cheats.py has the format). A cheat whose status line is missing or has
+// another content hash was added or edited and could not be built: a data cheat runs anyway, a code cheat stays off.
 //
 // Data cheats run in a VM after Atmosphere's dmnt cheat VM (opcodes 0-A; the 0xC.. and 0xF.. extensions are not
 // supported), every presented frame while their switch is on, with registers cleared before each cheat. Memory is the
@@ -32,6 +31,7 @@
 #include "cheats.h"
 #include "host.h"
 #include "input.h"
+#include "modcode.h"
 #include "mods.h"
 #include "platform/platform.h"
 
@@ -123,7 +123,7 @@ static const char *vm_unsupported(const uint32_t *w, char *buf, int n) {
     return NULL;
 }
 
-// The kind of a cheat the build did not see: heading, data, rebuild (it writes main's code) or unsupported.
+// The kind of a cheat tools/cheats.py did not see: heading, data, unbuilt (it writes main's code) or unsupported.
 static CheatKind classify(Cheat *c) {
     int ops = 0, ends = 0;
     for (int i = 0; i < c->n;) {
@@ -137,7 +137,7 @@ static CheatKind classify(Cheat *c) {
         ends += f >> 28 == 2;
         if (f >> 28 == 0 && ((f >> 20) & 0xF) == 0) {
             uint64_t off = ((uint64_t)(f & 0xFF) << 32) | c->words[i + 1];
-            if (off < g_code_end - g_main) return CHEAT_REBUILD;
+            if (off < g_code_end - g_main) return CHEAT_UNBUILT;
         }
         if (vm_unsupported(c->words + i, c->note, sizeof c->note)) return CHEAT_UNSUPPORTED;
         i += len;
@@ -446,38 +446,35 @@ static void plain_name(char *s) {
     }
 }
 
-// ---- code cheats and ExeFS patches the build lacks
-// They need the setup to lift and compile the game again (installer/steps.py Lift runs tools/cheats.py and
-// tools/exefs_patches.py over the mods folder). The game says so in the log and the Cheats tab and starts with the code
-// it has: the code cheats stay off, a mod with unbuilt ExeFS patches stays off as a whole (mods.c).
-static int g_unbuilt;   // code cheats of enabled mods plus ExeFS patch files the build lacks
-
 static void builtin_init(void);   // defined below, after the file cheats
 
-static void report_unbuilt(void) {
-    uint32_t key = 0x811C9DC5u;
-    int need = 0;
-    for (int i = 0; i < g_n; i++) need += g_cheats[i].info.kind == CHEAT_REBUILD;
-    int patches = mods_exefs_pending(&key);
-    g_unbuilt = need + patches;
-    if (g_unbuilt)
-        rt_log("cheats: %d code cheats and %d ExeFS patch files are not built into the game; run the setup again to "
-               "build them in", need, patches);
+static int g_read;       // the files are read (read_files)
+static int g_unbuilt;    // code cheats that could not be built
+
+static void forget(void) {
+    for (int i = 0; i < g_n; i++) {
+        free(g_cheats[i].words);
+        free((void *)g_cheats[i].info.name);
+    }
+    free(g_cheats);
+    g_cheats = NULL;
+    g_n = g_cap = g_files = g_read = 0;
 }
-void cheats_init(void) {
-    builtin_init();   // the patch sets are independent of the mods' files
-    const RtLoaded *m = ldr_count() ? ldr_module(0) : NULL;
-    char dir[PLAT_PATH_MAX], bid[17], path[2400];   // path: a mod's cheats folder (ModInfo.cheats) + the file
-    if (!m || !exe_dir(dir, sizeof dir) || !build_id(bid)) return;
-    snprintf(g_dir, sizeof g_dir, "%s", dir);
-    g_main = m->base;
-    g_main_size = m->size;
-    g_code_end = m->base + ((m->text_end + 0xFFF) & ~0xFFFull);
+
+// Reads the cheat files of the enabled mods that can be used. early: before the mods' code is built, when one that still
+// waits for it counts too; read once.
+static int read_files(int early) {
+    char bid[17], path[2400];   // path: a mod's cheats folder (ModInfo.cheats) + the file
+    if (early && g_read) return g_files;
+    forget();
+    if (!exe_dir(g_dir, sizeof g_dir) || !build_id(bid)) return 0;
+    g_read = 1;
     snprintf(g_file, sizeof g_file, "%s.txt", bid);
     mods_scan();
     for (int k = 0; k < mods_count(); k++) {   // the Mods tab's order, top first
         const ModInfo *mod = mods_at(k);
-        if (!mod->enabled || mod->problem != MOD_OK || !mod->cheats[0] || !find_file(mod->cheats, path, sizeof path))
+        if (!mod->enabled || (mod->problem != MOD_OK && !(early && mod->problem == MOD_EXEFS_LATER)) ||
+            !mod->cheats[0] || !find_file(mod->cheats, path, sizeof path))
             continue;
         char *text = read_text(path);
         if (!text) {
@@ -488,29 +485,65 @@ void cheats_init(void) {
         free(text);
         g_files++;
     }
-    if (!g_files) {
-        rt_log("cheats: no enabled mod holds cheats/%s", g_file);
-        report_unbuilt();   // an enabled mod's ExeFS patches may still wait for a build
+    return g_files;
+}
+
+// The keys of a cheat's status line: the hash of its name (into *name too) and of its words.
+static void identify(Cheat *c, char key[9], char content[9], uint32_t *name) {
+    char named[900];
+    snprintf(named, sizeof named, c->dup > 1 ? "%s/%s#%d" : "%s/%s", c->info.mod, c->info.name, c->dup);
+    *name = fnv(named, strlen(named));
+    snprintf(key, 9, "%08X", *name);
+    size_t tn = (size_t)c->n * 9 + 1, tl = 0;
+    char *t = (char *)malloc(tn);
+    if (!t) rt_fatal("cheats: out of memory");
+    t[0] = 0;
+    for (int k = 0; k < c->n; k++) tl += (size_t)snprintf(t + tl, tn - tl, k ? " %08X" : "%08X", c->words[k]);
+    c->content = fnv(t, tl);
+    snprintf(content, 9, "%08X", c->content);
+    free(t);
+}
+
+static char *read_status(void) {
+    char path[PLAT_PATH_MAX + 64];
+    snprintf(path, sizeof path, "%sbuild-cache" SEP "cheats.status", g_dir);
+    return read_text(path);
+}
+
+int cheats_files(void) { return read_files(1); }
+
+int cheats_pending(void) {
+    if (!read_files(1)) return 0;
+    char *status = read_status(), key[9], content[9], *f[5];
+    int n = 0;
+    uint32_t name;
+    for (int i = 0; i < g_n; i++) {
+        identify(&g_cheats[i], key, content, &name);
+        n += !status || !status_of(status, key, f) || strcmp(f[1], content);
+    }
+    free(status);
+    return n;
+}
+
+void cheats_init(void) {
+    builtin_init();   // the patch sets are independent of the mods' files
+    const RtLoaded *m = ldr_count() ? ldr_module(0) : NULL;
+    if (!m) return;
+    g_main = m->base;
+    g_main_size = m->size;
+    g_code_end = m->base + ((m->text_end + 0xFFF) & ~0xFFFull);
+    if (!read_files(0)) {
+        if (g_file[0]) rt_log("cheats: no enabled mod holds cheats/%s", g_file);
         return;
     }
-    snprintf(path, sizeof path, "%sbuild-cache" SEP "cheats.status", dir);
-    char *status = read_text(path);
+    char *status = read_status();
     int counts[CHEAT_UNSUPPORTED + 1] = {0}, seen_dups = 0;
     for (int i = 0; i < g_n; i++) {
         Cheat *c = &g_cheats[i];
-        char named[900];
-        snprintf(named, sizeof named, c->dup > 1 ? "%s/%s#%d" : "%s/%s", c->info.mod, c->info.name, c->dup);
-        seen_dups += c->dup > 1;
         char key[9], content[9];
-        snprintf(key, sizeof key, "%08X", fnv(named, strlen(named)));
-        size_t tn = (size_t)c->n * 9 + 1, tl = 0;
-        char *t = (char *)malloc(tn);
-        if (!t) rt_fatal("cheats: out of memory");
-        t[0] = 0;
-        for (int k = 0; k < c->n; k++) tl += (size_t)snprintf(t + tl, tn - tl, k ? " %08X" : "%08X", c->words[k]);
-        c->content = fnv(t, tl);
-        snprintf(content, sizeof content, "%08X", c->content);
-        free(t);
+        uint32_t name;
+        seen_dups += c->dup > 1;
+        identify(c, key, content, &name);
         snprintf(c->info.key, sizeof c->info.key, "XC2_CHEAT_%s", key);
         int master = c->info.kind == CHEAT_MASTER;
         char *f[5];
@@ -524,9 +557,10 @@ void cheats_init(void) {
             snprintf(c->note, sizeof c->note, "%s", f[4]);
             if (kind == CHEAT_CODE || kind == CHEAT_KEY || kind == CHEAT_MASTER) {
                 char set[32];
-                snprintf(set, sizeof set, "cheat_%08x", fnv(named, strlen(named)));
+                snprintf(set, sizeof set, "cheat_%08x", name);
                 c->set = rt_patch_set(set);
-                if (c->set < 0 && kind != CHEAT_MASTER) kind = CHEAT_REBUILD;
+                if (c->set < 0) kind = CHEAT_UNBUILT;
+                else modcode_use(c->set);
             }
         } else {
             kind = classify(c);
@@ -541,14 +575,14 @@ void cheats_init(void) {
         counts[kind]++;
     }
     free(status);
-    report_unbuilt();
+    g_unbuilt = counts[CHEAT_UNBUILT];
     for (int i = 0; i < g_n; i++) plain_name((char *)g_cheats[i].info.name);   // the hashes above read the file's bytes
     int on = 0;
     for (int i = 0; i < g_n; i++) on += g_cheats[i].on && g_cheats[i].info.kind != CHEAT_HEADING;
     rt_log("cheats: %s in %d mods: %d cheats, %d on; %d code, %d while buttons are held, %d data, %d master, "
-           "%d restore, %d headings, %d wait for a rebuild, %d not supported%s",
+           "%d restore, %d headings, %d not built, %d not supported%s",
            g_file, g_files, g_n, on, counts[CHEAT_CODE], counts[CHEAT_KEY], counts[CHEAT_DATA], counts[CHEAT_MASTER],
-           counts[CHEAT_RESTORE], counts[CHEAT_HEADING], counts[CHEAT_REBUILD], counts[CHEAT_UNSUPPORTED],
+           counts[CHEAT_RESTORE], counts[CHEAT_HEADING], counts[CHEAT_UNBUILT], counts[CHEAT_UNSUPPORTED],
            seen_dups ? " (repeated names numbered)" : "");
 }
 

@@ -46,7 +46,8 @@
 static int deterministic;
 void vk_exec_deterministic(int on) { deterministic = on != 0; }
 
-enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_XFB, W_COUNT };
+enum { W_PROGRAM, W_SHADER, W_PIPELINE, W_NO_VS, W_INDEX, W_UB, W_BIND, W_SSBO_ALIGN, W_SSBO_SLOT, W_RESTART, W_INDIRECT, W_XFB, W_FB_STORE,
+       W_COUNT };
 
 static void warn_once(int key, const char *fmt, ...) {
     static volatile int32_t seen[W_COUNT];
@@ -483,9 +484,41 @@ typedef struct ViewNode { struct ViewNode *next; ViewKey k; VkImageView view; } 
 static nvn_hmap view_of;                 // ViewKey -> VkImageView
 static nvn_hmap views_by_image;          // VkImage -> its first ViewNode
 
+// Bytes per texel of an uncompressed colour format, 0 for any other: Vulkan's size-compatible format classes.
+static int color_bytes(VkFormat f) {
+    if (f >= VK_FORMAT_R8_UNORM && f <= VK_FORMAT_R8_SRGB) return 1;
+    if ((f >= VK_FORMAT_R8G8_UNORM && f <= VK_FORMAT_R8G8_SRGB) || (f >= VK_FORMAT_R16_UNORM && f <= VK_FORMAT_R16_SFLOAT)) return 2;
+    if ((f >= VK_FORMAT_R8G8B8A8_UNORM && f <= VK_FORMAT_A2B10G10R10_SINT_PACK32) ||
+        (f >= VK_FORMAT_R16G16_UNORM && f <= VK_FORMAT_R16G16_SFLOAT) || (f >= VK_FORMAT_R32_UINT && f <= VK_FORMAT_R32_SFLOAT) ||
+        f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
+        return 4;
+    if ((f >= VK_FORMAT_R16G16B16A16_UNORM && f <= VK_FORMAT_R16G16B16A16_SFLOAT) ||
+        (f >= VK_FORMAT_R32G32_UINT && f <= VK_FORMAT_R32G32_SFLOAT))
+        return 8;
+    return f >= VK_FORMAT_R32G32B32A32_UINT && f <= VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : 0;
+}
+
+// The format of a storage view of img for a shader that declares it with format code `decl` (GfxShaderRes.format).
+// The translator declares SULD.D, SUST.D and the surface atomics as R*UI or R*I by their access size: Maxwell moves the
+// texel's bits whatever the surface's format is (XC2's decals read the RGB10A2 normal target as one 32-bit word). Vulkan
+// leaves such an access undefined unless the view has the declared format, so the view takes it when its texels are as
+// large as the image's. A typed access (SULD.P, SUST.P) converts by the surface's format: its image is declared without
+// one, and the view keeps the surface's.
+static VkFormat storage_format(const VkTexImage *img, int decl) {
+    VkFormat f = decl > 0 && decl < 40 ? tex_format[decl] : VK_FORMAT_UNDEFINED;
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_SINT: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32A32_UINT:
+        return color_bytes(img->format) == color_bytes(f) ? f : img->format;
+    default: return img->format;
+    }
+}
+
 // An image view of a registered texture for a shader resource of type `rtype` (GfxShaderRes.type); VK_NULL_HANDLE when
-// the image cannot serve it (the caller binds a stand-in). Texture lock held.
-static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
+// the image cannot serve it (the caller binds a stand-in). decl: GfxShaderRes.format of a storage image. Texture lock
+// held.
+static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage,
+                            int decl) {
     VkImageViewType vt = res_view_type(rtype);
     int ms = (rtype & 0x200) != 0;
     if ((img->samples > 1) != ms || (storage && ms)) return VK_NULL_HANDLE;
@@ -533,17 +566,19 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
             }
     }
     uint32_t swz = (uint32_t)sw[0] | (uint32_t)sw[1] << 8 | (uint32_t)sw[2] << 16 | (uint32_t)sw[3] << 24;
-    ViewKey k = {img->image, img->format, vt, aspect, l0, nl, y0, ny, swz};
+    VkFormat fmt = storage ? storage_format(img, decl) : img->format;
+    ViewKey k = {img->image, fmt, vt, aspect, l0, nl, y0, ny, swz};
     if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
     VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
     if (found) return found;
     VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image, .viewType = vt,
-                                .format = img->format,
+                                .format = fmt,
                                 .components = {swz_of(sw[0]), swz_of(sw[1]), swz_of(sw[2]), swz_of(sw[3])},
                                 .subresourceRange = {aspect, l0, nl, y0, ny}};
     VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                       .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
     if (img->block_views) ci.pNext = &use;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
+    else if (fmt != img->format) use.usage = VK_IMAGE_USAGE_STORAGE_BIT, ci.pNext = &use;   // none of the image's others
     VkImageView view;
     if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
     ViewNode *n = malloc(sizeof *n);
@@ -656,10 +691,14 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
     return 1;
 }
 
-// Texture and image types of a stage's first 32 slots, each kept with the handle and the generation and slot token it
-// was looked up under: a slot is looked up again, a hash probe, only when the handle changed or its slot may resolve
-// otherwise (slot_still).
-static struct { uint64_t tex[32], img[32], ttok[32], itok[32]; uint32_t tgen[32], igen[32]; uint8_t tt[32], it[32]; } AC[6];
+// Texture and image types of a stage's first 32 slots and their integer components (vk_texture_slot_component), each
+// kept with the handle and the generation and slot token it was looked up under: a slot is looked up again, a hash
+// probe, only when the handle changed or its slot may resolve otherwise (slot_still).
+static struct {
+    uint64_t tex[32], img[32], ttok[32], itok[32];
+    uint32_t tgen[32], igen[32];
+    uint8_t tt[32], it[32], tc[32], ic[32];
+} AC[6];
 
 // vk_texture_slot_token of the slot a texture or image handle names; an empty handle always resolves to nothing.
 static uint64_t token_of(uint64_t h) { return h ? vk_texture_slot_token((int)(h & 0xfffff)) : 1; }
@@ -676,22 +715,26 @@ static int slot_still(uint32_t *egen, uint64_t etok, uint64_t h, uint32_t gen) {
 }
 static int shader_memo_on(void);
 
-// The slots of (program, stage) whose types its translation reads (gfx_shader_slot_mask), learned from its first
-// shader; ~0u while unknown. The types of other slots select the same shader, so answers_for leaves them zero instead
+// The slots of (program, stage) whose types (m) and integer formats (texs, imgs) its translation reads
+// (gfx_shader_slot_mask), learned from its first shader; ~0u while unknown. The types of other slots select the same
+// shader, so answers_for leaves them zero instead
 // of looking up all 64 handles. Direct-mapped by serial and stage; a collision only relearns.
 #define SLOTM_N 4096
-static struct { uint64_t serial; int st; uint32_t m; } slotm[SLOTM_N];
+typedef struct { uint32_t m, texs, imgs; } SlotMask;
+static struct { uint64_t serial; int st; SlotMask m; } slotm[SLOTM_N];
 
 static uint32_t slotm_idx(uint64_t serial, int st) { return (uint32_t)((serial * 8 + (uint64_t)st) * 0x9E3779B97F4A7C15ull >> 52); }
 
-static uint32_t slot_mask_of(uint64_t serial, int st) {
+static SlotMask slot_mask_of(uint64_t serial, int st) {
     const typeof(slotm[0]) *e = &slotm[slotm_idx(serial, st)];
-    return serial && e->serial == serial && e->st == st ? e->m : ~0u;
+    return serial && e->serial == serial && e->st == st ? e->m : (SlotMask){~0u, ~0u, ~0u};
 }
 
 static void slot_mask_learn(uint64_t serial, int st, const GfxShader *s) {
-    if (!serial || slot_mask_of(serial, st) != ~0u) return;
-    slotm[slotm_idx(serial, st)] = (typeof(slotm[0])){serial, st, gfx_shader_slot_mask(s)};
+    if (!serial || slot_mask_of(serial, st).m != ~0u) return;
+    SlotMask m;
+    m.m = gfx_shader_slot_mask(s, &m.texs, &m.imgs);
+    slotm[slotm_idx(serial, st)] = (typeof(slotm[0])){serial, st, m};
 }
 
 static uint8_t type_of_handle(uint64_t h) {   // texture lock held
@@ -708,8 +751,10 @@ static unsigned alpha_test_func(const VkExec *ex) {
     return f && f != NVN_ALPHA_FUNC_ALWAYS && f <= NVN_ALPHA_FUNC_GEQUAL ? f : 0;
 }
 
-// The answers of stage st for the slots in mask; the types of other slots stay zero.
-static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, GfxShaderAnswers *a) {
+// The answers of stage st for the slots in mask; the types of other slots stay zero. The instructions do not say whether
+// a texture's or image's format is an integer one (stencil is), so the bound ones do: the shader reads and writes those
+// as integers (tools/xlate/patches/0010).
+static void answers_for(VkExec *ex, int st, const uint8_t *ctl, SlotMask mask, GfxShaderAnswers *a) {
     memset(a, 0, sizeof *a);
     if (st == NVN_STAGE_VS) vk_pipeline_answers(&ex->pipe, a, NULL);
     else if (st == NVN_STAGE_FS) {
@@ -732,18 +777,31 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     // again.
     uint32_t gen = vk_texture_slots_gen();
     int locked = 0, check = shader_memo_on() == 2;
-    for (uint32_t m = mask; m; m &= m - 1) {
+    // A slot's component is read after its lookup, which resolves the slot (vk_texture_by_id_locked keeps the component
+    // of what the slot resolves to): one registered with an integer format at storage that now holds a float image, or
+    // with no image at all, answers float, as its descriptor (or the stand-in) is.
+    for (uint32_t m = mask.m | mask.texs | mask.imgs; m; m &= m - 1) {
         int slot = __builtin_ctz(m);
         uint64_t h = ex->tex[st][slot], hi = ex->img[st][slot];
         int tmiss = c->tex[slot] != h || !c->ttok[slot] || !slot_still(&c->tgen[slot], c->ttok[slot], h, gen);
         int imiss = c->img[slot] != hi || !c->itok[slot] || !slot_still(&c->igen[slot], c->itok[slot], hi, gen);
         uint64_t tt = tmiss ? token_of(h) : 0, it = imiss ? token_of(hi) : 0;
         if ((tmiss || imiss || check) && !locked) vk_texture_lock(), locked = 1, BS.ac_miss++;
-        if (tmiss) c->tt[slot] = type_of_handle(h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
-        if (imiss) c->it[slot] = type_of_handle(hi), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
-        if (check && (type_of_handle(h) != c->tt[slot] || type_of_handle(hi) != c->it[slot]))   // XC2_SHADER_MEMO=check
+        if (tmiss) {
+            c->tt[slot] = type_of_handle(h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
+            c->tc[slot] = h ? (uint8_t)vk_texture_slot_component((int)(h & 0xfffff)) : 0;
+        }
+        if (imiss) {
+            c->it[slot] = type_of_handle(hi), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+            c->ic[slot] = hi ? (uint8_t)vk_texture_slot_component((int)(hi & 0xfffff)) : 0;
+        }
+        if (check && (type_of_handle(h) != c->tt[slot] || type_of_handle(hi) != c->it[slot] ||   // XC2_SHADER_MEMO=check
+                      (h ? vk_texture_slot_component((int)(h & 0xfffff)) : 0) != c->tc[slot] ||
+                      (hi ? vk_texture_slot_component((int)(hi & 0xfffff)) : 0) != c->ic[slot]))
             rt_fatal("vk_exec: kept texture types of stage %d slot %d differ from a lookup", st, slot);
-        a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
+        if (mask.m >> slot & 1) a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
+        if (mask.texs >> slot & 1) a->tex_type[slot] |= c->tc[slot];
+        if (mask.imgs >> slot & 1) a->img_type[slot] |= c->ic[slot];
     }
     if (locked) vk_texture_unlock();
 }
@@ -1305,19 +1363,20 @@ static SubRange sampled_sub(uint64_t h) {   // texture lock held
     return img ? sub_of(img, &v, hv) : (SubRange){0};
 }
 
-// Attachments of the open pass the fragment shader fs samples; kept while the shader, the texture bindings and the
-// pass stay the same.
-static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
-    if (ex->fb_fs == fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial) return ex->fb_sampled;
+// Attachments of the open pass that the resources of kind (GFX_RES_TEX or GFX_RES_IMG) of the fragment shader fs name.
+// Images the shader stores into are left out: a store into an attachment has no counterpart here (feedback_prepare).
+static uint32_t feedback_scan_kind(VkExec *ex, const GfxShader *fs, int kind, uint32_t *stored) {
     const GfxShaderRes *res;
-    int n = gfx_shader_resources(fs, GFX_RES_TEX, &res);
-    uint32_t m = 0, gen = vk_texture_slots_gen();   // before any lookup
+    int n = gfx_shader_resources(fs, kind, &res);
+    uint32_t all[2] = {0, 0}, gen = vk_texture_slots_gen();   // before any lookup
     int memo = td_mode(), locked = 0;
     for (int r = 0; r < n; r++)
         for (int k = 0; k < (res[r].count ? res[r].count : 1); k++) {
             int slot = res[r].slot + k;
-            uint64_t h = slot >= 0 && slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0;
+            uint64_t h = slot < 0 ? 0 : kind == GFX_RES_IMG ? (slot < 32 ? ex->img[NVN_STAGE_FS][slot] : 0)
+                                                            : (slot < 128 ? ex->tex[NVN_STAGE_FS][slot] : 0);
             if (!h) continue;
+            uint32_t *m = &all[kind == GFX_RES_IMG && (res[r].flags & 4)];
             typeof(FM[0]) *f = &FM[(h * 0x9E3779B97F4A7C15ull) >> 51];
             if (memo && f->h == h && slot_still(&f->gen, f->tok, h, gen)) {
                 if (memo == 2) {
@@ -1326,19 +1385,35 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
                     if (memcmp(&c, &f->r, sizeof c))
                         rt_fatal("vk_exec: feedback memo of handle %#llx differs from a lookup", (unsigned long long)h);
                 }
-                m |= attached_as(ex, &f->r);
+                *m |= attached_as(ex, &f->r);
                 continue;
             }
             uint64_t tok = token_of(h);   // before the lookup
             if (!locked) vk_texture_lock(), locked = 1;
             SubRange sr = sampled_sub(h);
-            m |= attached_as(ex, &sr);
+            *m |= attached_as(ex, &sr);
             if (tok) *f = (typeof(*f)){.h = h, .tok = tok, .gen = gen, .r = sr};
             else f->h = 0;
         }
     if (locked) vk_texture_unlock();
-    ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_pass = ex->pass_serial, ex->fb_sampled = m;
-    return m;
+    *stored |= all[1];
+    return all[0];
+}
+
+// Attachments of the open pass the fragment shader fs samples, and in *loaded the ones it reads as storage images; kept
+// while the shader, the texture and image bindings, the pass and the slot generation stay the same (a slot registered
+// again may now name a target of the pass without a bind).
+static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs, uint32_t *loaded) {
+    uint32_t gen = vk_texture_slots_gen();   // before the scan, whose lookups may bump it
+    if (ex->fb_fs != fs || ex->fb_serial != ex->tex_serial || ex->fb_pass != ex->pass_serial || ex->fb_gen != gen) {
+        uint32_t stored = 0;
+        ex->fb_sampled = feedback_scan_kind(ex, fs, GFX_RES_TEX, &stored);
+        ex->fb_loaded = feedback_scan_kind(ex, fs, GFX_RES_IMG, &stored);
+        if (stored) warn_once(W_FB_STORE, "a draw stores into a target of its own pass through a storage image (slots %#x)", stored);
+        ex->fb_fs = fs, ex->fb_serial = ex->tex_serial, ex->fb_pass = ex->pass_serial, ex->fb_gen = gen;
+    }
+    *loaded = ex->fb_loaded;
+    return ex->fb_sampled;
 }
 
 // A draw that samples a colour target it also writes. Maxwell's texture cache does not see the ROP's writes before the
@@ -1347,7 +1422,8 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 // writes the sea's own distance into it. Where a fragment saw a distance the same draw had just written it faded to
 // almost nothing, and the sky showed through as thin flickering lines on AMD (issue 39), whose reads do see those
 // writes; the feedback layout defines the read but not that order. Here the draw reads a copy of the target made
-// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off, and 2 copies for every draw.
+// just before it, which is what Maxwell gives it. XC2_FEEDBACK_SNAP=0 turns this off, and 2 copies for every draw. A draw
+// that reads a target as a storage image always reads a copy (feedback_snapshot).
 // A copy stays in use while the only draws that write its target are draws that read the copy (VkExec.snap_keep): a run
 // of such draws shares one copy, made before the first, and none of them sees what the others wrote. That is the same
 // stale read (no barrier lies between them), and it bounds the cost: a copy per draw meant a pass restart and up to three
@@ -1364,7 +1440,7 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
 #define SNAP_MAX 32
 #define SNAP_BYTES ((uint64_t)384 << 20)
 #define FB_SKIP 0xffffffffu   // feedback_prepare: the draw cannot be made with its copies
-static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w, h, slot; uint64_t bytes, fence; } snap_imgs[SNAP_MAX];
+static struct { VkImage image; VmaAllocation alloc; VkFormat format; uint32_t w, h, slot, storage; uint64_t bytes, fence; } snap_imgs[SNAP_MAX];
 static int nsn;
 static uint64_t snap_total;   // bytes the pool holds (estimate)
 static uint64_t snap_gen;     // bumps with every image the pool creates or drops: bind_sig keys on it
@@ -1394,12 +1470,14 @@ static int snap_victim(uint64_t fence) {
     return v;
 }
 
-// The copy for target slot slot in the submission with fence; VK_NULL_HANDLE when none can be had.
-static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) {
+// The copy for target slot slot in the submission with fence; VK_NULL_HANDLE when none can be had. storage: one that may
+// also be bound as a storage image, in a format of the shader's choice (storage_format).
+static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot, uint32_t storage) {
     static int warned;
     const VkTexImage *img = t->img;
     for (int i = 0; i < nsn; i++)
-        if (snap_imgs[i].format == img->format && snap_imgs[i].w == img->width && snap_imgs[i].h == img->height && snap_imgs[i].slot == slot) {
+        if (snap_imgs[i].format == img->format && snap_imgs[i].w == img->width && snap_imgs[i].h == img->height &&
+            snap_imgs[i].slot == slot && snap_imgs[i].storage == storage) {
             snap_imgs[i].fence = fence;
             return snap_imgs[i].image;
         }
@@ -1414,6 +1492,7 @@ static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) 
                             .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    if (storage) ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT, ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation alloc = NULL;
@@ -1436,15 +1515,15 @@ static VkImage snap_image(uint64_t fence, const VkExecTarget *t, uint32_t slot) 
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
     vkCmdPipelineBarrier2(vk_upload_begin(), &di);   // the upload batch goes to the queue before this part
     vk_upload_end();
-    snap_imgs[nsn] = (typeof(snap_imgs[0])){image, alloc, img->format, img->width, img->height, slot, bytes, fence};
+    snap_imgs[nsn] = (typeof(snap_imgs[0])){image, alloc, img->format, img->width, img->height, slot, storage, bytes, fence};
     nsn++, snap_total += bytes, snap_gen++;
     vk_exec_frame.snap_new++;
     // Only the first eight copies are logged: a game that samples its targets creates a copy per draw, and the frame log
     // (vk_exec_frame_log) counts them all in snap_new.
     static volatile int32_t n_logged;
     if (plat_inc32(&n_logged) <= 8)
-        rt_log("vk: a draw samples a target it writes: it reads a copy (%ux%u format %d, target %u)", img->width, img->height,
-               (int)img->format, slot);
+        rt_log("vk: a draw %s a target it writes: it reads a copy (%ux%u format %d, target %u)",
+               storage ? "loads from" : "samples", img->width, img->height, (int)img->format, slot);
     return image;
 }
 
@@ -1505,19 +1584,28 @@ static void snap_live_note(const VkExecTarget *t, uint32_t slot) {
     vk_exec_frame.snap_live++;
     if (logged < 8) {
         logged++;
-        rt_log("vk: a draw samples target %u it writes, a shape the copy path does not take (format %d, %ux%u, %u levels, "
+        rt_log("vk: a draw reads target %u it writes, a shape the copy path does not take (format %d, %ux%u, %u levels, "
                "%u layers, %d samples, 3D %d, blocks %d): it reads the target live", slot, (int)t->format, t->width, t->height,
                t->img->levels, t->img->layers, (int)t->img->samples, (int)t->is3d, (int)t->blocks);
     }
 }
 
-// Copies the colour targets among m that the draw with fragment shader fs writes itself; the draw's descriptors then
-// read the copies (tex_info_full). Returns the sampled targets the copies cover: the copied ones, and any other sampled
-// slot holding the same image as a copied one (tex_info_full sends that slot to the copy too). Returns FB_SKIP when a
-// copy could not be had: the draw is then not made, rather than read from the target it writes.
-static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
+// Copies the colour targets among m that the draw with fragment shader fs writes itself, and those among loaded, which
+// it reads as storage images; the draw's descriptors then read the copies (tex_info_full). A storage image must be in
+// GENERAL, so it cannot be a target in the feedback layout, and reading a target in any other layout is undefined in the
+// pass that writes or loads it (VUID-vkCmdDrawIndexed-None-10795, -12338): a copy is the only defined read, so it is
+// made on every GPU and for XC2_FEEDBACK_SNAP=0 too (a shape snap_fits does not take is still read live, as a sampled
+// read of one is: snap_live_note logs it, and XC2 has none). XC2's decals do this: they load the normal target's pixel, blend
+// the decal's normal into it and write it back. They are few (1 to 5 draws a frame), and a run of them shares one copy
+// as the sampled reads do. Returns the targets the copies cover: the copied ones, and any other read slot holding the
+// same image as a copied one (tex_info_full sends that slot to the copy too). Returns FB_SKIP when a copy could not be
+// had: the draw is then not made, rather than read from the target it writes.
+static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m, uint32_t loaded) {
     snap_config();
-    if (snap_on <= 0 || !(m & 0xff)) return 0;
+    loaded &= 0xff;
+    if (snap_on <= 0) m = 0;
+    m |= loaded;
+    if (!(m & 0xff)) return 0;
     VkPipeState s = ex->pipe;
     s.fs = fs;
     // One copy per source image. A colour slot that holds an image an earlier slot of c already holds is the same target:
@@ -1525,7 +1613,8 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
     // and kept current without ever being read.
     uint32_t c = 0;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++) {
-        if (!(m >> i & 1) || !ex->color[i].image || !vk_pipeline_target_wmask(&s, (int)i)) continue;
+        if (!(m >> i & 1) || !ex->color[i].image) continue;
+        if (!(loaded >> i & 1) && !vk_pipeline_target_wmask(&s, (int)i)) continue;
         if (!snap_fits(&ex->color[i])) {
             snap_live_note(&ex->color[i], i);
             continue;
@@ -1536,22 +1625,35 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
         if (!same) c |= 1u << i;
     }
     if (!c) return 0;
+    // An image that another of its slots loads needs a copy a storage image descriptor may name.
+    uint32_t img = 0;
+    for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+        for (uint32_t j = 0; j < ex->pass_ncolor; j++)
+            if ((c >> i & 1) && (loaded >> j & 1) && ex->color[i].image == ex->color[j].image) img |= 1u << i;
+    // The copies kept from before stay current while their pass is the open one and the pool has dropped no image since
+    // snap_keep was last checked (snap_seen). A kept copy that a storage image descriptor may name serves both kinds of
+    // read, so a draw that only samples keeps using it.
+    if (ex->snap_pass != ex->pass_serial || ex->snap_seen != snap_drops) ex->snap_keep = 0;
+    uint32_t kept_img = ex->snap_kept_img & ex->snap_keep;
+    for (uint32_t i = 0; i < 8; i++)
+        if ((c >> i & 1) && (kept_img >> i & 1) && ex->snap_src[i] == ex->color[i].image) img |= 1u << i;
     // Every copy is acquired before anything is recorded: an acquire can drop an image that a kept copy lives in, and a
     // draw that cannot get all of its copies is skipped with nothing to undo.
     VkImage copy[8];
     for (uint32_t i = 0; i < 8; i++) {
         if (!(c >> i & 1)) continue;
-        copy[i] = snap_image(ex->fence, &ex->color[i], i);
+        copy[i] = snap_image(ex->fence, &ex->color[i], i, img >> i & 1);
         if (!copy[i]) return FB_SKIP;   // no image for this copy: the draw is not made
     }
-    // The copies kept from before stay current while their pass is the open one and the pool has dropped no image since
-    // snap_keep was last checked (snap_seen). A target whose copy is kept and whose image is unchanged is not copied again,
-    // unless XC2_FEEDBACK_SNAP=2.
-    if (ex->snap_pass != ex->pass_serial || ex->snap_seen != snap_drops) ex->snap_keep = 0;
+    // A target whose copy is kept, of the kind this draw needs, and whose image is unchanged is not copied again, unless
+    // XC2_FEEDBACK_SNAP=2.
+    if (ex->snap_seen != snap_drops) ex->snap_keep = 0;   // an acquire dropped one
     ex->snap_seen = snap_drops;
     uint32_t need = 0;
     for (uint32_t i = 0; i < 8; i++)
-        if ((c >> i & 1) && (snap_on >= 2 || !(ex->snap_keep >> i & 1) || ex->snap_src[i] != ex->color[i].image)) need |= 1u << i;
+        if ((c >> i & 1) && (snap_on >= 2 || !(ex->snap_keep >> i & 1) || ex->snap_src[i] != ex->color[i].image ||
+                             ((img & ~ex->snap_kept_img) >> i & 1)))
+            need |= 1u << i;
     if (need) {
         // The copies kept from the pass just ended stay current: nothing was drawn between its end and this resume.
         VkExecSnap sn[8];
@@ -1564,15 +1666,17 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
         for (uint32_t i = 0; i < 8; i++)
             if (need >> i & 1) ex->snap_src[i] = ex->color[i].image, vk_exec_frame.fb_snaps++;
         ex->snap_keep |= need, ex->snap_pass = ex->pass_serial;
+        ex->snap_kept_img = (ex->snap_kept_img & ~need) | (img & need);
         vk_exec_frame.fb_snap_draws++;
     }
     for (uint32_t i = 0; i < 8; i++) {
         if (!(c >> i & 1)) continue;
+        if (img >> i & 1) ex->snap_img |= 1u << ex->nsnap;
         ex->snap_of[ex->nsnap] = ex->color[i].image, ex->snap[ex->nsnap] = copy[i], ex->nsnap++;
         if (!(need >> i & 1)) vk_exec_frame.fb_snap_reuse++;
     }
     ex->snap_now = c;
-    // The sampled slots that the copies cover: every slot holding an image that a copy covers, not only the first. Their
+    // The read slots that the copies cover: every slot holding an image that a copy covers, not only the first. Their
     // descriptors read the copy too (tex_info_full), so the draw's feedback processing must not see them as dirty.
     uint32_t covered = 0;
     for (uint32_t i = 0; i < ex->pass_ncolor; i++)
@@ -1585,11 +1689,11 @@ static uint32_t feedback_snapshot(VkExec *ex, const GfxShader *fs, uint32_t m) {
 // sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier), or FB_SKIP.
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
-    ex->nsnap = 0, ex->snap_now = 0;
+    ex->nsnap = 0, ex->snap_now = 0, ex->snap_img = 0;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
-    uint32_t m = feedback_scan(ex, fs);
+    uint32_t loaded, m = feedback_scan(ex, fs, &loaded);
     uint32_t dirty = m & ex->fb_dirty;   // read before the snapshot, whose pass restart clears fb_dirty
-    uint32_t snapped = feedback_snapshot(ex, fs, m);
+    uint32_t snapped = feedback_snapshot(ex, fs, m, loaded);
     if (snapped == FB_SKIP) return FB_SKIP;
     m &= ~snapped;
     // A snapshot ends the pass behind barriers that make every earlier write visible to the graphics stages (vk_exec_snap_copy
@@ -1708,13 +1812,15 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
         int hv;
         const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
         VkTexImage copy;
-        for (int i = 0; img && !storage && i < ex->nsnap; i++)
-            if (ex->snap_of[i] == img->image) {   // feedback_snapshot: the same picture, sampled from the copy
+        for (int i = 0; img && i < ex->nsnap; i++)
+            if (ex->snap_of[i] == img->image && (!storage || ((ex->snap_img >> i & 1) && !(r->flags & 4)))) {
+                // feedback_snapshot: the same picture, read from the copy
                 copy = *img, copy.image = ex->snap[i], img = &copy;
                 break;
             }
-        if (img) view = get_view(ex, img, &v, hv, r->type, storage), *image = img->image;
-        if (img && storage) vk_texture_storage_bound_locked(img);
+        if (img) view = get_view(ex, img, &v, hv, r->type, storage, r->format), *image = img->image;
+        // A copy is no registered entry, and a draw reading one does not store through it (the copy is only for loads).
+        if (img && storage && img != &copy) vk_texture_storage_bound_locked(img);
         if (img && !storage && ex->nfbl && in_fbl(ex, img->image)) layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
         if (!storage && !separate) {
             // A depth texture sampled without a compare reads one texel on the Switch, whatever the sampler's filter:
@@ -3123,7 +3229,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     case OP_BIND_IMG: {
         const p_bind_handles *b = payload;
         bind_handles(b->stage >= 0 && b->stage < 6 ? ex->img[b->stage] : NULL, 32, b);
-        ex->tex_serial++;   // the shader memo's handle check (feedback_scan reads only textures: a rescan at most)
+        ex->tex_serial++;   // the shader memo's handle check and feedback_scan's
         bind_gen++;
         break;
     }

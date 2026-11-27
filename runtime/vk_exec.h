@@ -107,15 +107,18 @@ typedef struct VkExec {
     uint32_t fb_dirty;                   // attachments of the open pass written by a draw or clear since the pass began
                                          // or the last in-pass barrier
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
-    uint32_t fb_serial, fb_pass, fb_sampled;
+    uint32_t fb_serial, fb_pass, fb_sampled, fb_loaded;   // fb_sampled, fb_loaded: what feedback_scan found
+    uint32_t fb_gen;                     // vk_texture_slots_gen of that scan
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
-    VkImage snap_of[8], snap[8];         // this draw's targets it samples itself and their copies (feedback_snapshot)
+    VkImage snap_of[8], snap[8];         // this draw's targets it reads itself and their copies (feedback_snapshot)
+    uint32_t snap_img;                   // bit i: snap[i] may be bound as a storage image
     int nsnap;
     // Copies that still hold what their target held before the draws that sample it began (feedback_snapshot): bit i of
     // snap_keep says the copy of colour target i was made from snap_src[i] in the pass numbered snap_pass and that only
     // draws reading that copy wrote the target since. snap_now: the targets the current draw reads from copies.
     VkImage snap_src[8];
-    uint32_t snap_keep, snap_pass, snap_now;
+    // snap_kept_img: of the kept copies, those that may be bound as a storage image.
+    uint32_t snap_keep, snap_pass, snap_now, snap_kept_img;
     uint64_t snap_seen;   // snap_drops (vk_exec_draw.c) when snap_keep was last checked
 
     int fsr3_armed;                     // VK_FSR3_*: what FSR 3.1 records when the open pass ends (vk_fsr3.c)
@@ -226,3 +229,5 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+// After the pass ended: the GPU writes of the samples-passed reports made in it (vk_exec_xfer.c gpu_write).
+void vk_exec_oq_after_pass(VkExec *ex);

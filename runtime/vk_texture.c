@@ -114,7 +114,9 @@ static int small_pending;
 static uint32_t tex_gen = 1;
 // Bumped with tex_gen and whenever a slot is registered: what vk_texture_by_id returns for any slot may have changed.
 static uint32_t slots_gen = 1;
-static uint32_t samp_gen = 1;   // bumped whenever a sampler slot is registered: vk_sampler_by_id may answer otherwise
+// Bumped whenever a sampler slot is registered or scene_bias changes: vk_sampler_by_id may answer otherwise
+static uint32_t samp_gen = 1;
+static float scene_bias;     // vk_sampler_scene_bias; under tex_lock
 static uint64_t n_checks;    // draw-binding storage checks (make_fresh_snap) since the last perf line
 // tex_gen per storage address (hashed): a slot resolves through the entries at its own address only (slot_resolve), so
 // a slot's resolution stays valid while its address's generation does. XCX finalizes and initializes transient
@@ -127,6 +129,11 @@ static uint32_t agen[AGEN_N];
 // 20 bits), unlike tslots, which moves when it grows.
 static uint64_t *sinfo;
 static uint32_t reg_serial;
+// Per slot id, for vk_texture_slot_component without the lock: GFX_TEX_SINT or GFX_TEX_UINT when the texture the slot
+// samples has an integer format or is read in STENCIL mode, else 0. Of the registered descriptor until the slot
+// resolves, then of what it resolved to.
+static uint8_t scomp[1 << 20];
+static uint8_t component_of_desc(const tex_t *t, const view_t *v);
 
 static uint32_t agen_idx(uint64_t addr) { return (uint32_t)(addr * 0x9E3779B97F4A7C15ull >> 52); }
 
@@ -1228,6 +1235,7 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     s->t = *t;
     s->used = 1;
     s->ce = NULL;
+    __atomic_store_n(&scomp[id], component_of_desc(t, v), __ATOMIC_RELEASE);   // before slots_gen: the shader memo reads both unlocked
     slots_gen++;
     if (!++reg_serial) reg_serial = 1;
     __atomic_store_n(&sinfo[id], (uint64_t)reg_serial << 16 | agen_idx((uintptr_t)t->mem), __ATOMIC_RELEASE);
@@ -1236,6 +1244,31 @@ void vk_texture_register(int id, const tex_t *t, const view_t *v) {
     else memset(&s->v, 0, sizeof s->v);
     unlock();
 }
+
+// GFX_TEX_* component of the sampled view of an image of format f and aspect mask `aspect`, in STENCIL mode or not.
+static uint8_t component_of(VkFormat f, VkImageAspectFlags aspect, int stencil) {
+    if (aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+        return (aspect & VK_IMAGE_ASPECT_STENCIL_BIT) && (stencil || !(aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) ? GFX_TEX_UINT : 0;
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16_UINT:
+    case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT:
+    case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32: return GFX_TEX_UINT;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT:
+    case VK_FORMAT_R32G32B32A32_SINT: case VK_FORMAT_A2B10G10R10_SINT_PACK32: return GFX_TEX_SINT;
+    default: return 0;
+    }
+}
+
+// That of a descriptor as registered. A buffer texture has none: the replay binds a float stand-in.
+static uint8_t component_of_desc(const tex_t *t, const view_t *v) {
+    TexVkFormat f;
+    if (t->d.target == NVN_TEXTURE_TARGET_BUFFER || !tex_vk_format(t->d.format, &f)) return 0;
+    int mode = v && v->set_dsmode ? v->dsmode : t->d.dsmode;
+    return component_of(f.vk, aspect_of(&f), mode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+}
+
+int vk_texture_slot_component(int id) { return id >= 0 && id < (1 << 20) ? __atomic_load_n(&scomp[id], __ATOMIC_RELAXED) : 0; }
 
 // The entry slot s resolves to, and the view and has_view a caller gets with it (the slot's, with the descriptor's
 // swizzle when the entry is another descriptor at the same storage). NULL when the slot names no texture.
@@ -1318,6 +1351,12 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
         s->ce = slot_resolve(s, &v, &hv);   // entry_of may create an entry and bump g: g read before it
         s->cview = v, s->chas_view = (uint8_t)hv;
         s->cgen = g;
+        // The slot may follow a texture of another format at its storage (slot_resolve), or have no image yet, when a
+        // float stand-in is bound for it (vk_exec_draw.c tex_info_full): the draws after this one ask for a shader that
+        // samples what is bound, and slots_gen makes them look the shader up again.
+        int stencil = hv && v.set_dsmode && v.dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+        uint8_t comp = s->ce ? component_of(s->ce->pub.format, s->ce->pub.aspect, stencil) : 0;
+        if (comp != scomp[id]) __atomic_store_n(&scomp[id], comp, __ATOMIC_RELEASE), slots_gen++;
         s->cepoch = 0;
     }
     Tex *e = s->ce;
@@ -1961,17 +2000,36 @@ VkSampler vk_sampler_for(const samp_par *s) {
     return v;
 }
 
-// Samplers live until shutdown, so a slot keeps the one its parameters map to until it is registered again.
+// Samplers live until shutdown, so a slot keeps the one its parameters map to until it is registered again or the bias
+// of its kind changes.
 VkSampler vk_sampler_by_id_locked(int id) {
     VkCtx *c = vk_ctx();
     if (!c) return VK_NULL_HANDLE;
     VkSampler v = VK_NULL_HANDLE;
     if (id >= 0 && id < nsslots && sslots[id].used) {
         SampSlot *s = &sslots[id];
-        if (!s->s) s->s = sampler_for(c, &s->p);
+        if (!s->s) {
+            samp_par k = s->p;
+            if (k.aniso > 1 && k.minf > NVN_MIN_FILTER_LINEAR) k.lod_bias += scene_bias;
+            s->s = sampler_for(c, &k);
+        }
         v = s->s;
     }
     return v;
+}
+
+// Anisotropy is what tells the materials apart: Vulkan adds a sampler's bias to an explicit level too, so it must stay
+// off the reflection cubes, whose level the shaders choose by roughness, and off the blur chains, and those are sampled
+// without anisotropy.
+void vk_sampler_scene_bias(float bias) {
+    lock();
+    if (bias != scene_bias) {
+        scene_bias = bias;
+        for (int i = 0; i < nsslots; i++)
+            if (sslots[i].p.aniso > 1) sslots[i].s = VK_NULL_HANDLE;
+        __atomic_add_fetch(&samp_gen, 1, __ATOMIC_RELEASE);
+    }
+    unlock();
 }
 
 VkSampler vk_sampler_point_by_id_locked(int id) {

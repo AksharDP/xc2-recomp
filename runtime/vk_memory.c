@@ -782,6 +782,7 @@ static uint8_t snap_untracked[SNAP_REGIONS];
 // the replay's own snapshot of the region would only repeat the query (a PAGEMAP_SCAN, a fifth of the replay thread
 // on the Steam Deck); writes after it are the next capture's.
 static uint32_t snap_capgen[SNAP_REGIONS];
+#define SNAP_FROZEN_SPAN 16u   // frozen 2 MiB regions one capture query may span (snap_regions)
 static uint32_t cur_gen;               // replay: its gen (0: none, as in the probes' own submissions)
 static uint64_t n_snap_checks, n_snap_calls, n_snap_untracked;
 
@@ -806,12 +807,28 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         }
         uint64_t k = r;   // one query over a run of regions not seen in this epoch
         while (k + 1 <= r1 && (!epoch || snap_at[k + 1] != epoch) && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
+        // The capture's query also spans up to SNAP_FROZEN_SPAN frozen regions to the next region that is not frozen.
+        // The reset of a query costs a TLB flush on every processor the process runs on, about 15 us and up to 130 us
+        // a call against about 2 us a MiB for the walk, and the flush also costs the other threads their TLB entries;
+        // frozen regions in a pool cut its run into pieces, about 20 queries a frame on the walk route, 8 this way.
+        // A frozen region has no written pages to return, and one thawed meanwhile is stamped like any other.
+        while (!epoch) {
+            uint64_t j = k + 1;
+            while (j <= r1 && j - k <= SNAP_FROZEN_SPAN && mem_frozen(j << SNAP_SHIFT)) j++;
+            if (j > r1 || j - k > SNAP_FROZEN_SPAN) break;
+            k = j;
+            while (k + 1 <= r1 && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
+        }
         uint64_t a = r << SNAP_SHIFT, b = (k + 1) << SNAP_SHIFT;
         if (!g) g = ++gen_now;
         int tracked = query_stamp(a, b, g);
         calls++;
         for (uint64_t j = r; j <= k; j++) {
             if (epoch) snap_at[j] = epoch;
+            if (!epoch && mem_frozen(j << SNAP_SHIFT)) {   // a frozen region the query spanned
+                snap_untracked[j] = 0;
+                continue;
+            }
             snap_untracked[j] = (uint8_t)!tracked;
             if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
                 ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
@@ -943,7 +960,8 @@ static uint64_t s_syncs, s_copied, s_queries, s_untracked, s_wb_bytes, s_ticks; 
 // write-back changed (the CPU's newer bytes reverted to the shadow's). XC2_SHADOW_WB_SKIP_CPU=1 leaves such pages out of
 // the write-back (the CPU's bytes win).
 static int s_diag = -1, s_wb_skip_cpu = -1;
-// Diff write-back (the default): a GPU-written range keeps a copy of its shadow bytes from record time, and the fence
+// Diff write-back (the default): a GPU-written range keeps a copy of its shadow bytes from record time, which the CPU's
+// writes were copied into first (vk_mem_gpu_pending), and the fence
 // write-back copies only the bytes the GPU changed. The recorded range is the whole bound storage range (often far more
 // than the shader writes), and the CPU keeps writing it for the next frame while the GPU runs: a whole-range copy put
 // the shadow's older bytes over those writes (about 2.3 KB a frame on the Steam Deck title screen). On the Deck the GPU
@@ -1182,6 +1200,15 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
         const pidx_ent *e = pidx_find(&pool_index, addr, size);
         PoolRec *r = e ? e->buf : NULL;
         if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (snap = snap_alloc(size))) {
+            // Without captures the CPU's writes go into the shadow at the submit, which leaves this range out once it is
+            // pending: they go in here, before the snapshot. Otherwise the snapshot still holds what the last GPU write
+            // left, and where the GPU writes those bytes again over the CPU's newer ones (a readback the game cleared),
+            // the write-back finds no change and the CPU keeps its own.
+            if (!shadow_cap) {
+                plat_mutex_lock(&shadow_lock);
+                shadow_copy(r, addr, addr + size, 0);
+                plat_mutex_unlock(&shadow_lock);
+            }
             memcpy(snap, r->smap + (addr - r->import_lo), size);
             if (shadow_cap) shadow_overlay(addr, size, snap);
         }
@@ -1591,7 +1618,7 @@ static void wbf_prune(uint64_t done) {
     nwbf = n;
 }
 
-static void mirror_mode(int discrete) {
+static void mirror_mode(int discrete, int host_import) {
     const char *e = cfg_value("XC2_MEMORY");
     const char *sh = cfg_get("XC2_SHADOW");
 #ifdef _WIN32
@@ -1599,6 +1626,12 @@ static void mirror_mode(int discrete) {
 #else
     shadow_on = !sh || !*sh || strcmp(sh, "0");
 #endif
+    // A driver without VK_EXT_external_memory_host cannot import guest pages: shadow storage is then the only way
+    // (vk_require.h makes the extension optional for this). XC2_VK_HIDE_EXT=VK_EXT_external_memory_host tests it.
+    if (!host_import) {
+        if (sh && *sh && !strcmp(sh, "0")) rt_log("mem: XC2_SHADOW=0 ignored: the device cannot import host memory");
+        shadow_on = 1;
+    }
     // 0 import, 1 mirror, 2 verify. Mirror on integrated GPUs too: there the point is not bandwidth but the staged
     // uploads, which let the frame guard go (Iris Xe, first battle: 45 fps with import, 59 with mirror, for 1.3 GiB more
     // system memory). Not with shadow storage (the default off Windows): the guard stays on there (nvn_reads_snapshot),
@@ -1638,7 +1671,7 @@ static void mirror_mode(int discrete) {
         shadow_cap = 0;
     }
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s; "
-                          "%s", sh && *sh ? " (XC2_SHADOW)" : "",
+                          "%s", !host_import ? " (no VK_EXT_external_memory_host)" : sh && *sh ? " (XC2_SHADOW)" : "",
                           shadow_cap ? "the CPU's writes are captured in the submit call (XC2_SHADOW_CAPTURE)"
                                      : "the CPU's writes are copied in before each part");
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
@@ -1951,20 +1984,29 @@ void *vk_mem_capture(void) {
         // ones not used as buffers yet, so that a first use finds the writes before this submit call already stamped.
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
         int have = 0;
-        for (int i = 0; i < pool_index.n; i++) {
-            const PoolRec *r = pool_index.e[i].buf;
-            if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
-            if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
-            uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
-            if (b >= SNAP_REGIONS) continue;
-            if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
-                if (b > run1) run1 = b;
-                continue;
+        static uint64_t (*runs)[2];   // gen_lock: the runs queried, marked in snap_capgen below
+        static int cruns;
+        int nruns = 0;
+        for (int i = 0; i <= pool_index.n; i++) {
+            const PoolRec *r = i < pool_index.n ? pool_index.e[i].buf : NULL;
+            uint64_t a = 0, b = 0;
+            if (r) {
+                if (r->kind != POOL_IMPORT || !r->buf || r->import_hi <= r->import_lo) continue;
+                if (__atomic_load_n(&r->mstate, __ATOMIC_ACQUIRE) == MS_REFUSED) continue;
+                a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
+                if (b >= SNAP_REGIONS) continue;
+                if (have && a >= run0 && a <= run1 + 1 + (uint64_t)mirror_gap) {   // the index is sorted by address
+                    if (b > run1) run1 = b;
+                    continue;
+                }
             }
-            if (have) q += snap_regions(run0, run1, 0);
-            run0 = a, run1 = b, have = 1;
+            if (have) {
+                q += snap_regions(run0, run1, 0);
+                if (nruns == cruns) grow((void **)&runs, &cruns, sizeof *runs);
+                runs[nruns][0] = run0, runs[nruns][1] = run1, nruns++;
+            }
+            if (r) run0 = a, run1 = b, have = 1;
         }
-        if (have) q += snap_regions(run0, run1, 0);
         qb = ww_bytes - b0;
         perf_count_by(PERF_CNT_MIRROR_KB, qb >> 10);
         // A capture that queries a large part of the pools (a load, a title screen): say how large, a few times a run.
@@ -1982,7 +2024,13 @@ void *vk_mem_capture(void) {
             }
         }
         for (int i = 0; i < nm; i++) pools += (uint64_t)capture_pool(mlist[i]);
-        cap->gen = gen_now;
+        // A generation of its own, also when nothing was queried: a region stamped by an earlier capture and not covered
+        // by this one (its pool refused since) must not pass the replay's snap_capgen test for this submission.
+        cap->gen = ++gen_now;
+        // The regions just queried (frozen ones count: nothing wrote them), as the shadow captures mark theirs: the
+        // replay's texture checks of this submission take their stamps instead of querying them again on its thread.
+        for (int i = 0; i < nruns; i++)
+            for (uint64_t k = runs[i][0]; k <= runs[i][1]; k++) snap_capgen[k] = cap->gen;
     } else if (shadow_cap) {   // the same over the shadow pools, all of them: the replay has not resolved any yet
         cap->shadow = 1;
         uint64_t b0 = ww_bytes, run0 = 0, run1 = 0;
@@ -2005,7 +2053,7 @@ void *vk_mem_capture(void) {
             PoolRec *r = pool_index.e[i].buf;
             if (r->kind == POOL_IMPORT && r->smap && r->import_hi > r->import_lo) pools += (uint64_t)shadow_capture_pool(r);
         }
-        cap->gen = gen_now;
+        cap->gen = ++gen_now;   // a generation of its own, as above
         for (int i = 0; i < pool_index.n; i++) {   // the regions just queried (frozen ones count: nothing wrote them)
             const PoolRec *r = pool_index.e[i].buf;
             if (r->kind != POOL_IMPORT || !r->smap || r->import_hi <= r->import_lo) continue;
@@ -2625,7 +2673,7 @@ static void vram_log(uint64_t frame) {
 
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
 // heap that is not device-local (host memory) -> discrete; otherwise uma (import everywhere). Sets the mirror mode.
-void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m) {
+void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m, int host_import) {
     int big_local = -1, host_heap = -1;
     for (uint32_t h = 0; h < m->memoryHeapCount; h++) {
         if (m->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
@@ -2661,7 +2709,7 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
                               f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? " LAZY" : "");
     }
     rt_log("%s", line);
-    mirror_mode(discrete);
+    mirror_mode(discrete, host_import);
 }
 
 // ---------------------------------------------------------------- upload batches and deferred destruction
