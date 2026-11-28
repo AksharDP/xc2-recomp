@@ -10,6 +10,8 @@ extern "C" {
 // Whether AMD FSR can run here: with AMD's library or the built-in FSR 3.1 on this device, unless it failed in this run.
 enum { VK_FSR_OK, VK_FSR_NO_DEVICE, VK_FSR_FAILED };
 int vk_fsr3_state(void);
+// Active startup choice, after verifying the camera patch; pending restart changes do not affect it.
+int vk_scene_aa_off(void);
 // What the menu offers: 1 once FSR, FSR 4 (as a choice) and frame generation have each been loaded here, by a check that
 // the first question starts (it can take a few seconds) or by running, and have not failed since.
 int vk_fsr3_ready(void);                     // -1 while the check runs

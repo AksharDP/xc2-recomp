@@ -86,6 +86,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Keep (bars)", [UI_MENU_PICTURE_FIT_STRETCH] = "Stretch",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_GAME_TAA] = "Game temporal anti-aliasing",
+    [UI_MENU_GAME_TAA_DESC] = "Restart required. Off removes camera jitter and bypasses the game's temporal resolve. "
+                              "AMD FSR temporal upscaling and frame generation are unavailable while off. "
+                              "FSR window scaling and FSR sharpness have separate controls. Game sharpening is unchanged.",
     [UI_MENU_FSR3] = "AMD FSR",
     [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
                           "3D render scale to the game resolution. The note under On says whether it runs, and which "
@@ -369,6 +373,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
     [UI_MENU_OV_FMT_UPSCALER] = "AMD FSR %s", [UI_MENU_OV_UPSCALE_GAME] = "game (TAA)",
+    [UI_MENU_OV_UPSCALE_NO_TAA] = "game (TAA off)",
     [UI_MENU_OV_UPSCALE_NO_FSR] = "game: FSR not available",
     [UI_MENU_OV_UPSCALE_IDLE] = "game: FSR not running",
 };

@@ -171,8 +171,9 @@ void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 // AMD FSR 3.1 in place of the game's temporal resolve and final stretch (vk_fsr3.c): vk_fsr3_note follows the picture
 // through a draw about to be made in the open pass and arms the pass; vk_fsr3_resolve records FSR once that pass ended.
 // VK_FSR3_RESOLVE waits for the end of the pass; VK_FSR3_UPSCALE ends it at the next draw (prepare_draw), as the rest of
-// the pass, the HUD, goes over FSR's result.
-enum { VK_FSR3_RESOLVE = 1, VK_FSR3_UPSCALE };
+// the pass, the HUD, goes over FSR's result. VK_FSR3_BYPASS waits for the pass end too and
+// replaces only the displayed temporal result with the raw scene when game TAA is off.
+enum { VK_FSR3_RESOLVE = 1, VK_FSR3_UPSCALE, VK_FSR3_BYPASS };
 void vk_fsr3_note(VkExec *ex);
 void vk_fsr3_resolve(VkExec *ex);
 
