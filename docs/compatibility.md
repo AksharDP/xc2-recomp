@@ -215,6 +215,29 @@ Local evidence: `build/logs/build-v301-khr-dispatch.log`, `build/compat/vk-dispa
 `build/compat/vk-khr-astc-validation.log`, `build/compat/vk-khr-missing-extension.log`, and
 `build/compat/vk-{core,khr}-dispatch-validation.log`. No physical Vulkan 1.2 device was tested.
 
+## November 28, 2026: native Windows RTX shadow-path checks
+
+A Ryzen 7 7700X desktop with an RTX 5060 Ti (NVIDIA 621.24), Windows 11 build 26300, ran the Western 3.0.1
+opening and King Crustip tutorial with `VK_EXT_external_memory_host` hidden. This is a controlled fallback-path
+check on a driver that has the extension, not a test of a physical older driver without it.
+
+The executable used freshly generated game code and current-main runtime at `a9cc307`, plus the default-on game
+TAA option in PR #250. TAA remained enabled; temporal FSR and frame generation were off. Its SHA256 was
+`b0cc7ecf0c9a1a79c119c8778ec59ddd16a889fd1cb08e7881736e7818ce2218`.
+
+| Shadow synchronization | Replay | Result |
+| --- | --- | --- |
+| Before each part (`XC2_SHADOW_CAPTURE=0`) | Synchronous | Exit 0; 1,379 frames presented; differential write-back reported 2.13 MiB copied back at its logged sample |
+| Submit-time capture (`XC2_SHADOW_CAPTURE=1`) | Asynchronous | Exit 0; 1,613 frames presented; differential write-back reported 2.08 MiB copied back at its logged sample |
+
+Each run used a separate copied profile and a 30-second first-present clock, which includes menus and cutscenes.
+Both preserved the original profile hashes. The logs confirmed shadow storage, absent host import and the selected
+synchronization path; `XC2_SHADOW=0` was correctly overridden because host import was unavailable. Both reported
+zero shader failures and skipped draws. Their zero validation-error counters are not validation-layer coverage.
+The logged write-back samples are not whole-run traffic totals or proof that concurrent CPU/GPU writes are correct
+in every case. Current main already contains differential shadow write-back; these runs do not independently close
+issue #115 or establish long-session support. Local private evidence: `build/xc2-shadow-path-results/checked-results.json`.
+
 ## Limits that remain
 
 | Barrier | Why | What it would take |
@@ -243,14 +266,15 @@ No performance threshold or complete hardware impossibility has been demonstrate
 
 ## What cannot be claimed
 
-- That any GPU other than the Iris Xe works with these changes. AMD, NVIDIA and other Intel generations were not
-  available for this validation ([building.md](building.md) records earlier play on other GPUs, on Linux).
+- That the whole earlier compatibility matrix is validated on GPUs beyond the Iris Xe. The dated RTX 5060 Ti
+  checks above cover two shadow synchronization paths only; AMD and other Intel generations remain untested here.
 - That a v2 build runs on a physical processor without AVX2. Emulation is strong evidence for the code it ran, but it
   covered a self-test and minutes of the opening, not the game, and the Nehalem run needed `-xsave_by_host` and ended
   in a lost device (above).
 - How much slower the v2 build is in play: the comparison above ran in a 30 fps cutscene on a v3 processor, where both
   builds hold the cap. Without FMA its fused multiply-adds are library calls.
-- That any driver without `VK_EXT_external_memory_host` works: only the hidden extension on the Iris Xe was run.
+- That any physical driver without `VK_EXT_external_memory_host` works: the extension was hidden on the Iris Xe
+  and RTX 5060 Ti; neither test substitutes for an older physical driver.
 - Why the v2 build holds more memory: 1.4 to 2.4 GiB more resident and 0.2 to 1.2 GiB more commit than the v3 build
   across both pairs of runs, while the game's own memory census (110 pools, 1,709.7 MiB) was the same in all of them. The
   difference lies outside the game's pools; not isolated.
