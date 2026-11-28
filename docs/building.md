@@ -227,6 +227,13 @@ change passes these, all run with `.venv`:
 | `tests\ui_text_test.py` | the catalog of the settings menu and the overlay: English for every id, the same printf conversions in every language; lists the texts without a Chinese translation (CI runs it) | no |
 | `tests\prompts_text_test.py` | the stick click lines `tools\xc2_prompts.py` moves to the click's icon, on a made-up message table | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
+| `tests\pulse_loop_check.py` | the actual additive UI controller, decoder and sampler against synthetic analytic animation profiles; loop/restart/context checks | yes |
+
+`tests\pulse_loop_check.py --exefs build\extracted\v301\exefs` uses the player's Western 3.0.1 modules and
+Unicorn, not recorded game assets. It checks 30 fps, 120 fps and uneven steps, including cumulative position and
+rotation, clamped alpha, inactive components, restart state and shared callback context. The generator also validates
+the patch expansions. Generated C and results stay under `build/pulse-loop-check/`; CI does not run this game-dependent
+check. It does not by itself establish the cause of a particular in-game UI report.
 
 CI's Python tests (`.github/workflows/python-tests.yml`) run the installer, generator and mod tool tests that need no
 game files, compiler or window, on the Python and packages of the setup (`tools/requirements-installer.txt`).

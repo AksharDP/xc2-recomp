@@ -575,25 +575,21 @@ site xc2qte main 3b87dc sha:0e61f08ec7edf2af b9408269 5280090a 9b0a4d29 bd43d120
 site xc2qte main 3b87e0 sha:a51b9efa2ff79485 79401a8a 0b0a0129 7940268a
 site xc2qte main 3bb670 sha:bca0d338fa39aedd 97fe7908
 site xc2qte main 3bb674 sha:2ddbafe335badaf3 bd409e61 1e210800 bd449661 1e202820 bd049660 1e27d001 1e210800 1e240008
-# xc2pulse (XC2_PULSE_FIX, on): the glow behind the element icon at the centre of the arts cross grew in battle until
-# the next special reset it (issue 48: it reached 161 interface units against its 8 at the start of a two-minute
-# fight, at 30 fps as at 60). The glow is a looping additive animation of a UI object (main+0x670ad4): its keys hold
-# per-step changes, one per 1/30 s, and each frame the sampler main+0x67e324 adds the changes inside the frame's
-# window [position, position + step] to the object's size at +0x30. The size is reset absolutely (main+0x670b18) only
-# when the position is exactly 0.0 (main+0x670b0c to main+0x670b14). The console steps exactly 1/30 s, so every loop
-# lands on 0.0 and re-bases the size. The recomp steps the measured frame time (frame_rate.c), so a loop wraps a little
-# past 0 and the reset is skipped, while the frame that crosses the loop's end drops the rest of its last key (the
-# sampler stops at the last key), the part where the glow shrinks back: each loop leaves its rise behind. A special
-# starts the animation again at exactly 0, which is why it put the glow back to its base size. Masagrator's 60 fps
-# mod shows the same growth on emulators, as it also steps a varying frame time. The replacement of the compare with
-# zero resets when the position is below the step ([x21,#4], in the position's units), the first frame of every loop
-# at any step; at an exact 1/30 s step it is the original test (position 0 is below the step, the next frame's
-# position equals it). The compare becomes ldr s1, [x21, #4]; fcmp s0, s1 and the branch to the additive path
-# (main+0x670b6c) b.ge in place of b.ne, so a NaN position resets as well. s1 is written before it is read on both
-# paths (main+0x670b38, main+0x670b78), and neither callee on the way takes a float argument.
+# xc2pulse (XC2_PULSE_FIX, on): reset additive interface sizes at each loop and
+# rebuild the prefix already elapsed in that loop. main+0x66c7ac's context carries
+# the old phase and current step; comparing those misses resets after a longer frame.
+# Its unused context +0xc carries the loop count belonging to that old phase.
+# main+0x670ad4 clones the context into its unused stack prefix so other components
+# retain their own input. Component +0x14, zeroed by main+0x670a48 alongside its index,
+# keeps the last sampled loop. On a new loop the local phase becomes 0 and its step
+# becomes old phase + step. This also restores the prefix the sampler omitted at
+# the previous wrap. Original phase-zero reset and sampling code then do the work.
+# The counter test and float selects use masks, so no site changes NZCV.
 set xc2pulse XC2_PULSE_FIX 1
-site xc2pulse main 670b10 sha:f6998207a2c97b35 bd4006a1 1e212000
-site xc2pulse main 670b14 sha:828d0405fcd42748 540002ca
+site xc2pulse main 66c7f8 sha:7585b34bfba9b2bc b9000bea b9402269 b9000fe9
+site xc2pulse main 670af4 sha:ae69cd9a830cd5c0 a9402849 a9002be9 910003f5
+site xc2pulse main 670b00 sha:c9b9248b955ac55d b9002bff b9400ea9 b940168a b9001689 4a0a012b 4b0b03ec 2a0c016b 531f7d6b
+site xc2pulse main 670b04 sha:7c6b8017f90c7b39 a901ffff 2d4006a0 1e212802 4b0b03eb 4e040d70 2eb01c41 0e701c00 2d0006a0
 # xc2jit (XC2_FSR_JITTER, on): the camera jitter FSR needs. The renderer (main+0x7e3808) moves the projection by one
 # entry of a Halton(2,3) table in its object each frame (+0x9c0, 16 entries of 16 bytes; the next entry's index at
 # +0x9b4), modulo the count in its settings (+0x14c of the pass settings, 8). Those 8 positions are made for the game's
