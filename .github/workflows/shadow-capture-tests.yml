@@ -1,0 +1,41 @@
+name: Shadow capture lifetime tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow_capture_lifetime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install native test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang binutils
+      - name: Prepare the release's pinned Vulkan and VMA headers
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          from make_release import unpack
+          vma = unpack('vma') / 'ucrt64/include/vma'
+          vulkan = unpack('vulkan-headers') / 'ucrt64/include'
+          assert (vma / 'vk_mem_alloc.h').is_file()
+          assert (vulkan / 'vulkan/vulkan.h').is_file()
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as out:
+              out.write(f'VMA_INCLUDE_DIR={vma}\nVULKAN_INCLUDE_DIR={vulkan}\n')
+          PY
+      - name: Check capture destination lifetime without a GPU or game files
+        env:
+          CC: clang
+          XC2_TEST_REQUIRE_DEPS: "1"
+        run: python tests/shadow_capture_lifetime_test.py
