@@ -79,6 +79,8 @@ def main():
     # A destination inside a copied tree makes copy_tree copy its own output. A parent destination could overwrite
     # source files. Refuse both before writing anything.
     sources = (build, a.extracted.resolve(), a.xlate.resolve().parent)
+    if fonts.is_dir():
+        sources += (fonts.resolve(),)
     if any(out == src or out in src.parents or src in out.parents for src in sources):
         sys.exit('package_build: --out must not overlap a source directory')
     if not str(out).startswith(str(ROOT / 'build')) and not str(out).startswith(str(ROOT / 'generated')):
