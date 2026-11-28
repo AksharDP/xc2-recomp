@@ -189,6 +189,7 @@
  "param.region.Japan": "日版（含中文）",
  "launcher.title": "XC2 安装程序",
  "launcher.python_missing": "安装程序文件不完整：XC2-Setup.exe 同级目录下缺少 python 文件夹。请重新完整解压压缩包后，再从解压文件夹中启动 XC2-Setup.exe。",
+ "ui.lang_keep": "保留当前游戏语言",
  "lang.ja": "日语",
  "lang.en-US": "英语（美国）",
  "lang.en-GB": "英语（英国）",

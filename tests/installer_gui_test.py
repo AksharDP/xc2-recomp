@@ -272,6 +272,91 @@ class FormTest(unittest.TestCase):
         return path
 
 
+class UpdateLanguageChoiceTest(unittest.TestCase):
+    """Exercise the real App language methods with plain widgets, without opening Tk."""
+
+    class Variable:
+        def __init__(self, value=''):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class Widget:
+        def configure(self, **values):
+            self.__dict__.update(values)
+
+    def setUp(self):
+        try:
+            from installer.gui import App
+        except ImportError:
+            self.skipTest('no tkinter module')
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dest = Path(self.tmp.name) / 'installed'
+        self.dest.mkdir()
+        statefile.save(self.dest, statefile.empty('r0') | {'lang': 'en-US', 'languages': ['en-US', 'ko']})
+        app = self.app = App.__new__(App)
+        app.vars = {key: self.Variable() for key in ('base', 'update', 'keys', 'dlc', 'lang', 'dest')}
+        app.vars['dest'].set(str(self.dest))
+        app.cat = Catalog('en')
+        app.all_cats = {code: Catalog(code) for code in ('en', 'zh-Hans', 'zh-Hant')}
+        app.lang_code, app.lang_touched, app.languages = 'en-US', False, None
+        app.lang_box, app.langs_label, app.update_hint = self.Widget(), self.Widget(), self.Widget()
+        app.probe_status = ('ui.langs_hint', {})
+        app.fit = lambda: None
+        app.refresh_form()
+
+    def test_untouched_update_keeps_language_and_omits_cli_option(self):
+        self.assertEqual(self.app.selected_lang(), '')
+        self.assertEqual(self.app.vars['lang'].get(), 'Keep current game language')
+        self.assertNotIn('--lang', self.app.form().command('python'))
+        for text in ('[language]\nlang = ko\n', '[language]\nlang =\n', '[language]\n',
+                     '[language]\nlang = mod-language\n'):
+            (self.dest / 'xc2.ini').write_text(text, encoding='utf-8')
+            self.app.refresh_form()
+            self.assertEqual(self.app.selected_lang(), '')
+            self.assertEqual((self.dest / 'xc2.ini').read_text(encoding='utf-8'), text)
+
+    def test_explicit_choice_survives_refresh_probe_and_translation(self):
+        self.app.vars['lang'].set(self.app.lang_label('ko'))
+        self.app.lang_touched = True
+        self.app.refresh_form()
+        self.app.set_languages(['en-US', 'ko'], ('ui.langs_hint', {}))
+        self.app.cat = Catalog('zh-Hant')
+        self.app.fill_languages()
+        self.assertEqual(self.app.selected_lang(), 'ko')
+        cmd = self.app.form().command('python')
+        self.assertEqual(cmd[cmd.index('--lang') + 1], 'ko')
+        self.app.vars['lang'].set(self.app.lang_label(''))
+        self.app.fill_languages()
+        self.assertEqual(self.app.selected_lang(), '')
+        self.assertNotIn('--lang', self.app.form().command('python'))
+
+    def test_keep_survives_probe_translation_and_update_destination(self):
+        self.app.set_languages(['ja', 'zh-CN'], ('ui.langs_hint', {}))
+        self.app.cat = Catalog('zh-Hans')
+        self.app.fill_languages()
+        self.assertEqual(self.app.selected_lang(), '')
+        other = self.dest.parent / 'other'
+        other.mkdir()
+        statefile.save(other, statefile.empty('r0') | {'lang': 'ja'})
+        self.app.vars['dest'].set(str(other))
+        self.app.refresh_form()
+        self.assertEqual(self.app.selected_lang(), '')
+
+    def test_new_install_has_no_keep_choice_and_requires_concrete_language(self):
+        self.app.vars['dest'].set(str(self.dest.parent / 'new'))
+        self.app.refresh_form()
+        self.assertNotIn('', self.app.offered())
+        self.assertEqual(self.app.selected_lang(), 'en-US')
+        self.assertIn('--lang', self.app.form().command('python'))
+        self.assertIn('ui.need_lang', Form(dest='new', lang='').problems())
+
+
 class CheckLanguageTest(unittest.TestCase):
     """installer/steps.py Check.language: the language an install gets from what the game files have."""
     US = ['en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'ko']
@@ -417,7 +502,7 @@ class LanguageWindowTest(unittest.TestCase):
         self.made[-1].result = {'type': 'error', 'id': 'check.languages_unreadable'}
         self.app.poll_probe()
         self.assertEqual(self.app.languages, self.US)
-        self.assertEqual(self.app.selected_lang(), 'fr')
+        self.assertEqual(self.app.selected_lang(), '')
 
     def test_a_failed_read_is_translated_after_a_language_change(self):
         self.choose('us.nsp')
@@ -428,7 +513,7 @@ class LanguageWindowTest(unittest.TestCase):
         self.app.switch_language()
         self.assertIn(Catalog('zh-Hans')('check.languages_unreadable'), self.app.langs_label.cget('text'))
 
-    def test_the_install_folders_language_is_kept(self):
+    def test_the_install_folders_language_is_not_requested_again(self):
         jp, us = self.dir / 'jp-install', self.dir / 'us-install'
         for folder, lang, langs in ((jp, 'ja', self.JP), (us, 'fr', self.US)):
             folder.mkdir()
@@ -436,10 +521,10 @@ class LanguageWindowTest(unittest.TestCase):
         self.choose(None)
         self.app.vars['dest'].set(str(jp))
         self.app.start_probe()
-        self.assertEqual(self.app.selected_lang(), 'ja')
-        self.app.vars['dest'].set(str(us))   # fr is checked against the JP list first, then the list becomes US
+        self.assertEqual(self.app.selected_lang(), '')
+        self.app.vars['dest'].set(str(us))   # switching installs keeps their settings rather than requesting stale metadata
         self.app.start_probe()
-        self.assertEqual(self.app.selected_lang(), 'fr')
+        self.assertEqual(self.app.selected_lang(), '')
 
 
 class UpdateBannerTest(unittest.TestCase):
@@ -630,6 +715,8 @@ class UpdateBannerTest(unittest.TestCase):
         dest = self.install_folder()
         app = self.app(App, update_install=str(dest))
         self.assertEqual(app.vars['dest'].get(), os.path.normpath(dest))
+        self.assertEqual(app.selected_lang(), '')
+        self.assertNotIn('--lang', app.form().command('python'))
         self.root.after(self.gui.AUTO_START_MS + 100)
         self.root.update()
         self.assertEqual(started, [os.path.normpath(dest)])

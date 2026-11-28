@@ -1122,8 +1122,12 @@ class Cleanup(Step):
         # the installed RomFS has the update applied: its languages are the ones the game runs with, which the in-game
         # menu offers and the runtime keeps to (game_langs, runtime/ov_system.c ov_language_shipped)
         langs = installed_languages(dest) or ctx.languages
+        # The game menu changes xc2.ini without changing the installer's recorded language. An update with no
+        # explicit choice keeps those lines, including Automatic (an empty or absent lang), while refreshing game_langs.
+        keep_language = (ctx.mode != 'install' and ctx.options.lang is None and
+                         any((dest / name).is_file() for name in ('xc2.ini', 'xcx.ini')))
         try:
-            ini.write(dest, ctx.lang, ctx.layout.ini_example, game_langs=langs)
+            ini.write(dest, None if keep_language else ctx.lang, ctx.layout.ini_example, game_langs=langs)
         except (OSError, ValueError) as e:   # ValueError: an xc2.ini saved in another encoding than UTF-8
             raise InstallError('cleanup.ini_failed', detail=str(e)) from None
         ctx.state['lang'] = ctx.lang

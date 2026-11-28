@@ -5,8 +5,9 @@ A first install needs every option but --lang, which defaults to en-US, or Japan
 English (the Japanese release). The language must be one the game files have text for: the Americas and Europe release
 has English, French, German, Italian, Spanish and Korean, the Japanese one Japanese and Chinese (python -m
 installer.probe lists them). On a folder with xc2-install.json (resume after a cancel or failure, or update with a
-newer release) only --dest is needed: --lang defaults to the recorded language, and the game files are needed only
-when the extraction has to run again. Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed,
+newer release) only --dest is needed: without --lang the existing configuration's language is kept, using the
+recorded one only if the configuration is missing. Game files are needed only when extraction has to run again.
+Prints JSON events on stdout (events.py). Exit code: 0 done, 1 failed,
 2 bad command line, 3 cancelled (Ctrl+C or Ctrl+Break).
 """
 import argparse
@@ -73,7 +74,8 @@ def main(argv=None):
         rep.emit('end', result='failed', seconds=0)
         return 1
     # Without --lang (the launcher has no language field) a first install gets the default of the game's languages
-    # (en-US, or Japanese on the Japanese release: installer/steps.py Check.language), and an update the recorded one
+    # (en-US, or Japanese on the Japanese release: installer/steps.py Check.language). Updates keep the existing
+    # xc2.ini language; the recorded choice is the fallback when that file is missing.
     ctx = Context(layout, dest, temp, rep, args, state=state, verify=args.verify)
     steps = all_steps()
     rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),

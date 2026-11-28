@@ -1,7 +1,7 @@
 name: Python tests
 
-# The tests of the installer, the generator and the mod tools that need no game files, compiler or window, on the Python
-# and the packages the setup ships (tools/make_release.py).
+# Installer, generator and mod-tool checks without game files. The window tests use a software virtual display;
+# the main check uses the Python and packages the setup ships (tools/make_release.py).
 
 on:
   push:
@@ -11,6 +11,21 @@ permissions:
   contents: read
 
 jobs:
+  installer_gui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Tk and the virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+      - run: python -m pip install -r tools/requirements-installer.txt
+      - name: Check installer language choices and update handoff
+        run: xvfb-run -a python tests/installer_gui_test.py
+
   check:
     runs-on: ubuntu-latest
     steps:
