@@ -1,10 +1,9 @@
-"""Exercise the draw buffer allocation paths with a simulated VMA memory selector.
+"""Check that CPU-written draw buffers get host-coherent memory, without a GPU or game files.
 
-The C fixture compiles scratch() and dummies_init()'s allocation/zeroing prefix
-from the actual source. It stops before image/view creation; no Vulkan loader,
-GPU, game files or third-party headers are needed. The allocator prefers cached
-noncoherent memory unless the caller explicitly requires coherent memory.
-DRAW_BUFFER_TEST_SOURCE may select an unchanged source for before/after checks.
+The draw scratch chunks and the zero stand-in buffer (runtime/vk_exec_draw.c) are written by the CPU and read by the GPU
+with no flush in between, so runtime/vk_host_buffer.c has to ask for host-coherent memory and refuse anything else. The
+test compiles that whole file against a stand-in vk_mem_alloc.h whose allocator prefers cached memory that is not
+coherent, as VMA may for HOST_ACCESS_RANDOM on hardware that offers such a type.
 """
 import os
 from pathlib import Path
@@ -14,132 +13,133 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = r'''
+
+# Only the names runtime/vk_host_buffer.c uses; designated initializers make the field order irrelevant.
+STUB_VMA = r'''
+#pragma once
+#include <stddef.h>
 #include <stdint.h>
+typedef uint64_t VkDeviceSize;
+typedef int VkResult;
+typedef uint32_t VkFlags;
+typedef VkFlags VkBufferUsageFlags;
+typedef VkFlags VkMemoryPropertyFlags;
+enum { VK_SUCCESS = 0, VK_ERROR_OUT_OF_DEVICE_MEMORY = -2 };
+enum { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO = 12 };
+enum { VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT = 2, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 4,
+       VK_MEMORY_PROPERTY_HOST_CACHED_BIT = 8 };
+enum { VMA_MEMORY_USAGE_AUTO_PREFER_HOST = 9 };
+enum { VMA_ALLOCATION_CREATE_MAPPED_BIT = 4, VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT = 0x800 };
+typedef struct VmaAllocator_T *VmaAllocator;
+typedef struct VmaAllocation_T *VmaAllocation;
+typedef struct VkBuffer_T *VkBuffer;
+typedef struct { int sType; const void *pNext; VkFlags flags; VkDeviceSize size; VkBufferUsageFlags usage; }
+    VkBufferCreateInfo;
+typedef struct { VkFlags flags; int usage; VkMemoryPropertyFlags requiredFlags, preferredFlags; } VmaAllocationCreateInfo;
+typedef struct { void *pMappedData; } VmaAllocationInfo;
+VkResult vmaCreateBuffer(VmaAllocator vma, const VkBufferCreateInfo *bi, const VmaAllocationCreateInfo *ai,
+                         VkBuffer *buf, VmaAllocation *alloc, VmaAllocationInfo *info);
+void vmaGetAllocationMemoryProperties(VmaAllocator vma, VmaAllocation alloc, VkMemoryPropertyFlags *flags);
+'''
+
+# The stand-in allocator and the cases. argv[1] picks how the allocator behaves:
+#   pick      VMA's rule: the first type that has every required flag, cached non-coherent memory first.
+#   ignore    hands back the non-coherent type whatever was required (a broken driver or allocator).
+#   unmapped  allocates coherent memory but returns no mapping.
+#   fail      the allocation fails.
+# Only pick may succeed; the others must end in rt_fatal, which exits with 42.
+FIXTURE = r'''
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
-typedef uint64_t VkDeviceSize;
-typedef int VkResult;
-enum { VK_SUCCESS, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-enum { VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT = 1, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 2,
-       VK_MEMORY_PROPERTY_HOST_CACHED_BIT = 4 };
-enum { VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT = 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT = 2,
-       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT = 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT = 8,
-       VK_BUFFER_USAGE_TRANSFER_SRC_BIT = 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT = 32,
-       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT = 64, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT = 128 };
-enum { VMA_MEMORY_USAGE_AUTO_PREFER_HOST, VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT = 1,
-       VMA_ALLOCATION_CREATE_MAPPED_BIT = 2 };
-typedef struct Allocation { uint8_t *host, *device; uint64_t size; unsigned type; } *VmaAllocation;
-typedef VmaAllocation VkBuffer;
-typedef struct { int sType; uint64_t size; unsigned usage; } VkBufferCreateInfo;
-typedef struct { int usage; unsigned flags, requiredFlags; } VmaAllocationCreateInfo;
-typedef struct { void *pMappedData; } VmaAllocationInfo;
-typedef struct { void *vma; } VkCtx;
-typedef struct { uint64_t fence; } VkExec;
-static VkCtx ctx;
-static VkCtx *vk_ctx(void) { return &ctx; }
-static _Noreturn void rt_fatal(const char *fmt, ...) { (void)fmt; abort(); }
-static void plat_mutex_lock(int *m) { (void)m; }
-static void plat_mutex_unlock(int *m) { (void)m; }
-static VkResult vmaCreateBuffer(void *vma, const VkBufferCreateInfo *bi,
-        const VmaAllocationCreateInfo *ai, VkBuffer *buf, VmaAllocation *alloc, VmaAllocationInfo *info) {
+#include "vk_host_buffer.h"
+
+static const VkMemoryPropertyFlags types[] = {
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+struct VmaAllocation_T { VkMemoryPropertyFlags flags; uint8_t *host, *device; VkDeviceSize size; };
+static const char *mode;
+static VkBufferCreateInfo seen_bi;
+static VmaAllocationCreateInfo seen_ai;
+
+_Noreturn void rt_fatal(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(42);
+}
+
+VkResult vmaCreateBuffer(VmaAllocator vma, const VkBufferCreateInfo *bi, const VmaAllocationCreateInfo *ai,
+                         VkBuffer *buf, VmaAllocation *alloc, VmaAllocationInfo *info) {
     (void)vma;
-    // Both are valid host-visible choices. RANDOM access prefers the cached one.
-    const unsigned types[] = { VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT };
-    unsigned required = ai->requiredFlags;
-    if (ai->flags & VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT) required |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-    unsigned selected = 0;
-    while (selected < 2 && (types[selected] & required) != required) selected++;
-    if (selected == 2 || !(ai->flags & VMA_ALLOCATION_CREATE_MAPPED_BIT)) abort();
-    VmaAllocation a = calloc(1, sizeof *a);
-    a->size = bi->size; a->type = selected;
-    a->host = malloc((size_t)a->size);
-    a->device = selected == 1 ? a->host : malloc((size_t)a->size);
-    memset(a->host, 0xa5, (size_t)a->size);
-    if (a->device != a->host) memset(a->device, 0x5a, (size_t)a->size);
-    *buf = *alloc = a; info->pMappedData = a->host;
+    seen_bi = *bi, seen_ai = *ai;
+    if (!strcmp(mode, "fail")) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    VkMemoryPropertyFlags need = ai->requiredFlags | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+    int t = 0;
+    if (strcmp(mode, "ignore"))
+        while (t < 2 && (types[t] & need) != need) t++;
+    if (t == 2) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    struct VmaAllocation_T *a = calloc(1, sizeof *a);
+    a->flags = types[t], a->size = bi->size;
+    a->host = calloc(1, (size_t)bi->size);
+    // Without coherence the GPU reads its own copy, which a CPU write does not reach until a flush.
+    a->device = types[t] & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ? a->host : calloc(1, (size_t)bi->size);
+    *alloc = a;
+    *buf = (VkBuffer)a;
+    info->pMappedData = strcmp(mode, "unmapped") ? a->host : NULL;
     return VK_SUCCESS;
 }
-/* SOURCE_DECLARATIONS */
-typedef struct { Chunk *chunks; int nchunks, cchunks; } CbRes;
-static CbRes resources;
-static CbRes *cb_res(VkExec *ex) { (void)ex; return &resources; }
-static int spare_lock, nspare_chunk;
-static Chunk spare_chunk[1];
-static struct { int ready; VkBuffer zbuf; VmaAllocation zalloc; } Z;
-/* SOURCE_FUNCTIONS */
-static int same(VkBuffer buf, uint64_t off, const void *p, size_t n) {
-    if (off + n > buf->size) abort();
-    return !memcmp(buf->device + off, p, n);
+
+void vmaGetAllocationMemoryProperties(VmaAllocator vma, VmaAllocation alloc, VkMemoryPropertyFlags *flags) {
+    (void)vma;
+    *flags = alloc->flags;
 }
+
 int main(int argc, char **argv) {
     if (argc != 2) return 2;
-    if (!strcmp(argv[1], "zero")) {
-        dummies_init();
-        for (unsigned i = 0; i < ZERO_BYTES; i++)
-            if (Z.zbuf->device[i]) { fprintf(stderr, "GPU zero buffer is not initialized\n"); return 1; }
-        return Z.zbuf->type != 1;
+    mode = argv[1];
+    VkBuffer buf;
+    VmaAllocation alloc;
+    uint8_t *p = vk_host_buffer(NULL, 4096, 0x30, "test buffer", &buf, &alloc);
+    if (seen_bi.size != 4096 || seen_bi.usage != 0x30 || !(seen_ai.flags & VMA_ALLOCATION_CREATE_MAPPED_BIT)) {
+        fprintf(stderr, "size, usage or MAPPED not passed to the allocator\n");
+        return 3;
     }
-    VkExec ex = {.fence = 1}; VkBuffer first, second; VkDeviceSize off;
-    uint8_t *p = scratch(&ex, 7, &first, &off);
-    if (off || resources.nchunks != 1) return 2;
-    memcpy(p, "support", 7);
-    if (!same(first, off, "support", 7)) { fprintf(stderr, "GPU cannot see CPU scratch writes\n"); return 1; }
-    if (!strcmp(argv[1], "reused")) {
-        spare_chunk[nspare_chunk++] = resources.chunks[0];
-        free(resources.chunks); memset(&resources, 0, sizeof resources);
-        p = scratch(&ex, 9, &second, &off);
-        if (off || second != first || nspare_chunk) return 2;
-        memcpy(p, "recycled!", 9);
-        if (!same(second, off, "recycled!", 9)) return 1;
-    } else {
-        // Model a completed earlier split's GPU write, then append a CPU allocation.
-        first->device[0] = 0x36;
-        p = scratch(&ex, 17, &second, &off);
-        if (second != first || off != 256) return 2;
-        memset(p, 0x7b, 17);
-        if (!same(second, off, p, 17) || first->device[0] != 0x36) return 1;
-        p = scratch(&ex, CHUNK_BYTES + 1, &second, &off);
-        if (off || second == first || resources.nchunks != 2) return 2;
-        p[CHUNK_BYTES] = 0x42;
-        if (second->device[CHUNK_BYTES] != 0x42) return 1;
+    memcpy(p + 100, "visible", 7);
+    if (memcmp(alloc->device + 100, "visible", 7)) {
+        fprintf(stderr, "the GPU does not see the CPU write without a flush\n");
+        return 1;
     }
-    return first->type != 1 || second->type != 1;
+    return 0;
 }
 '''
 
 
-class DrawBufferMemoryTest(unittest.TestCase):
-    def test_cpu_initialized_draw_buffers_use_visible_coherent_memory(self):
+class HostBufferTest(unittest.TestCase):
+    def test_cpu_written_buffers_are_host_coherent(self):
         default_cc = r'C:\msys64\ucrt64\bin\clang.exe' if os.name == 'nt' else 'clang'
         cc = shutil.which(os.environ.get('CC', default_cc))
         if not cc:
             self.skipTest('Clang required')
-        path = Path(os.environ.get('DRAW_BUFFER_TEST_SOURCE', ROOT / 'runtime/vk_exec_draw.c'))
-        source = path.read_text(encoding='utf-8')
-        chunk = next(line for line in source.splitlines() if line.startswith('typedef struct { VkBuffer buf;'))
-        defines = '\n'.join(line for line in source.splitlines()
-                            if line.startswith(('#define CHUNK_BYTES ', '#define ZERO_BYTES ')))
-        grow = source[source.index('static void *grow('):source.index('// ---- resources of one command buffer')]
-        scratch = source[source.index('static uint8_t *scratch('):source.index('static void note_written(')]
-        # The remaining dummies_init code creates views, samplers and images; this
-        # test executes its buffer allocation and zeroing before that first view.
-        zero = source[source.index('static void dummies_init('):source.index('    VkBufferViewCreateInfo bv =')]
-        fixture = FIXTURE.replace('/* SOURCE_DECLARATIONS */', defines + '\n' + chunk)
-        fixture = fixture.replace('/* SOURCE_FUNCTIONS */', grow + scratch + zero + '}\n')
         with tempfile.TemporaryDirectory() as tmp:
-            src, exe = Path(tmp) / 'buffers.c', Path(tmp) / 'buffers.exe'
-            src.write_text(fixture, encoding='utf-8')
-            built = subprocess.run([cc, '-O2', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)],
+            tmp = Path(tmp)
+            (tmp / 'vk_mem_alloc.h').write_text(STUB_VMA, encoding='utf-8')
+            src, exe = tmp / 'host_buffer.c', tmp / 'host_buffer.exe'
+            src.write_text(FIXTURE, encoding='utf-8')
+            # The stand-in directory comes first, so vk_host_buffer.h finds the stand-in vk_mem_alloc.h.
+            built = subprocess.run([cc, '-O2', '-Wall', '-Wextra', '-I', str(tmp), '-I', str(ROOT / 'runtime'),
+                                    str(src), str(ROOT / 'runtime' / 'vk_host_buffer.c'), '-o', str(exe)],
                                    capture_output=True, text=True, timeout=60)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
-            for mode in ('fresh', 'reused', 'zero'):
-                with self.subTest(path=mode):
+            for mode, rc in (('pick', 0), ('ignore', 42), ('unmapped', 42), ('fail', 42)):
+                with self.subTest(allocator=mode):
                     run = subprocess.run([str(exe), mode], capture_output=True, text=True, timeout=10)
-                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertEqual(run.returncode, rc, run.stdout + run.stderr)
+                    if rc == 42:
+                        self.assertIn('test buffer', run.stderr)
 
 
 if __name__ == '__main__':
