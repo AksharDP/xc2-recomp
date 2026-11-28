@@ -72,6 +72,7 @@ class Animation:
         self.component = self.HEAP + 0x1000
         self.pane = self.HEAP + 0x3000
         self.context = None
+        self.context_size = 16 if replacements else 12
         self.make_asset()
 
     def put64(self, address, value):
@@ -122,8 +123,9 @@ class Animation:
             mu.reg_write(arm.UC_ARM64_REG_PC, mu.reg_read(arm.UC_ARM64_REG_X30))
         elif address == self.OBSERVE_CONTEXT:
             # A second component checks that the first did not change the
-            # controller's shared phase/step/duration context.
-            self.context = bytes(mu.mem_read(mu.reg_read(arm.UC_ARM64_REG_X2), 12))
+            # controller's shared context, including the pre-advance loop count
+            # supplied by the patch. The unpatched seek control has three words.
+            self.context = bytes(mu.mem_read(mu.reg_read(arm.UC_ARM64_REG_X2), self.context_size))
             mu.reg_write(arm.UC_ARM64_REG_PC, mu.reg_read(arm.UC_ARM64_REG_X30))
         elif address == self.mod.base + 0x6983F8:
             raise AssertionError('the synthetic animation triggered a game assertion')
@@ -174,6 +176,8 @@ class Animation:
         phase = self.float_at(self.controller + 0x10)
         loops = self.u32_at(self.controller + 0x20)
         expected_context = struct.pack('<fff', phase, delta, 1.0)
+        if self.context_size == 16:
+            expected_context += struct.pack('<I', loops)
         self.context = None
         self.mu.reg_write(arm.UC_ARM64_REG_X0, self.controller)
         self.mu.reg_write(arm.UC_ARM64_REG_S0, struct.unpack('<I', struct.pack('<f', delta))[0])
