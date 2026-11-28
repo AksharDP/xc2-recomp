@@ -1,9 +1,10 @@
 """Package a built xc2.exe into a folder that runs from anywhere: build/<version>-portable by default.
 
 The folder holds the exe, its DLLs, the shader translator (NativeAOT: no .NET), the RomFS index and patches, the
-extracted ExeFS (the game code the exe loads), the shared fonts, the prepared shader and pipeline files. There is
-no config file: xc2.exe finds the exefs, romfs, profile and shared-fonts folders next to itself. Without --with-romfs
-the 16 GB RomFS image stays out; copy build/extracted/<version>/romfs/romfs.bin to <folder>/romfs/ or set XC2_ROMFS
+extracted ExeFS (the game code the exe loads), any extracted add-on content, the shared fonts, prepared button prompts,
+and the prepared shader and pipeline files. There is no config file: xc2.exe finds the asset folders next to itself.
+Without --with-romfs the 16 GB RomFS image stays out; copy build/extracted/<version>/romfs/romfs.bin to
+<folder>/romfs/ or set XC2_ROMFS
 (a path, relative ones to the exe's folder).
 
 The folder contains game code and data derived from the game: for your own machines only, never publish or share it.
@@ -101,8 +102,9 @@ def main():
         else:
             print(f'package_build: {f} not in {build}, skipped')
     n = copy_tree(exefs, out / 'exefs')
-    # XC2 has no RomFS frame-rate patches. Firmware fonts are needed only for Chinese and Korean text.
-    for src, name in ((build / 'romfs-patches', 'romfs-patches'), (fonts, 'shared-fonts')):
+    # Keep optional assets in the same relative locations the runtime uses.
+    for src, name in ((build / 'romfs-patches', 'romfs-patches'), (fonts, 'shared-fonts'),
+                      (a.extracted.resolve() / 'aoc', 'aoc'), (build / 'prompts', 'prompts')):
         if src.is_dir():
             n += copy_tree(src, out / name)
     if not a.no_shader_cache and (build / 'shader-cache').is_dir():

@@ -32,6 +32,8 @@ class PortableTest(unittest.TestCase):
             self.assertTrue((out / 'exefs' / 'main').is_file())
             self.assertTrue((out / 'profile').is_dir())
             self.assertFalse((out / 'shared-fonts').exists())
+            self.assertFalse((out / 'aoc').exists())
+            self.assertFalse((out / 'prompts').exists())
             for name in pkg.OPTIONAL_DLLS:
                 self.assertEqual((out / name).read_bytes(), b'fixture')
             fonts = extracted.parent / 'firmware' / 'shared-fonts'
@@ -39,10 +41,19 @@ class PortableTest(unittest.TestCase):
             (fonts / 'font.bin').write_bytes(b'optional font fixture')
             (build / 'romfs-patches').mkdir()
             (build / 'romfs-patches' / 'patch.bin').write_bytes(b'optional patch fixture')
+            (extracted / 'aoc' / '99').mkdir(parents=True)
+            (extracted / 'aoc' / '99' / 'voice.marker').write_bytes(b'add-on fixture')
+            (build / 'prompts').mkdir()
+            (build / 'prompts' / 'manifest.tsv').write_bytes(b'prompt manifest fixture')
+            (build / 'prompts' / 'xbox' / 'menu').mkdir(parents=True)
+            (build / 'prompts' / 'xbox' / 'menu' / 'button.marker').write_bytes(b'prompt image fixture')
             result = subprocess.run(cmd, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((out / 'shared-fonts' / 'font.bin').read_bytes(), b'optional font fixture')
             self.assertEqual((out / 'romfs-patches' / 'patch.bin').read_bytes(), b'optional patch fixture')
+            self.assertEqual((out / 'aoc' / '99' / 'voice.marker').read_bytes(), b'add-on fixture')
+            self.assertEqual((out / 'prompts' / 'manifest.tsv').read_bytes(), b'prompt manifest fixture')
+            self.assertEqual((out / 'prompts' / 'xbox' / 'menu' / 'button.marker').read_bytes(), b'prompt image fixture')
             # A source nested in the output or the reverse must fail before copying.
             for unsafe in (build, build / 'nested', root):
                 result = subprocess.run(cmd[:-1] + [str(unsafe)], capture_output=True, text=True)
