@@ -913,9 +913,11 @@ NVN_API(nvnCommandBufferDrawElementsBaseVertex) {
 // int instances): assumed to use the 6-parameter draw macro of the base-vertex form (unverified)
 NVN_API(nvnCommandBufferDrawElementsInstanced) {
     draw_callers(c, "elements-inst", (int)arg_x(c, 1), (int)arg_x(c, 3));
+    int inst = (int)arg_x(c, 7);
+    if (inst <= 0) return;
     cmd_t *o = cmd_of(c);
     *REC(o, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3),
-                                                    (int)arg_x(c, 5), (int)arg_x(c, 6), (int)arg_x(c, 7), arg_x(c, 4)};
+                                                    (int)arg_x(c, 5), (int)arg_x(c, 6), inst, arg_x(c, 4)};
     hw_fix(o, 44);
 }
 // void nvnCommandBufferDrawElementsIndirect(NVNcommandBuffer *cmd, NVNdrawPrimitive prim, NVNindexType type,

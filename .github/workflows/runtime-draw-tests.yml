@@ -1,0 +1,25 @@
+name: Native draw tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  draw_instances:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Clang and LLD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+      - name: Check NVN instanced draw recording without game files
+        env:
+          CC: clang
+        run: python tests/draw_instances_test.py
