@@ -27,3 +27,19 @@ jobs:
             python "tests/${t}_test.py" || failed="$failed $t"
           done
           test -z "$failed" || { echo "failed:$failed"; exit 1; }
+
+  controls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install the C compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Check Controls key edits without game files
+        env:
+          CC: clang
+        run: python tests/input_key_move_test.py
