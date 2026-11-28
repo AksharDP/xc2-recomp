@@ -259,7 +259,10 @@ def build_harness(work, bodies, jobs, cflags):
     if any(p.wait() for p in procs):
         raise SystemExit('compile failed')
     exe = work / ('harness.exe' if os.name == 'nt' else 'harness')
-    subprocess.check_call([cc, '-fuse-ld=lld', '-o', str(exe)] + [str(o) for o in objs], env=env)
+    # With baseline x86-64 flags, 128-bit atomics lower to GCC's fallback helpers. They are unused for v2/v3.
+    atomic = MSYS_BIN.parent / 'lib' / 'libatomic.a'
+    libs = [str(atomic), str(MSYS_BIN.parent / 'lib' / 'libwinpthread.a')] if os.name == 'nt' and atomic.is_file() else []
+    subprocess.check_call([cc, '-fuse-ld=lld', '-o', str(exe)] + [str(o) for o in objs] + libs, env=env)
     return exe
 
 
