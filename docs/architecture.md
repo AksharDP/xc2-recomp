@@ -99,12 +99,12 @@ Every guest thread is a host thread. XCX assumes Horizon's scheduler: three appl
 - Resolution. Patch sets make the game read its output, swapchain and scene sizes from the patch page
   (MacNativeGames' sites); `resolution.c` sets them from `output_res` and `render_scale` and grows the texture heap
   and the application pool to match. When the window is larger than the output, `vk_fsr.c` runs AMD FSR 1 (EASU,
-  RCAS) on the present. On Western XC2 update 3.0.1, `no_game_sharpen = 1` in the INI's `[display]` section
+  RCAS) on the present. For XC2 updates using the shared 3.0.1 patch table, `no_game_sharpen = 1` in the INI's `[display]` section
   (or `XC2_NO_GAME_SHARPEN=1`) disables the game's separate final scene sharpening after a restart. Patch set
   `xc2nosh` zeros its strength before `main+0x7f6c20` selects the `ENABLE_SHARPEN` shader variant and uploads the
   coefficients, preserving the rest of that pass. This leaves game temporal AA and FSR settings independent:
-  `sharpness = 0` disables FSR 1's RCAS only, and `upscaler = bilinear` avoids its window scaling. Other game
-  regions and updates do not contain this patch. This component addresses the game sharpening part of issue #182.
+  `sharpness = 0` disables FSR 1's RCAS only, and `upscaler = bilinear` avoids its window scaling. Western 3.0.1 and Japanese 3.0.0 share this patch table (`tools/xc2_titles.py`,
+  `PATCH_TABLES`); native validation so far covers Western 3.0.1 only. This component addresses the game sharpening part of issue #182.
   With `XC2_FSR3`, `vk_fsr3.c` runs AMD FSR (3.1.6, or FSR Upscaling 4.1.2 on Radeon RX 6000 and
   newer with a recent driver) through the AMD FSR SDK 2.4 loader on the game's own jitter, depth and motion: the raw scene
   goes through bloom and the tone map at the render scale, and FSR takes the tone-mapped picture to the output size in
