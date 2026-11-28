@@ -449,6 +449,7 @@ def module_glue(layout, linked, hashes, paths, version, title_id, name=None, abi
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
     expected ExeFS hashes, the game version, the release's application id, the default game paths (host.h) and the key
     of the mods' code (tools/mod_abi.py)."""
+    game_name = name or GAME_NAMES.get(version, '')
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -476,7 +477,7 @@ def module_glue(layout, linked, hashes, paths, version, title_id, name=None, abi
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
     number = GAME_VERSIONS.get(version, 0)   # 1.4.3 -> 143; XCX 2.0.0 and XC2 3.0.1 -> 0
     out += [f'const int rt_game_version = {number};', f'const char rt_port_version[] = {c_string(port_version())};',
-            f'const char rt_game_name[] = {c_string(name or GAME_NAMES.get(version, ""))};',
+            f'const char rt_game_name[] = {c_string(game_name)};',
             f'const uint64_t rt_title_id = {title_id:#018x}ull;', f'const char rt_mod_abi[] = {c_string(abi)};', '']
     return '\n'.join(out)
 
