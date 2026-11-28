@@ -1,7 +1,8 @@
 # Building from source
 
-Windows 10 or later, an x86-64 CPU with AVX2, and a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`. Allow about
-60 GB for the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB afterwards.
+Windows 10 or later, an x86-64 CPU (with AVX2 for the default build; [Processors without AVX2](#processors-without-avx2)
+otherwise), and a GPU with Vulkan 1.3 ([compatibility.md](compatibility.md) lists the rest). Allow about 60 GB for
+the work folder. Extraction wants about 55 GB free while it runs and keeps about 35 GB afterwards.
 
 Players who only want to play can use the [installer](installer.md) instead: it builds the game on their machine
 without this toolchain.
@@ -166,6 +167,46 @@ The portable packager includes firmware fonts and RomFS patches when present; ne
 American/European build in any of its languages, Korean included; whether Chinese text on the Japanese release asks
 for the shared fonts is unchecked. Optional FSR DLLs
 found beside the source executable are included. The folder keeps its own profile; existing saves are not copied.
+
+### Processors without AVX2
+
+`--cpu v2` compiles the lifted code and the runtime for x86-64-v2 (SSE4.2, POPCNT) instead of x86-64-v3, for
+processors without AVX2 (`runtime/cpu_level.h`). Build it in a folder of its own, since the flags differ from the main
+build's and nothing of it is shared:
+
+```powershell
+.venv\Scripts\python tools\build_game.py --version <ver> --cpu v2 --out build\<ver>-v2
+.venv\Scripts\python tools\check_isa.py build\<ver>-v2\xc2.exe
+```
+
+`tools/check_isa.py` disassembles the linked exe and fails on any function with instructions above x86-64-v2, except
+library code that picks them after a CPU check of its own (libvpx, zstd, `runtime/sha256.c`), which it lists apart.
+Every build runs a start-up check first (`runtime/cpu_check.c`): a v3 build on a processor without AVX2 stops with a
+message and exit code 72 instead of an illegal-instruction crash. `--make-runtime-lib --cpu v2` writes
+`libxc2rt-v2.a`, which the installer links on such processors; a library of the other level does not link
+(`rt_cpu_level_v2` / `rt_cpu_level_v3` undefined).
+
+### Experimental baseline Windows source build
+
+The installer still requires x86-64-v2. For research on older x64 CPUs, the Windows MSYS2 source build accepts
+`--cpu v1` and uses baseline SSE2 code generation. This option does not establish support for every baseline CPU:
+DLL/translator dispatch and full gameplay below v2 remain validation requirements in [compatibility.md](compatibility.md).
+
+```powershell
+.venv\Scripts\python tools\build_baseline_deps.py
+.venv\Scripts\python tools\build_game.py --version v301 --cpu v1
+```
+
+This defaults to `build/v301-v1` so it does not replace the normal build. It requires the helper's pinned VP9 and
+Zstandard archives in `toolchain/baseline/lib`; missing archives stop the build. It also links the MSYS2 GCC
+`libatomic.a` fallback for 128-bit operations instead of requiring CMPXCHG16B code generation, with static
+`libwinpthread.a`. Use a separate output directory for each CPU level. Custom `--toolchain`/`--deps` and Linux are
+not enabled for v1. A v1 runtime library has its own CPU marker and cannot be substituted for v2/v3.
+
+The build checks the runtime objects before linking and runs the level-1 mnemonic audit on the final executable,
+writing `isa-audit.json` in its output folder. A failed audit makes the command fail even if an executable was
+produced; the output is not a validated build. This audit does not clear the bundled DLLs or translator. The helper
+is an experimental build dependency tool; it does not change the release installer or fetch game inputs.
 
 ## Linux
 

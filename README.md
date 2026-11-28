@@ -53,7 +53,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Installing
 
-Requirements: Windows 10 or later, or Linux 6.7 or later with glibc 2.34, an x86-64 CPU with AVX2, a GPU with Vulkan 1.3 and `VK_EXT_external_memory_host`, about 25 GiB free during setup (20 GiB after).
+Requirements: Windows 10 or later, or Linux 6.7 or later with glibc 2.34, an x86-64 CPU with AVX2 (on Windows, a CPU without AVX2 but with SSE4.2 gets a build for it), a GPU with Vulkan 1.3, about 25 GiB free during setup (20 GiB after). The setup's PC check names anything missing; [docs/compatibility.md](docs/compatibility.md) lists what has been tested and what has not.
 
 1. Download `XC2-Setup-<version>-windows.zip` from [Releases](../../releases/latest) and unpack it.
 2. Start `XC2-Setup.exe`. If SmartScreen warns about an unsigned app, choose *More info*, then *Run anyway*.

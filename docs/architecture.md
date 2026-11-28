@@ -114,7 +114,7 @@ Every guest thread is a host thread. XCX assumes Horizon's scheduler: three appl
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `XC2_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).
-- Allocation: Vulkan Memory Allocator. Debugging: Vulkan validation layers, per-pass frame dumps (`XC2_DUMP`, `vk_dump.c`) and a flight recorder (`XC2_FLIGHT`). RenderDoc cannot capture, because it hides `VK_EXT_external_memory_host` from the application.
+- Allocation: Vulkan Memory Allocator. Debugging: Vulkan validation layers, per-pass frame dumps (`XC2_DUMP`, `vk_dump.c`) and a flight recorder (`XC2_FLIGHT`). RenderDoc hides `VK_EXT_external_memory_host` from the application; the back end then uses shadow storage (`runtime/vk_require.h`), which should let it capture (not yet tried).
 
 Maxwell behaviour the back end has to match, and the XCX bugs other ports fixed: [maxwell.md](maxwell.md).
 

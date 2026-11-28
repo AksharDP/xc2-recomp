@@ -145,10 +145,13 @@ functions to it.
 1. **Check** before writing anything: the files open with the keys, the base game, the update and the add-ons are one
    release's ([Releases](#releases)), the base game and the update are 1.0.0 and 3.0.1 (by the hashes in
    `tools/data/expected-xc2[-jp]-<version>.json`), the keys are new enough for the update, enough space
-   is free on the target disk, the CPU has SSE4.2 and POPCNT (x86-64-v2; with AVX2 the
-   game is built for x86-64-v3, without it for x86-64-v2 when the release has `libxc2rt-v2.a`), Windows is 10 or later,
-   and a GPU meets the game's own requirements (`runtime/vk_require.h`: Vulkan 1.3 and a list of extensions and
-   features). Each failure is one clear message.
+   is free on the target disk, and the PC can run the game. The PC check (`installer/hostcheck.c`, judged by
+   `installer/steps.py` `judge_host`) applies the game's own rules: the processor's x86-64 level
+   (`runtime/cpu_level.h`: x86-64-v3 builds the game as before, x86-64-v2 builds it with `--cpu v2` and the
+   release's `runtime/libxc2rt-v2.a`, anything older is refused), Windows 10 or later, and each Vulkan device judged
+   by `runtime/vk_require.h`, the list the game's device choice uses, so a refusal names what each GPU lacks. A GPU
+   without `VK_EXT_external_memory_host`, Windows on Arm and a software renderer get a warning, not a refusal
+   ([compatibility.md](compatibility.md)). Each failure is one clear message.
 2. **Build kit** (Windows): copies the tools into `build-kit/` ("Code of mods").
 3. **Extract** ExeFS and RomFS into the install folder and verify the hashes. `tools/xc2_merge_romfs.py` applies
    the update's BKTR patch while reading both game files in place: it writes the 14 GB RomFS once, decrypting on

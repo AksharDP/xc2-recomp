@@ -1,0 +1,288 @@
+# PC compatibility (Windows)
+
+What a Windows PC needs to run XC2 Recomp, what has been tested and what has not. The game is native x86-64 code with a
+Vulkan renderer; no emulator is involved. The setup builds the game on the player's PC, so it can build it for that
+PC's processor, and its PC check (`installer/hostcheck.c`) applies the game's own rules, so it refuses what the game
+would refuse and names what is missing.
+
+**One PC has been tested** (below). "Accepted" in this file means the PC check lets a PC through; it does not mean such
+a PC was tried.
+
+## Evidence levels
+
+| Level | Meaning |
+| --- | --- |
+| **Tested** | Ran on real hardware, with logs and screenshots kept. |
+| **Path tested** | The code path ran on the tested PC by forcing it (for example hiding a Vulkan extension the driver has). Shows the code works; says nothing about a particular other driver. |
+| **Emulated** | Ran under Intel SDE with an older processor's CPUID, SDE stopping at the first instruction that processor lacks. |
+| **Check only** | The PC check's verdict in unit tests (`tests/installer_test.py` `HostVerdictTest`); nothing ran on such hardware. |
+| **Unsupported** | Refused by design; the reason is given. |
+
+## The tested PC
+
+Intel Core i5-1240P (x86-64-v3), Intel Iris Xe (Vulkan 1.4.323, driver 32.0.101.7092), 16 GB RAM, Windows 11 Home
+build 26300. No AMD or NVIDIA GPU, no AMD CPU, no CPU without AVX2 and no Windows 10 PC was available.
+
+## Requirements
+
+| | Requirement | Level |
+| --- | --- | --- |
+| Architecture | 64-bit x86 (Intel or AMD). Windows on Arm would require x64 emulation; setup refuses it because this release has no native ARM64 target. | Check only (Arm) |
+| Windows | 10 or 11. `xc2.exe` imports nothing newer than Windows 10 version 1507: `SetThreadDescription` (1607) is looked up at run time. Vulkan 1.3 drivers and the setup's Python ship for nothing older than Windows 10. | Tested on 11 (26300); Check only for 10 |
+| Processor | x86-64-v3 (AVX2, FMA, BMI2: Intel Haswell 2013+, AMD Excavator 2015+ / Zen) gets the default build. x86-64-v2 (SSE4.2, POPCNT, CMPXCHG16B: Intel Nehalem 2008+, AMD Bulldozer 2011+, and Pentium and Celeron models up to 2020, which have no AVX) gets a build for that level. Older processors are refused. | v3 Tested; v2 Emulated |
+| GPU API | Vulkan 1.3. | Tested |
+| GPU extensions | `VK_KHR_swapchain`, `VK_KHR_push_descriptor`, `VK_EXT_depth_clip_control` (`runtime/vk_require.h`). `VK_EXT_external_memory_host` is optional: without it the game keeps host-visible copies of the GPU-shared memory (shadow storage, as on Linux), at about 1 GiB more committed memory in the opening on the tested PC (7.7 against 6.6 to 6.8 GiB). | Tested (with); Path tested (without) |
+| GPU features | `timelineSemaphore`, `dynamicRendering`, `synchronization2`, `shaderStorageImageWriteWithoutFormat`, `depthClipControl`, `shaderInt64`, `samplerAnisotropy`, `independentBlend`, `geometryShader`, `textureCompressionBC`. A GPU lacking one is skipped, so a laptop whose discrete GPU lacks one plays on its integrated GPU. | Tested (all present) |
+| Driver | The GPU maker's or PC maker's normal driver. No Vulkan SDK. | Tested (Intel) |
+| RAM | 16 GB tested. The game alone held 3.1 to 5.8 GiB resident and 6.1 to 7.7 GiB private commit in the opening, depending on the build and path (below). Less RAM is untested; the game's own memory mode switches to import below 12 GB on an integrated GPU (`xc2.ini` `memory`). | Tested (16 GB only) |
+| Disk | About 25 GiB free during setup, 20 GiB after. | Tested |
+
+## What changed for this
+
+1. **Processors without AVX2.** `tools/build_game.py --cpu v2` compiles the lifted code and the runtime for
+   x86-64-v2; the setup does so on such a processor with the release's `runtime/libxc2rt-v2.a` (the release script
+   builds both libraries). Before, the setup refused every processor without AVX2.
+   - `runtime/kernel.c` `kern_ap_stub`, the hand-written stub that keeps the registers of preempted game code, saved
+     YMM registers with AVX instructions in every build. A v2 build would have crashed a processor without AVX the
+     first time game code was preempted. It now saves XMM registers with SSE instructions in a v2 build (v2 game code
+     never holds data in the upper YMM halves).
+   - `runtime/cpu_check.c` runs before `main` and before every other constructor, compiled for any x86-64 processor:
+     a build started on a processor below its level (a v3 folder copied to an older PC) stops with a message and exit
+     code 72 instead of an illegal-instruction crash.
+   - A prebuilt runtime library of the other level does not link (`rt_cpu_level_v2` / `rt_cpu_level_v3` undefined),
+     and `build_game.py --cpu v2` reads every runtime object with `tools/check_isa.py` before linking or archiving,
+     stopping on any instruction above x86-64-v2.
+2. **GPUs without `VK_EXT_external_memory_host`.** It was required; now a device without it gets shadow storage
+   (`runtime/vk_memory.c` `mirror_mode`). Windows drivers of NVIDIA, AMD and Intel have it, so this mostly matters for
+   layers and translation drivers that hide it (RenderDoc, Mesa's Vulkan-on-Direct3D 12 "Dozen"). Untested on any of
+   them.
+3. **One list of GPU requirements.** `runtime/vk_require.h` holds the version, extensions and features; the game's
+   device choice and device creation use it, and so does the setup's PC check. Before, the setup checked only
+   "Vulkan 1.3", accepting GPUs the game would then refuse at start, and the game checked features only after choosing
+   a GPU, stopping instead of trying the next one.
+4. **Windows 10 before version 1607.** The static import of `SetThreadDescription` stopped the loader there with
+   "entry point not found"; it is looked up now. The PC check refuses Windows before 10 with a plain message.
+
+## Validation
+
+| Check | Result | Level |
+| --- | --- | --- |
+| Baseline (this commit's parent): extract, lift, compile, shader preparation, boot | RomFS 3.0.1 hash matched (14,019,660,980 bytes, 28,376 files); 9,033 shader variants translated, 0 failed; title screen and the New Game opening rendered with sound; 18.0 fps in the first minute (cold caches), 26.2 in the second (the opening cutscene runs at 30 fps) | Tested |
+| Changed v3 build, same boot, twice | Self-test passed; opening rendered; 24.1 / 26.6 and 26.9 / 29.9 fps (warmer caches); peak 3,120 and 3,991 MiB resident, 6,631 and 6,090 MiB private commit | Tested |
+| Changed v3 build with `XC2_VK_HIDE_EXT=VK_EXT_external_memory_host` | Both GPUs logged "no VK_EXT_external_memory_host; CPU-visible pools will be shadow copies"; shadow storage on; opening rendered (screenshot inspected); 28.9 / 29.7 fps; peak 5,797 MiB resident, 7,708 MiB commit | Path tested |
+| v2 build (`--cpu v2`) on the tested PC, twice | Self-test passed; opening rendered; 30.5 / 29.8 and 29.8 / 30.0 fps; peak 5,424 and 5,522 MiB resident, 6,837 and 7,329 MiB commit | Tested (on a v3 CPU) |
+| `tools/check_isa.py` on the v2 `xc2.exe` (17.5 million instructions) | 0 functions above x86-64-v2 outside a CPU check; 138 libvpx functions behind libvpx's own CPU detection (the linker map places 3 symbol-less ones in libvpx's `*_avx2.c.o` objects); the SHA-extension path of `runtime/sha256.c` behind its check | Static |
+| Negative control: `tools/check_isa.py` at level 2 on the v3 `xc2.exe` | 37,269 functions flagged | Static |
+| v2 self-test under SDE, Nehalem (no AVX, no XSAVE) and Sandy Bridge (AVX, no AVX2) | Passed in both, 0 SDE errors; the build reads the emulated processors as x86-64-v2 | Emulated |
+| v3 `xc2.exe` under SDE, Nehalem and Sandy Bridge | Stopped by `cpu_check.c` with exit code 72 and the message, before any AVX instruction (SDE reported none) | Emulated |
+| Negative control: an AVX2 test program under SDE | Stopped at the first AVX2 instruction on Sandy Bridge and the first AVX instruction on Nehalem, also with SDE limited to that image | Emulated |
+| v2 game under SDE, Sandy Bridge | 14 minutes: title screen, New Game, the opening cutscene into the dive (screenshots inspected), with sound; 2 to 3.5 fps under emulation; 0 SDE errors | Emulated |
+| v2 game under SDE, Nehalem | As is, SDE stops about 20 s in with its own error "OSXSAVE bit is not set in CPUID", raised by code outside the three checked images (also with the null graphics back end and SDL's dummy audio driver), before the window opens; reaZelda's TotK runs stopped the same way. With `-xsave_by_host 1` (code outside the images may use the host's XSAVE; the images stay checked against Nehalem, and the AVX2 test program is still stopped): 8.5 minutes, title screen, New Game, the opening cutscene with sound, 464 preemptions of game code through the SSE stub, 0 invalid instructions. Then the Vulkan device was lost (exit 70), which no native or Sandy Bridge run showed; the Intel driver runs under the emulated Nehalem CPUID too. Not isolated | Emulated |
+| Shader translator (`xc2_xlate.exe`, .NET NativeAOT) under SDE, Nehalem and Sandy Bridge, its own image checked | `tools/xlate_smoke.py` passed: the test shader translated to valid SPIR-V, 0 SDE errors. Inside the SDE game runs the game's translation requests failed ("translator unavailable", 3 and 7 times; SDE instruments that child process too); the prepared shader cache covered the opening | Emulated |
+| Setup PC check (`installer/hostcheck.c`) on the tested PC | `cpu_level` 3, Windows 10.0.26300, x64; both Iris Xe entries usable with host import | Tested |
+| PC check verdicts (`tests/installer_test.py`, 13 cases) | v3 and v2 processors, v2 without the v2 library, below v2, Windows 7 / 8.1 refused and 10 1507 accepted, Arm refused even with a v2/v3 CPU report, no loader or device, Vulkan 1.2 only, missing extensions and features named per GPU, a laptop with an unusable discrete GPU, host import judged on the GPU the game picks, software renderer, an older host check's output | Check only |
+
+### Baseline x86-64 experiment (not released)
+
+A local experiment compiled the existing generated v301 C and a copy of the runtime with `-march=x86-64`, using the
+SSE preemption stub and a level-1 runtime marker. No SIMD lowering changes were needed. The executable passed
+`--selftest` on the host and under SDE's Merom (Core 2) model with `-xsave_by_host 1`. The existing v2 executable
+refused that model with exit 72. A separate executable containing POPCNT was rejected by SDE as invalid for Merom,
+confirming that the instruction check was active.
+
+A 180-second Merom boot run reached Vulkan initialization, asset loading and frame submission without an SDE
+invalid-instruction report. The inspected frame-120 screenshot showed a loading indicator, not verified gameplay.
+The harness stopped the process tree at the time limit; this was not a normal game exit. About 3.1 fps was logged
+under SDE, which says nothing about native Core 2 performance. This does not establish support for a physical Core 2,
+AMD K10, or all baseline x86-64 processors. The static checker now accepts `--level 1` for known instructions above baseline SSE2, but is a mnemonic-based
+audit, not an exhaustive CPUID decoder. Bundled libraries and the shader translator still need validation below v2. The installer still rejects CPUs below v2.
+
+Local evidence: `build/logs/build-v301-v1-experiment.log`, `build/compat/v1-native-selftest.log`,
+`build/compat/v1-merom-selftest.log`, `build/compat/v1-merom-popcnt-negative.log`, and `build/compat/v1-merom-boot/`.
+The initial local launcher was `build/compat/build_v1_experiment.py`. The experiment is now reproducible with the
+explicit `tools/build_game.py --cpu v1` source option; it is not an installer support claim.
+
+The level-1 audit found unguarded SSE3 instructions in the original linked MSYS2 libvpx and Zstandard archives,
+including `vp9_adjust_mask` and `ZSTD_buildFSETable`. Those instructions run on Core 2, which has SSE3, so the earlier
+Merom run could not establish the baseline SSE2 ceiling. Merely recompiling game code for baseline is insufficient.
+
+`python tools/build_baseline_deps.py` rebuilds pinned Zstandard 1.5.7 and libvpx 1.16.0 sources for Windows using
+`-march=x86-64`. It writes experimental static archives to `toolchain/baseline/lib`; these are selected only by the experimental `--cpu v1` source build, not the default build or setup. libvpx retains its CPU dispatch and builds only the VP9 decoder. The helper
+requires MSYS2 `nasm`, `diffutils` and `perl` as well as the documented compiler toolchain. Sources are checked against
+fixed commit IDs, and old objects are cleaned before building so a prior set of compiler flags cannot leak through.
+
+The relinked experimental executable passed the native self-test and movie probe. The movie probe also passed under
+Merom: 420 frames decoded, zero decoder errors, and no invalid-instruction report. This checks one movie and model,
+not full gameplay. Its level-1 scan covered 16,788,081 instructions and found no remaining ordinary SSE3 dependency
+functions. At that stage it failed its gate: eight functions required dispatch review (Zstandard BMI2 fast loops and libvpx
+SSSE3 helpers), and a libstdc++ `random.o` path with RDRAND/RDSEED had no recorded check in the auditor. The subsequent review below accounts for these paths. No baseline support claim follows from these results.
+
+Evidence: `build/compat/isa-v1.json` (original dependencies), `build/compat/isa-v1-baseline-deps.json`,
+`build/logs/build-baseline-deps-helper.log`, `build/logs/build-v301-v1-baseline-deps.log`,
+`build/compat/v1-baseline-deps-selftest.log`, `build/compat/v1-baseline-deps-movie.log`, and
+`build/compat/v1-baseline-deps-merom-movie.log`.
+
+### Reproducible source option
+
+`--cpu v1` now selects `-march=x86-64`, the baseline dependency archives and a distinct level-1 runtime marker.
+The normal build remains v3 and setup still refuses CPUs below v2. The v1 default output is `build/<version>-v1`.
+Missing rebuilt archives or an unsupported toolchain stops the command; it never falls back to the MSYS2 SSE3
+archives. The final executable audit runs automatically and a failure makes the build command fail.
+
+Baseline atomic differential tests initially exposed missing 128-bit atomic helper symbols. The source build now
+links GCC's static `libatomic` fallback; the test harness links it with static winpthread, avoiding a missing DLL
+at startup. The baseline SIMD differential test passed 159,976 cases from 20,000 encodings, with 1,048,640 validity
+encodings checked and no disagreement. The atomic test passed 12,672 cases across 198 tests. Replaying the same harness under Merom completed with
+no invalid-instruction report and produced byte-for-byte identical output records. Three CPU build tests
+cover fail-closed dependency/toolchain selection and a real link failure for a mismatched runtime CPU marker.
+The existing native translator also passed its smoke test under SDE's Merom model, including recovery after invalid
+JSON and valid SPIR-V output; this is one shader, not all translation paths or a baseline SSE2 CPU.
+
+Evidence: `build/logs/build-v301-v1-source-option.log`, `build/logs/simd-baseline-source-option.log`,
+`build/logs/atomic-baseline-source-option.log`, `build/compat/atomic-baseline-merom.json`,
+`build/compat/v1-source-selftest.log`, `build/compat/v1-source-merom-selftest.log`, and
+`build/compat/xlate-merom-current.log`. The source-option build and its automatic executable audit passed; both
+native and Merom self-tests passed afterward.
+
+### Reviewed dispatch and DLL boundary
+
+A follow-up audit reviewed the Zstandard fast-loop gates in `huf_decompress.c`, the two libvpx helpers in
+`inv_txfm_ssse3.c`, and the linked libstdc++ `random_device::_M_init` CPUID checks. The linker map's `.text$` section
+names recover the RNG helper names that the executable's stripped symbol table otherwise labels as `range_error`.
+The auditor now recognizes only the reviewed functions, objects and opcodes; a different object or an additional
+SSE3 opcode still fails. Seven auditor tests cover those restrictions, function sections, and compiled instruction
+fixtures. The experimental executable's 16,788,081-instruction scan now reports zero unexpected functions, 138
+CPU-dispatched functions, and four optional-extension functions with recorded guards.
+
+This result covers the executable, not its DLLs or its child translator. DLL scans exposed a reporting defect: the
+auditor used the neighboring `xc2.map` for DLL addresses. It now defaults to the input's own `.map` filename. Without
+that unrelated map, the scanned libiconv has no flagged instructions above baseline. SDL3, Opus and `xc2_xlate.exe`
+still have flagged newer instructions with insufficient symbol detail to establish all their dispatch guards.
+They remain an open validation requirement. SDE's Pentium 4 model refused the x64 executable itself; that attempt
+is not an SSE2 execution result and is not evidence about a usable Windows x64 configuration.
+
+Evidence: `build/compat/isa-v1-reviewed.json`, `build/compat/isa-v1-dlls.json`, and
+`build/compat/v1-sse2-selftest.log`. None of this enables a baseline installer option.
+
+The SDE runs check `xc2.exe`, `SDL3.dll` and `libopus-0.dll` (`-chip_check_image`), not Windows' own DLLs or the GPU
+driver, which choose their instructions by processor themselves. Evidence files are in `build/compat/` of the
+maintainer's checkout (game-derived, not in the repository).
+
+## Extension command path toward Vulkan 1.2
+
+The renderer can resolve six command entry points either by their Vulkan 1.3 core names (default) or by their
+KHR/EXT names (`XC2_VK_KHR_DISPATCH=1`). The latter requires and enables `VK_KHR_dynamic_rendering`,
+`VK_KHR_synchronization2` and `VK_EXT_extended_dynamic_state`. Missing extensions or entry points stop initialization.
+The recorder's final driver calls use the selected table, so both direct and recorded commands take the same path.
+The queue-submission sites use that table too. The resolver's compiled fake-driver test checks both sets of names
+and failure with each entry point missing, including clearing a partially resolved table.
+
+This is a tested part of a prospective lower-version renderer, not Vulkan 1.2 support. Khronos describes these
+commands' promotion and aliasing in its [version guide](https://docs.vulkan.org/guide/latest/versions.html).
+The instance/device checks still require 1.3. Before lowering that requirement, these remaining dependencies must
+be handled:
+
+| Current dependency | Needed lower-version work |
+| --- | --- |
+| Instance requests 1.3; setup checks the same minimum | Negotiate a supported version and apply the same extension/feature checks in setup |
+| Device, capability and pipeline queries use Vulkan13 feature/property structures | Query and enable the individual extension structures on 1.2; preserve optional feature fallbacks |
+| Physical pools call `vkGetDeviceImageMemoryRequirements` | Use maintenance4 when available or create a temporary image and query its requirements |
+| VMA is configured for 1.3 | Pass the actual negotiated version and enable any required allocation extensions |
+| Translator, shader caches and pipeline providers assume the present environment | Validate generated SPIR-V and provider requirements against the lower-version environment |
+
+On the available Iris Xe, the native core and extension paths both passed the window probe: 300 frames, resize,
+exact presentation readback and approximately 60 Hz vsync, with the validation layer loaded and zero validation
+errors. The extension path passed the ASTC probe (14 footprints, linear/sRGB, 1,740,602 texels bit-exact), also with
+zero validation errors. A forced missing dynamic-rendering extension was refused before command dispatch.
+
+Both full census draw probes passed their functional checks without the validation layer. With the layer loaded,
+both reported the same 18 depth-comparison descriptor errors (VUID 06479: RGBA8 images used with comparison samplers)
+and exited 1. These are not clean validation runs. No additional VUID category appeared in the extension path; the
+shared descriptor problem still needs a separate investigation. Initial runs requested validation without a loaded
+layer; their zero error counters are not validation evidence. The successful runs above set `VK_LAYER_PATH` to
+`C:\msys64\ucrt64\bin`, where this machine's MSYS2 layer manifest and DLL reside.
+
+A subsequent fix identified those 18 errors as the unbound shadow-image fallback: comparison samplers were paired
+with the ordinary RGBA8 stand-in. Missing shadow descriptors now use lazy depth images, chosen from supported D32
+or D16 comparison formats, cleared to zero and synchronized before sampling. Both core and extension full census
+probes now pass with zero validation errors, and the extension probe also passes with synchronization validation.
+These tests resolve the earlier VUID 06479 failures on the tested Iris Xe; they do not clear other GPUs or the
+remaining Vulkan 1.2 negotiation barriers. Evidence is in `build/compat/shadow-dummy-core-validation.log`,
+`build/compat/shadow-dummy-khr-validation.log`, and `build/compat/shadow-dummy-khr-sync-validation.log`.
+
+Local evidence: `build/logs/build-v301-khr-dispatch.log`, `build/compat/vk-dispatch-cfg.log`,
+`build/compat/vk-core-window-validation.log`, `build/compat/vk-khr-window-validation.log`,
+`build/compat/vk-khr-astc-validation.log`, `build/compat/vk-khr-missing-extension.log`, and
+`build/compat/vk-{core,khr}-dispatch-validation.log`. No physical Vulkan 1.2 device was tested.
+
+## November 28, 2026: native Windows RTX shadow-path checks
+
+A Ryzen 7 7700X desktop with an RTX 5060 Ti (NVIDIA 621.24), Windows 11 build 26300, ran the Western 3.0.1
+opening and King Crustip tutorial with `VK_EXT_external_memory_host` hidden. This is a controlled fallback-path
+check on a driver that has the extension, not a test of a physical older driver without it.
+
+The executable used freshly generated game code and current-main runtime at `a9cc307`, plus the default-on game
+TAA option in PR #250. TAA remained enabled; temporal FSR and frame generation were off. Its SHA256 was
+`b0cc7ecf0c9a1a79c119c8778ec59ddd16a889fd1cb08e7881736e7818ce2218`.
+
+| Shadow synchronization | Replay | Result |
+| --- | --- | --- |
+| Before each part (`XC2_SHADOW_CAPTURE=0`) | Synchronous | Exit 0; 1,379 frames presented; differential write-back reported 2.13 MiB copied back at its logged sample |
+| Submit-time capture (`XC2_SHADOW_CAPTURE=1`) | Asynchronous | Exit 0; 1,613 frames presented; differential write-back reported 2.08 MiB copied back at its logged sample |
+
+Each run used a separate copied profile and a 30-second first-present clock, which includes menus and cutscenes.
+Both preserved the original profile hashes. The logs confirmed shadow storage, absent host import and the selected
+synchronization path; `XC2_SHADOW=0` was correctly overridden because host import was unavailable. Both reported
+zero shader failures and skipped draws. Their zero validation-error counters are not validation-layer coverage.
+The logged write-back samples are not whole-run traffic totals or proof that concurrent CPU/GPU writes are correct
+in every case. Current main already contains differential shadow write-back; these runs do not independently close
+issue #115 or establish long-session support. Local private evidence: `build/xc2-shadow-path-results/checked-results.json`.
+
+## Limits that remain
+
+| Barrier | Why | What it would take |
+| --- | --- | --- |
+| 32-bit Windows | The current guest layout reserves addresses beyond a 32-bit process's address space. | Cannot run this executable or preserve its direct-address layout. A redesigned memory model would be required; no such implementation exists. |
+| No Vulkan driver (Microsoft Basic Display Adapter; Intel before Skylake; NVIDIA Fermi and older; AMD TeraScale) | The renderer is Vulkan only. | A Direct3D 12 back end, or Mesa's Vulkan-on-Direct3D 12 driver (smaller feature set, untried). |
+| Vulkan below 1.3 (NVIDIA Kepler, GTX 600/700, on its last 470-series driver; AMD GCN 1 to 3 on the legacy driver) | Dynamic rendering, synchronization2 and the 1.3 feature structures are used throughout. | Extension command dispatch is implemented and path-tested on the Iris Xe. Version/feature negotiation, image memory queries, allocation configuration and shader validation still need a 1.2 path; older devices remain refused. |
+| Processors below x86-64-v2 (Core 2, AMD K10) | Refused by the current installer and build options. Performance on these processors has not been measured. | An experimental baseline build compiled and passed self-tests; complete dependency and gameplay validation remain open. The experimental Windows source option is `--cpu v1`; no installer option is shipped. |
+| Windows on Arm | x64 code runs only under emulation there; the runtime's platform layer is x64 specific. | A native ARM64 Windows build. |
+| Windows 7, 8, 8.1 | The shipped setup Python and .NET toolchain target newer Windows. No end-to-end validation exists on these OS versions. | Unsupported by this distribution; an older setup runtime and an audit of game and dependency imports would be needed. |
+| Software Vulkan (lavapipe, SwiftShader) | The check warns when a software device satisfies the required features. No gameplay or performance validation exists here. | Measure correctness and performance on a specific implementation before claiming support. |
+| The Linux release | Has no v2 runtime library yet, so its setup refuses processors without AVX2 as before (`check.cpu_no_avx2`). | `tools/make_release_linux.py` building `libxc2rt-v2.a` against its sysroot. |
+
+## Hard limits and implementation limits
+
+This renderer's Vulkan version, the installer runtime, and the current CPU build targets are implementation limits.
+They are not proof that a PC cannot run a different native port. A CPU instruction missing from a processor cannot
+be executed directly on that processor; a compiler or a different algorithm can often avoid it. Likewise, an x86-64
+executable is not a native ARM64 executable. Native Windows on Arm requires a separate code generator target and
+platform implementation; x64 emulation does not satisfy that requirement.
+
+The current direct-address memory model needs a 64-bit address space. Supporting 32-bit Windows would require a
+fundamental redesign, not a setup option. With no usable graphics driver, the current Vulkan renderer cannot start.
+A different graphics back end or software renderer would still need its own correctness and performance evidence.
+No performance threshold or complete hardware impossibility has been demonstrated for all alternative designs.
+
+## What cannot be claimed
+
+- That the whole earlier compatibility matrix is validated on GPUs beyond the Iris Xe. The dated RTX 5060 Ti
+  checks above cover two shadow synchronization paths only; AMD and other Intel generations remain untested here.
+- That a v2 build runs on a physical processor without AVX2. Emulation is strong evidence for the code it ran, but it
+  covered a self-test and minutes of the opening, not the game, and the Nehalem run needed `-xsave_by_host` and ended
+  in a lost device (above).
+- How much slower the v2 build is in play: the comparison above ran in a 30 fps cutscene on a v3 processor, where both
+  builds hold the cap. Without FMA its fused multiply-adds are library calls.
+- That any physical driver without `VK_EXT_external_memory_host` works: the extension was hidden on the Iris Xe
+  and RTX 5060 Ti; neither test substitutes for an older physical driver.
+- Why the v2 build holds more memory: 1.4 to 2.4 GiB more resident and 0.2 to 1.2 GiB more commit than the v3 build
+  across both pairs of runs, while the game's own memory census (110 pools, 1,709.7 MiB) was the same in all of them. The
+  difference lies outside the game's pools; not isolated.
+- Anything about long sessions, demanding scenes or PCs with less than 16 GB of RAM. Two runs of the same build
+  differed by up to 0.9 GiB resident and 0.5 GiB commit.
+
+## How to check another PC
+
+Start `XC2-Setup.exe` and press *Start*: the PC check runs first and writes `host: {...}` to the setup log, the JSON
+of `installer/hostcheck.c` with the processor level, the Windows build and, for each GPU, `usable`, `missing` and
+`host_import`. A refusal names what each GPU lacks. Please attach that line to a compatibility report.
