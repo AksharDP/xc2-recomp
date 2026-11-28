@@ -610,3 +610,10 @@ site xc2jit main 7e459c sha:e1119b8bd8c8d6fa @page:x12 f9447d8c 0a2c016b d360fd8
 site xc2jit main 7e45a0 sha:0c4ef1bf4730445a @page:x9 8b0c0d29
 site xc2jit main 7e45ac sha:894eb2555f6a9265 b949012a
 site xc2jit main 7e45b0 sha:2c5c87ebbcaa8bf9 b9490529
+
+# xc2nosh (XC2_NO_GAME_SHARPEN, off): disable the game's sharpening stage in main+0x7f6c20.
+# Its configured strength (or a special-mode override) is in s8 at main+0x7f6df8.
+# Zero it before the original compare: the game chooses the disabled ENABLE_SHARPEN
+# shader variant and uploads neutral coefficients (1, 0), keeping the rest of the pass.
+set xc2nosh XC2_NO_GAME_SHARPEN 0
+site xc2nosh main 7f6df8 sha:e07972a3d836791d 1e2703e8 1e202108

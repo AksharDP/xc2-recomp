@@ -86,6 +86,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PICTURE_FIT_KEEP] = "Keep (bars)", [UI_MENU_PICTURE_FIT_STRETCH] = "Stretch",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
+    [UI_MENU_NO_GAME_SHARPEN] = "Disable game sharpening",
+    [UI_MENU_NO_GAME_SHARPEN_DESC] = "Restart required. Uses the game's unsharpened shader variant. "
+                                     "FSR sharpening has a separate slider. Requires Western game update 3.0.1.",
     [UI_MENU_FSR3] = "AMD FSR",
     [UI_MENU_FSR3_DESC] = "Replaces the game's temporal anti-aliasing and scaling with AMD FSR, which upscales a lower "
                           "3D render scale to the game resolution. The note under On says whether it runs, and which "

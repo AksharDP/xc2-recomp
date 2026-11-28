@@ -39,6 +39,8 @@ int ov_language_shipped(const char *code);   // ov.h (pulls in gfx.h)
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+int rt_patch_set(const char *name);
+int rt_patch_held(int set);
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 extern const char rt_game_name[];   // the game version shown, "2.0.0" (tools/build_game.py)
@@ -611,6 +613,9 @@ static void tab_screen(float scale) {
     row_output_res();
     opt_toggle("XC2_HUD_CENTER", UI_MENU_HUD_CENTER, UI_MENU_HUD_CENTER_DESC);   // resolution.c wide_hud
     row_render_scale();
+    int sharpen_patch = rt_patch_set("xc2nosh");
+    if (sharpen_patch >= 0 && !rt_patch_held(sharpen_patch))
+        opt_toggle("XC2_NO_GAME_SHARPEN", UI_MENU_NO_GAME_SHARPEN, UI_MENU_NO_GAME_SHARPEN_DESC);
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     if (vk_fsr1_usable()) opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     static const UiTextId fit[] = {UI_MENU_PICTURE_FIT_KEEP, UI_MENU_PICTURE_FIT_STRETCH};
