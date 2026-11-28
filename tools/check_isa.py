@@ -14,8 +14,9 @@ processor's CPUID, which stops at the first instruction that processor lacks.
     python tools/check_isa.py build/v301-v2/xc2.exe [--level 2] [--objdump PATH] [--json OUT]
 
 Reads the disassembly of GNU objdump or llvm-objdump (AT&T syntax) as it streams. Standard library only.
-Level 1 additionally checks the SSE3, SSSE3, SSE4 and scalar additions listed in ABOVE_BASELINE. This mnemonic-based
-audit is not an exhaustive CPUID decoder or proof that dispatch guards work; combine it with older-CPU execution.
+Level 1 additionally checks the SSE3, SSSE3, SSE4 and scalar additions listed in ABOVE_BASELINE. Mnemonics, operands
+and encoding prefixes are not an exhaustive CPUID decoder or proof that dispatch guards work; combine this audit
+with older-CPU execution.
 """
 import argparse
 import bisect
@@ -75,7 +76,10 @@ V3_VECTOR = re.compile(r"""v(?:
   | ph(?:add|sub)(?:[wd]|sw) | phminposuw | mpsadbw | ptest
 )""", re.X)
 FUNC = re.compile(r'^([0-9a-f]+) <(.+)>:$')
-INSN = re.compile(r'^\s*([0-9a-f]+):\s+(.*)$')
+INSN = re.compile(r'^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2}\s+)+)(.*)$')
+# Address-size and segment overrides can precede an EVEX prefix. In 64-bit code 0x62 introduces EVEX,
+# whose instructions need extensions beyond v3 even when they use only the low XMM or YMM registers.
+LEGACY_PREFIX_BYTES = {0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0xf0, 0xf2, 0xf3}
 
 # Function name pattern -> the check that keeps it off processors without the instructions
 DISPATCHED = [
@@ -169,9 +173,12 @@ def find_objdump(hint):
     return str(msys) if msys.is_file() else None
 
 
-def classify(text, level):
+def classify(text, level, encoding=b''):
     """'above' (outside the level), 'optional' (an extension outside both levels) or None for one instruction."""
     words = text.split()
+    opcode = next((b for b in encoding if b not in LEGACY_PREFIX_BYTES), None)
+    if opcode == 0x62 or '{evex}' in words:
+        return 'above'
     while words and (words[0] in PREFIXES or words[0].startswith('{')):
         words = words[1:]
     if not words:
@@ -253,7 +260,7 @@ def scan(objdump, path, level, link_map=None):
     count. With link_map each instruction is also attributed to the object file it came from. A label names the code
     after it only inside its own object: a static function that follows another object's function without a symbol of
     its own is '?', so it cannot pass as that function (DISPATCHED excuses by name)."""
-    proc = subprocess.Popen([objdump, '-d', '--no-show-raw-insn', str(path)], stdout=subprocess.PIPE,
+    proc = subprocess.Popen([objdump, '-d', str(path)], stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, errors='replace', bufsize=1 << 20)
     found = collections.defaultdict(collections.Counter)
     func, func_obj, total = '?', None, 0
@@ -266,9 +273,11 @@ def scan(objdump, path, level, link_map=None):
         m = INSN.match(line)
         if not m:
             continue
+        text = m.group(3).strip()
+        if not text:   # GNU objdump wraps the remaining bytes of long instructions onto a second line.
+            continue
         total += 1
-        text = m.group(2)
-        kind = classify(text, level)
+        kind = classify(text, level, bytes.fromhex(m.group(2)))
         if kind:
             words = [w for w in text.split() if w not in PREFIXES and not w.startswith('{')]
             obj = link_map.object_at(int(m.group(1), 16)) if link_map else None
