@@ -191,7 +191,7 @@ static void cb_done(void *arg) {   // completion thread
     VkCtx *c = vk_ctx();
     for (int i = 0; i < r->nback; i++) {   // before vk_gpu_written below reports these ranges as written
         const CopyBack *b = &r->back[i];
-        vmaInvalidateAllocation(c->vma, b->alloc, b->off, b->size);   // the chunk may be non-coherent host memory
+        vmaInvalidateAllocation(c->vma, b->alloc, b->off, b->size);   // a no-op for coherent scratch chunks
         memcpy((void *)(uintptr_t)b->addr, b->src, b->size);
     }
     for (int i = 0; i < r->nwritten; i++) vk_gpu_written(r->written[i].addr, r->written[i].size);
@@ -251,7 +251,10 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
                                  .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        // CPU writes go straight into these chunks without flushes. Coherent memory also avoids flushing over
+        // shader-written ranges when a later split submission appends to the same chunk.
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                       .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
         VmaAllocationInfo info;
         VkResult res = vmaCreateBuffer(vk_ctx()->vma, &bi, &ai, &c->buf, &c->alloc, &info);
@@ -367,7 +370,9 @@ static void dummies_init(void) {
                              .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT};
+    // The CPU initializes this buffer once; there is no upload or flush before a draw reads it.
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                  .requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
     VmaAllocationInfo info;
     if (vmaCreateBuffer(c->vma, &bi, &ai, &Z.zbuf, &Z.zalloc, &info) != VK_SUCCESS) rt_fatal("vk: zero buffer failed");
