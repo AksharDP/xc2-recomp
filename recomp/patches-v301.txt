@@ -585,14 +585,28 @@ site xc2qte main 3bb674 sha:2ddbafe335badaf3 bd409e61 1e210800 bd449661 1e202820
 # past 0 and the reset is skipped, while the frame that crosses the loop's end drops the rest of its last key (the
 # sampler stops at the last key), the part where the glow shrinks back: each loop leaves its rise behind. A special
 # starts the animation again at exactly 0, which is why it put the glow back to its base size. Masagrator's 60 fps
-# mod shows the same growth on emulators, as it also steps a varying frame time. The replacement of the compare with
-# zero resets when the position is below the step ([x21,#4], in the position's units), the first frame of every loop
-# at any step; at an exact 1/30 s step it is the original test (position 0 is below the step, the next frame's
-# position equals it). The compare becomes ldr s1, [x21, #4]; fcmp s0, s1 and the branch to the additive path
-# (main+0x670b6c) b.ge in place of b.ne, so a NaN position resets as well. s1 is written before it is read on both
-# paths (main+0x670b38, main+0x670b78), and neither callee on the way takes a float argument.
+# mod shows the same growth on emulators, as it also steps a varying frame time. The replacement resets at position 0
+# as before and on the first frame of every loop at any step: the timeline (main+0x66c7ac) passes the position before
+# it adds the step, so after a wrap the position is the previous position plus the previous step less the length,
+# below the previous step, while on any other frame it is the previous position plus the previous step, at least the
+# previous step. The animation object keeps the step it was last given at +0x38: the object fills 0x40 bytes of its
+# slot (+0xb0 of the 0x270-byte slot, main+0x66ea6c builds it; the timeline follows at +0xf0), its fields end at +0x34
+# (main+0x670a48 sets them) and nothing reads or writes +0x38 (the slot array is zeroed when it is built). Testing the
+# position against the current step instead, as the first version of this set did (issue 238), also reset on the
+# second frame of an animation whenever that frame was longer than the first (about 1 reset in 9 on the issue 47 save's
+# fight route): the reset sets the size from the first key and skips the first frame's change, so a one-shot animation
+# such as a balloon's or an enemy art name's pop-in could end at another size than its last key. Its next start takes
+# that size as its base (main+0x670a48 copies the object's +0x30), so the error multiplied from one showing to the next:
+# on that route one object's base went 1.0, 1.0163, 1.0327 over seven showings, where it stays 1.0 with this test. With
+# the previous step a one-shot animation resets only at position 0, as the original code does, and at an exact 1/30 s
+# step it is the original test. The compare becomes ldr s2, [x20, #0x38]; ldr s1, [x21, #4];
+# str s1, [x20, #0x38]; fcmeq s1, s0, #0.0; orr v2.8b, v2.8b, v1.8b; fcmp s0, s2: at position 0 the mask turns the
+# previous step into a NaN, so the compare is unordered (a site takes one flag-setting word, so no fccmp), and the
+# branch to the additive path (main+0x670b6c) is b.ge in place of b.ne, which an unordered compare does not take, so a
+# NaN position resets as well. s1 and s2 are written before they are read on both paths (main+0x670b34 and
+# main+0x670b38, main+0x670b78), and neither callee on the way takes a float argument.
 set xc2pulse XC2_PULSE_FIX 1
-site xc2pulse main 670b10 sha:f6998207a2c97b35 bd4006a1 1e212000
+site xc2pulse main 670b10 sha:f6998207a2c97b35 bd403a82 bd4006a1 bd003a81 5ea0d801 0ea11c42 1e222000
 site xc2pulse main 670b14 sha:828d0405fcd42748 540002ca
 # xc2jit (XC2_FSR_JITTER, on): the camera jitter FSR needs. The renderer (main+0x7e3808) moves the projection by one
 # entry of a Halton(2,3) table in its object each frame (+0x9c0, 16 entries of 16 bytes; the next entry's index at
