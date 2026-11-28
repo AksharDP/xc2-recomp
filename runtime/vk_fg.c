@@ -166,6 +166,7 @@ static int init(void) {
 
 // On: the setting is on, the library loaded, and the inputs frame generation needs exist (the upscaler's resolve hook).
 int vk_fg_wanted(void) {
+    if (vk_scene_aa_off()) return 0;
     if (!cfg_bool("XC2_FRAME_GEN")) return 0;
     if (G.failed || cfg_bool("XC2_FSR_BUILTIN") || vk_fsr3_state() != VK_FSR_OK) return 0;
     if (!G.tried && !init()) return 0;
@@ -644,6 +645,7 @@ static int own_usable(VkCtx *c) {
 }
 
 int vk_fg_own_wanted(VkCtx *c) {
+    if (vk_scene_aa_off()) return 0;
     if (!cfg_bool("XC2_FRAME_GEN") || !cfg_bool("XC2_FSR3") || O.failed || vk_fg_wanted() ||
         vk_fsr3_state() != VK_FSR_OK)
         return 0;

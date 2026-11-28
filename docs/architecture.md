@@ -99,7 +99,14 @@ Every guest thread is a host thread. XCX assumes Horizon's scheduler: three appl
 - Resolution. Patch sets make the game read its output, swapchain and scene sizes from the patch page
   (MacNativeGames' sites); `resolution.c` sets them from `output_res` and `render_scale` and grows the texture heap
   and the application pool to match. When the window is larger than the output, `vk_fsr.c` runs AMD FSR 1 (EASU,
-  RCAS) on the present. With `XC2_FSR3`, `vk_fsr3.c` runs AMD FSR (3.1.6, or FSR Upscaling 4.1.2 on Radeon RX 6000 and
+  RCAS) on the present. `game_taa = 0` in the INI's `[display]` section (or `XC2_GAME_TAA=0`) is a
+  restart-only choice: `vk_fsr3_jitter_init` centers every camera sample, and `vk_fsr3_resolve` copies the raw scene
+  over the displayed temporal result after the game's five-target draw. Its history and auxiliary targets remain
+  intact. The option requires the active `xc2jit` game-code patch; otherwise TAA remains on and the log explains why.
+  Temporal AMD FSR and frame generation are unavailable while game TAA is off. Window scaling remains independent:
+  `upscaler = bilinear` avoids FSR 1, while `sharpness = 0` disables only its RCAS sharpening. The game's separate
+  sharpening pass is unchanged; this is not a complete implementation of issue #182.
+  With `XC2_FSR3`, `vk_fsr3.c` runs AMD FSR (3.1.6, or FSR Upscaling 4.1.2 on Radeon RX 6000 and
   newer with a recent driver) through the AMD FSR SDK 2.4 loader on the game's own jitter, depth and motion: the raw scene
   goes through bloom and the tone map at the render scale, and FSR takes the tone-mapped picture to the output size in
   place of the stretch at the start of the HUD pass. While it runs the materials' samplers take AMD's mip bias,

@@ -68,6 +68,10 @@
 #define MAX_MISSES 8
 
 enum { API_NONE, API_LOADER, API_LEGACY, API_BUILTIN };
+// Fixed at startup: a centered sample table must stay centered for the whole run.
+static int scene_aa_off;
+int vk_scene_aa_off(void) { return __atomic_load_n(&scene_aa_off, __ATOMIC_ACQUIRE); }
+static struct { VkImage image; uint32_t w, h; } unfiltered;
 enum { IMG_COLOUR, IMG_DEPTH, IMG_MOTION, IMG_OUT, IMG_N };
 enum { STAGE_NONE, STAGE_RESOLVED, STAGE_TONED };
 
@@ -615,6 +619,43 @@ void vk_fsr3_note(VkExec *ex) {
     int unfinished = F.stage != STAGE_NONE;
     F.stage = STAGE_NONE;
     note_scene_size(ex);
+    if (vk_scene_aa_off()) {
+        view_t scene_view;
+        int has_scene_view = 0;
+        const VkTexImage *scene = vk_texture_by_id(NVN_HANDLE_TEX(ex->tex[1][0]), &scene_view, &has_scene_view);
+        const float *c4 = block_of(&ex->ubo[1][1], 96);
+        const VkExecTarget *out = &ex->color[4];
+        // Keep the original draw and its history outputs. Only its final scene is replaced;
+        // the tone map, bloom, scaling and HUD continue through the game's normal path.
+        if (!scene || scene->format != SCENE_FORMAT || scene->samples > 1 ||
+            scene->type != VK_IMAGE_TYPE_2D || scene->layers != 1 ||
+            !(scene->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+            (has_scene_view && ((scene_view.set_levels && scene_view.base_level) ||
+                                (scene_view.set_layers && scene_view.min_layer) || scene_view.set_format)) ||
+            !input_view(bound(ex, 7), VK_FORMAT_UNDEFINED, VK_IMAGE_ASPECT_DEPTH_BIT) ||
+            !input_view(bound(ex, 4), VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_IMAGE_ASPECT_COLOR_BIT) ||
+            !out->img || !out->image || out->samples > 1 || out->is3d || out->layers != 1 ||
+            !(out->img->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || scene->image == out->image || (ex->fbl_mask & (1u << 4)) || !c4)
+            return;
+        // Another attachment can alias the sampled image. Its feedback-loop layout
+        // cannot be passed to vkCmdCopyImage as GENERAL.
+        for (uint32_t i = 0; i < ex->pass_ncolor; i++)
+            if ((ex->fbl_mask & (1u << i)) && ex->color[i].image == scene->image) return;
+        float w = c4[12], h = c4[13];
+        if (!(w >= 1 && h >= 1 && w <= ex->pass_w && h <= ex->pass_h &&
+              w <= scene->width && h <= scene->height && w <= out->width && h <= out->height)) return;
+        static unsigned noted;
+        if (noted < 4) {
+            rt_log("vk: game TAA bypass %ux%u, camera jitter %.9g %.9g",
+                   (unsigned)w, (unsigned)h, c4[8], c4[9]);
+            noted++;
+        }
+        unfiltered.image = scene->image;
+        unfiltered.w = (uint32_t)w;
+        unfiltered.h = (uint32_t)h;
+        ex->fsr3_armed = VK_FSR3_BYPASS;
+        return;
+    }
     if (!cfg_bool("XC2_FSR3")) return;   // frame generation is off without it too (vk_fg_wanted)
     VkCtx *c = vk_ctx();
     if (!F.tried && !init(c)) off();
@@ -796,6 +837,18 @@ static void record_upscale(VkExec *ex) {
 void vk_fsr3_resolve(VkExec *ex) {
     int step = ex->fsr3_armed;
     ex->fsr3_armed = 0;
+    if (step == VK_FSR3_BYPASS) {
+        const VkExecTarget *out = &ex->color[4];
+        VkImageCopy r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, out->level, out->base_layer, 1},
+                        .extent = {unfiltered.w, unfiltered.h, 1}};
+        memory_barrier(ex->cb);
+        vkCmdCopyImage(ex->cb, unfiltered.image, VK_IMAGE_LAYOUT_GENERAL, out->image,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        memory_barrier(ex->cb);
+        ex->recorded += 3;
+        return;
+    }
     if (step == VK_FSR3_RESOLVE) record_resolve(ex);
     else record_upscale(ex);
     ex->recorded += 8;
@@ -829,9 +882,20 @@ static float halton(unsigned i, unsigned base) {
 
 void vk_fsr3_jitter_init(void) {
     uint8_t *page = rt_patch_page();
-    if (!page || !rt_patch_enabled(rt_patch_set("xc2jit"))) return;
+    int requested = !cfg_bool("XC2_GAME_TAA");
+    if (!page || !rt_patch_enabled(rt_patch_set("xc2jit"))) {
+        if (requested) rt_log("vk: game TAA stays on: its camera jitter patch is unavailable");
+        return;
+    }
+    __atomic_store_n(&scene_aa_off, requested, __ATOMIC_RELEASE);
     float t[JITTER_TABLE][2];
-    for (unsigned i = 0; i < JITTER_TABLE; i++) t[i][0] = halton(i + 1, 2), t[i][1] = halton(i + 1, 3);
+    // main+0x7e45d4 subtracts 0.5 from each table coordinate. Center every entry,
+    // including indices left from a longer sequence, to remove projection jitter.
+    for (unsigned i = 0; i < JITTER_TABLE; i++) {
+        t[i][0] = requested ? 0.5f : halton(i + 1, 2);
+        t[i][1] = requested ? 0.5f : halton(i + 1, 3);
+    }
+    if (vk_scene_aa_off()) rt_log("vk: game temporal AA off; centered camera samples, AMD FSR temporal upscaling disabled");
     memcpy(page + 0x900, t, sizeof t);
     jitter_word = (uint64_t *)(page + 0x8f8);
 }
@@ -984,6 +1048,7 @@ static int check_done(void) {
 }
 
 int vk_fsr3_ready(void) {
+    if (vk_scene_aa_off()) return 0;
     char ver[64];
     int done = check_done();
     if (vk_fsr3_state() != VK_FSR_OK) return 0;

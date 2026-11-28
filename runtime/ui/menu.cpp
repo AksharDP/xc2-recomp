@@ -611,6 +611,7 @@ static void tab_screen(float scale) {
     row_output_res();
     opt_toggle("XC2_HUD_CENTER", UI_MENU_HUD_CENTER, UI_MENU_HUD_CENTER_DESC);   // resolution.c wide_hud
     row_render_scale();
+    opt_toggle("XC2_GAME_TAA", UI_MENU_GAME_TAA, UI_MENU_GAME_TAA_DESC);
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     if (vk_fsr1_usable()) opt_choice("XC2_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
     static const UiTextId fit[] = {UI_MENU_PICTURE_FIT_KEEP, UI_MENU_PICTURE_FIT_STRETCH};
@@ -1197,10 +1198,11 @@ static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 
 // The overlay's Upscaler line: what takes the 3D scene to the game image. AMD FSR with the version that ran when it
 // upscaled within the last second (vk_fsr3.c vk_fsr3_shown), else the game's own temporal anti-aliasing and stretch,
-// with the reason when the FSR setting is on.
+// with the reason when the FSR setting is on. The startup AA choice stays active until restart.
 static void upscaler_text(char *b, size_t n) {
     char ver[64];
-    if (vk_fsr3_shown(ver, sizeof ver)) snprintf(b, n, menu_text(UI_MENU_OV_FMT_UPSCALER), ver);
+    if (vk_scene_aa_off()) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_NO_TAA));
+    else if (vk_fsr3_shown(ver, sizeof ver)) snprintf(b, n, menu_text(UI_MENU_OV_FMT_UPSCALER), ver);
     else if (!cfg_bool("XC2_FSR3")) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_GAME));
     else if (vk_fsr3_state() != VK_FSR_OK) snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_NO_FSR));
     else snprintf(b, n, "%s", menu_text(UI_MENU_OV_UPSCALE_IDLE));
