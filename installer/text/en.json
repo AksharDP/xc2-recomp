@@ -189,6 +189,7 @@
  "param.region.Japan": "Japan",
  "launcher.title": "XC2 Setup",
  "launcher.python_missing": "The setup files are incomplete: the python folder next to XC2-Setup.exe is missing. Unpack the whole archive again and start XC2-Setup.exe from the unpacked folder.",
+ "ui.lang_keep": "Keep current game language",
  "lang.ja": "Japanese",
  "lang.en-US": "English (US)",
  "lang.en-GB": "English (UK)",

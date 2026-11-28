@@ -98,8 +98,8 @@ def get_language(text):
 
 
 def write(dest, lang, example=None, game_langs=None):
-    """Write dest/xc2.ini with lang and, when given, game_langs (a list of codes); an existing file keeps its other
-    lines. Returns the path."""
+    """Write dest/xc2.ini with lang and, when given, game_langs (a list of codes). None for lang preserves its existing
+    lines, including an unset language (Automatic). Other lines stay as they are. Returns the path."""
     path = Path(dest) / 'xc2.ini'
     legacy = Path(dest) / 'xcx.ini'   # an install folder made before the rename to XC2: renamed before it is read
     if legacy.is_file() and not path.exists():
@@ -110,7 +110,7 @@ def write(dest, lang, example=None, game_langs=None):
         text = Path(example).read_text(encoding='utf-8')
     else:
         text = ''
-    new = set_language(text, lang)
+    new = text if lang is None else set_language(text, lang)
     if game_langs:
         new = set_value(new, 'game_langs', ' '.join(game_langs))
     if path.is_file() and new == text:

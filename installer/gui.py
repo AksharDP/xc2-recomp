@@ -197,20 +197,21 @@ class App:
         self.fit()
 
     def lang_label(self, code):
-        return self.cat('lang.' + code)
+        return self.cat('ui.lang_keep') if not code else self.cat('lang.' + code)
 
     def offered(self):
-        """The languages the list holds: those of the chosen game files once read, else every one the game knows."""
-        return list(self.languages) if self.languages else list(ini.LANGUAGES)
+        """Game-file languages when known, plus an update-only choice to preserve the current configuration."""
+        languages = list(self.languages) if self.languages else list(ini.LANGUAGES)
+        return [''] + languages if self.form().update_mode() else languages
 
     def fill_languages(self):
         code = self.selected_lang()
         offered = self.offered()
-        recorded = None if self.lang_touched else self.recorded_lang()
-        if recorded in offered:   # an update keeps the language the install has, unless the user picked another
-            code = recorded
-        elif code not in offered:   # chosen before the files were read, or for the other release: their default
-            code = ini.default_language(offered)
+        if '' in offered and not self.lang_touched:
+            code = ''   # Preserve the current ini, including Automatic and mod-provided languages.
+        elif code not in offered:
+            code = '' if '' in offered else ini.default_language(offered)
+            self.lang_touched = False
         self.lang_box.configure(values=[self.lang_label(c) for c in offered])
         self.vars['lang'].set(self.lang_label(code))
         self.lang_code = code
@@ -227,9 +228,9 @@ class App:
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
         shown = self.vars['lang'].get()
-        for code in ini.LANGUAGES:
+        for code in ('', *ini.LANGUAGES):
             for cat in self.all_cats.values():
-                if shown == cat('lang.' + code):
+                if shown == cat('ui.lang_keep' if not code else 'lang.' + code):
                     return code
         return self.lang_code
 
@@ -439,15 +440,13 @@ class App:
         state = self.form().installed_state()
         return (state or {}).get('languages') or None
 
-    def recorded_lang(self):
-        """The game language the install folder has (xc2-install.json), or None."""
-        state = self.form().installed_state()
-        return ini.recorded_language(state.get('lang')) if state else None
-
     def set_languages(self, languages, status):
         """Offer languages (None: every one) and show status under the list; a choice they lack gives way to their
-        default (fill_languages)."""
-        self.lang_touched = self.lang_touched and self.selected_lang() in (languages or ini.LANGUAGES)
+        default, or Keep current on an update (fill_languages)."""
+        choices = list(languages or ini.LANGUAGES)
+        if self.form().update_mode():
+            choices.append('')
+        self.lang_touched = self.lang_touched and self.selected_lang() in choices
         self.languages = list(languages) if languages else None
         self.probe_status = status
         self.fill_languages()
@@ -491,11 +490,9 @@ class App:
         state = form.installed_state()
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
-            recorded = ini.recorded_language(state.get('lang'))
-            if recorded in self.offered() and not self.lang_touched:
-                self.vars['lang'].set(self.lang_label(recorded))
         else:
             self.update_hint.configure(text='')
+        self.fill_languages()
         self.fit()
 
     def pick_file(self, name, pick_id):

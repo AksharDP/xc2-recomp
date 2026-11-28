@@ -199,11 +199,14 @@ warns (`warn.lang_fonts_unchecked`); if the game asks for a system font that is 
   languages, with the release named under it. Without an update the list is the base game's (no Korean).
 - Check: the language must be one the game files have (`check.lang_not_in_game`); without `--lang` a first install
   gets en-US, or ja when the files have no English.
+- Updates keep the language lines already in `xc2.ini`, including Automatic (an empty or absent `lang`), unless a
+  language is explicitly selected. The window defaults to "Keep current game language" for an installed folder.
+  If the configuration is missing, the recorded installer language initializes it.
 - Cleanup: the languages of the installed RomFS go into `xc2.ini` as `game_langs` and into `xc2-install.json` as
   `languages`. The in-game menu offers only those, and the runtime turns a language outside them (XC2_LANG, or the
   Windows locale when it is unset) into en-US, else the first of them (`runtime/ov_system.c` `ov_language`).
-- An install recorded with nl, pt, pt-BR or ru gets its release's default on update; zh-Hans and zh-Hant become zh-CN
-  and zh-TW.
+- When initializing a missing configuration, recorded nl, pt, pt-BR or ru give way to the release's default;
+  zh-Hans and zh-Hant become zh-CN and zh-TW.
 
 ## Command line
 
@@ -226,7 +229,8 @@ with that release's `--toolchain` and `--ninja`.
   `installer/text/en.json` holds their English text. The human-readable log goes to `<temp>/logs/`.
 - `--progress-lines` (`events.LauncherReporter`): stdout carries `progress <0 to 1> <text>` lines instead of JSON, the
   format of RecompLauncher's setup step (`recomplauncher.json`, `prepare`), and an error is one line on stderr. A first
-  install without `--lang` gets en-US, or ja on the Japanese release; an update keeps the recorded language. `--dlc` may be repeated
+  install without `--lang` gets en-US, or ja on the Japanese release; an update keeps the existing configuration's
+  language, using the recorded one only when the configuration is missing. `--dlc` may be repeated
   (`--dlc=FILE` once per add-on). In the AppImage, `AppRun -m installer ...` runs the module with the bundled Python
   and no window, the same arguments as `python\python.exe -m installer ...` in the Windows release.
 - Exit codes: 0 done, 1 failed, 2 bad command line, 3 cancelled. The window cancels with Ctrl+Break to the

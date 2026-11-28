@@ -202,6 +202,49 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(e.exception.id, 'state.newer_format')
 
 
+class CleanupLanguageTest(unittest.TestCase):
+    def cleanup(self, root, requested=None, mode='update'):
+        dest, temp = root / 'game', root / 'work'
+        dest.mkdir(exist_ok=True)
+        temp.mkdir(exist_ok=True)
+        ctx = SimpleNamespace(dest=dest, temp=temp, mode=mode, options=SimpleNamespace(lang=requested),
+                              lang=requested or 'en-US', languages=['en-US', 'ko'], state={'lang': 'en-US'},
+                              layout=SimpleNamespace(ini_example=None),
+                              reporter=SimpleNamespace(progress=lambda *a, **kw: None))
+        with mock.patch.object(steps, 'installed_languages', return_value=ctx.languages), \
+                mock.patch.object(steps, 'write_mod_command'):
+            steps.Cleanup().run(ctx)
+        return (dest / 'xc2.ini').read_text(encoding='utf-8')
+
+    def test_untouched_updates_preserve_current_language_and_auto(self):
+        for mode in ('update', 'resume'):
+            for name in ('xc2.ini', 'xcx.ini'):
+                for language in ('lang = ko\n', 'lang = \n', '# lang = en-US\n'):
+                    with self.subTest(mode=mode, name=name, language=language), tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        dest = root / 'game'
+                        dest.mkdir()
+                        before = '[language]\n' + language + 'game_langs = en-US\n[input]\nprompts = playstation\n'
+                        (dest / name).write_text(before, encoding='utf-8')
+                        after = self.cleanup(root, mode=mode)
+                        self.assertEqual(after, before.replace('game_langs = en-US\n', 'game_langs = en-US ko\n'))
+                        if name == 'xcx.ini':
+                            self.assertFalse((dest / name).exists())
+
+    def test_explicit_language_choice_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / 'game'
+            dest.mkdir()
+            (dest / 'xc2.ini').write_text('[language]\nlang = en-US\n', encoding='utf-8')
+            self.assertEqual(ini.get_language(self.cleanup(root, requested='ko')), 'ko')
+
+    def test_missing_config_is_initialized_for_install_and_update(self):
+        for mode in ('install', 'update', 'resume'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(ini.get_language(self.cleanup(Path(tmp), mode=mode)), 'en-US')
+
+
 class IniTest(unittest.TestCase):
     EXAMPLE = '[display]\n# vk_present = mailbox\n\n[language]\n# locale = en-US\n# lang = en-US\n# x = 1\n'
 
@@ -431,7 +474,8 @@ class CleanupTest(unittest.TestCase):
                                  python=root / 'python' / 'python.exe', runtime=root / 'runtime',
                                  clang=root / 'llvm' / 'bin' / 'clang.exe', sysroot=None)
         self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO()), dest=self.dest, temp=temp, lang='en-US',
-                                   languages=None, state={}, layout=layout)
+                                   languages=None, state={}, layout=layout, mode='install',
+                                   options=SimpleNamespace(lang='en-US'))
 
     def tearDown(self):
         self.tmp.cleanup()
