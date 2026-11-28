@@ -119,8 +119,10 @@ class InstructionLevelTest(unittest.TestCase):
 
     def test_a_label_does_not_reach_into_the_next_object(self):
         """plain.o's static function has no symbol and follows vpx_copy_avx2 of another object in the disassembly."""
-        listing = ('140001000 <vpx_copy_avx2>:\n140001000: vmovdqu (%rax), %ymm0\n140001008: vpaddd %ymm0, %ymm1, %ymm2\n'
-                   '140001010: vpaddd %ymm0, %ymm1, %ymm2\n140001020 <plain>:\n140001020: vaddps %ymm0, %ymm1, %ymm2\n')
+        listing = ('140001000 <vpx_copy_avx2>:\n140001000: c5 fe 6f 00 vmovdqu (%rax), %ymm0\n'
+                   '140001008: c5 f5 fe d0 vpaddd %ymm0, %ymm1, %ymm2\n'
+                   '140001010: c5 f5 fe d0 vpaddd %ymm0, %ymm1, %ymm2\n'
+                   '140001020 <plain>:\n140001020: c5 f4 58 d0 vaddps %ymm0, %ymm1, %ymm2\n')
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'fixture.map'
             path.write_text('00001000 00000010    16         kernels.c.obj:(.text)\n'
@@ -174,12 +176,29 @@ class InstructionLevelTest(unittest.TestCase):
         for asm in ('vpternlogd $0,%xmm0,%xmm1,%xmm2', 'vpabsq %ymm0,%ymm1', 'vpsraq $3,%xmm0,%xmm1',
                     'vaddps %xmm16,%xmm1,%xmm2', 'vaddps (%rax){1to4},%xmm1,%xmm2', 'vaddps %zmm0,%zmm1,%zmm2',
                     'vmovdqu8 %ymm0,%ymm1', 'vpcmpeqd %xmm0,%xmm1,%k1', 'kmovw %k0,%eax',
-                    '{vex} vpdpbusd %ymm0,%ymm1,%ymm2', 'adcx %rax,%rcx', 'adoxq %rax,%rcx'):
+                    '{vex} vpdpbusd %ymm0,%ymm1,%ymm2', '{evex} vaddps %ymm0,%ymm1,%ymm2',
+                    'adcx %rax,%rcx', 'adoxq %rax,%rcx'):
             with self.subTest(asm=asm):
                 self.assertEqual(classify(asm, 3), 'above')
         for asm in ('vaesenc %xmm0,%xmm1,%xmm2', 'vpclmulqdq $0,%xmm0,%xmm1,%xmm2', 'sha256rnds2 %xmm0,%xmm1'):
             with self.subTest(asm=asm):
                 self.assertEqual(classify(asm, 3), 'optional')
+
+    def test_evex_without_disassembler_marker_and_wrapped_bytes(self):
+        # LLVM need not print GNU's {evex} marker. The instruction bytes disambiguate the two vaddps forms.
+        listing = '''0000000000000000 <plain>:
+   0: c5 f4 58 d0                   vaddps %ymm0,%ymm1,%ymm2
+   4: 62 f1 74 28 58 d0             vaddps %ymm0,%ymm1,%ymm2
+   a: 67 62 f1 74 28 58 90          vaddps 0x12345678(%eax),%ymm1,%ymm2
+  11: 78 56 34 12
+  15: c3                            retq
+'''
+        proc = mock.Mock(stdout=io.StringIO(listing), stderr=io.StringIO(''))
+        proc.wait.return_value = 0
+        with mock.patch.object(check_isa.subprocess, 'Popen', return_value=proc):
+            found, total = scan('objdump', Path('fixture.o'), 3)
+        self.assertEqual(total, 4)
+        self.assertEqual(dict(found[('plain', None)]), {('above', 'vaddps'): 2})
 
     def test_runtime_audit_refuses_extensions_outside_the_levels(self):
         """build_game.py check_runtime_isa: AES without a known CPU check stops the build, sha256.c's checked SHA does not."""
@@ -214,13 +233,25 @@ requires_sse3:
 requires_popcnt:
     popcnt %rax, %rcx
     ret
+.globl vex_v3
+vex_v3:
+    .byte 0xc5,0xf4,0x58,0xd0
+    ret
+.globl evex_above_v3
+evex_above_v3:
+    .byte 0x62,0xf1,0x74,0x28,0x58,0xd0
+    ret
 ''')
             subprocess.run([cc, '-c', '-target', 'x86_64-w64-windows-gnu', str(src), '-o', str(obj)],
                            check=True, capture_output=True)
-            baseline, count = scan(objdump, obj, 1)
-            self.assertGreater(count, 0)
-            self.assertEqual({fn for fn, _ in baseline}, {'requires_sse3', 'requires_popcnt'})
-            self.assertEqual(dict(scan(objdump, obj, 2)[0]), {})
+            for decoder in sorted({objdump, shutil.which('objdump'), shutil.which('llvm-objdump')} - {None}):
+                with self.subTest(objdump=decoder):
+                    baseline, count = scan(decoder, obj, 1)
+                    self.assertEqual(count, 10)
+                    self.assertEqual({fn for fn, _ in baseline},
+                                     {'requires_sse3', 'requires_popcnt', 'vex_v3', 'evex_above_v3'})
+                    self.assertEqual({fn for fn, _ in scan(decoder, obj, 2)[0]}, {'vex_v3', 'evex_above_v3'})
+                    self.assertEqual({fn for fn, _ in scan(decoder, obj, 3)[0]}, {'evex_above_v3'})
 
 
 if __name__ == '__main__':

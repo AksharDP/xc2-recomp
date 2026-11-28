@@ -11,6 +11,20 @@ permissions:
   contents: read
 
 jobs:
+  isa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the assembler and disassemblers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm binutils
+      - name: Check instruction auditing without running the fixtures
+        run: python tests/check_isa_test.py
+
   check:
     runs-on: ubuntu-latest
     steps:
