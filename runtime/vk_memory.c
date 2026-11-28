@@ -45,7 +45,7 @@ typedef struct PoolRec {
     VmaAllocation alloc;               // POOL_PHYS
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
-    volatile int32_t used;                // resolved at least once: the GPU may still read it at finalize
+    volatile int32_t used;                // resolved or copied by the GPU: it may still use the buffer at finalize
     // XC2_TRACE=perf dirty census (vk_mem_dirty_submit), replay thread under the submit lock only:
     uint32_t bound_sub;                // last submit that bound it as a buffer (dirty_sub), 0 never
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
@@ -2407,7 +2407,11 @@ static void apply_shadow(VkCommandBuffer cb, MCap *c, uint64_t fence) {
             uint64_t lo = r->import_lo + c->c[i].off;
             shadow_put(c, r, lo, lo + c->c[i].size, c->c[i].src, 0, &k, fence, &live);
         }
-        if (k) vkCmdCopyBuffer(cb, c->st->buf, r->buf, (uint32_t)k, sregions);
+        if (k) {
+            // Captures include pools no binding resolved. Finalize must wait for these copies too.
+            if (!r->used) plat_xchg32(&r->used, 1);
+            vkCmdCopyBuffer(cb, c->st->buf, r->buf, (uint32_t)k, sregions);
+        }
     }
     plat_mutex_unlock(&shadow_lock);
     if (live) {
