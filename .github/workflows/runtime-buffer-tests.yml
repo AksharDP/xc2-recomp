@@ -1,0 +1,25 @@
+name: Native draw buffer tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  draw_buffers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Check draw buffer memory selection without game files
+        env:
+          CC: clang
+        run: python tests/draw_buffer_memory_test.py
