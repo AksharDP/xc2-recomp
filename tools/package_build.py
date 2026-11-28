@@ -117,4 +117,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # A redirected Windows console may use a code page that cannot represent the paths being packaged.
+    sys.stdout.reconfigure(errors='backslashreplace')
     main()
